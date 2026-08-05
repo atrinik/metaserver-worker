@@ -64,6 +64,7 @@ describe("protocol helpers", () => {
     expect(envBoolean("treu", true)).toBe(true);
     expect(envBoolean("off", true)).toBe(false);
     expect(envNumber("30junk", 30)).toBe(30);
+    expect(envNumber("9007199254740992", 30)).toBe(30);
     expect(envNumber("60", 30)).toBe(60);
   });
 

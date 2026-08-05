@@ -42,7 +42,7 @@ export function envNumber(
   }
 
   const parsed = Number(value);
-  return Number.isFinite(parsed) && parsed >= minimum ? parsed : fallback;
+  return Number.isSafeInteger(parsed) && parsed >= minimum ? parsed : fallback;
 }
 
 export function envBoolean(
