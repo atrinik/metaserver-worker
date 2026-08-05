@@ -14,10 +14,9 @@ an operator runbook, not authorization for an automated tool to deploy.
 5. Review `wrangler deploy --dry-run --outdir dist` output for unexpected
    bindings, routes, compatibility changes, or secrets.
 
-Migration `0005_quic_only.sql` is intentionally breaking: it only supports QUIC
-identities and directory protocol 3, and removes prior listings and owners. Do
-not apply it unless the database has been backed up and the reset was explicitly
-approved.
+Migration `0001_initial.sql` creates a new, empty QUIC-only schema. Apply it
+only to the intended empty database. After the first deployment, preserve the
+applied migration and add ordered migrations for later schema changes.
 
 ## Canary
 
@@ -61,5 +60,5 @@ authentication key before re-registering. Treat this as destructive recovery.
 
 Detach the production Custom Domain or deploy the last known-good artifact,
 then restore the recorded D1 backup if schema or ownership state was changed.
-Do not attempt to roll back to the removed TCP/hostname contract. Preserve logs
-and the failed artifact for diagnosis before retrying.
+Restore only a previously validated QUIC artifact and compatible schema.
+Preserve logs and the failed artifact for diagnosis before retrying.

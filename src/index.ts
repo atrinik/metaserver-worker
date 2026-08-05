@@ -14,8 +14,8 @@ import {
 } from "./protocol";
 import type {
   BlacklistRecord,
-  OwnerRecord,
-  ServerRecord,
+  DirectoryServerRecord,
+  OwnerAuthRecord,
   UpdatePayload,
 } from "./types";
 import { openRendezvous, RendezvousRoom } from "./rendezvous";
@@ -90,24 +90,23 @@ async function listDirectServers(env: Env): Promise<Response> {
   const result = await env.DB.prepare(
     `SELECT server_id, name, players_count, version, text_comment,
             quic_host, quic_port, quic_cert_sha256,
-            password_required, last_seen
+            password_required
        FROM servers
       WHERE last_seen >= ?
         AND is_public = 1
-        AND server_id IS NOT NULL
       ORDER BY name COLLATE NOCASE, server_id`,
   )
     .bind(cutoff)
-    .all<ServerRecord>();
+    .all<DirectoryServerRecord>();
 
   const body = result.results.map((server) =>
     "<Server>" +
-    `<Id>${escapeXml(server.server_id ?? "")}</Id>` +
+    `<Id>${escapeXml(server.server_id)}</Id>` +
     `<Name>${escapeXml(server.name)}</Name>` +
     `<PlayersCount>${server.players_count}</PlayersCount>` +
     `<Version>${escapeXml(server.version)}</Version>` +
     `<TextComment>${escapeXml(server.text_comment || "No description.")}</TextComment>` +
-    `<Address>${escapeXml(server.quic_host ?? "")}</Address>` +
+    `<Address>${escapeXml(server.quic_host)}</Address>` +
     `<Port>${server.quic_port}</Port>` +
     `<CertificateSha256>${server.quic_cert_sha256}</CertificateSha256>` +
     `<PasswordRequired>${server.password_required === 1 ? "true" : "false"}</PasswordRequired>` +
@@ -159,10 +158,10 @@ async function updateServer(request: Request, env: Env): Promise<Response> {
   await consumeOtp(env, payload.otp, sourceIp, now);
 
   let owner = await env.DB.prepare(
-    "SELECT server_id, auth_key, current_ip, ip_changed_at, updated_at FROM server_owners WHERE server_id = ?",
+    "SELECT auth_key FROM server_owners WHERE server_id = ?",
   )
     .bind(payload.serverId)
-    .first<OwnerRecord>();
+    .first<OwnerAuthRecord>();
 
   if (owner !== null) {
     await authenticateExistingOwner(payload, owner);
@@ -184,10 +183,10 @@ async function updateServer(request: Request, env: Env): Promise<Response> {
       .run();
 
     owner = await env.DB.prepare(
-      "SELECT server_id, auth_key, current_ip, ip_changed_at, updated_at FROM server_owners WHERE server_id = ?",
+      "SELECT auth_key FROM server_owners WHERE server_id = ?",
     )
       .bind(payload.serverId)
-      .first<OwnerRecord>();
+      .first<OwnerAuthRecord>();
 
     if (owner === null) {
       throw new Error("Owner registration was not persisted");
@@ -314,7 +313,10 @@ async function enforceBlacklist(
   }
 }
 
-async function authenticateExistingOwner(payload: UpdatePayload, owner: OwnerRecord): Promise<void> {
+async function authenticateExistingOwner(
+  payload: UpdatePayload,
+  owner: OwnerAuthRecord,
+): Promise<void> {
   const expected = await deriveUpdateProof(payload.otp, owner.auth_key, payload.cotp);
   if (!constantTimeEqual(expected, payload.key)) {
     throw new RequestError("Invalid metaserver key", 401);

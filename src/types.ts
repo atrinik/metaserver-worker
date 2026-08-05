@@ -3,29 +3,25 @@ export interface BlacklistRecord {
   reason: string;
 }
 
-export interface ServerRecord {
+export interface DirectoryServerRecord {
   server_id: string;
-  source_ip: string;
   name: string;
   players_count: number;
   version: string;
   text_comment: string;
-  last_seen: number;
-  is_public: number;
   quic_host: string;
   quic_port: number;
   quic_cert_sha256: string;
   password_required: number;
-  rendezvous_token_hash: string | null;
 }
 
-export interface OwnerRecord {
-  server_id: string;
+export interface RendezvousServerRecord {
+  is_public: number;
+  rendezvous_token_hash: string;
+}
+
+export interface OwnerAuthRecord {
   auth_key: string;
-  current_ip: string;
-  ip_changed_at: number;
-  created_at: number;
-  updated_at: number;
 }
 
 export interface UpdatePayload {

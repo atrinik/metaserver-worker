@@ -257,10 +257,6 @@ export function escapeXml(value: string): string {
     .replace(/'/g, "&apos;");
 }
 
-export function ipAddressesEqual(left: string, right: string): boolean {
-  return normalizeIpAddress(left) === normalizeIpAddress(right);
-}
-
 export function normalizeIpAddress(value: string): string {
   let address = value.trim().toLowerCase();
   if (address.startsWith("[") && address.endsWith("]")) {
