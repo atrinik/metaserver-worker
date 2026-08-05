@@ -42,7 +42,7 @@ export function envNumber(
   }
 
   const parsed = Number(value);
-  return Number.isFinite(parsed) && parsed >= minimum ? parsed : fallback;
+  return Number.isSafeInteger(parsed) && parsed >= minimum ? parsed : fallback;
 }
 
 export function envBoolean(
@@ -255,10 +255,6 @@ export function escapeXml(value: string): string {
     .replace(/>/g, "&gt;")
     .replace(/"/g, "&quot;")
     .replace(/'/g, "&apos;");
-}
-
-export function ipAddressesEqual(left: string, right: string): boolean {
-  return normalizeIpAddress(left) === normalizeIpAddress(right);
 }
 
 export function normalizeIpAddress(value: string): string {

@@ -8,7 +8,6 @@ import {
   envNumber,
   escapeXml,
   formatOtpResponse,
-  ipAddressesEqual,
   normalizeIpAddress,
   parseUpdatePayload,
   RequestError,
@@ -56,13 +55,16 @@ describe("protocol helpers", () => {
     expect(normalizeIpAddress("[2001:0DB8::1]")).toBe(
       "2001:0db8:0000:0000:0000:0000:0000:0001",
     );
-    expect(ipAddressesEqual("::ffff:192.0.2.1", "0:0:0:0:0:ffff:c000:201")).toBe(true);
+    expect(normalizeIpAddress("::ffff:192.0.2.1")).toBe(
+      "0000:0000:0000:0000:0000:ffff:c000:0201",
+    );
   });
 
   it("uses secure fallbacks for malformed environment settings", () => {
     expect(envBoolean("treu", true)).toBe(true);
     expect(envBoolean("off", true)).toBe(false);
     expect(envNumber("30junk", 30)).toBe(30);
+    expect(envNumber("9007199254740992", 30)).toBe(30);
     expect(envNumber("60", 30)).toBe(60);
   });
 

@@ -2,12 +2,13 @@ import { DurableObject } from "cloudflare:workers";
 
 import {
   constantTimeEqual,
+  envNumber,
   normalizeIpAddress,
   SERVER_SIGNAL_CANDIDATE_KINDS,
   sha256Hex,
 } from "./protocol";
 import type { DirectCandidateKind } from "./protocol";
-import type { ServerRecord } from "./types";
+import type { RendezvousServerRecord } from "./types";
 
 const MAX_SIGNAL_BYTES = 512;
 const HEX_64 = /^[0-9a-f]{64}$/;
@@ -27,13 +28,12 @@ export async function openRendezvous(
   const url = new URL(request.url);
   const role = url.searchParams.get("role");
   const cutoff = Math.floor(Date.now() / 1_000) -
-    Number(env.LISTING_TTL_SECONDS ?? "3600");
+    envNumber(env.LISTING_TTL_SECONDS, 3_600);
   const server = await env.DB.prepare(
-    `SELECT server_id, is_public, rendezvous_token_hash, last_seen
+    `SELECT is_public, rendezvous_token_hash
        FROM servers
-      WHERE server_id = ? AND last_seen >= ?
-      ORDER BY last_seen DESC LIMIT 1`,
-  ).bind(serverId, cutoff).first<ServerRecord>();
+      WHERE server_id = ? AND last_seen >= ?`,
+  ).bind(serverId, cutoff).first<RendezvousServerRecord>();
 
   if (server === null) {
     return new Response("Server is offline\n", { status: 404 });
@@ -44,9 +44,7 @@ export async function openRendezvous(
     const match = /^Bearer ([0-9a-f]{64})$/i.exec(authorization);
     const token = match?.[1] ?? "";
     const actual = await sha256Hex(token);
-    if (server.rendezvous_token_hash === null ||
-        server.rendezvous_token_hash === undefined ||
-        !constantTimeEqual(actual, server.rendezvous_token_hash)) {
+    if (!constantTimeEqual(actual, server.rendezvous_token_hash)) {
       return new Response("Invalid rendezvous token\n", {
         status: 401,
         headers: { "WWW-Authenticate": "Bearer" },

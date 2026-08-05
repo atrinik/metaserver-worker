@@ -21,12 +21,12 @@
       }
     ]
   },
-  "migrations": [
-    {
-      "tag": "v1",
-      "new_sqlite_classes": ["RendezvousRoom"]
+  "exports": {
+    "RendezvousRoom": {
+      "type": "durable-object",
+      "storage": "sqlite"
     }
-  ],
+  },
   "ratelimits": [
     {
       "name": "GLOBAL_RATE_LIMITER",

@@ -41,12 +41,15 @@ remote migrations, deployments, or owner resets merely to validate a change.
 
 ## Storage
 
-`migrations/0005_quic_only.sql` is the intentional breaking reset from the old
-hostname/TCP schema. It retains the ordered migration history but removes old
-listings and owners because their hostname-derived credentials cannot safely
-claim certificate identities. Ownership resets and blacklist changes should be
-generated with `scripts/admin_sql.py`, reviewed, and only then applied by an
-authorized operator.
+`migrations/0001_initial.sql` is the clean QUIC-only bootstrap schema. This
+repository predates its first deployment, so it deliberately has no legacy
+schema transition or data import path. Once this migration has been applied to
+a persistent database, append new migrations instead of rewriting it.
+
+The SQLite-backed `RendezvousRoom` Durable Object is declared through
+Wrangler's `exports` configuration. Ownership resets and blacklist changes
+should be generated with `scripts/admin_sql.py`, reviewed, and only then
+applied by an authorized operator.
 
 See [DEPLOYMENT.md](DEPLOYMENT.md) for the release checklist.
 
