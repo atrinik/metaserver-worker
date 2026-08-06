@@ -42,7 +42,7 @@ remote migrations, deployments, or owner resets merely to validate a change.
 ## Storage
 
 `migrations/0001_initial.sql` is the clean QUIC-only bootstrap schema. This
-repository predates its first deployment, so it deliberately has no legacy
+repository predates its first deployment, so it deliberately has no historical
 schema transition or data import path. Once this migration has been applied to
 a persistent database, append new migrations instead of rewriting it.
 
