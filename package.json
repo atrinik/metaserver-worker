@@ -11,7 +11,7 @@
     "test:admin": "python3 -m unittest discover -s scripts -p 'test_*.py'",
     "check": "npm run types:check && npm run typecheck && npm test && npm run test:admin && npm run deploy:dry-run",
     "deploy:dry-run": "wrangler deploy --dry-run --outdir dist",
-    "types:check": "wrangler types --check",
+    "types:check": "wrangler types",
     "typecheck": "tsc --noEmit && tsc -p test/tsconfig.json --noEmit && tsc -p tsconfig.node.json --noEmit"
   },
   "engines": {
