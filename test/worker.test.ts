@@ -4,7 +4,7 @@ import {
   createScheduledController,
   waitOnExecutionContext,
 } from "cloudflare:test";
-import { beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import worker from "../src/index";
 import { deriveStoredKey, deriveUpdateProof } from "../src/protocol";
@@ -84,6 +84,10 @@ beforeEach(async () => {
   ]);
 });
 
+afterEach(() => {
+  vi.restoreAllMocks();
+});
+
 describe("metaserver Worker", () => {
   it("serves health and an empty QUIC directory", async () => {
     const health = await callWorker(request("/"));
@@ -96,6 +100,64 @@ describe("metaserver Worker", () => {
       '<?xml version="1.0" encoding="UTF-8"?><Servers protocol="3"></Servers>',
     );
     expect((await callWorker(request("/index.wsgi"))).status).toBe(404);
+  });
+
+  it("logs curated rejection events but not routine requests", async () => {
+    const warnings: string[] = [];
+    const debug = vi.spyOn(console, "debug").mockImplementation(() => {});
+    const info = vi.spyOn(console, "info").mockImplementation(() => {});
+    const log = vi.spyOn(console, "log").mockImplementation(() => {});
+    const warn = vi.spyOn(console, "warn").mockImplementation((message) => {
+      warnings.push(String(message));
+    });
+    const error = vi.spyOn(console, "error").mockImplementation(() => {});
+
+    expect((await callWorker(request("/"))).status).toBe(200);
+    expect((await callWorker(request("/v2/servers"))).status).toBe(200);
+    expect((await callWorker(request("/missing"))).status).toBe(404);
+    expect(debug).not.toHaveBeenCalled();
+    expect(info).not.toHaveBeenCalled();
+    expect(log).not.toHaveBeenCalled();
+    expect(warn).not.toHaveBeenCalled();
+    expect(error).not.toHaveBeenCalled();
+
+    const invalidSource = request("/", {}, "not-an-ip-address");
+    expect((await callWorker(invalidSource)).status).toBe(400);
+    expect(warnings.map((message) => JSON.parse(message))).toEqual([
+      {
+        event: "request_rejected",
+        method: "GET",
+        path: "/",
+        status: 400,
+        reason: "The source address is invalid",
+      },
+    ]);
+
+    warnings.length = 0;
+    await env.DB.prepare(
+      "INSERT INTO server_blacklist (pattern, reason, created_at) VALUES (?, ?, ?)",
+    ).bind("1111*", "test identity block", 1).run();
+    expect((await postUpdate(updateForm(await issueOtp(), RAW_KEY))).status).toBe(403);
+    expect(warnings.map((message) => JSON.parse(message))).toEqual([
+      {
+        event: "blacklist_match",
+        serverId: SERVER_ID,
+        sourceIp: SOURCE_IP,
+        pattern: "1111*",
+        reason: "test identity block",
+      },
+      {
+        event: "request_rejected",
+        method: "POST",
+        path: "/index.wsgi/update",
+        status: 403,
+        reason: "The server is blacklisted",
+      },
+    ]);
+    expect(debug).not.toHaveBeenCalled();
+    expect(info).not.toHaveBeenCalled();
+    expect(log).not.toHaveBeenCalled();
+    expect(error).not.toHaveBeenCalled();
   });
 
   it("registers and accepts a second authenticated identity update", async () => {
