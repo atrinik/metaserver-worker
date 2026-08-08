@@ -19,8 +19,20 @@ export default defineConfig({
           TEST_MIGRATIONS: await readD1Migrations(
             path.join(projectDirectory, "migrations"),
           ),
-          ALLOW_TEST_SOURCE_IP: "true",
-          RATE_LIMIT_PER_MINUTE: "1000",
+          COMPAT_HOSTNAME: "meta.example.test",
+          SOURCE_TAG_KEY_CURRENT:
+            "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+          SOURCE_TAG_KEY_PREVIOUS:
+            "AQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQE",
+          COMPAT_STATUS_DAILY_LIMIT: "8",
+          COMPAT_DIRECTORY_DAILY_LIMIT: "8",
+          COMPAT_OTP_DAILY_LIMIT: "48",
+          COMPAT_UPDATE_SOURCE_DAILY_LIMIT: "48",
+          COMPAT_UPDATE_SERVER_DAILY_LIMIT: "8",
+          COMPAT_RENDEZVOUS_CLIENT_SOURCE_DAILY_LIMIT: "50",
+          COMPAT_RENDEZVOUS_CLIENT_PAIR_DAILY_LIMIT: "10",
+          COMPAT_RENDEZVOUS_SERVER_SOURCE_DAILY_LIMIT: "8",
+          COMPAT_RENDEZVOUS_SERVER_DAILY_LIMIT: "8",
         },
       },
     })),

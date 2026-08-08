@@ -2,25 +2,42 @@
 
 [![Check](https://github.com/atrinik/metaserver-worker/actions/workflows/check.yml/badge.svg)](https://github.com/atrinik/metaserver-worker/actions/workflows/check.yml)
 
-This Cloudflare Worker is the directory and rendezvous service for Atrinik's
-QUIC-only game transport. It does not proxy game traffic.
+This repository owns Atrinik's Cloudflare metaserver services for QUIC-only
+game transport. The services publish discovery metadata and exchange bounded
+connection candidates; they never proxy game traffic.
 
-## Endpoints
+## Compatibility endpoints
 
-- `GET /` returns service health.
-- `GET /index.wsgi/otp` issues a source-bound, single-use update token.
+The temporary compatibility Worker accepts only its configured authority and
+exact legacy paths:
+
+- `GET /` returns temporary service health.
+- `GET /index.wsgi/otp` issues a tagged, single-use update token.
 - `POST /index.wsgi/update` authenticates a server identity and updates its
-  QUIC directory record.
-- `GET /v2/servers` returns protocol 3 XML with public QUIC endpoints and
-  pinned SHA-256 certificate fingerprints.
-- `GET /v2/rendezvous/:server-id` upgrades to a signaling-only WebSocket.
+  temporary classic directory record.
+- `GET /v2/servers` returns protocol 3 XML.
+- `GET /v2/rendezvous/:server-id?role=client|server` upgrades to a
+  signaling-only WebSocket.
 
-There is deliberately no TCP directory, compatibility listing, DNS ownership,
-or game-port reachability probe. A server is owned by the SHA-256 identity
-derived from its persistent QUIC certificate, and the directory rejects a
-record whose identity and certificate fingerprint differ. Update authentication
-retains the native server's OTP/proof protocol. Rendezvous server peers additionally
-authenticate with the bearer token returned by a successful update.
+Every route has an independent emergency circuit breaker and bounded daily
+budget. Directory, OTP, update, and rendezvous also have route-specific burst
+limits; the temporary status route uses the global 10/minute ingress ceiling.
+Non-canonical hosts, methods, paths, queries, and content fail before
+application dispatch.
+These routes remain only for the coordinated consumer cutover; they are not
+aliases on the canonical publisher or rendezvous hosts.
+
+The final hostname and route contract is documented in
+[docs/routes.md](docs/routes.md). `meta.atrinik.org` and
+`classic.meta.atrinik.org` become direct static directory origins;
+`publish.meta.atrinik.org` and `rendezvous.meta.atrinik.org` are isolated
+dynamic services.
+
+There is deliberately no TCP directory, DNS ownership proof, game-port probe,
+or game relay. A server is owned by the SHA-256 identity derived from its
+persistent QUIC certificate. The temporary publisher retains the classic
+OTP/proof protocol; the final publisher folds freshness and identity proof into
+one replay-safe signed request. Rendezvous server peers authenticate separately.
 
 ## Development
 
@@ -39,12 +56,17 @@ The checked-in Wrangler file has a placeholder D1 ID and no production route.
 Supply reviewed production bindings during the deployment procedure. Never run
 remote migrations, deployments, or owner resets merely to validate a change.
 
+The Worker requires current and previous source-tag HMAC secrets. Their names
+are declared in `wrangler.jsonc`; values belong only in Cloudflare encrypted
+secrets or ignored `.dev.vars` files. See [docs/privacy.md](docs/privacy.md) for
+rotation and retention rules. Do not substitute plaintext Wrangler variables.
+
 ## Storage
 
-`migrations/0001_initial.sql` is the clean QUIC-only bootstrap schema. This
-repository predates its first deployment, so it deliberately has no historical
-schema transition or data import path. Once this migration has been applied to
-a persistent database, append new migrations instead of rewriting it.
+Production state exists. `migrations/0001_initial.sql` is immutable applied
+history, and every transition is an appended ordered migration. Tests apply the
+complete series and exercise upgrades from populated production-shaped state.
+Never edit, reorder, or reuse an applied migration number.
 
 The SQLite-backed `RendezvousRoom` Durable Object is declared through
 Wrangler's `exports` configuration. Ownership resets and blacklist changes
@@ -53,21 +75,40 @@ applied by an authorized operator.
 
 See [DEPLOYMENT.md](DEPLOYMENT.md) for the release checklist.
 
+## Request controls and privacy
+
+For requests handled by the foundation Worker, newly observed raw addresses
+remain request-scoped. New challenge and request-control writes use
+purpose-separated, rotating HMAC tags with bounded retention; authenticated
+stages use the server identity. The additive migration does not erase dormant
+historical owner/listing values: the next accepted publish clears those legacy
+columns for that server, while a later ordered sanitization migration owns any
+remaining dormant rows. No update infers a QUIC endpoint from the HTTPS source.
+The request path emits only the closed, redacted diagnostic events described in
+[docs/privacy.md](docs/privacy.md).
+
+Native rate bindings cap local bursts, D1 enforces exact fixed-window budgets,
+and the rendezvous hardening phase will add per-room rolling session/work
+budgets. A pre-Worker WAF rule is still required to prevent a blocked loop from
+consuming Worker invocations. The ceilings, `429` contract, shared-NAT policy,
+and circuit breakers are in [docs/rate-limits.md](docs/rate-limits.md); the
+reviewed edge-policy specification and deployment gate are in
+[docs/edge-policy.md](docs/edge-policy.md).
+
 ## Observability
 
-Workers Logs remains enabled for deliberately emitted application diagnostics.
-The rejection and blacklist paths emit structured events, while unexpected
-failures remain logged for diagnosis. Automatic invocation logs are explicitly
-disabled, so routine requests, WebSocket events, and scheduled invocations do
-not each persist a `cf-worker-event` record. Custom-log sampling remains at
-100% while the curated event set is small, so those diagnostics remain
-available to operators.
+Automatic invocation logs are explicitly disabled. Deliberate custom logs are
+limited to redacted `request_rejected`, `blacklist_match`, and
+`unexpected_error` objects with closed, low-cardinality fields. Routine
+success, expected `404`, rate-limit, and open-circuit traffic remains silent, so
+a throttled loop does not replace automatic invocation noise with one custom
+event per request.
 
 This setting changes stored log-event volume, not Worker invocation usage.
-Cloudflare Worker Metrics remains the source for aggregate request counts,
-errors, CPU time, wall time, and duration. Directory hosts that are later moved
-to direct static storage should be monitored as storage/cache traffic rather
-than Worker traffic.
+Cloudflare Worker Metrics and zone security analytics remain the sources for
+aggregate request/status counts, errors, CPU time, wall time, duration, and WAF
+mitigations. Directory hosts that are later moved to direct static storage
+should be monitored as storage/cache traffic rather than Worker traffic.
 
 ## License
 

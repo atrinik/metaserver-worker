@@ -1,8 +1,3 @@
-export interface BlacklistRecord {
-  pattern: string;
-  reason: string;
-}
-
 export interface DirectoryServerRecord {
   server_id: string;
   name: string;

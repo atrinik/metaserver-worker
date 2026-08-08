@@ -4,7 +4,8 @@
   "main": "src/index.ts",
   "compatibility_date": "2026-08-05",
   "compatibility_flags": ["nodejs_compat"],
-  "workers_dev": true,
+  "workers_dev": false,
+  "preview_urls": false,
   "d1_databases": [
     {
       "binding": "DB",
@@ -32,7 +33,15 @@
       "name": "GLOBAL_RATE_LIMITER",
       "namespace_id": "1003",
       "simple": {
-        "limit": 300,
+        "limit": 10,
+        "period": 60
+      }
+    },
+    {
+      "name": "DIRECTORY_RATE_LIMITER",
+      "namespace_id": "1005",
+      "simple": {
+        "limit": 10,
         "period": 60
       }
     },
@@ -40,7 +49,7 @@
       "name": "OTP_RATE_LIMITER",
       "namespace_id": "1001",
       "simple": {
-        "limit": 20,
+        "limit": 10,
         "period": 60
       }
     },
@@ -48,29 +57,66 @@
       "name": "UPDATE_RATE_LIMITER",
       "namespace_id": "1002",
       "simple": {
-        "limit": 20,
+        "limit": 10,
         "period": 60
       }
     },
     {
-      "name": "RENDEZVOUS_RATE_LIMITER",
+      "name": "PUBLISH_IDENTITY_RATE_LIMITER",
+      "namespace_id": "1006",
+      "simple": {
+        "limit": 2,
+        "period": 60
+      }
+    },
+    {
+      "name": "RENDEZVOUS_CLIENT_RATE_LIMITER",
       "namespace_id": "1004",
       "simple": {
-        "limit": 60,
+        "limit": 5,
+        "period": 60
+      }
+    },
+    {
+      "name": "RENDEZVOUS_SERVER_RATE_LIMITER",
+      "namespace_id": "1007",
+      "simple": {
+        "limit": 3,
         "period": 60
       }
     }
   ],
+  "secrets": {
+    "required": [
+      "SOURCE_TAG_KEY_CURRENT",
+      "SOURCE_TAG_KEY_PREVIOUS"
+    ]
+  },
   "vars": {
-    "ALLOW_TEST_SOURCE_IP": "false",
-    "LISTING_TTL_SECONDS": "3600",
+    "COMPAT_HOSTNAME": "meta.atrinik.org",
+    "COMPAT_STATUS_ENABLED": "enabled",
+    "COMPAT_DIRECTORY_ENABLED": "enabled",
+    "COMPAT_OTP_ENABLED": "enabled",
+    "COMPAT_UPDATE_ENABLED": "enabled",
+    "COMPAT_RENDEZVOUS_ENABLED": "enabled",
+    "SOURCE_TAG_KEY_CURRENT_ID": "2026-08-a",
+    "SOURCE_TAG_KEY_PREVIOUS_ID": "2026-07-a",
+    "LISTING_TTL_SECONDS": "14400",
     "OTP_TTL_SECONDS": "120",
-    "RATE_LIMIT_PER_MINUTE": "30",
-    "STALE_DATA_RETENTION_SECONDS": "2592000",
-    "MAX_UPDATE_BODY_BYTES": "100000"
+    "STALE_DATA_RETENTION_SECONDS": "18000",
+    "ROUTE_DISABLED_RETRY_SECONDS": "300",
+    "COMPAT_STATUS_DAILY_LIMIT": "100",
+    "COMPAT_DIRECTORY_DAILY_LIMIT": "100",
+    "COMPAT_OTP_DAILY_LIMIT": "48",
+    "COMPAT_UPDATE_SOURCE_DAILY_LIMIT": "48",
+    "COMPAT_UPDATE_SERVER_DAILY_LIMIT": "48",
+    "COMPAT_RENDEZVOUS_CLIENT_SOURCE_DAILY_LIMIT": "50",
+    "COMPAT_RENDEZVOUS_CLIENT_PAIR_DAILY_LIMIT": "10",
+    "COMPAT_RENDEZVOUS_SERVER_SOURCE_DAILY_LIMIT": "50",
+    "COMPAT_RENDEZVOUS_SERVER_DAILY_LIMIT": "50"
   },
   "triggers": {
-    "crons": ["17 3 * * *"]
+    "crons": ["17 * * * *"]
   },
   "observability": {
     "enabled": true,

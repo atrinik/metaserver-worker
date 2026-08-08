@@ -7,3 +7,7 @@ __pycache__/
 *.log
 worker-configuration.d.ts
 *:Zone.Identifier
+.dev.vars
+.dev.vars.*
+.env
+.env.*
