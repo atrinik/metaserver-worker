@@ -28,41 +28,6 @@ export class RequestError extends Error {
   }
 }
 
-export function envNumber(
-  value: string | undefined,
-  fallback: number,
-  minimum = 1,
-): number {
-  if (value === undefined) {
-    return fallback;
-  }
-
-  if (!/^\d+$/.test(value)) {
-    return fallback;
-  }
-
-  const parsed = Number(value);
-  return Number.isSafeInteger(parsed) && parsed >= minimum ? parsed : fallback;
-}
-
-export function envBoolean(
-  value: string | undefined,
-  fallback: boolean,
-): boolean {
-  if (value === undefined) {
-    return fallback;
-  }
-
-  const normalized = value.toLowerCase();
-  if (["1", "true", "yes", "on"].includes(normalized)) {
-    return true;
-  }
-  if (["0", "false", "no", "off"].includes(normalized)) {
-    return false;
-  }
-  return fallback;
-}
-
 export async function sha512Hex(value: string): Promise<string> {
   const digest = await crypto.subtle.digest(
     "SHA-512",
@@ -98,14 +63,18 @@ export async function deriveUpdateProof(
   return sha512Hex(otp + storedKey + cotp);
 }
 
-export function constantTimeEqual(left: string, right: string): boolean {
-  if (left.length !== right.length) {
-    return false;
-  }
+export async function constantTimeEqual(
+  left: string,
+  right: string,
+): Promise<boolean> {
   const encoder = new TextEncoder();
+  const [leftDigest, rightDigest] = await Promise.all([
+    crypto.subtle.digest("SHA-256", encoder.encode(left)),
+    crypto.subtle.digest("SHA-256", encoder.encode(right)),
+  ]);
   return crypto.subtle.timingSafeEqual(
-    encoder.encode(left),
-    encoder.encode(right),
+    leftDigest,
+    rightDigest,
   );
 }
 
@@ -196,7 +165,11 @@ function requiredField(
   maximumLength: number,
   allowEmpty = false,
 ): string {
-  const value = form.get(name);
+  const values = form.getAll(name);
+  const value = values[0];
+  if (values.length !== 1) {
+    throw new RequestError(`Ambiguous field: ${name}`);
+  }
   if (typeof value !== "string") {
     throw new RequestError(`Missing field: ${name}`);
   }
@@ -214,8 +187,15 @@ function optionalField(
   name: string,
   maximumLength: number,
 ): string | null {
-  const value = form.get(name);
-  if (value === null || value === "") {
+  const values = form.getAll(name);
+  if (values.length === 0) {
+    return null;
+  }
+  if (values.length !== 1) {
+    throw new RequestError(`Ambiguous field: ${name}`);
+  }
+  const value = values[0];
+  if (value === "") {
     return null;
   }
 
@@ -259,13 +239,26 @@ export function escapeXml(value: string): string {
 
 export function normalizeIpAddress(value: string): string {
   let address = value.trim().toLowerCase();
-  if (address.startsWith("[") && address.endsWith("]")) {
+  const startsWithBracket = address.startsWith("[");
+  const endsWithBracket = address.endsWith("]");
+  if (startsWithBracket || endsWithBracket) {
+    if (!startsWithBracket || !endsWithBracket) {
+      throw new RequestError("Invalid source IP address");
+    }
     address = address.slice(1, -1);
+    if (
+      !address.includes(":") ||
+      address.includes("[") ||
+      address.includes("]")
+    ) {
+      throw new RequestError("Invalid source IP address");
+    }
+  } else if (address.includes("[") || address.includes("]")) {
+    throw new RequestError("Invalid source IP address");
   }
 
-  const zone = address.indexOf("%");
-  if (zone !== -1) {
-    address = address.slice(0, zone);
+  if (address.includes("%")) {
+    throw new RequestError("Invalid source IP address");
   }
 
   if (!address.includes(":")) {
@@ -277,8 +270,8 @@ export function normalizeIpAddress(value: string): string {
     throw new RequestError("Invalid source IP address");
   }
 
-  const left = parseIpv6Words(halves[0]);
-  const right = halves.length === 2 ? parseIpv6Words(halves[1]) : [];
+  const left = parseIpv6Words(halves[0], halves.length === 1);
+  const right = halves.length === 2 ? parseIpv6Words(halves[1], true) : [];
   const missing = 8 - left.length - right.length;
   if (
     (halves.length === 1 && missing !== 0) ||
@@ -292,15 +285,21 @@ export function normalizeIpAddress(value: string): string {
     .join(":");
 }
 
-function parseIpv6Words(part: string): string[] {
+function parseIpv6Words(
+  part: string,
+  allowFinalIpv4: boolean,
+): string[] {
   if (part === "") {
     return [];
   }
 
   const raw = part.split(":");
   const words: string[] = [];
-  for (const word of raw) {
+  for (const [index, word] of raw.entries()) {
     if (word.includes(".")) {
+      if (!allowFinalIpv4 || index !== raw.length - 1) {
+        throw new RequestError("Invalid source IP address");
+      }
       const ipv4 = normalizeIpv4(word)
         .split(".")
         .map((value) => Number.parseInt(value, 10));

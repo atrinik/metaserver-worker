@@ -4,8 +4,6 @@ import {
   constantTimeEqual,
   deriveStoredKey,
   deriveUpdateProof,
-  envBoolean,
-  envNumber,
   escapeXml,
   formatOtpResponse,
   normalizeIpAddress,
@@ -42,9 +40,9 @@ describe("protocol helpers", () => {
     const stored = await deriveStoredKey("a".repeat(128), "1".repeat(64));
     const proof = await deriveUpdateProof("otp", stored, "b".repeat(128));
     expect(proof).toMatch(/^[0-9a-f]{128}$/);
-    expect(constantTimeEqual(proof, proof)).toBe(true);
-    expect(constantTimeEqual(proof, "0".repeat(128))).toBe(false);
-    expect(constantTimeEqual(proof, "short")).toBe(false);
+    await expect(constantTimeEqual(proof, proof)).resolves.toBe(true);
+    await expect(constantTimeEqual(proof, "0".repeat(128))).resolves.toBe(false);
+    await expect(constantTimeEqual(proof, "short")).resolves.toBe(false);
   });
 
   it("keeps the exact OTP response expected by the C parser", () => {
@@ -58,14 +56,39 @@ describe("protocol helpers", () => {
     expect(normalizeIpAddress("::ffff:192.0.2.1")).toBe(
       "0000:0000:0000:0000:0000:ffff:c000:0201",
     );
+    expect(normalizeIpAddress("[::ffff:192.0.2.1]")).toBe(
+      "0000:0000:0000:0000:0000:ffff:c000:0201",
+    );
+    expect(normalizeIpAddress("2001:db8::192.0.2.1")).toBe(
+      "2001:0db8:0000:0000:0000:0000:c000:0201",
+    );
   });
 
-  it("uses secure fallbacks for malformed environment settings", () => {
-    expect(envBoolean("treu", true)).toBe(true);
-    expect(envBoolean("off", true)).toBe(false);
-    expect(envNumber("30junk", 30)).toBe(30);
-    expect(envNumber("9007199254740992", 30)).toBe(30);
-    expect(envNumber("60", 30)).toBe(60);
+  it("rejects zones, malformed brackets, and non-terminal embedded IPv4", () => {
+    for (const address of [
+      "192.0.2.1%zone",
+      "2001:db8::1%eth0",
+      "2001:db8::1%",
+      "[2001:db8::1%eth0]",
+      "[192.0.2.1]",
+      "[2001:db8::1",
+      "2001:db8::1]",
+      "[[2001:db8::1]]",
+      "2001:[db8::1]",
+      "[2001:db8::1]:443",
+      "192.0.2.1:1:2:3:4:5:6",
+      "1:192.0.2.1:2:3:4:5:6",
+      "::192.0.2.1:1",
+      "192.0.2.1::",
+      "1.2.3.4:5.6.7.8:1:2:3:4",
+      "1::2::3",
+      "1:2:3:4:5:6:7:8:9",
+      "2001:db8",
+      "[]",
+      "",
+    ]) {
+      expect(() => normalizeIpAddress(address), address).toThrow(RequestError);
+    }
   });
 
   it("parses a complete QUIC update and rejects malformed fields", () => {
@@ -87,6 +110,22 @@ describe("protocol helpers", () => {
     ]) {
       const form = validForm();
       form.set(field, value);
+      expect(() => parseUpdatePayload(form)).toThrow(RequestError);
+    }
+  });
+
+  it("rejects duplicate required and optional update fields", () => {
+    for (const [field, value] of [
+      ["otp", "second-token"],
+      ["server_id", "2".repeat(64)],
+      ["quic_host", "198.51.100.21"],
+      ["public", "0"],
+    ]) {
+      const form = validForm();
+      if (!form.has(field)) {
+        form.set(field, "1");
+      }
+      form.append(field, value);
       expect(() => parseUpdatePayload(form)).toThrow(RequestError);
     }
   });

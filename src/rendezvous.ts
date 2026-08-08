@@ -2,33 +2,76 @@ import { DurableObject } from "cloudflare:workers";
 
 import {
   constantTimeEqual,
-  envNumber,
   normalizeIpAddress,
   SERVER_SIGNAL_CANDIDATE_KINDS,
   sha256Hex,
 } from "./protocol";
 import type { DirectCandidateKind } from "./protocol";
+import type { RendezvousRole } from "./routes";
 import type { RendezvousServerRecord } from "./types";
 
 const MAX_SIGNAL_BYTES = 512;
 const HEX_64 = /^[0-9a-f]{64}$/;
+const RENDEZVOUS_ERROR_DEFINITIONS = {
+  invalid_server_id: {
+    body: "Invalid server ID\n",
+    status: 400,
+  },
+  websocket_upgrade_required: {
+    body: "WebSocket upgrade required\n",
+    status: 426,
+    headers: { Upgrade: "websocket" },
+  },
+  server_offline: {
+    body: "Server is offline\n",
+    status: 404,
+  },
+  invalid_rendezvous_token: {
+    body: "Invalid rendezvous token\n",
+    status: 401,
+    headers: { "WWW-Authenticate": "Bearer" },
+  },
+  server_private: {
+    body: "Server is private\n",
+    status: 403,
+  },
+  room_forbidden: {
+    body: "Forbidden\n",
+    status: 403,
+  },
+  room_full: {
+    body: "Rendezvous room is full\n",
+    status: 503,
+  },
+} as const satisfies Readonly<Record<string, {
+  readonly body: string;
+  readonly status: number;
+  readonly headers?: Readonly<Record<string, string>>;
+}>>;
+
+type RendezvousErrorCode = keyof typeof RENDEZVOUS_ERROR_DEFINITIONS;
+
+export interface RendezvousAdmissionHooks {
+  readonly listingTtlSeconds: number;
+  serverAuthenticated(): Promise<void>;
+}
 
 export async function openRendezvous(
   request: Request,
   env: Env,
   serverId: string,
+  role: RendezvousRole,
+  hooks: RendezvousAdmissionHooks,
 ): Promise<Response> {
   if (!HEX_64.test(serverId)) {
-    return new Response("Invalid server ID\n", { status: 400 });
+    return fixedError("invalid_server_id");
   }
   if (request.headers.get("Upgrade")?.toLowerCase() !== "websocket") {
-    return new Response("WebSocket upgrade required\n", { status: 426 });
+    return fixedError("websocket_upgrade_required");
   }
 
-  const url = new URL(request.url);
-  const role = url.searchParams.get("role");
   const cutoff = Math.floor(Date.now() / 1_000) -
-    envNumber(env.LISTING_TTL_SECONDS, 3_600);
+    hooks.listingTtlSeconds;
   const server = await env.DB.prepare(
     `SELECT is_public, rendezvous_token_hash
        FROM servers
@@ -36,7 +79,7 @@ export async function openRendezvous(
   ).bind(serverId, cutoff).first<RendezvousServerRecord>();
 
   if (server === null) {
-    return new Response("Server is offline\n", { status: 404 });
+    return fixedError("server_offline");
   }
 
   if (role === "server") {
@@ -44,25 +87,44 @@ export async function openRendezvous(
     const match = /^Bearer ([0-9a-f]{64})$/i.exec(authorization);
     const token = match?.[1] ?? "";
     const actual = await sha256Hex(token);
-    if (!constantTimeEqual(actual, server.rendezvous_token_hash)) {
-      return new Response("Invalid rendezvous token\n", {
-        status: 401,
-        headers: { "WWW-Authenticate": "Bearer" },
-      });
+    if (!await constantTimeEqual(actual, server.rendezvous_token_hash)) {
+      return fixedError("invalid_rendezvous_token");
     }
-  } else if (role === "client") {
-    if (server.is_public !== 1) {
-      return new Response("Server is private\n", { status: 403 });
-    }
+    await hooks.serverAuthenticated();
   } else {
-    return new Response("Invalid rendezvous role\n", { status: 400 });
+    if (server.is_public !== 1) {
+      return fixedError("server_private");
+    }
   }
 
   const id = env.RENDEZVOUS.idFromName(serverId);
-  const headers = new Headers(request.headers);
-  headers.delete("Authorization");
-  headers.set("X-Atrinik-Role", role);
-  return env.RENDEZVOUS.get(id).fetch(new Request(request, { headers }));
+  const headers = new Headers({
+    Upgrade: "websocket",
+    "X-Atrinik-Role": role,
+  });
+  return env.RENDEZVOUS.get(id).fetch(new Request(request.url, {
+    method: "GET",
+    headers,
+  }));
+}
+
+function fixedError(
+  code: RendezvousErrorCode,
+): Response {
+  const definition = RENDEZVOUS_ERROR_DEFINITIONS[code];
+  const headers = new Headers();
+  if ("headers" in definition) {
+    for (const [name, value] of Object.entries(definition.headers)) {
+      headers.set(name, value);
+    }
+  }
+  headers.set("Cache-Control", "no-store");
+  headers.set("Content-Type", "text/plain; charset=utf-8");
+  headers.set("X-Content-Type-Options", "nosniff");
+  return new Response(definition.body, {
+    status: definition.status,
+    headers,
+  });
 }
 
 /**
@@ -78,14 +140,17 @@ export class RendezvousRoom extends DurableObject<Env> {
   }
 
   async fetch(request: Request): Promise<Response> {
+    if (!isValidRoomUpgrade(request)) {
+      return fixedError("room_forbidden");
+    }
     const role = request.headers.get("X-Atrinik-Role");
     if (role !== "server" && role !== "client") {
-      return new Response("Forbidden\n", { status: 403 });
+      return fixedError("room_forbidden");
     }
 
     if (role === "client" &&
         this.ctx.getWebSockets("client").length >= 64) {
-      return new Response("Rendezvous room is full\n", { status: 503 });
+      return fixedError("room_full");
     }
     if (role === "server") {
       for (const existing of this.ctx.getWebSockets("server")) {
@@ -107,45 +172,49 @@ export class RendezvousRoom extends DurableObject<Env> {
       return;
     }
 
-    let signal: {
-      type?: unknown;
-      host?: unknown;
-      port?: unknown;
-      kind?: unknown;
-      ticket?: unknown;
-    };
+    let signal: unknown;
     try {
       signal = JSON.parse(message);
     } catch {
       socket.close(1008, "Invalid signaling JSON");
       return;
     }
+    if (
+      signal === null ||
+      typeof signal !== "object" ||
+      Array.isArray(signal)
+    ) {
+      socket.close(1008, "Invalid signaling JSON");
+      return;
+    }
+
+    const fields = signal as Record<string, unknown>;
 
     let candidateHost: string | null = null;
-    if (typeof signal.host === "string") {
+    if (typeof fields.host === "string") {
       try {
-        candidateHost = normalizeIpAddress(signal.host);
+        candidateHost = normalizeIpAddress(fields.host);
       } catch {
         candidateHost = null;
       }
     }
-    const isClientCandidate = signal.type === "client_candidate" &&
+    const isClientCandidate = fields.type === "client_candidate" &&
       candidateHost !== null &&
-      Number.isInteger(signal.port) &&
-      Number(signal.port) >= 1 && Number(signal.port) <= 65_535 &&
-      typeof signal.ticket === "string" &&
-      /^[0-9a-f]{64}$/.test(signal.ticket);
-    const isServerCandidate = signal.type === "server_candidate" &&
+      Number.isInteger(fields.port) &&
+      Number(fields.port) >= 1 && Number(fields.port) <= 65_535 &&
+      typeof fields.ticket === "string" &&
+      /^[0-9a-f]{64}$/.test(fields.ticket);
+    const isServerCandidate = fields.type === "server_candidate" &&
       candidateHost !== null &&
-      Number.isInteger(signal.port) &&
-      Number(signal.port) >= 1 && Number(signal.port) <= 65_535 &&
-      typeof signal.kind === "string" &&
-      SERVER_SIGNAL_CANDIDATE_KINDS.has(signal.kind as DirectCandidateKind) &&
-      typeof signal.ticket === "string" &&
-      /^[0-9a-f]{64}$/.test(signal.ticket);
-    const isComplete = signal.type === "complete" &&
-      typeof signal.ticket === "string" &&
-      /^[0-9a-f]{64}$/.test(signal.ticket);
+      Number.isInteger(fields.port) &&
+      Number(fields.port) >= 1 && Number(fields.port) <= 65_535 &&
+      typeof fields.kind === "string" &&
+      SERVER_SIGNAL_CANDIDATE_KINDS.has(fields.kind as DirectCandidateKind) &&
+      typeof fields.ticket === "string" &&
+      /^[0-9a-f]{64}$/.test(fields.ticket);
+    const isComplete = fields.type === "complete" &&
+      typeof fields.ticket === "string" &&
+      /^[0-9a-f]{64}$/.test(fields.ticket);
     if (!isClientCandidate && !isServerCandidate && !isComplete) {
       socket.close(1008, "Unsupported signaling message");
       return;
@@ -162,18 +231,18 @@ export class RendezvousRoom extends DurableObject<Env> {
       ? JSON.stringify({
           type: "client_candidate",
           host: candidateHost,
-          port: signal.port,
-          ticket: signal.ticket,
+          port: fields.port,
+          ticket: fields.ticket,
         })
       : isServerCandidate
         ? JSON.stringify({
             type: "server_candidate",
             host: candidateHost,
-            port: signal.port,
-            kind: signal.kind,
-            ticket: signal.ticket,
+            port: fields.port,
+            kind: fields.kind,
+            ticket: fields.ticket,
           })
-        : JSON.stringify({ type: "complete", ticket: signal.ticket });
+        : JSON.stringify({ type: "complete", ticket: fields.ticket });
     const targets = this.ctx.getWebSockets(
       sourceIsServer ? "client" : "server",
     );
@@ -186,11 +255,25 @@ export class RendezvousRoom extends DurableObject<Env> {
     }
   }
 
-  async webSocketClose(
-    socket: WebSocket,
-    code: number,
-    reason: string,
+}
+
+function isValidRoomUpgrade(request: Request): boolean {
+  if (
+    request.method !== "GET" ||
+    request.body !== null ||
+    request.headers.get("Upgrade") !== "websocket"
   ) {
-    socket.close(code, reason);
+    return false;
   }
+  for (const name of [
+    "Content-Length",
+    "Content-Type",
+    "Content-Encoding",
+    "Transfer-Encoding",
+  ]) {
+    if (request.headers.has(name)) {
+      return false;
+    }
+  }
+  return true;
 }

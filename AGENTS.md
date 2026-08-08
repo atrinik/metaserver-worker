@@ -11,9 +11,22 @@
 - `wrangler.jsonc` deliberately uses declarative `exports` for the SQLite
   Durable Object and a placeholder D1 ID. Do not add legacy Durable Object
   migration configuration alongside `exports`.
-- `migrations/0001_initial.sql` is the clean bootstrap for a not-yet-deployed
-  database. Once persistent production state exists, append migrations rather
-  than rewriting applied history.
+- Production state exists. `migrations/0001_initial.sql` is applied history:
+  never rewrite, reorder, or reuse it. Add every schema transition as a new,
+  ordered migration and test the complete populated-schema upgrade path.
+- Treat request addresses as request-scoped data. Persist only authenticated
+  identities or purpose-separated, rotating HMAC tags with bounded retention;
+  never log raw addresses, tags, credentials, tokens, or rendezvous candidates.
+- Declare required secret names in Wrangler configuration, keep their values in
+  Cloudflare secrets or ignored local development files, and fail closed when
+  key material or a route circuit breaker is invalid.
+- Keep production `workers.dev` and preview URLs disabled so zone WAF/custom
+  domain policy cannot be bypassed. Use an isolated custom hostname, secrets,
+  and state for canaries.
+- Preserve the curated `request_rejected`, `blacklist_match`, and
+  `unexpected_error` diagnostics with their closed, redacted schemas. Do not
+  log routine success, expected `404`, rate-limit, or open-circuit traffic; use
+  aggregate platform metrics/WAF analytics for traffic measurements.
 - Keep generated Wrangler types and `dist/` untracked. Update bindings, runtime
   types, tests, and dry-run configuration together.
 - Never deploy, run remote D1 migrations, reset ownership, or mutate Cloudflare

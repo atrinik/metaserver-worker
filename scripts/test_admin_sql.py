@@ -8,14 +8,15 @@ import admin_sql
 
 SERVER_ID = "1" * 64
 OTHER_SERVER_ID = "2" * 64
-SCHEMA = Path(__file__).parents[1] / "migrations" / "0001_initial.sql"
+MIGRATIONS = tuple(sorted((Path(__file__).parents[1] / "migrations").glob("*.sql")))
 
 
 class AdminSqlTest(unittest.TestCase):
     def database(self) -> sqlite3.Connection:
         connection = sqlite3.connect(":memory:")
         self.addCleanup(connection.close)
-        connection.executescript(SCHEMA.read_text(encoding="utf-8"))
+        for migration in MIGRATIONS:
+            connection.executescript(migration.read_text(encoding="utf-8"))
         return connection
 
     def seed_server(self, connection: sqlite3.Connection, server_id: str) -> None:
