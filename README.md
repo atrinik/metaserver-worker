@@ -41,12 +41,17 @@ one replay-safe signed request. Rendezvous server peers authenticate separately.
 
 Rendezvous is one short, bounded signaling attempt, not a room-wide message
 bus. A client is admitted only while one authenticated server-control socket is
-live. Its first and only `client_candidate` supplies a fresh client-generated
-ticket, which the room binds to that socket and makes single-use for the rolling
-24-hour replay window. Only that socket receives the matching server messages.
-A session lasts at most 15 seconds and can forward one client candidate, 12
-server candidates, and one completion; every frame is at most 512 bytes and the
-complete accepted exchange is at most 7,168 bytes. Candidate endpoints are
+live. A passwordless client's first and only `client_candidate` supplies a
+fresh client-generated ticket; a protected client supplies it in `auth_init`.
+The room binds the ticket to that socket and makes it single-use for the rolling
+24-hour replay window. Only that socket receives matching server messages.
+A protected attempt first relays exactly one `auth_init`, `auth_challenge`,
+`auth_proof`, and `auth_result`; the authenticated current server control is
+the only authority that may return `authorized: true`. No candidate is accepted
+before that result. A session lasts at most 15 seconds and can forward at most
+two client authorization frames, two server authorization frames, one client
+candidate, 12 server candidates, and one completion. Every frame is at most 512
+bytes and the complete accepted exchange is at most 9,216 bytes. Candidate endpoints are
 never cached or persisted. A terminal transition immediately removes the raw
 ticket and routing digest from the client attachment. If the transport close
 itself fails, the already non-signaling socket normally receives at most four
@@ -55,10 +60,12 @@ retry counter and closing both fail, the alarm fails into Cloudflare's bounded
 platform retry policy instead of installing another alarm; neither path can
 create a self-sustaining loop.
 
-Password-protected listings currently fail client rendezvous closed. Server
-control authentication proves the publishing server, but it is not the game
-password authorization required before candidate disclosure; issue #20 owns
-that separate exchange.
+Password-protected listings accept clients only when both peers negotiate the
+exact `atrinik-classic-rendezvous-invite-v1` WebSocket subprotocol. The Worker
+relays a challenge/response for a random, expiring invite capability but never
+receives the invite secret and never interprets the proof. The classic server
+verifies the proof in constant time and returns only a generic authorization
+result. The independent in-game join password remains mandatory after QUIC.
 
 ## Development
 
@@ -94,11 +101,18 @@ Never edit, reorder, or reuse an applied migration number.
 The SQLite-backed `RendezvousRoom` Durable Object is declared through
 Wrangler's `exports` configuration. Its application SQLite admission ledger
 retains at most 50 rows per room. A row records its acceptance time and, when
-the client's first candidate atomically claims it, exactly two
+the client's first candidate or protected `auth_init` atomically claims it,
+exactly two
 purpose-separated HMAC-SHA-256 replay aliases derived with the current and
 previous source-tag keys. Raw tickets, SHA-256 routing digests, connection IDs,
-and candidate addresses never enter SQLite. Outside the transient signaling
-frame, retained raw-ticket state exists only in its client WebSocket attachment
+and candidate addresses never enter SQLite. Invite IDs, secrets, challenges,
+proofs, and serialized authorization frames do not enter SQLite, Durable Object
+key-value storage, hibernation attachments, logs, or metrics. The D1 owner and
+listing rows, the room's fixed key-value marker, and both attachment roles
+retain only the same random, non-secret token-generation ID needed to
+invalidate a previous control.
+Outside the transient signaling frame, retained raw-ticket state exists only
+in its client WebSocket attachment
 for at most 15 seconds; the server attachment keeps random connection IDs,
 opening/expiry times, and bounded routing digest/counter state until that same
 session expires. A terminal client attachment retains only bounded counters,

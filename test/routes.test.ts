@@ -4,6 +4,7 @@ import { HttpError } from "../src/http";
 import {
   classifyCanonicalRoute,
   classifyCompatibilityRoute,
+  CLASSIC_RENDEZVOUS_INVITE_SUBPROTOCOL,
   COMPATIBILITY_AUTHORITY,
   PUBLISH_AUTHORITY,
   PUBLISH_MAX_BODY_BYTES,
@@ -110,15 +111,24 @@ describe("canonical dynamic route grammar", () => {
       generation: "game-protocol-1",
       serverId: SERVER_ID,
       role: "client",
+      subprotocol: null,
       authority: RENDEZVOUS_AUTHORITY,
     });
     expect(classifyCanonicalRoute(rendezvousInput(
       `/v1/classic/servers/${SERVER_ID}?role=server`,
+      {
+        headers: new Headers({
+          Upgrade: "websocket",
+          "Sec-WebSocket-Protocol":
+            CLASSIC_RENDEZVOUS_INVITE_SUBPROTOCOL,
+        }),
+      },
     ))).toEqual({
       kind: "rendezvous",
       generation: "classic",
       serverId: SERVER_ID,
       role: "server",
+      subprotocol: CLASSIC_RENDEZVOUS_INVITE_SUBPROTOCOL,
       authority: RENDEZVOUS_AUTHORITY,
     });
   });
@@ -373,6 +383,12 @@ describe("canonical dynamic route grammar", () => {
     expect(canonicalError(rendezvousInput(undefined, {
       headers: new Headers({
         Upgrade: "websocket",
+        "Sec-WebSocket-Protocol": CLASSIC_RENDEZVOUS_INVITE_SUBPROTOCOL,
+      }),
+    })).code).toBe("bad_request");
+    expect(canonicalError(rendezvousInput(undefined, {
+      headers: new Headers({
+        Upgrade: "websocket",
         "Sec-WebSocket-Protocol": "atrinik-rendezvous",
       }),
     })).code).toBe("bad_request");
@@ -429,6 +445,7 @@ describe("separate classic compatibility grammar", () => {
       generation: "classic",
       serverId: SERVER_ID,
       role: "client",
+      subprotocol: null,
     });
     expect(classifyCompatibilityRoute(compatibilityInput(
       `/v2/rendezvous/${SERVER_ID}?role=server`,
@@ -438,6 +455,7 @@ describe("separate classic compatibility grammar", () => {
       generation: "classic",
       serverId: SERVER_ID,
       role: "server",
+      subprotocol: null,
     });
   });
 
@@ -537,5 +555,18 @@ describe("separate classic compatibility grammar", () => {
       `/v2/rendezvous/${SERVER_ID}?role=client`,
       { headers: subprotocolHeaders },
     )).code).toBe("bad_request");
+
+    const inviteHeaders = new Headers(headers);
+    inviteHeaders.set(
+      "Sec-WebSocket-Protocol",
+      CLASSIC_RENDEZVOUS_INVITE_SUBPROTOCOL,
+    );
+    expect(classifyCompatibilityRoute(compatibilityInput(
+      `/v2/rendezvous/${SERVER_ID}?role=client`,
+      { headers: inviteHeaders },
+    ))).toMatchObject({
+      kind: "compatibility-rendezvous",
+      subprotocol: CLASSIC_RENDEZVOUS_INVITE_SUBPROTOCOL,
+    });
   });
 });

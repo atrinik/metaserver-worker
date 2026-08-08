@@ -21,6 +21,7 @@ import {
 const OPENED_AT = 1_750_000_000_000;
 const CONTROL_ID = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
 const CLIENT_ID = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb";
+const GENERATION = "d".repeat(64);
 const RAW_TICKET = "a".repeat(64);
 const TICKET_DIGEST = "b".repeat(64);
 
@@ -37,6 +38,7 @@ function awaitingClient(): ClientAttachment {
     v: ATTACHMENT_VERSION,
     role: "client",
     controlId: CONTROL_ID,
+    generation: GENERATION,
     connectionId: CLIENT_ID,
     admissionId: 7,
     openedAt: OPENED_AT,
@@ -44,6 +46,9 @@ function awaitingClient(): ClientAttachment {
     ticket: null,
     ticketDigest: null,
     stage: "awaiting_candidate",
+    authorization: "not_required",
+    clientAuthorizationFrames: 0,
+    serverAuthorizationFrames: 0,
     clientCandidates: 0,
     serverCandidates: 0,
     completionCount: 0,
@@ -74,6 +79,7 @@ function terminalClient(): ClientAttachment {
     ticket: null,
     ticketDigest: null,
     stage: "terminal",
+    authorization: "terminal",
     completionCount: 1,
     signalBytes: 512,
     framesForwarded: 4,
@@ -88,7 +94,10 @@ function ticketState(index: number): TicketState {
     clientConnectionId: connectionId(index + 1),
     openedAt: OPENED_AT,
     expiresAt: OPENED_AT + MAX_SESSION_MS,
-    stage: "candidate_exchange",
+    stage: "active",
+    authorization: "not_required",
+    clientAuthorizationFrames: 0,
+    serverAuthorizationFrames: 0,
     serverCandidates: 0,
     completionCount: 0,
     signalBytes: 1,
@@ -100,7 +109,9 @@ function serverAttachment(tickets: TicketState[] = []): ServerAttachment {
     v: ATTACHMENT_VERSION,
     role: "server",
     current: true,
+    inviteProtocol: false,
     controlId: CONTROL_ID,
+    generation: GENERATION,
     openedAt: OPENED_AT,
     tickets,
   };
@@ -144,6 +155,118 @@ describe("rendezvous hibernation attachments", () => {
     }
   });
 
+  it("round-trips every protected authorization transition without transcripts", () => {
+    const init = { ...awaitingClient(), authorization: "awaiting_init" } as const;
+    const challenge = {
+      ...awaitingClient(),
+      ticket: RAW_TICKET,
+      ticketDigest: TICKET_DIGEST,
+      authorization: "awaiting_challenge",
+      clientAuthorizationFrames: 1,
+      signalBytes: 100,
+      framesForwarded: 1,
+    } as const;
+    const proof = {
+      ...challenge,
+      authorization: "awaiting_proof",
+      serverAuthorizationFrames: 1,
+      signalBytes: 200,
+      framesForwarded: 2,
+    } as const;
+    const result = {
+      ...proof,
+      authorization: "awaiting_result",
+      clientAuthorizationFrames: 2,
+      signalBytes: 300,
+      framesForwarded: 3,
+    } as const;
+    const authorized = {
+      ...result,
+      authorization: "authorized",
+      serverAuthorizationFrames: 2,
+      signalBytes: 400,
+      framesForwarded: 4,
+    } as const;
+    const candidate = {
+      ...authorized,
+      stage: "candidate_exchange",
+      clientCandidates: 1,
+      signalBytes: 500,
+      framesForwarded: 5,
+    } as const;
+    for (const attachment of [
+      init,
+      challenge,
+      proof,
+      result,
+      authorized,
+      candidate,
+    ]) {
+      const stored = encodeRendezvousAttachment(attachment);
+      expect(decodeRendezvousAttachment(stored)).toEqual(attachment);
+      expect(JSON.stringify(stored)).not.toMatch(
+        /invite|challenge|proof|secret|authorized/,
+      );
+    }
+
+    const server = serverAttachment([{
+      ...ticketState(0),
+      authorization: "awaiting_result",
+      clientAuthorizationFrames: 2,
+      serverAuthorizationFrames: 1,
+      signalBytes: 300,
+    }]);
+    const storedServer = encodeRendezvousAttachment({
+      ...server,
+      inviteProtocol: true,
+    });
+    expect(decodeRendezvousAttachment(storedServer)).toEqual({
+      ...server,
+      inviteProtocol: true,
+    });
+    expect(JSON.stringify(storedServer)).not.toMatch(
+      /invite|challenge|proof|secret|authorized/,
+    );
+  });
+
+  it("round-trips terminal clients from every authorization prefix", () => {
+    const prefixes = [
+      { client: 0, server: 0, bytes: 0, forwarded: 0 },
+      { client: 1, server: 0, bytes: 100, forwarded: 1 },
+      { client: 1, server: 1, bytes: 200, forwarded: 2 },
+      { client: 2, server: 1, bytes: 300, forwarded: 3 },
+      { client: 2, server: 2, bytes: 400, forwarded: 4 },
+    ] as const;
+
+    for (const prefix of prefixes) {
+      const attachment: ClientAttachment = {
+        ...awaitingClient(),
+        stage: "terminal",
+        authorization: "terminal",
+        clientAuthorizationFrames: prefix.client,
+        serverAuthorizationFrames: prefix.server,
+        signalBytes: prefix.bytes,
+        framesForwarded: prefix.forwarded,
+        terminalOutcome: "protocol_error",
+      };
+      expect(decodeRendezvousAttachment(
+        encodeRendezvousAttachment(attachment),
+      )).toEqual(attachment);
+    }
+
+    const deniedTicket: TicketState = {
+      ...ticketState(0),
+      stage: "terminal",
+      authorization: "denied",
+      clientAuthorizationFrames: 2,
+      serverAuthorizationFrames: 2,
+      signalBytes: 400,
+    };
+    expect(decodeRendezvousAttachment(encodeRendezvousAttachment(
+      serverAttachment([deniedTicket]),
+    ))).toEqual(serverAttachment([deniedTicket]));
+  });
+
   it("keeps the maximum 50-ticket server attachment below 16 KiB", () => {
     const attachment = serverAttachment(
       Array.from({ length: MAX_RETAINED_TICKETS }, (_, index) =>
@@ -177,9 +300,9 @@ describe("rendezvous hibernation attachments", () => {
       { role: "client", stage: "awaiting_candidate" },
       { role: "server", current: true },
       { ...client, v: 0 },
-      { ...client, v: 2 },
+      { ...client, v: 3 },
       { ...server, v: 0 },
-      { ...server, v: 2 },
+      { ...server, v: 3 },
       { ...server, r: "server" },
     ];
 
@@ -206,7 +329,7 @@ describe("rendezvous hibernation attachments", () => {
       { ...terminal, t: RAW_TICKET, d: TICKET_DIGEST },
       { ...terminal, y: null },
       { ...terminal, y: -1 },
-      { ...terminal, y: 7 },
+      { ...terminal, y: 8 },
       { ...terminal, k: -1 },
       { ...terminal, k: 5 },
       { ...terminal, q: 13 },
@@ -278,11 +401,11 @@ describe("rendezvous hibernation attachments", () => {
     const stored = encodeRendezvousAttachment(serverAttachment());
     const duplicateDigest: StoredTicketState = [
       first[0], second[1], second[2], second[3], second[4], second[5],
-      second[6], second[7],
+      second[6], second[7], second[8], second[9], second[10],
     ];
     const duplicateConnection: StoredTicketState = [
       second[0], first[1], second[2], second[3], second[4], second[5],
-      second[6], second[7],
+      second[6], second[7], second[8], second[9], second[10],
     ];
 
     expect(decodeRendezvousAttachment({

@@ -53,17 +53,17 @@ describe("rendezvous terminal metrics", () => {
 
     writeRendezvousTerminalMetric(dataset, {
       outcome: "completed",
-      clientFramesAccepted: 2.9,
-      serverFramesMatched: 14.9,
-      framesForwarded: 15.9,
-      signalBytes: 8_000.9,
+      clientFramesAccepted: 3.9,
+      serverFramesMatched: 15.9,
+      framesForwarded: 18.9,
+      signalBytes: 10_000.9,
       durationMs: 20_000.9,
     });
 
     expect(writeDataPoint).toHaveBeenCalledExactlyOnceWith({
-      indexes: ["rendezvous-session-v1:completed"],
-      blobs: ["rendezvous-session-v1", "completed"],
-      doubles: [1, 1, 13, 14, 7_168, 15_000],
+      indexes: ["rendezvous-session-v2:completed"],
+      blobs: ["rendezvous-session-v2", "completed"],
+      doubles: [1, 3, 15, 18, 9_216, 15_000],
     });
   });
 
@@ -81,8 +81,8 @@ describe("rendezvous terminal metrics", () => {
     writeRendezvousTerminalMetric(dataset, malformed);
 
     expect(writeDataPoint).toHaveBeenCalledExactlyOnceWith({
-      indexes: ["rendezvous-session-v1:completed"],
-      blobs: ["rendezvous-session-v1", "completed"],
+      indexes: ["rendezvous-session-v2:completed"],
+      blobs: ["rendezvous-session-v2", "completed"],
       doubles: [1, 0, 0, 0, 0, 0],
     });
   });
@@ -97,8 +97,8 @@ describe("rendezvous terminal metrics", () => {
     writeRendezvousTerminalMetric(dataset, malformed);
 
     expect(writeDataPoint).toHaveBeenCalledExactlyOnceWith({
-      indexes: ["rendezvous-session-v1:internal_error"],
-      blobs: ["rendezvous-session-v1", "internal_error"],
+      indexes: ["rendezvous-session-v2:internal_error"],
+      blobs: ["rendezvous-session-v2", "internal_error"],
       doubles: [1, 1, 13, 14, 7_168, 15_000],
     });
   });

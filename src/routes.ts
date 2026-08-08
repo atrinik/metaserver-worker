@@ -4,6 +4,8 @@ import { isCanonicalHostname } from "./hostname";
 export const PUBLISH_AUTHORITY = "publish.meta.atrinik.org";
 export const RENDEZVOUS_AUTHORITY = "rendezvous.meta.atrinik.org";
 export const COMPATIBILITY_AUTHORITY = "meta.atrinik.org";
+export const CLASSIC_RENDEZVOUS_INVITE_SUBPROTOCOL =
+  "atrinik-classic-rendezvous-invite-v1";
 export const PUBLISH_MAX_BODY_BYTES = 65_536;
 export const COMPATIBILITY_UPDATE_MAX_BODY_BYTES = 100_000;
 
@@ -28,6 +30,8 @@ const CRITICAL_HEADERS = [
 
 export type ProtocolGeneration = "game-protocol-1" | "classic";
 export type RendezvousRole = "client" | "server";
+export type ClassicRendezvousSubprotocol =
+  typeof CLASSIC_RENDEZVOUS_INVITE_SUBPROTOCOL;
 
 export interface RouteInput {
   /**
@@ -54,6 +58,7 @@ export type CanonicalDynamicRoute =
       readonly generation: ProtocolGeneration;
       readonly serverId: string;
       readonly role: RendezvousRole;
+      readonly subprotocol: ClassicRendezvousSubprotocol | null;
       readonly authority: typeof RENDEZVOUS_AUTHORITY;
     };
 
@@ -80,6 +85,7 @@ export type CompatibilityRoute =
       readonly generation: "classic";
       readonly serverId: string;
       readonly role: RendezvousRole;
+      readonly subprotocol: ClassicRendezvousSubprotocol | null;
     };
 
 interface ParsedTarget {
@@ -212,11 +218,16 @@ function classifyRendezvous(
   const role = parseRendezvousRole(target.query);
   enforceNoBody(input);
   enforceWebSocketUpgrade(input.headers);
+  const subprotocol = parseRendezvousSubprotocol(
+    input.headers,
+    route.generation === "classic",
+  );
   return {
     kind: "rendezvous",
     generation: route.generation,
     serverId: route.serverId,
     role,
+    subprotocol,
     authority: RENDEZVOUS_AUTHORITY,
   };
 }
@@ -235,11 +246,13 @@ function classifyCompatibilityRendezvous(
   const role = parseRendezvousRole(target.query);
   enforceNoBody(input);
   enforceWebSocketUpgrade(input.headers);
+  const subprotocol = parseRendezvousSubprotocol(input.headers, true);
   return {
     kind: "compatibility-rendezvous",
     generation: "classic",
     serverId,
     role,
+    subprotocol,
   };
 }
 
@@ -333,6 +346,20 @@ function parseRendezvousRole(query: string | null): RendezvousRole {
     return "server";
   }
   throw new HttpError("unexpected_query");
+}
+
+function parseRendezvousSubprotocol(
+  headers: Headers,
+  allowClassicInvite: boolean,
+): ClassicRendezvousSubprotocol | null {
+  const value = headers.get("Sec-WebSocket-Protocol");
+  if (value === null) {
+    return null;
+  }
+  if (allowClassicInvite && value === CLASSIC_RENDEZVOUS_INVITE_SUBPROTOCOL) {
+    return value;
+  }
+  throw new HttpError("bad_request");
 }
 
 function enforcePublisherBody(input: RouteInput): void {
@@ -433,9 +460,6 @@ function enforceWebSocketUpgrade(headers: Headers): void {
   const key = headers.get("Sec-WebSocket-Key");
   if (key !== null && !/^[A-Za-z0-9+/]{22}==$/.test(key)) {
     throw new HttpError("upgrade_required");
-  }
-  if (headers.has("Sec-WebSocket-Protocol")) {
-    throw new HttpError("bad_request");
   }
 }
 

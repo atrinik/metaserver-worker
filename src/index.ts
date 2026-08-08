@@ -51,6 +51,11 @@ import {
 import type { RequestBudgetScope } from "./rate-limit";
 import { openRendezvous, RendezvousRoom } from "./rendezvous";
 import {
+  INTERNAL_RENDEZVOUS_PUBLISH_URL,
+} from "./rendezvous-contract";
+import type { InternalRendezvousPublication } from "./rendezvous-contract";
+import { readPublishedGeneration } from "./rendezvous-publication";
+import {
   classifyCompatibilityRoute,
   routeInputFromRequest,
 } from "./routes";
@@ -375,19 +380,25 @@ async function listDirectServers(
     .bind(cutoff)
     .all<DirectoryServerRecord>();
 
-  const body = result.results.map((server) =>
-    "<Server>" +
-    `<Id>${escapeXml(server.server_id)}</Id>` +
-    `<Name>${escapeXml(server.name)}</Name>` +
-    `<PlayersCount>${server.players_count}</PlayersCount>` +
-    `<Version>${escapeXml(server.version)}</Version>` +
-    `<TextComment>${escapeXml(server.text_comment || "No description.")}</TextComment>` +
-    `<Address>${escapeXml(server.quic_host)}</Address>` +
-    `<Port>${server.quic_port}</Port>` +
-    `<CertificateSha256>${server.quic_cert_sha256}</CertificateSha256>` +
-    `<PasswordRequired>${server.password_required === 1 ? "true" : "false"}</PasswordRequired>` +
-    "</Server>"
-  ).join("");
+  const body = result.results.map((server) => {
+    const directEndpoint = server.quic_host === ""
+      ? ""
+      : `<Address>${escapeXml(server.quic_host)}</Address>` +
+        `<Port>${server.quic_port}</Port>`;
+
+    return (
+      "<Server>" +
+      `<Id>${escapeXml(server.server_id)}</Id>` +
+      `<Name>${escapeXml(server.name)}</Name>` +
+      `<PlayersCount>${server.players_count}</PlayersCount>` +
+      `<Version>${escapeXml(server.version)}</Version>` +
+      `<TextComment>${escapeXml(server.text_comment || "No description.")}</TextComment>` +
+      directEndpoint +
+      `<CertificateSha256>${server.quic_cert_sha256}</CertificateSha256>` +
+      `<PasswordRequired>${server.password_required === 1 ? "true" : "false"}</PasswordRequired>` +
+      "</Server>"
+    );
+  }).join("");
 
   return new Response(
     `<?xml version="1.0" encoding="UTF-8"?><Servers protocol="3">${body}</Servers>`,
@@ -521,54 +532,44 @@ async function updateServer(
 
   const rendezvousToken = randomToken();
   const rendezvousTokenHash = await sha256Hex(rendezvousToken);
-  const persisted = await env.DB.batch([
-    env.DB.prepare(
-      `UPDATE server_owners
-          SET current_ip = '',
-              ip_changed_at = CASE WHEN current_ip <> '' THEN ? ELSE ip_changed_at END,
-              updated_at = ?
-        WHERE server_id = ?`,
-    ).bind(now, now, payload.serverId),
-    env.DB.prepare(
-      `INSERT INTO servers
-         (server_id, source_ip, name, players_count, version, text_comment,
-          last_seen, is_public, quic_host, quic_port, quic_cert_sha256,
-          password_required, rendezvous_token_hash)
-       VALUES (?, '', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-       ON CONFLICT(server_id) DO UPDATE SET
-         source_ip = '',
-         name = excluded.name,
-         players_count = excluded.players_count,
-         version = excluded.version,
-         text_comment = excluded.text_comment,
-         last_seen = excluded.last_seen,
-         is_public = excluded.is_public,
-         quic_host = excluded.quic_host,
-         quic_port = excluded.quic_port,
-         quic_cert_sha256 = excluded.quic_cert_sha256,
-         password_required = excluded.password_required,
-         rendezvous_token_hash = excluded.rendezvous_token_hash`,
-    ).bind(
-      payload.serverId,
-      payload.name,
-      payload.playersCount,
-      payload.version,
-      payload.textComment,
-      now,
-      payload.isPublic ? 1 : 0,
-      payload.quicHost ?? "",
-      payload.quicPort,
-      payload.quicCertSha256,
-      payload.passwordRequired ? 1 : 0,
-      rendezvousTokenHash,
-    ),
-  ]);
-  if (
-    persisted.length !== 2 ||
-    persisted.some((result) => !result.success) ||
-    persisted.some((result) => result.meta.changes !== 1)
-  ) {
-    throw new Error("Server update did not persist every required mutation");
+  const rendezvousGeneration = randomToken();
+  const expectedGeneration = await readPublishedGeneration(
+    env.DB,
+    payload.serverId,
+  );
+  const publication = {
+    serverId: payload.serverId,
+    expectedGeneration,
+    generation: rendezvousGeneration,
+    tokenHash: rendezvousTokenHash,
+    now,
+    name: payload.name,
+    playersCount: payload.playersCount,
+    version: payload.version,
+    textComment: payload.textComment,
+    isPublic: payload.isPublic,
+    quicHost: payload.quicHost ?? "",
+    quicPort: payload.quicPort,
+    quicCertSha256: payload.quicCertSha256,
+    passwordRequired: payload.passwordRequired,
+  } satisfies InternalRendezvousPublication;
+  const committed = await env.RENDEZVOUS.getByName(payload.serverId).fetch(
+    new Request(INTERNAL_RENDEZVOUS_PUBLISH_URL, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify(publication),
+    }),
+  );
+  if (committed.status !== 204) {
+    await committed.body?.cancel();
+  }
+  if (committed.status === 409) {
+    throw new HttpError("service_disabled", { retryAfterSeconds: 5 });
+  }
+  if (committed.status !== 204) {
+    throw new Error("Rendezvous publication did not commit");
   }
 
   return Response.json(

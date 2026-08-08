@@ -47,24 +47,90 @@ dynamic Worker:
   Game Protocol 1.
 - `classic.meta.atrinik.org`: the same four paths for the classic generation.
 
+In the compatibility XML, `Address` and `Port` appear only when the server
+explicitly publishes a direct endpoint. Their absence denotes an addressless
+listing that clients must join through rendezvous; the Worker never fills an
+address from the HTTPS request source. A present compatibility endpoint is
+public even when `PasswordRequired` is true; the password remains an in-game
+authentication step and does not conceal published routing metadata.
+
 ## Rendezvous signaling semantics
 
 The public route selects a role; it does not grant that role. The server role
 must authenticate the listing's rendezvous token before the Worker opens the
 per-server room, and a client is admitted only while that authenticated control
-socket remains live. A password-protected listing fails client rendezvous
-closed with a fixed `503 Protected rendezvous authorization is unavailable`
-response and `Retry-After: 300` until issue #20 provides the separate
-game-password authorization stage.
+socket remains live. Every successful publish rotates a non-secret generation
+with the bearer token and retires all controls, pending authorizations, and
+authorized tickets from the previous generation before the new token becomes
+usable. The per-server room serializes that complete generation/token/listing
+commit. Concurrent updates carry the D1 generation they observed; only the
+first matching precondition can commit, so a delayed writer cannot regress the
+room or listing to an unusable token. A password-protected listing fails client
+rendezvous closed with a fixed retryable `503` unless both the client and
+current server control negotiate exactly
+`atrinik-classic-rendezvous-invite-v1`. The selected subprotocol is echoed in
+the `101` response; missing, alternate, whitespace-, or comma-joined values are
+not accepted for the protected flow.
 
-An accepted client sends one fresh client-generated ticket in its only
-`client_candidate`. The room binds that ticket to the originating socket,
-rejects replay or cross-socket use, and routes at most 12 matching
+| Listing policy | Client without invite subprotocol | Client with invite subprotocol |
+| --- | --- | --- |
+| private, either password mode | fixed `403`; no room admission | fixed `403`; the invite is not a discovery grant |
+| public, passwordless | admitted only while a server control is live | fixed `400`; protected and passwordless modes cannot be mixed |
+| public, password-protected | fixed retryable `503` | admitted only while an invite-capable server control is live; authorization is mandatory |
+
+An authenticated classic server control may always advertise invite-v1 support
+so one long-lived control can serve the listing after an operator policy
+change. The listing's current `PasswordRequired` value, not a client-selected
+header, determines whether authorization is required.
+
+### Classic invite-v1 contract
+
+An invite capability has the exact canonical form
+`atrinik-invite-v1.<server-id>.<invite-id>.<secret>.<expiry>`. The server ID is
+64 lowercase hexadecimal characters, the random invite ID is 32 lowercase
+hexadecimal characters (128 bits), and the random secret is 64 lowercase
+hexadecimal characters (256 bits). Expiry is a nonzero unsigned 64-bit Unix
+timestamp in canonical decimal with no leading zero. A capability is valid
+only for the exact embedded server identity, while `expiry > now`, and while
+expiry is no more than seven days in the future. Peers apply no implicit clock
+skew allowance.
+
+The proof is HMAC-SHA-256 with the 32-byte invite secret over this exact binary
+transcript, in order:
+
+1. ASCII `atrinik-classic-rendezvous-invite-v1` followed by one NUL byte;
+2. the decoded 32-byte server ID;
+3. the decoded 32-byte ticket;
+4. the decoded 16-byte invite ID;
+5. the 32-byte random server challenge; and
+6. expiry encoded as an unsigned 64-bit big-endian integer.
+
+One capability may authorize multiple fresh attempts until expiry; every proof
+is nevertheless unique to its single-use ticket and fresh challenge. The
+classic server owns capability creation, storage, expiry, and revocation. It
+keeps one mode-`0600` capability file, creates a replacement valid for at most
+seven days when none exists, and revokes/rotates it when the operator removes
+that file and restarts. Clients receive the capability out of band, hold it
+only for the attempted connection, and cleanse it afterward. It must never be
+placed in a URL, query string, command line, log, directory representation, or
+Worker request.
+
+An accepted passwordless client sends one fresh client-generated ticket in its
+only `client_candidate`. A protected client sends the ticket in a canonical
+`auth_init`, receives one `auth_challenge`, returns one `auth_proof`, and waits
+for one `auth_result`. The authenticated current server-control socket is the
+only authority that can advance the exact ticket with `authorized: true`; a
+false result is terminal and no candidate frame is accepted before a true
+result. The invite secret and proof interpretation remain entirely in classic
+peers, and the post-QUIC game join password remains independent. The room binds
+the ticket to the originating socket, rejects replay or cross-socket use, and
+routes at most 12 matching
 `server_candidate` messages and one `complete` only to that socket. Completion
 closes the client immediately; the room closes it unconditionally after 15
-seconds. Each frame is at most 512 bytes and the accepted attempt is capped at
-7,168 signaling bytes. Candidate and ticket payloads are never cacheable route
-representations. Terminal state clears the client attachment's ticket and
+seconds. Each frame is at most 512 bytes. Authorization is capped at four
+frames/2,048 bytes and the complete accepted attempt is capped at 9,216
+signaling bytes. Candidate, ticket, invite, challenge, and proof payloads are
+never cacheable route representations. Terminal state clears the client attachment's ticket and
 digest immediately. A persistently failing transport close has four
 explicit teardown-only retries ending seven seconds after the session deadline.
 If both the retry-counter attachment write and close fail, the alarm throws so
@@ -77,9 +143,9 @@ client attachment until that 15-second deadline. The server attachment keeps
 random per-connection IDs, opening/expiry times, its SHA-256 routing digest,
 and bounded counters for the live attempt. After becoming terminal, the client
 attachment also keeps the closed outcome enum and a bounded teardown-attempt
-counter. On
-the first candidate, the room atomically claims two purpose-separated HMAC
-replay aliases in the already reserved admission row. Those opaque aliases—not
+counter. On the first passwordless candidate or protected `auth_init`, the room
+atomically claims two purpose-separated HMAC replay aliases in the already
+reserved admission row. Those opaque aliases—not
 a raw ticket, unkeyed SHA-256 routing digest, connection ID, or candidate
 address—preserve single use for the rolling 24-hour window across server
 reconnect and Durable Object reconstruction.

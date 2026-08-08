@@ -1,8 +1,12 @@
 import {
+  INTERNAL_RENDEZVOUS_AUTHORIZATION_HEADER,
+  INTERNAL_RENDEZVOUS_GENERATION_HEADER,
+  INTERNAL_RENDEZVOUS_PROTOCOL_HEADER,
   INTERNAL_RENDEZVOUS_ROLE_HEADER,
   INTERNAL_RENDEZVOUS_URL,
 } from "./rendezvous-contract";
 import { constantTimeEqual, sha256Hex } from "./protocol";
+import { CLASSIC_RENDEZVOUS_INVITE_SUBPROTOCOL } from "./routes";
 import type { RendezvousRole } from "./routes";
 import type { RendezvousServerRecord } from "./types";
 
@@ -16,6 +20,10 @@ const RENDEZVOUS_ERROR_DEFINITIONS = {
     body: "WebSocket upgrade required\n",
     status: 426,
     headers: { Upgrade: "websocket" },
+  },
+  invalid_websocket_subprotocol: {
+    body: "Invalid WebSocket subprotocol\n",
+    status: 400,
   },
   server_offline: {
     body: "Server is offline\n",
@@ -61,10 +69,20 @@ export async function openRendezvous(
   if (request.headers.get("Upgrade")?.toLowerCase() !== "websocket") {
     return fixedError("websocket_upgrade_required");
   }
+  const requestedSubprotocol = request.headers.get("Sec-WebSocket-Protocol");
+  if (
+    requestedSubprotocol !== null &&
+    requestedSubprotocol !== CLASSIC_RENDEZVOUS_INVITE_SUBPROTOCOL
+  ) {
+    return fixedError("invalid_websocket_subprotocol");
+  }
+  const inviteProtocol = requestedSubprotocol ===
+    CLASSIC_RENDEZVOUS_INVITE_SUBPROTOCOL;
 
   const cutoff = Math.floor(Date.now() / 1_000) - hooks.listingTtlSeconds;
   const server = await env.DB.prepare(
-    `SELECT is_public, password_required, rendezvous_token_hash
+    `SELECT is_public, password_required, rendezvous_token_hash,
+            rendezvous_generation
        FROM servers
       WHERE server_id = ? AND last_seen >= ?`,
   ).bind(serverId, cutoff).first<RendezvousServerRecord>();
@@ -86,10 +104,12 @@ export async function openRendezvous(
     if (server.is_public !== 1) {
       return fixedError("server_private");
     }
-    // Issue #20 will replace this safe dependency boundary with a bounded
-    // password authorization exchange before any candidate is disclosed.
     if (server.password_required === 1) {
-      return fixedError("rendezvous_authorization_unavailable");
+      if (!inviteProtocol) {
+        return fixedError("rendezvous_authorization_unavailable");
+      }
+    } else if (inviteProtocol) {
+      return fixedError("invalid_websocket_subprotocol");
     }
   }
 
@@ -100,6 +120,15 @@ export async function openRendezvous(
       headers: {
         Upgrade: "websocket",
         [INTERNAL_RENDEZVOUS_ROLE_HEADER]: role,
+        [INTERNAL_RENDEZVOUS_PROTOCOL_HEADER]: inviteProtocol
+          ? "classic-invite-v1"
+          : "none",
+        [INTERNAL_RENDEZVOUS_AUTHORIZATION_HEADER]:
+          role === "client" && server.password_required === 1
+            ? "required"
+            : "not-required",
+        [INTERNAL_RENDEZVOUS_GENERATION_HEADER]:
+          server.rendezvous_generation,
       },
     },
   ));
