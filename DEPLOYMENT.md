@@ -14,8 +14,16 @@ readonly ATRINIK_PROD_WORKER=atrinik-metaserver
 readonly ATRINIK_CF_PROFILE=atrinik-production
 readonly ATRINIK_SOURCE_TAG_SECRETS=/secure/path/source-tags-initial.env
 
-npx wrangler whoami --profile "$ATRINIK_CF_PROFILE"
+npx wrangler auth activate "$ATRINIK_CF_PROFILE" .
+npx wrangler whoami --json
 ```
+
+`wrangler whoami` does not accept `--profile` in the pinned CLI. Activating the
+reviewed profile for this exact checkout makes the unprofiled identity check
+use it; compare the returned account with the release target before continuing.
+Run `npx wrangler auth deactivate .` when the dedicated deployment session is
+finished. The mutation is a local Wrangler authentication binding only; it is
+not a Cloudflare deployment.
 
 ## Prepare
 
@@ -34,7 +42,11 @@ npx wrangler whoami --profile "$ATRINIK_CF_PROFILE"
    corresponding Wrangler variables. Every canary/environment gets independent
    keys and a distinct configured hostname namespace. Do not use sequential
    `wrangler secret put` commands, and do not put values in Wrangler variables,
-   shell history, logs, or this repository.
+   shell history, logs, or this repository. Confirm the planned current/previous
+   pair shares one identical key with the preceding deployed pair and that this
+   overlap remains active for strictly more than 24 hours after the last writer
+   using the preceding pair stops; the per-room replay ledger depends on that
+   overlap.
 6. Run `npm ci` and `npm run check` from this directory.
 7. Run the following dry run and review its output for unexpected bindings,
    routes, compatibility changes, or secrets:
@@ -46,10 +58,30 @@ npx wrangler whoami --profile "$ATRINIK_CF_PROFILE"
      --profile "$ATRINIK_CF_PROFILE"
    ```
 
+   Preserve the resolved binding summary in the reviewed release record. In
+   particular, record that production `RENDEZVOUS_METRICS` resolves to
+   `atrinik_metaserver_rendezvous`; this is the comparison baseline for the
+   canary dry run below.
+
 8. Confirm the production artifact has `workers_dev: false` and
    `preview_urls: false`. Review and stage
    [docs/edge-policy.md](docs/edge-policy.md); no production custom domain may
    be attached before its raw-target gate and rate-policy decision pass review.
+9. Confirm the artifact has the `RENDEZVOUS_METRICS` Analytics Engine binding
+   targeting only `atrinik_metaserver_rendezvous`, the SQLite `RENDEZVOUS`
+   Durable Object binding, and all three rendezvous policy variables. The
+   production values are
+   `RENDEZVOUS_CLIENT_ROLLING_LIMIT=50`,
+   `RENDEZVOUS_ACTIVE_CLIENT_LIMIT=16`, and
+   `RENDEZVOUS_CLIENT_SESSION_SECONDS=15`. A canary or incident version may
+   lower any of them to a positive integer, but configuration cannot raise a
+   reviewed maximum. Missing or malformed values fail in the Worker before
+   source tags, counters, D1, server lookup, or Durable Object work; the room
+   independently validates them again as the final authority.
+10. Confirm `no_web_socket_compression` remains in the compatibility flags.
+    Rendezvous carries at most 512-byte signaling frames for at most 15 seconds;
+    compression negotiation and per-message CPU/state are unnecessary for that
+    deliberately tiny, attacker-controlled workload.
 
 Migration `0002_request_control.sql` is additive. It adds dual-tagged
 transitional OTP state and exact request budgets without changing existing
@@ -62,49 +94,244 @@ rollback.
 
 ## Canary
 
-1. Create a separate canary D1 database and apply
-   all ordered migrations to it.
-2. Deploy a canary Worker on a separately reviewed canary custom hostname. Use
-   a canary-only configuration and keep both `workers.dev` and preview URLs off.
-3. Verify `/`, OTP issuance, authenticated registration/update,
+1. Create a separate canary D1 database and apply all ordered migrations to it.
+   Provision a separate Analytics Engine dataset named
+   `atrinik_metaserver_rendezvous_canary`. The code-facing binding remains
+   `RENDEZVOUS_METRICS`, but its canary resource target must never be the
+   production `atrinik_metaserver_rendezvous` dataset. Give every one of the
+   seven native Rate Limiting bindings a canary-only `namespace_id` that is
+   distinct from every production ID and from the other canary IDs. Cloudflare
+   deliberately shares counters between Workers that reuse a namespace ID, so
+   copied IDs would couple canary traffic to production. The separate canary
+   Worker must also own its declarative `RendezvousRoom` namespace; do not bind
+   it to the production script/class namespace.
+2. Before any canary deployment, run a local-only dry run with the exact canary
+   target and configuration:
+
+   ```sh
+   readonly ATRINIK_CANARY_CONFIG=/secure/path/atrinik-metaserver.canary.jsonc
+   readonly ATRINIK_CANARY_WORKER=atrinik-metaserver-canary
+   readonly ATRINIK_CANARY_CF_PROFILE=atrinik-canary
+   readonly ATRINIK_CANARY_DRY_RUN_DIR="$(mktemp -d)"
+
+   npx wrangler deploy --dry-run --outdir "$ATRINIK_CANARY_DRY_RUN_DIR" \
+     --config "$ATRINIK_CANARY_CONFIG" \
+     --name "$ATRINIK_CANARY_WORKER" \
+     --profile "$ATRINIK_CANARY_CF_PROFILE"
+   ```
+
+   Compare the resolved binding summary with the production dry run recorded in
+   Prepare step 7. It must show the canary Worker name, canary-owned
+   `RendezvousRoom`, canary D1 database, all seven Rate Limiting bindings, and
+   `RENDEZVOUS_METRICS` targeting
+   `atrinik_metaserver_rendezvous_canary`, not the exact production target
+   `atrinik_metaserver_rendezvous`. Wrangler's dry-run summary shows each
+   binding's rate but does not display its `namespace_id`. Separately inspect
+   the exact canary configuration selected by `--config` and compare all seven
+   IDs with each other and with the production configuration/release record;
+   record only the comparison result, not secret configuration. A matching
+   binding name or clean dry run does not prove isolated counters. Stop on any
+   ambiguity or shared state.
+   Neither source-configuration review nor the dry run is sufficient alone:
+   the former proves namespace-ID isolation and the latter proves the resolved
+   artifact/binding contract. This command writes only the local temporary
+   bundle and does not upload a version or mutate Cloudflare. After recording
+   the reviewed results, remove that local bundle:
+
+   ```sh
+   rm -r -- "$ATRINIK_CANARY_DRY_RUN_DIR"
+   ```
+3. Deploy the dry-run-reviewed canary Worker on a separately reviewed canary
+   custom hostname. Use only that canary configuration and keep both
+   `workers.dev` and preview URLs off.
+4. Verify `/`, OTP issuance, authenticated registration/update,
    `/v2/servers`, and both rendezvous WebSocket roles.
-4. Confirm malformed identities, expired/replayed OTPs, missing bearer tokens,
+5. Confirm malformed identities, expired/replayed OTPs, missing bearer tokens,
    oversized bodies, and blacklist entries fail closed.
-5. Confirm routine traffic, expected `404`, `429`, and open-circuit responses
+6. Confirm routine traffic, expected `404`, `429`, and open-circuit responses
    emit no custom log. Exercise one bounded rejection, one blacklist match, and
    one forced dependency failure; confirm the exact closed
    `request_rejected`, `blacklist_match`, and `unexpected_error` objects remain
    queryable without addresses/tags, server IDs, patterns/reasons, credentials,
    tokens, exception text, or rendezvous candidates.
-6. Send a routine health request, a known-not-found request, and a scheduled
+7. Send a routine health request, a known-not-found request, and a scheduled
    invocation. Confirm that none persists a `cf-worker-event` record in Workers
    Logs. A forced scheduled failure may emit its bounded custom diagnostic and
    a fixed, cause-free `Scheduled maintenance failed` platform error; neither
    record may contain the underlying exception or request/state data.
-7. Apply and exercise the canary edge policy. Confirm raw/unknown targets are
+8. Apply and exercise the canary edge policy. Confirm raw/unknown targets are
    stopped before Worker invocation and a controlled burst is visible in WAF
    analytics without a matching post-mitigation rise in Worker invocations.
-8. Confirm Worker Metrics continues to report aggregate requests, errors, CPU
+9. Confirm Worker Metrics continues to report aggregate requests, errors, CPU
    time, wall time, and duration. Invocation metrics may increase even though
    automatic invocation-log volume remains flat.
-9. Exercise the current and previous source-tag keys. Confirm an `A/Z` writer
+10. Exercise the current and previous source-tag keys. Confirm an `A/Z` writer
    stores exactly `A,Z` and a `B/A` writer stores exactly `B,A`; consume each
    OTP through the other deployment. Alternate `A/Z` and `B/A` budget
    admissions, confirm the maximum count advances once per request, and confirm
    each touched pair converges. The shared `A` must use the identical ID,
-   secret, hostname namespace, purpose, and derivation contract.
-10. Verify the 9th directory request under a canary limit of 8/day and the 11th
-    valid dynamic request in one minute return `429`, consistent
-    `Retry-After` header/body values, and no further handler mutation.
-11. Verify the 9th status request and 9th unauthenticated server-rendezvous
-    request under canary limits of 8/day return their stable daily reasons.
-    Force a native/D1 request-control failure and confirm a non-cacheable
-    `503 request_control_unavailable` rather than admission.
+   secret, hostname namespace, purpose, and derivation contract. In an isolated
+   canary room, claim a fresh rendezvous ticket under `A/Z`, reconstruct the
+   room under `B/A`, and confirm replay is rejected through shared `A` while a
+   fresh ticket succeeds. Do not print either stored alias.
+11. Use fresh controlled source actors whose relevant minute and 24-hour
+    windows contain no earlier canary traffic. Verify the 9th directory request
+    under a canary limit of 8/day and, independently, the 11th valid dynamic
+    request in one minute return `429`, consistent `Retry-After` header/body
+    values, and no further handler mutation.
+12. Use separate fresh controlled source actors for each assertion. Verify the
+    9th status request and 9th unauthenticated server-rendezvous request under
+    canary limits of 8/day return their stable daily reasons. From another
+    unconsumed source window, force a native/D1 request-control failure and
+    confirm a non-cacheable `503 request_control_unavailable` rather than
+    admission.
+13. Lower all three `RENDEZVOUS_*` canary values to 8 and use a fresh controlled
+    server identity whose room has no retained admissions. Open one
+    authenticated server-control socket, accept and close eight client sessions,
+    and confirm the ninth returns `429` with reason
+    `rendezvous_server_sessions_rolling` and a header/body `Retry-After` derived
+    from the oldest admission. Confirm a client without a live authenticated
+    server receives a retryable `503` and creates no admission row.
+14. Use another fresh controlled server identity/room. Exercise the structural
+    rendezvous bounds: eight concurrent clients are admitted and the ninth is
+    rejected as full; every admitted client closes no later than the
+    eight-second canary lifetime; a duplicate/cross-socket ticket, second client
+    candidate, thirteenth server candidate, second completion, frame over 512
+    bytes, or exchange over 7,168 bytes closes the offending control path before
+    unrelated candidate forwarding. Confirm completion and each candidate
+    reaches only the ticket's originating client.
+15. Use another fresh controlled server identity/room. Confirm a
+    password-protected listing returns the retryable `503` with the fixed
+    `Protected rendezvous authorization is unavailable` body to a client even
+    while its authenticated server-control socket is live. Do not enable
+    protected rendezvous until issue #20's separate game-password authorization
+    protocol is deployed and reviewed.
+16. Use another fresh controlled server identity/room. Let its idle
+    server-control WebSocket hibernate, then complete a fresh client attempt.
+    Confirm the socket remains usable after object reconstruction and the single
+    alarm closes the client and removes its server-side routing metadata at the
+    canary session deadline, then remains scheduled only for the earliest
+    retained admission's 24-hour expiry. Inject a close failure and confirm the
+    terminal socket cannot signal, has no raw ticket/digest, and normally
+    receives at most four explicit teardown retries at the deadline and one,
+    three, and seven seconds afterward; after that bound, only retained
+    admission expiry may keep an application alarm. Also inject simultaneous
+    retry-counter serialization and
+    transport-close failures: the alarm must fail into Cloudflare's bounded
+    failed-alarm retry policy without installing a replacement alarm. No
+    interval/timer or fault loop may keep the room resident.
+17. Use a fresh controlled canary server identity for a replay/SQL inspection.
+    Connect its authenticated server and one client, send a first candidate
+    with a fresh ticket, and confirm that candidate reaches the server. Then
+    disconnect the server, confirm the client closes, allow and verify Durable
+    Object eviction, reconnect the authenticated server, and replay the same
+    ticket from a new client. The replay must close before any candidate reaches
+    the replacement server; a second fresh ticket must still succeed.
+
+    Through the approved read-only canary Durable Object storage inspection
+    path, run these statements without selecting or exporting alias values:
+
+    ```sql
+    PRAGMA table_info(rendezvous_admissions);
+
+    SELECT
+      COUNT(*) AS retained_rows,
+      SUM(CASE
+        WHEN ticket_replay_tag_current IS NOT NULL
+         AND ticket_replay_tag_previous IS NOT NULL
+        THEN 1 ELSE 0
+      END) AS claimed_rows,
+      SUM(CASE
+        WHEN ticket_replay_tag_current IS NULL
+         AND ticket_replay_tag_previous IS NULL
+        THEN 1 ELSE 0
+      END) AS unclaimed_rows,
+      SUM(CASE
+        WHEN (
+          ticket_replay_tag_current IS NULL
+          AND ticket_replay_tag_previous IS NULL
+        ) OR (
+          ticket_replay_tag_current IS NOT NULL
+          AND ticket_replay_tag_previous IS NOT NULL
+          AND ticket_replay_tag_current <> ticket_replay_tag_previous
+          AND substr(
+            ticket_replay_tag_current,
+            4,
+            instr(substr(ticket_replay_tag_current, 4), '.') - 1
+          ) <> substr(
+            ticket_replay_tag_previous,
+            4,
+            instr(substr(ticket_replay_tag_previous, 4), '.') - 1
+          )
+        ) THEN 0 ELSE 1
+      END) AS invalid_alias_pairs,
+      SUM(CASE
+        WHEN ticket_replay_tag_current IS NULL THEN 0
+        WHEN length(ticket_replay_tag_current) BETWEEN 48 AND 79
+         AND substr(ticket_replay_tag_current, 1, 3) = 'v1.'
+         AND instr(substr(ticket_replay_tag_current, 4), '.') BETWEEN 2 AND 33
+         AND substr(
+           ticket_replay_tag_current,
+           4,
+           instr(substr(ticket_replay_tag_current, 4), '.') - 1
+         ) NOT GLOB '*[^A-Za-z0-9_-]*'
+         AND length(substr(
+           ticket_replay_tag_current,
+           4 + instr(substr(ticket_replay_tag_current, 4), '.')
+         )) = 43
+         AND substr(
+           ticket_replay_tag_current,
+           4 + instr(substr(ticket_replay_tag_current, 4), '.')
+         ) NOT GLOB '*[^A-Za-z0-9_-]*'
+         AND substr(ticket_replay_tag_current, -1)
+           GLOB '[AEIMQUYcgkosw048]'
+         AND length(ticket_replay_tag_previous) BETWEEN 48 AND 79
+         AND substr(ticket_replay_tag_previous, 1, 3) = 'v1.'
+         AND instr(substr(ticket_replay_tag_previous, 4), '.') BETWEEN 2 AND 33
+         AND substr(
+           ticket_replay_tag_previous,
+           4,
+           instr(substr(ticket_replay_tag_previous, 4), '.') - 1
+         ) NOT GLOB '*[^A-Za-z0-9_-]*'
+         AND length(substr(
+           ticket_replay_tag_previous,
+           4 + instr(substr(ticket_replay_tag_previous, 4), '.')
+         )) = 43
+         AND substr(
+           ticket_replay_tag_previous,
+           4 + instr(substr(ticket_replay_tag_previous, 4), '.')
+         ) NOT GLOB '*[^A-Za-z0-9_-]*'
+         AND substr(ticket_replay_tag_previous, -1)
+           GLOB '[AEIMQUYcgkosw048]'
+        THEN 0 ELSE 1
+      END) AS malformed_alias_rows
+    FROM rendezvous_admissions;
+    ```
+
+    The only columns must be local `id`, `accepted_at_ms`,
+    `ticket_replay_tag_current`, and `ticket_replay_tag_previous`;
+    the isolated sequence above must produce three retained admissions, two
+    claimed rows, and one unclaimed replay-attempt row. Every row must be either
+    unclaimed or have both distinct aliases; `invalid_alias_pairs` and
+    `malformed_alias_rows` must both be zero. No raw ticket, unkeyed SHA-256
+    ticket digest, connection ID, counter, or candidate-address column may
+    exist. `retained_rows` must never exceed the canary rolling limit. Do not
+    copy the opaque alias values into the release record.
+18. Query built-in zone, Worker, and Durable Object metrics for upgrade,
+    rejection, connection, raw-frame, and failure counts. Run the
+    sampling-weighted SQL in [docs/privacy.md](docs/privacy.md) against only
+    `atrinik_metaserver_rendezvous_canary`; do not query or write the production
+    dataset as part of canary validation. Confirm each accepted session
+    attempted at most one best-effort anonymous terminal summary and no
+    room-admission rejection or individual frame created a custom point/log or
+    exposed an identifier, ticket, credential, candidate, exception, or
+    free-form close reason.
 
 ## Stage and inspect the production version
 
 The production configuration selected above must contain the approved D1,
-Durable Object, rate-limit, hostname, key-ID, route, observability,
+Durable Object, Analytics Engine, rate-limit, hostname, key-ID, route,
+observability,
 `workers_dev: false`, and `preview_urls: false` settings. Do not fall back to
 the checked-in placeholder configuration or an implicit account. Upload the
 initial current and previous secrets together with that exact configuration:
@@ -114,7 +341,7 @@ npx wrangler versions upload --strict \
   --config "$ATRINIK_PROD_CONFIG" \
   --name "$ATRINIK_PROD_WORKER" \
   --profile "$ATRINIK_CF_PROFILE" \
-  --tag request-control-foundation \
+  --tag rendezvous-work-budgets \
   --secrets-file "$ATRINIK_SOURCE_TAG_SECRETS"
 ```
 
@@ -132,13 +359,13 @@ npx wrangler versions view "$REVIEWED_VERSION_ID" --json \
   --profile "$ATRINIK_CF_PROFILE"
 ```
 
-Confirm the version's Worker name, code/tag, compatibility settings, variables,
-D1 and Durable Object bindings, rate-limit bindings, and both secret binding
-names against the release record. Secret values must not be printed or copied
-into the record. Stop if any binding or ID is absent, unexpected, or belongs to
-another environment. Delete the protected secret file according to the
-credential-handling policy only after the inspected version no longer needs to
-be recreated.
+Confirm the version's Worker name, code/tag, compatibility settings (including
+`no_web_socket_compression`), variables, D1, Durable Object, Analytics Engine,
+and rate-limit bindings, and both secret binding names against the release
+record. Secret values must not be printed or copied into the record. Stop if
+any binding or ID is absent, unexpected, or belongs to another environment.
+Delete the protected secret file according to the credential-handling policy
+only after the inspected version no longer needs to be recreated.
 
 ## Cut over
 
@@ -164,6 +391,15 @@ be recreated.
    Verify the active deployment references that exact version and has no public
    alternate hostname. Version inspection does not replace separate review of
    the Custom Domain, route, and scheduled-trigger state.
+
+   Assign this security-contract release directly to 100%. Do not gradually
+   split public rendezvous traffic between the former unversioned broadcast
+   room and the ticket-scoped room. The private Worker-to-Durable-Object upgrade
+   uses a new versioned URL/header contract: a new Worker reaching an old room,
+   or an old Worker reaching a reconstructed new room, rejects the upgrade
+   instead of silently entering the former behavior. That fail-closed
+   version-skew window can produce temporary `403`/`503` responses during
+   propagation; it must never be bypassed with an unversioned fallback.
 4. Install and re-read the reviewed zone edge rules. Confirm the reviewed
    production configuration contains only the intended Custom Domain/route and
    the exact hourly cron `17 * * * *`. A version upload does not apply either
@@ -194,6 +430,12 @@ be recreated.
    rendezvous Workers must each set `observability.logs.invocation_logs` to
    `false`; static directory hostnames must resolve directly to the approved
    storage/cache path and execute no Worker.
+8. Watch authenticated server-control upgrade and close counts closely. Older
+   classic servers reconnect on a two-second fixed loop after a control socket
+   is rejected or closed; their producer backoff is tracked in
+   [atrinik/classic#5](https://github.com/atrinik/classic/issues/5). If that
+   behavior causes an invocation spike, disable the rendezvous route and fix
+   forward rather than relaxing authentication, admission, or frame limits.
 
 ## Rotate source-tag keys
 
@@ -215,17 +457,26 @@ Before assigning traffic, pass the returned rotation version ID to
 `--profile` arguments used above. Verify the `B/A` IDs, both secret binding
 names, hostname namespace, and every non-secret binding against the release
 record. Use `npx wrangler versions deploy` with those same target arguments to
-split traffic only after the bidirectional canary in step 9 passes, then move
+split traffic only after the bidirectional canary in step 10 passes, then move
 the reviewed version to 100%. Do not use sequential `wrangler secret put`
 operations: each command can create an intermediate version whose IDs and
 secrets do not form the reviewed pair. Never roll traffic between disjoint
 pairs.
 
-Keep `A` until all `A/Z` traffic has stopped and the longest UTC-day budget,
-OTP lifetime, propagation interval, and cleanup run have elapsed. Rotate at the
-next UTC budget boundary and verify no backlog before preparing `C/B`. Remove
-the protected secrets file according to the operator's credential-handling
-policy; never commit it or paste its contents into logs or review comments.
+An `A/Z` rendezvous writer stores both aliases in the admission row; `B/A`
+detects the same ticket through shared `A` even after server reconnect and room
+reconstruction. Keep `A` until all `A/Z` traffic has stopped, strictly more than
+24 hours has elapsed since the last possible old-pair replay claim, and the
+longest UTC-day budget, OTP lifetime, propagation interval, and cleanup run
+have also elapsed. Rotate at the next UTC budget boundary and verify no backlog
+before preparing `C/B`.
+
+Durable Object point-in-time recovery may retain the deleted `A/Z` opaque
+aliases for its platform retention window; retiring `A` does not erase that
+history. Treat a replay-ledger restore as a key/schema recovery operation and
+fail closed unless its reviewed artifact has the matching key pair. Remove the
+protected secrets file according to the operator's credential-handling policy;
+never commit it or paste its contents into logs or review comments.
 
 ## Administrative SQL
 
@@ -244,9 +495,13 @@ authentication key before re-registering. Treat this as destructive recovery.
 
 ## Roll back
 
-Prefer a forward fix. Detaching the production Custom Domain is the safe first
-rollback because it leaves the reviewed code and schema intact and does not
-enable a `workers.dev` fallback.
+Prefer a forward fix. For a rendezvous-only incident, close the rendezvous
+circuit breaker or detach its dedicated Custom Domain first; for the combined
+compatibility deployment, detach the production Custom Domain if isolation is
+not possible. These actions leave reviewed code/state intact and do not enable
+a `workers.dev` fallback. Never restore a pre-hardening rendezvous version that
+broadcasts candidates or accepts unbounded signaling work. Re-enable only a
+reviewed fix-forward artifact with the versioned internal contract.
 
 Never run `wrangler deploy`, `wrangler versions upload`, or secret commands
 from an older checkout or with an older/implicit Wrangler configuration. That

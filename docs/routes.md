@@ -47,6 +47,50 @@ dynamic Worker:
   Game Protocol 1.
 - `classic.meta.atrinik.org`: the same four paths for the classic generation.
 
+## Rendezvous signaling semantics
+
+The public route selects a role; it does not grant that role. The server role
+must authenticate the listing's rendezvous token before the Worker opens the
+per-server room, and a client is admitted only while that authenticated control
+socket remains live. A password-protected listing fails client rendezvous
+closed with a fixed `503 Protected rendezvous authorization is unavailable`
+response and `Retry-After: 300` until issue #20 provides the separate
+game-password authorization stage.
+
+An accepted client sends one fresh client-generated ticket in its only
+`client_candidate`. The room binds that ticket to the originating socket,
+rejects replay or cross-socket use, and routes at most 12 matching
+`server_candidate` messages and one `complete` only to that socket. Completion
+closes the client immediately; the room closes it unconditionally after 15
+seconds. Each frame is at most 512 bytes and the accepted attempt is capped at
+7,168 signaling bytes. Candidate and ticket payloads are never cacheable route
+representations. Terminal state clears the client attachment's ticket and
+digest immediately. A persistently failing transport close has four
+explicit teardown-only retries ending seven seconds after the session deadline.
+If both the retry-counter attachment write and close fail, the alarm throws so
+Cloudflare's bounded failed-alarm retry replaces application rescheduling. The
+socket cannot resume signaling or self-schedule indefinitely. See
+[privacy.md](privacy.md) for transient state and metrics.
+
+Outside the transient signaling frame, the raw ticket may live only in the
+client attachment until that 15-second deadline. The server attachment keeps
+random per-connection IDs, opening/expiry times, its SHA-256 routing digest,
+and bounded counters for the live attempt. After becoming terminal, the client
+attachment also keeps the closed outcome enum and a bounded teardown-attempt
+counter. On
+the first candidate, the room atomically claims two purpose-separated HMAC
+replay aliases in the already reserved admission row. Those opaque aliases—not
+a raw ticket, unkeyed SHA-256 routing digest, connection ID, or candidate
+address—preserve single use for the rolling 24-hour window across server
+reconnect and Durable Object reconstruction.
+
+The Worker proxies an accepted public upgrade to the Durable Object using a
+fixed, private versioned URL/header contract that is deliberately incompatible
+with the former unversioned broadcast room. During code propagation, old/new
+Worker and room combinations fail closed rather than falling back to broadcast.
+Production therefore deploys this security contract at 100%, not as a gradual
+traffic split.
+
 ## Boundary behavior
 
 Classification happens before source-tag derivation, D1, Durable Objects, or
