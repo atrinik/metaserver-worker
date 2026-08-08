@@ -2,6 +2,12 @@ import { isCanonicalHostname } from "./hostname";
 
 const MAXIMUM_RETRY_AFTER_SECONDS = 86_400;
 
+export const RENDEZVOUS_POLICY_MAXIMUMS = Object.freeze({
+  rendezvousClientRollingLimit: 50,
+  rendezvousActiveClientLimit: 16,
+  rendezvousClientSessionSeconds: 15,
+} as const);
+
 export const REQUEST_CONTROL_POLICY_MAXIMUMS = Object.freeze({
   otpTtlSeconds: 300,
   listingTtlSeconds: 86_400,
@@ -16,6 +22,18 @@ export const REQUEST_CONTROL_POLICY_MAXIMUMS = Object.freeze({
   compatibilityRendezvousServerSourceDaily: 50,
   compatibilityRendezvousServerDaily: 50,
 } as const);
+
+export interface RendezvousPolicyConfigurationInput {
+  readonly RENDEZVOUS_CLIENT_ROLLING_LIMIT?: string;
+  readonly RENDEZVOUS_ACTIVE_CLIENT_LIMIT?: string;
+  readonly RENDEZVOUS_CLIENT_SESSION_SECONDS?: string;
+}
+
+export interface RendezvousPolicyConfiguration {
+  readonly rendezvousClientRollingLimit: number;
+  readonly rendezvousActiveClientLimit: number;
+  readonly rendezvousClientSessionSeconds: number;
+}
 
 export interface RequestControlConfigurationInput {
   readonly COMPAT_HOSTNAME?: string;
@@ -56,6 +74,35 @@ export class RequestControlConfigurationError extends Error {
     super(`Invalid request-control configuration: ${variable}`);
     this.name = "RequestControlConfigurationError";
   }
+}
+
+/**
+ * Parse the policy shared by every rendezvous route and Durable Object room.
+ * Missing, malformed, and policy-raising values fail closed.
+ */
+export function rendezvousPolicyConfiguration(
+  input: RendezvousPolicyConfigurationInput,
+): RendezvousPolicyConfiguration {
+  return Object.freeze({
+    rendezvousClientRollingLimit: strictInteger(
+      input.RENDEZVOUS_CLIENT_ROLLING_LIMIT,
+      "RENDEZVOUS_CLIENT_ROLLING_LIMIT",
+      1,
+      RENDEZVOUS_POLICY_MAXIMUMS.rendezvousClientRollingLimit,
+    ),
+    rendezvousActiveClientLimit: strictInteger(
+      input.RENDEZVOUS_ACTIVE_CLIENT_LIMIT,
+      "RENDEZVOUS_ACTIVE_CLIENT_LIMIT",
+      1,
+      RENDEZVOUS_POLICY_MAXIMUMS.rendezvousActiveClientLimit,
+    ),
+    rendezvousClientSessionSeconds: strictInteger(
+      input.RENDEZVOUS_CLIENT_SESSION_SECONDS,
+      "RENDEZVOUS_CLIENT_SESSION_SECONDS",
+      1,
+      RENDEZVOUS_POLICY_MAXIMUMS.rendezvousClientSessionSeconds,
+    ),
+  });
 }
 
 /**

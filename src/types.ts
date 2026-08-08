@@ -12,6 +12,7 @@ export interface DirectoryServerRecord {
 
 export interface RendezvousServerRecord {
   is_public: number;
+  password_required: number;
   rendezvous_token_hash: string;
 }
 

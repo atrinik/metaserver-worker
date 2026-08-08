@@ -189,6 +189,55 @@ describe("metaserver Worker", () => {
     expect((await callWorker(request("/index.wsgi"))).status).toBe(404);
   });
 
+  it("keeps non-rendezvous routes independent of room-only policy", async () => {
+    const missingRoomPolicy = overrideEnv({
+      RENDEZVOUS_CLIENT_ROLLING_LIMIT: undefined,
+      RENDEZVOUS_ACTIVE_CLIENT_LIMIT: undefined,
+      RENDEZVOUS_CLIENT_SESSION_SECONDS: undefined,
+    });
+    const health = await callWorker(request("/"), missingRoomPolicy);
+    expect(health.status).toBe(200);
+    expect(await health.json()).toEqual({
+      service: "Atrinik metaserver",
+      status: "ok",
+    });
+  });
+
+  it("rejects invalid room policy before rendezvous admission work", async () => {
+    vi.spyOn(console, "error").mockImplementation(() => {});
+    const globalLimit = vi.fn(async () => ({ success: true }));
+    const rendezvousLimit = vi.fn(async () => ({ success: true }));
+    const getByName = vi.fn(() => {
+      throw new Error("Rendezvous Durable Object must not be invoked");
+    });
+    const invalid = overrideEnv({
+      RENDEZVOUS_CLIENT_ROLLING_LIMIT: undefined,
+      GLOBAL_RATE_LIMITER: { limit: globalLimit },
+      RENDEZVOUS_CLIENT_RATE_LIMITER: { limit: rendezvousLimit },
+      RENDEZVOUS: { getByName },
+    });
+
+    const response = await callWorker(request(
+      `/v2/rendezvous/${activeServerId}?role=client`,
+      { headers: { Upgrade: "websocket" } },
+    ), invalid);
+
+    expect(response.status).toBe(503);
+    expect(response.headers.get("Retry-After")).toBe("60");
+    expect(await response.json()).toEqual({
+      error: {
+        code: "request_control_unavailable",
+        message: "Request admission is temporarily unavailable.",
+      },
+    });
+    expect(globalLimit).not.toHaveBeenCalled();
+    expect(rendezvousLimit).not.toHaveBeenCalled();
+    expect(getByName).not.toHaveBeenCalled();
+    expect(await env.DB.prepare(
+      "SELECT COUNT(*) AS count FROM request_budgets",
+    ).first<number>("count")).toBe(0);
+  });
+
   it("rejects an alternate authority before request-control work", async () => {
     const foreign = new Request("https://example.test/v2/servers", {
       headers: { "CF-Connecting-IP": activeSourceIp },
@@ -1175,16 +1224,24 @@ describe("metaserver Worker", () => {
   it("keeps client source and source/server-pair rendezvous budgets independent", async () => {
     const firstServerId = activeServerId;
     const secondServerId = "f".repeat(64);
-    expect((await postUpdate(updateForm(
+    const firstRegistration = await postUpdate(updateForm(
       await issueOtp(),
       RAW_KEY,
       firstServerId,
-    ))).status).toBe(200);
-    expect((await postUpdate(updateForm(
+    ));
+    expect(firstRegistration.status).toBe(200);
+    const firstRendezvousToken = (await firstRegistration.json<{
+      rendezvousToken: string;
+    }>()).rendezvousToken;
+    const secondRegistration = await postUpdate(updateForm(
       await issueOtp(),
       RAW_KEY,
       secondServerId,
-    ))).status).toBe(200);
+    ));
+    expect(secondRegistration.status).toBe(200);
+    const secondRendezvousToken = (await secondRegistration.json<{
+      rendezvousToken: string;
+    }>()).rendezvousToken;
 
     const acceptingLimiter: RateLimit = {
       async limit() {
@@ -1198,6 +1255,35 @@ describe("metaserver Worker", () => {
       COMPAT_RENDEZVOUS_CLIENT_PAIR_DAILY_LIMIT: "2",
     });
     const clientSource = "198.51.100.200";
+    const openServer = async (
+      serverId: string,
+      rendezvousToken: string,
+    ): Promise<WebSocket> => {
+      const response = await callWorker(request(
+        `/v2/rendezvous/${serverId}?role=server`,
+        {
+          headers: {
+            Authorization: `Bearer ${rendezvousToken}`,
+            Upgrade: "websocket",
+          },
+        },
+      ), controlled);
+      expect(response.status).toBe(101);
+      const socket = response.webSocket;
+      if (socket === null) {
+        throw new Error("Accepted server control returned no WebSocket");
+      }
+      socket.accept();
+      return socket;
+    };
+    const firstServerSocket = await openServer(
+      firstServerId,
+      firstRendezvousToken,
+    );
+    const secondServerSocket = await openServer(
+      secondServerId,
+      secondRendezvousToken,
+    );
     const openClient = (serverId: string): Promise<Response> => callWorker(
       request(
         `/v2/rendezvous/${serverId}?role=client`,
@@ -1270,6 +1356,47 @@ describe("metaserver Worker", () => {
       { request_count: 1, aliases: 2 },
       { request_count: 2, aliases: 2 },
     ]);
+    firstServerSocket.close(1000, "Test complete");
+    secondServerSocket.close(1000, "Test complete");
+  });
+
+  it("fails protected client rendezvous closed until authorization is available", async () => {
+    const form = updateForm(await issueOtp(), RAW_KEY);
+    form.set("password_required", "1");
+    const registration = await postUpdate(form);
+    expect(registration.status).toBe(200);
+    const { rendezvousToken } = await registration.json<{
+      rendezvousToken: string;
+    }>();
+
+    const serverControl = await callWorker(request(
+      `/v2/rendezvous/${activeServerId}?role=server`,
+      {
+        headers: {
+          Authorization: `Bearer ${rendezvousToken}`,
+          Upgrade: "websocket",
+        },
+      },
+    ));
+    expect(serverControl.status).toBe(101);
+    const serverSocket = serverControl.webSocket;
+    if (serverSocket === null) {
+      throw new Error("Accepted server control returned no WebSocket");
+    }
+    serverSocket.accept();
+
+    const client = await callWorker(request(
+      `/v2/rendezvous/${activeServerId}?role=client`,
+      { headers: { Upgrade: "websocket" } },
+    ));
+    expect(client.status).toBe(503);
+    expect(client.headers.get("Cache-Control")).toBe("no-store");
+    expect(client.headers.get("Retry-After")).toBe("300");
+    expect(await client.text()).toBe(
+      "Protected rendezvous authorization is unavailable\n",
+    );
+    expect(serverSocket.readyState).toBe(WebSocket.OPEN);
+    serverSocket.close(1000, "Test complete");
   });
 
   it("lists opted-in servers and relays rendezvous candidates", async () => {
