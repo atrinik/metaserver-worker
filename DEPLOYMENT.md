@@ -28,6 +28,15 @@ applied migration and add ordered migrations for later schema changes.
 4. Confirm malformed identities, expired/replayed OTPs, missing bearer tokens,
    oversized bodies, and blacklist entries fail closed.
 5. Confirm logs contain no authentication material or rendezvous tokens.
+6. Send a routine health request, a known-not-found request, and a scheduled
+   invocation. Confirm that none persists a `cf-worker-event` record in Workers
+   Logs.
+7. Trigger controlled malformed-input and blacklist rejections. Confirm that
+   the expected structured `request_rejected` and `blacklist_match` events are
+   queryable, with no authentication material or rendezvous token fields.
+8. Confirm Worker Metrics continues to report aggregate requests, errors, CPU
+   time, wall time, and duration. Invocation metrics may increase even though
+   automatic invocation-log volume remains flat.
 
 ## Cut over
 
@@ -40,6 +49,10 @@ applied migration and add ordered migrations for later schema changes.
    endpoint, visibility, and rendezvous flow from a current client.
 6. Monitor rejection rates, D1 errors, Durable Object failures, response time,
    and stale-record cleanup through at least one scheduled run.
+7. Repeat the observability canary after every entrypoint split. Publisher and
+   rendezvous Workers must each set `observability.logs.invocation_logs` to
+   `false`; static directory hostnames must resolve directly to the approved
+   storage/cache path and execute no Worker.
 
 ## Administrative SQL
 

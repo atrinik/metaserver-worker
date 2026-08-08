@@ -53,6 +53,22 @@ applied by an authorized operator.
 
 See [DEPLOYMENT.md](DEPLOYMENT.md) for the release checklist.
 
+## Observability
+
+Workers Logs remains enabled for deliberately emitted application diagnostics.
+The rejection and blacklist paths emit structured events, while unexpected
+failures remain logged for diagnosis. Automatic invocation logs are explicitly
+disabled, so routine requests, WebSocket events, and scheduled invocations do
+not each persist a `cf-worker-event` record. Custom-log sampling remains at
+100% while the curated event set is small, so those diagnostics remain
+available to operators.
+
+This setting changes stored log-event volume, not Worker invocation usage.
+Cloudflare Worker Metrics remains the source for aggregate request counts,
+errors, CPU time, wall time, and duration. Directory hosts that are later moved
+to direct static storage should be monitored as storage/cache traffic rather
+than Worker traffic.
+
 ## License
 
 This project is licensed under the [MIT License](LICENSE).
