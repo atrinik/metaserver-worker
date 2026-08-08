@@ -1,14 +1,23 @@
 import { describe, expect, it } from "vitest";
 
 import { SERVER_SIGNAL_CANDIDATE_KINDS } from "../src/protocol";
+import inviteVector from "./fixtures/rendezvous-invite-v1.json";
+import negativeInviteVector from "./fixtures/rendezvous-invite-v1-negative.json";
 
 import {
+  INTERNAL_RENDEZVOUS_AUTHORIZATION_HEADER,
+  INTERNAL_RENDEZVOUS_GENERATION_HEADER,
+  INTERNAL_RENDEZVOUS_PUBLISH_URL,
+  INTERNAL_RENDEZVOUS_PROTOCOL_HEADER,
   INTERNAL_RENDEZVOUS_ROLE_HEADER,
   INTERNAL_RENDEZVOUS_URL,
   LEGACY_INTERNAL_RENDEZVOUS_ROLE_HEADER,
+  LEGACY_INTERNAL_RENDEZVOUS_V1_ROLE_HEADER,
+  MAX_CLIENT_AUTHORIZATION_FRAMES,
   MAX_RENDEZVOUS_SESSION_SIGNAL_BYTES,
   MAX_RENDEZVOUS_CLIENT_SOCKETS,
   MAX_SERVER_CANDIDATES,
+  MAX_SERVER_AUTHORIZATION_FRAMES,
   MAX_SIGNAL_BYTES,
   MAX_WEBSOCKET_CLOSE_REASON_BYTES,
   NORMAL_RENDEZVOUS_CLOSE,
@@ -16,10 +25,66 @@ import {
   RENDEZVOUS_CLOSE,
   RENDEZVOUS_ROLLING_WINDOW_MS,
   serializeRendezvousSignal,
+  validateInternalRendezvousPublication,
   validateInternalRendezvousUpgrade,
 } from "../src/rendezvous-contract";
 
 const TICKET = "a".repeat(64);
+const GENERATION = "0".repeat(64);
+const PUBLICATION = Object.freeze({
+  serverId: "1".repeat(64),
+  expectedGeneration: GENERATION,
+  generation: "2".repeat(64),
+  tokenHash: "3".repeat(64),
+  now: 2_000_000_000,
+  name: "Classic Server",
+  playersCount: 2,
+  version: "4.0.0",
+  textComment: "Protected rendezvous",
+  isPublic: true,
+  quicHost: "198.51.100.20",
+  quicPort: 1_730,
+  quicCertSha256: "1".repeat(64),
+  passwordRequired: true,
+});
+
+function publicationRequest(
+  body: unknown = PUBLICATION,
+  init: RequestInit = {},
+): Request {
+  const headers = new Headers(init.headers);
+  if (!headers.has("Content-Type")) {
+    headers.set("Content-Type", "application/json");
+  }
+  return new Request(INTERNAL_RENDEZVOUS_PUBLISH_URL, {
+    method: "POST",
+    ...init,
+    headers,
+    body: JSON.stringify(body),
+  });
+}
+
+function hexBytes(value: string): Uint8Array {
+  if (!/^(?:[0-9a-f]{2})+$/.test(value)) {
+    throw new Error("Fixture contains noncanonical hexadecimal bytes");
+  }
+  return Uint8Array.from(
+    value.match(/../g) ?? [],
+    (byte) => Number.parseInt(byte, 16),
+  );
+}
+
+function concatBytes(...parts: readonly Uint8Array[]): Uint8Array {
+  const combined = new Uint8Array(
+    parts.reduce((total, part) => total + part.byteLength, 0),
+  );
+  let offset = 0;
+  for (const part of parts) {
+    combined.set(part, offset);
+    offset += part.byteLength;
+  }
+  return combined;
+}
 
 function internalRequest(
   role: string = "client",
@@ -33,19 +98,34 @@ function internalRequest(
   if (!headers.has(INTERNAL_RENDEZVOUS_ROLE_HEADER)) {
     headers.set(INTERNAL_RENDEZVOUS_ROLE_HEADER, role);
   }
+  if (!headers.has(INTERNAL_RENDEZVOUS_PROTOCOL_HEADER)) {
+    headers.set(INTERNAL_RENDEZVOUS_PROTOCOL_HEADER, "none");
+  }
+  if (!headers.has(INTERNAL_RENDEZVOUS_AUTHORIZATION_HEADER)) {
+    headers.set(INTERNAL_RENDEZVOUS_AUTHORIZATION_HEADER, "not-required");
+  }
+  if (!headers.has(INTERNAL_RENDEZVOUS_GENERATION_HEADER)) {
+    headers.set(INTERNAL_RENDEZVOUS_GENERATION_HEADER, GENERATION);
+  }
   return new Request(url, { ...init, headers });
 }
 
 describe("internal rendezvous upgrade contract", () => {
   it("accepts only the two exact versioned internal roles", () => {
-    expect(validateInternalRendezvousUpgrade(internalRequest("client"))).toBe(
-      "client",
-    );
-    expect(validateInternalRendezvousUpgrade(internalRequest("server"))).toBe(
-      "server",
-    );
-    expect(INTERNAL_RENDEZVOUS_URL).toContain("/v1");
-    expect(INTERNAL_RENDEZVOUS_ROLE_HEADER).toContain("V1");
+    expect(validateInternalRendezvousUpgrade(internalRequest("client"))).toEqual({
+      role: "client",
+      inviteProtocol: false,
+      authorizationRequired: false,
+      generation: GENERATION,
+    });
+    expect(validateInternalRendezvousUpgrade(internalRequest("server"))).toEqual({
+      role: "server",
+      inviteProtocol: false,
+      authorizationRequired: false,
+      generation: GENERATION,
+    });
+    expect(INTERNAL_RENDEZVOUS_URL).toContain("/v2");
+    expect(INTERNAL_RENDEZVOUS_ROLE_HEADER).toContain("V2");
     expect(INTERNAL_RENDEZVOUS_ROLE_HEADER).not.toBe(
       LEGACY_INTERNAL_RENDEZVOUS_ROLE_HEADER,
     );
@@ -73,6 +153,117 @@ describe("internal rendezvous upgrade contract", () => {
       headers: { [LEGACY_INTERNAL_RENDEZVOUS_ROLE_HEADER]: "client" },
     });
     expect(validateInternalRendezvousUpgrade(both)).toBeNull();
+
+    const v1 = internalRequest("client", {
+      headers: { [LEGACY_INTERNAL_RENDEZVOUS_V1_ROLE_HEADER]: "client" },
+    });
+    expect(validateInternalRendezvousUpgrade(v1)).toBeNull();
+  });
+
+  it("accepts only coherent invite-protocol authorization metadata", () => {
+    expect(validateInternalRendezvousUpgrade(internalRequest("client", {
+      headers: {
+        [INTERNAL_RENDEZVOUS_PROTOCOL_HEADER]: "classic-invite-v1",
+        [INTERNAL_RENDEZVOUS_AUTHORIZATION_HEADER]: "required",
+      },
+    }))).toEqual({
+      role: "client",
+      inviteProtocol: true,
+      authorizationRequired: true,
+      generation: GENERATION,
+    });
+    expect(validateInternalRendezvousUpgrade(internalRequest("server", {
+      headers: {
+        [INTERNAL_RENDEZVOUS_PROTOCOL_HEADER]: "classic-invite-v1",
+      },
+    }))).toEqual({
+      role: "server",
+      inviteProtocol: true,
+      authorizationRequired: false,
+      generation: GENERATION,
+    });
+
+    const invalid = [
+      internalRequest("client", {
+        headers: {
+          [INTERNAL_RENDEZVOUS_PROTOCOL_HEADER]: "classic-invite-v1",
+        },
+      }),
+      internalRequest("client", {
+        headers: {
+          [INTERNAL_RENDEZVOUS_AUTHORIZATION_HEADER]: "required",
+        },
+      }),
+      internalRequest("server", {
+        headers: {
+          [INTERNAL_RENDEZVOUS_PROTOCOL_HEADER]: "classic-invite-v1",
+          [INTERNAL_RENDEZVOUS_AUTHORIZATION_HEADER]: "required",
+        },
+      }),
+      internalRequest("client", {
+        headers: {
+          [INTERNAL_RENDEZVOUS_PROTOCOL_HEADER]: "classic-invite-v2",
+        },
+      }),
+      internalRequest("client", {
+        headers: {
+          [INTERNAL_RENDEZVOUS_AUTHORIZATION_HEADER]: "optional",
+        },
+      }),
+    ];
+    for (const request of invalid) {
+      expect(validateInternalRendezvousUpgrade(request)).toBeNull();
+    }
+  });
+
+  it("accepts only an exact bounded publication commit", async () => {
+    await expect(validateInternalRendezvousPublication(publicationRequest()))
+      .resolves.toEqual(PUBLICATION);
+    await expect(validateInternalRendezvousPublication(publicationRequest({
+      ...PUBLICATION,
+      expectedGeneration: null,
+      quicHost: "",
+    }))).resolves.toMatchObject({
+      expectedGeneration: null,
+      quicHost: "",
+    });
+    const maximallyEscaped = {
+      ...PUBLICATION,
+      name: "\0".repeat(80),
+      version: "\0".repeat(32),
+      textComment: "\0".repeat(256),
+    };
+    expect(JSON.stringify(maximallyEscaped).length).toBeGreaterThan(2_048);
+    await expect(validateInternalRendezvousPublication(
+      publicationRequest(maximallyEscaped),
+    )).resolves.toEqual(maximallyEscaped);
+
+    const invalidBodies = [
+      { ...PUBLICATION, generation: "A".repeat(64) },
+      { ...PUBLICATION, serverId: "4".repeat(64) },
+      { ...PUBLICATION, quicHost: "EXAMPLE.invalid" },
+      { ...PUBLICATION, quicPort: 0 },
+      { ...PUBLICATION, playersCount: -1 },
+      { ...PUBLICATION, extra: true },
+      { ...PUBLICATION, name: "x".repeat(81) },
+    ];
+    for (const body of invalidBodies) {
+      await expect(validateInternalRendezvousPublication(
+        publicationRequest(body),
+      )).resolves.toBeNull();
+    }
+
+    for (const request of [
+      new Request(INTERNAL_RENDEZVOUS_PUBLISH_URL, { method: "POST" }),
+      publicationRequest(PUBLICATION, { headers: { "Content-Type": "text/plain" } }),
+      publicationRequest(PUBLICATION, { headers: { Upgrade: "websocket" } }),
+      publicationRequest(PUBLICATION, {
+        headers: { [INTERNAL_RENDEZVOUS_GENERATION_HEADER]: GENERATION },
+      }),
+      publicationRequest({ ...PUBLICATION, textComment: "x".repeat(2_049) }),
+    ]) {
+      await expect(validateInternalRendezvousPublication(request)).resolves.toBeNull();
+    }
   });
 
   it("rejects every deviation from the fixed URL and bodyless GET upgrade", () => {
@@ -107,6 +298,155 @@ describe("internal rendezvous upgrade contract", () => {
 });
 
 describe("rendezvous signal contract", () => {
+  it("validates the cross-repository invite proof and frame fixture", async () => {
+    expect(inviteVector.version).toBe(1);
+    expect(inviteVector.subprotocol).toBe(
+      "atrinik-classic-rendezvous-invite-v1",
+    );
+    expect(inviteVector.capability).toBe(
+      `atrinik-invite-v1.${inviteVector.server_id}.` +
+        `${inviteVector.invite_id}.${inviteVector.secret}.` +
+        `${inviteVector.expiry}`,
+    );
+    for (const frame of Object.values(inviteVector.frames)) {
+      const parsed = parseRendezvousSignal(frame);
+      expect(parsed).toMatchObject({ ok: true, serialized: frame });
+    }
+
+    const expiry = new Uint8Array(8);
+    new DataView(expiry.buffer).setBigUint64(
+      0,
+      BigInt(inviteVector.expiry),
+      false,
+    );
+    const transcript = concatBytes(
+      new TextEncoder().encode(`${inviteVector.subprotocol}\0`),
+      hexBytes(inviteVector.server_id),
+      hexBytes(inviteVector.ticket),
+      hexBytes(inviteVector.invite_id),
+      hexBytes(inviteVector.challenge),
+      expiry,
+    );
+    expect(Array.from(transcript, (byte) =>
+      byte.toString(16).padStart(2, "0")).join(""))
+      .toBe(inviteVector.transcript_hex);
+
+    const key = await crypto.subtle.importKey(
+      "raw",
+      hexBytes(inviteVector.secret),
+      { name: "HMAC", hash: "SHA-256" },
+      false,
+      ["sign"],
+    );
+    const proof = await crypto.subtle.sign(
+      "HMAC",
+      key,
+      transcript,
+    );
+    expect(Array.from(new Uint8Array(proof), (byte) =>
+      byte.toString(16).padStart(2, "0")).join("")).toBe(inviteVector.proof);
+  });
+
+  it("validates the cross-repository negative invite fixture", () => {
+    expect(negativeInviteVector.version).toBe(inviteVector.version);
+    expect(negativeInviteVector.wrong_ticket).toMatch(/^[0-9a-f]{64}$/);
+    expect(negativeInviteVector.wrong_ticket).not.toBe(inviteVector.ticket);
+
+    const wrongCandidate = parseRendezvousSignal(
+      negativeInviteVector.wrong_ticket_server_candidate,
+    );
+    expect(wrongCandidate).toMatchObject({
+      ok: true,
+      signal: {
+        type: "server_candidate",
+        ticket: negativeInviteVector.wrong_ticket,
+      },
+    });
+    const wrongResult = parseRendezvousSignal(
+      negativeInviteVector.wrong_ticket_auth_result,
+    );
+    expect(wrongResult).toMatchObject({
+      ok: true,
+      signal: {
+        type: "auth_result",
+        ticket: negativeInviteVector.wrong_ticket,
+      },
+    });
+
+    for (const malformed of [
+      negativeInviteVector.oversized_port_server_candidate,
+      negativeInviteVector.leading_zero_port_server_candidate,
+      negativeInviteVector.truncated_auth_challenge,
+    ]) {
+      expect(parseRendezvousSignal(malformed)).toMatchObject({ ok: false });
+    }
+  });
+
+  it("parses and serializes the four canonical authorization frames", () => {
+    const frames = [
+      {
+        type: "auth_init",
+        version: 1,
+        ticket: TICKET,
+        invite_id: "b".repeat(32),
+      },
+      {
+        type: "auth_challenge",
+        version: 1,
+        ticket: TICKET,
+        challenge: "c".repeat(64),
+      },
+      {
+        type: "auth_proof",
+        version: 1,
+        ticket: TICKET,
+        proof: "d".repeat(64),
+      },
+      {
+        type: "auth_result",
+        version: 1,
+        ticket: TICKET,
+        authorized: false,
+      },
+    ] as const;
+
+    for (const signal of frames) {
+      const serialized = JSON.stringify(signal);
+      expect(parseRendezvousSignal(serialized)).toEqual({
+        ok: true,
+        signal,
+        serialized,
+        bytes: serialized.length,
+      });
+      expect(serializeRendezvousSignal(signal)).toBe(serialized);
+    }
+  });
+
+  it("requires canonical authorization JSON and exact fields", () => {
+    const valid = JSON.stringify({
+      type: "auth_init",
+      version: 1,
+      ticket: TICKET,
+      invite_id: "b".repeat(32),
+    });
+    const invalid = [
+      ` ${valid}`,
+      valid.replace('"type":"auth_init","version":1',
+        '"version":1,"type":"auth_init"'),
+      valid.replace('"version":1', '"version":2'),
+      valid.replace("b".repeat(32), "B".repeat(32)),
+      valid.replace("b".repeat(32), "b".repeat(31)),
+      valid.slice(0, -1) + ',"extra":true}',
+      valid.replace('"version":1', '"version":1,"version":1'),
+    ];
+    for (const frame of invalid) {
+      expect(parseRendezvousSignal(frame)).toEqual({
+        ok: false,
+        error: "unsupported_signal",
+      });
+    }
+  });
+
   it("normalizes client candidates and serializes classic property order", () => {
     const input = JSON.stringify({
       ticket: TICKET,
@@ -301,9 +641,11 @@ describe("rendezvous structural constants", () => {
     expect(MAX_SERVER_CANDIDATES).toBe(12);
     expect(MAX_RENDEZVOUS_CLIENT_SOCKETS).toBe(64);
     expect(RENDEZVOUS_ROLLING_WINDOW_MS).toBe(86_400_000);
-    expect(MAX_RENDEZVOUS_SESSION_SIGNAL_BYTES).toBe(7_168);
+    expect(MAX_CLIENT_AUTHORIZATION_FRAMES).toBe(2);
+    expect(MAX_SERVER_AUTHORIZATION_FRAMES).toBe(2);
+    expect(MAX_RENDEZVOUS_SESSION_SIGNAL_BYTES).toBe(9_216);
     expect(MAX_RENDEZVOUS_SESSION_SIGNAL_BYTES).toBe(
-      MAX_SIGNAL_BYTES * (1 + MAX_SERVER_CANDIDATES + 1),
+      MAX_SIGNAL_BYTES * (2 + 2 + 1 + MAX_SERVER_CANDIDATES + 1),
     );
     expect(SERVER_SIGNAL_CANDIDATE_KINDS).toEqual([
       "lan", "ipv6", "mapped", "srflx",

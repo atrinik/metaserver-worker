@@ -92,6 +92,19 @@ against the additive schema, but it cannot consume a new tagged OTP. Pause
 updates during the Worker switch and prefer a forward fix over a mixed-version
 rollback.
 
+Migration `0003_rendezvous_generation.sql` is also additive. It gives every
+existing owner and listing row the same inert all-zero, non-secret generation
+and constrains later values to 64 lowercase hexadecimal characters. Apply it
+before deploying code that selects or writes `rendezvous_generation`. The new
+Worker replaces both sentinels on the next accepted publish. The per-server
+Durable Object serializes the complete update, invalidates the old control,
+then writes the owner guard, listing, bearer-token hash, and generation in one
+D1 batch. A stale concurrent update fails its generation precondition instead
+of overwriting the winner. An older Worker can read the expanded tables but
+would rotate a token without rotating either generation, so pause updates for
+the migration and deploy this Worker contract at 100%; do not operate mixed
+writers or roll back to the older publisher while updates are enabled.
+
 ## Canary
 
 1. Create a separate canary D1 database and apply all ordered migrations to it.
@@ -197,15 +210,24 @@ rollback.
     rejected as full; every admitted client closes no later than the
     eight-second canary lifetime; a duplicate/cross-socket ticket, second client
     candidate, thirteenth server candidate, second completion, frame over 512
-    bytes, or exchange over 7,168 bytes closes the offending control path before
+    bytes, or exchange over 9,216 bytes closes the offending control path before
     unrelated candidate forwarding. Confirm completion and each candidate
     reaches only the ticket's originating client.
-15. Use another fresh controlled server identity/room. Confirm a
-    password-protected listing returns the retryable `503` with the fixed
-    `Protected rendezvous authorization is unavailable` body to a client even
-    while its authenticated server-control socket is live. Do not enable
-    protected rendezvous until issue #20's separate game-password authorization
-    protocol is deployed and reviewed.
+15. Use another fresh controlled server identity/room and a disposable,
+    unlogged invite capability. Confirm a password-protected listing returns the
+    retryable fixed `503` to a no-subprotocol client and to an invite client
+    while only a no-subprotocol server control is live. Replace it with an
+    authenticated control and client that both negotiate exactly
+    `atrinik-classic-rendezvous-invite-v1`; verify the `101` responses echo that
+    value. Exercise `auth_init`, `auth_challenge`, `auth_proof`, and both true
+    and false `auth_result` paths. No candidate or UDP punch may occur before a
+    true result. Wrong, expired, unknown, replayed, cross-ticket, duplicate, or
+    out-of-order authorization input must receive only generic denial/closure,
+    and server replacement must invalidate every pending attempt. Inspect only
+    attachment field names/counters and confirm no invite ID, secret, expiry,
+    challenge, proof, serialized authorization frame, ticket, or candidate was
+    written to SQLite, KV, D1, logs, or metrics. Finally confirm the independent
+    post-QUIC join-password check still succeeds and rejects normally.
 16. Use another fresh controlled server identity/room. Let its idle
     server-control WebSocket hibernate, then complete a fresh client attempt.
     Confirm the socket remains usable after object reconstruction and the single

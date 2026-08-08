@@ -2,6 +2,8 @@ import { env } from "cloudflare:workers";
 import {
   createExecutionContext,
   createScheduledController,
+  evictDurableObject,
+  runInDurableObject,
   waitOnExecutionContext,
 } from "cloudflare:test";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -12,6 +14,7 @@ import {
   deriveUpdateProof,
   sha256Hex,
 } from "../src/protocol";
+import { CLASSIC_RENDEZVOUS_INVITE_SUBPROTOCOL } from "../src/routes";
 
 const BASE_URL = "https://meta.example.test";
 const SOURCE_IP = "192.0.2.10";
@@ -21,6 +24,7 @@ const COTP = "b".repeat(128);
 const PERSISTENCE_TEST_TRIGGERS = [
   "server_owners_test_ignore_update",
   "servers_test_ignore_insert",
+  "servers_test_ignore_update",
 ] as const;
 let activeSourceIp = SOURCE_IP;
 let activeServerId = INITIAL_SERVER_ID;
@@ -60,6 +64,15 @@ function nextWebSocketMessage(socket: WebSocket): Promise<string> {
     socket.addEventListener("message", (event) => resolve(String(event.data)), {
       once: true,
     });
+    socket.addEventListener("error", () => reject(new Error("WebSocket error")), {
+      once: true,
+    });
+  });
+}
+
+function nextWebSocketClose(socket: WebSocket): Promise<CloseEvent> {
+  return new Promise((resolve, reject) => {
+    socket.addEventListener("close", resolve, { once: true });
     socket.addEventListener("error", () => reject(new Error("WebSocket error")), {
       once: true,
     });
@@ -557,6 +570,184 @@ describe("metaserver Worker", () => {
     expect(body).not.toContain("198.51.100.20");
   });
 
+  it("serializes concurrent generation commits and returns only one usable token", async () => {
+    const initial = await postUpdate(updateForm(await issueOtp(), RAW_KEY));
+    expect(initial.status).toBe(200);
+    const { rendezvousToken: initialToken } = await initial.json<{
+      rendezvousToken: string;
+    }>();
+    const storedKey = await deriveStoredKey(RAW_KEY, activeServerId);
+    const [firstOtp, secondOtp] = await Promise.all([issueOtp(), issueOtp()]);
+    const first = updateForm(
+      firstOtp,
+      await deriveUpdateProof(firstOtp, storedKey, COTP),
+    );
+    const second = updateForm(
+      secondOtp,
+      await deriveUpdateProof(secondOtp, storedKey, COTP),
+    );
+    first.set("registration", "0");
+    second.set("registration", "0");
+    first.set("quic_port", "1731");
+    second.set("quic_port", "1732");
+
+    let releasePublications = (): void => {};
+    const publicationGate = new Promise<void>((resolve) => {
+      releasePublications = resolve;
+    });
+    let releaseArrivals = (): void => {};
+    const bothArrived = new Promise<void>((resolve) => {
+      releaseArrivals = resolve;
+    });
+    let arrivals = 0;
+    const gatedNamespace = {
+      getByName(name: string) {
+        const stub = env.RENDEZVOUS.getByName(name);
+        return new Proxy(stub, {
+          get(target, property, receiver) {
+            if (property === "fetch") {
+              return async (request: Request): Promise<Response> => {
+                arrivals += 1;
+                if (arrivals === 2) {
+                  releaseArrivals();
+                }
+                await publicationGate;
+                return target.fetch(request);
+              };
+            }
+            return Reflect.get(target, property, receiver);
+          },
+        });
+      },
+    };
+    const concurrentEnv = overrideEnv({ RENDEZVOUS: gatedNamespace });
+    const pending = [
+      postUpdate(first, activeSourceIp, concurrentEnv),
+      postUpdate(second, activeSourceIp, concurrentEnv),
+    ];
+    await bothArrived;
+    releasePublications();
+    const responses = await Promise.all(pending);
+    expect(responses.map((response) => response.status).sort()).toEqual([200, 503]);
+    const winner = responses.find((response) => response.status === 200);
+    if (winner === undefined) {
+      throw new Error("Concurrent publication returned no winner");
+    }
+    const { rendezvousToken } = await winner.json<{ rendezvousToken: string }>();
+    const stored = await env.DB.prepare(
+      `SELECT rendezvous_token_hash, rendezvous_generation, quic_port
+         FROM servers WHERE server_id = ?`,
+    ).bind(activeServerId).first<{
+      rendezvous_token_hash: string;
+      rendezvous_generation: string;
+      quic_port: number;
+    }>();
+    expect(stored).not.toBeNull();
+    expect(stored?.rendezvous_token_hash).toBe(await sha256Hex(rendezvousToken));
+    expect([1_731, 1_732]).toContain(stored?.quic_port);
+    expect(initialToken).not.toBe(rendezvousToken);
+
+    const stub = env.RENDEZVOUS.getByName(activeServerId);
+    await evictDurableObject(stub);
+    const accepted = await callWorker(request(
+      `/v2/rendezvous/${activeServerId}?role=server`,
+      {
+        headers: {
+          Authorization: `Bearer ${rendezvousToken}`,
+          Upgrade: "websocket",
+        },
+      },
+    ));
+    expect(accepted.status).toBe(101);
+    await runInDurableObject(stub, async (_instance, state) => {
+      expect(await state.storage.get("rendezvous:token-generation"))
+        .toBe(stored?.rendezvous_generation);
+    });
+    closeAcceptedWebSocket(accepted);
+  });
+
+  it("restores the published generation when D1 rejects a rotated update", async () => {
+    const initial = await postUpdate(updateForm(await issueOtp(), RAW_KEY));
+    expect(initial.status).toBe(200);
+    const { rendezvousToken } = await initial.json<{ rendezvousToken: string }>();
+    const before = await env.DB.prepare(
+      `SELECT rendezvous_token_hash, rendezvous_generation
+         FROM servers WHERE server_id = ?`,
+    ).bind(activeServerId).first<{
+      rendezvous_token_hash: string;
+      rendezvous_generation: string;
+    }>();
+    if (before === null) {
+      throw new Error("Initial publication was not stored");
+    }
+
+    const connected = await callWorker(request(
+      `/v2/rendezvous/${activeServerId}?role=server`,
+      {
+        headers: {
+          Authorization: `Bearer ${rendezvousToken}`,
+          Upgrade: "websocket",
+        },
+      },
+    ));
+    expect(connected.status).toBe(101);
+    const socket = connected.webSocket;
+    if (socket === null) {
+      throw new Error("Accepted rollback server returned no WebSocket");
+    }
+    socket.accept();
+    const closed = nextWebSocketClose(socket);
+
+    await env.DB.prepare(
+      `CREATE TRIGGER servers_test_ignore_update
+       BEFORE UPDATE ON servers
+       WHEN NEW.server_id = '${activeServerId}'
+       BEGIN
+         SELECT RAISE(IGNORE);
+       END`,
+    ).run();
+    const storedKey = await deriveStoredKey(RAW_KEY, activeServerId);
+    const otp = await issueOtp();
+    const rejected = updateForm(
+      otp,
+      await deriveUpdateProof(otp, storedKey, COTP),
+    );
+    rejected.set("registration", "0");
+    rejected.set("quic_port", "1731");
+    expect((await postUpdate(rejected)).status).toBe(500);
+    expect(socket.readyState).not.toBe(WebSocket.OPEN);
+    await expect(closed).resolves.toMatchObject({ code: 4_004 });
+    await env.DB.prepare("DROP TRIGGER servers_test_ignore_update").run();
+
+    const after = await env.DB.prepare(
+      `SELECT rendezvous_token_hash, rendezvous_generation, quic_port
+         FROM servers WHERE server_id = ?`,
+    ).bind(activeServerId).first<{
+      rendezvous_token_hash: string;
+      rendezvous_generation: string;
+      quic_port: number;
+    }>();
+    expect(after).toEqual({ ...before, quic_port: 1_730 });
+
+    const stub = env.RENDEZVOUS.getByName(activeServerId);
+    await evictDurableObject(stub);
+    const recovered = await callWorker(request(
+      `/v2/rendezvous/${activeServerId}?role=server`,
+      {
+        headers: {
+          Authorization: `Bearer ${rendezvousToken}`,
+          Upgrade: "websocket",
+        },
+      },
+    ));
+    expect(recovered.status).toBe(101);
+    await runInDurableObject(stub, async (_instance, state) => {
+      expect(await state.storage.get("rendezvous:token-generation"))
+        .toBe(before.rendezvous_generation);
+    });
+    closeAcceptedWebSocket(recovered);
+  });
+
   it("preserves the token and listing when the identity budget rejects", async () => {
     expect((await postUpdate(updateForm(await issueOtp(), RAW_KEY))).status).toBe(200);
     const storedKey = await deriveStoredKey(RAW_KEY, activeServerId);
@@ -706,7 +897,8 @@ describe("metaserver Worker", () => {
     expect(stored).toEqual({ source_ip: "", quic_host: "" });
     expect(JSON.stringify(stored)).not.toContain(activeSourceIp);
     const listing = await (await callWorker(request("/v2/servers"))).text();
-    expect(listing).toContain("<Address></Address>");
+    expect(listing).not.toContain("<Address>");
+    expect(listing).not.toContain("<Port>");
     expect(listing).not.toContain(activeSourceIp);
   });
 
@@ -1360,14 +1552,19 @@ describe("metaserver Worker", () => {
     secondServerSocket.close(1000, "Test complete");
   });
 
-  it("fails protected client rendezvous closed until authorization is available", async () => {
+  it("negotiates protected rendezvous only with invite-capable peers", async () => {
     const form = updateForm(await issueOtp(), RAW_KEY);
     form.set("password_required", "1");
+    form.delete("quic_host");
     const registration = await postUpdate(form);
     expect(registration.status).toBe(200);
     const { rendezvousToken } = await registration.json<{
       rendezvousToken: string;
     }>();
+    const listing = await (await callWorker(request("/v2/servers"))).text();
+    expect(listing).toContain(`<Id>${activeServerId}</Id>`);
+    expect(listing).not.toContain("<Address>");
+    expect(listing).not.toContain("<Port>");
 
     const serverControl = await callWorker(request(
       `/v2/rendezvous/${activeServerId}?role=server`,
@@ -1396,7 +1593,217 @@ describe("metaserver Worker", () => {
       "Protected rendezvous authorization is unavailable\n",
     );
     expect(serverSocket.readyState).toBe(WebSocket.OPEN);
-    serverSocket.close(1000, "Test complete");
+
+    const inviteServer = await callWorker(request(
+      `/v2/rendezvous/${activeServerId}?role=server`,
+      {
+        headers: {
+          Authorization: `Bearer ${rendezvousToken}`,
+          Upgrade: "websocket",
+          "Sec-WebSocket-Protocol":
+            CLASSIC_RENDEZVOUS_INVITE_SUBPROTOCOL,
+        },
+      },
+    ));
+    expect(inviteServer.status).toBe(101);
+    expect(inviteServer.headers.get("Sec-WebSocket-Protocol")).toBe(
+      CLASSIC_RENDEZVOUS_INVITE_SUBPROTOCOL,
+    );
+    const inviteServerSocket = inviteServer.webSocket;
+    if (inviteServerSocket === null) {
+      throw new Error("Accepted invite server returned no WebSocket");
+    }
+    inviteServerSocket.accept();
+
+    const protectedClient = await callWorker(request(
+      `/v2/rendezvous/${activeServerId}?role=client`,
+      {
+        headers: {
+          Upgrade: "websocket",
+          "Sec-WebSocket-Protocol":
+            CLASSIC_RENDEZVOUS_INVITE_SUBPROTOCOL,
+        },
+      },
+    ));
+    expect(protectedClient.status).toBe(101);
+    expect(protectedClient.headers.get("Sec-WebSocket-Protocol")).toBe(
+      CLASSIC_RENDEZVOUS_INVITE_SUBPROTOCOL,
+    );
+    const protectedClientSocket = protectedClient.webSocket;
+    if (protectedClientSocket === null) {
+      throw new Error("Accepted protected client returned no WebSocket");
+    }
+    protectedClientSocket.accept();
+    const init = nextWebSocketMessage(inviteServerSocket);
+    protectedClientSocket.send(JSON.stringify({
+      type: "auth_init",
+      version: 1,
+      ticket: "d".repeat(64),
+      invite_id: "e".repeat(32),
+    }));
+    expect(JSON.parse(await init)).toMatchObject({
+      type: "auth_init",
+      version: 1,
+      ticket: "d".repeat(64),
+      invite_id: "e".repeat(32),
+    });
+    expect(serverSocket.readyState).not.toBe(WebSocket.OPEN);
+    protectedClientSocket.close(1000, "Test complete");
+    inviteServerSocket.close(1000, "Test complete");
+  });
+
+  it("does not let an invite subprotocol bypass a private listing", async () => {
+    const form = updateForm(await issueOtp(), RAW_KEY);
+    form.set("public", "0");
+    form.set("password_required", "1");
+    expect((await postUpdate(form)).status).toBe(200);
+
+    for (const protocol of [null, CLASSIC_RENDEZVOUS_INVITE_SUBPROTOCOL]) {
+      const headers = new Headers({ Upgrade: "websocket" });
+      if (protocol !== null) {
+        headers.set("Sec-WebSocket-Protocol", protocol);
+      }
+      const response = await callWorker(request(
+        `/v2/rendezvous/${activeServerId}?role=client`,
+        { headers },
+      ));
+      expect(response.status).toBe(403);
+      expect(response.headers.get("Cache-Control")).toBe("no-store");
+      expect(await response.text()).toBe("Server is private\n");
+    }
+  });
+
+  it("rotates the control generation before publishing a new token", async () => {
+    const initialForm = updateForm(await issueOtp(), RAW_KEY);
+    initialForm.set("password_required", "1");
+    const initial = await postUpdate(initialForm);
+    const { rendezvousToken: oldToken } = await initial.json<{
+      rendezvousToken: string;
+    }>();
+
+    const serverResponse = await callWorker(request(
+      `/v2/rendezvous/${activeServerId}?role=server`,
+      {
+        headers: {
+          Authorization: `Bearer ${oldToken}`,
+          Upgrade: "websocket",
+          "Sec-WebSocket-Protocol":
+            CLASSIC_RENDEZVOUS_INVITE_SUBPROTOCOL,
+        },
+      },
+    ));
+    const server = serverResponse.webSocket;
+    if (server === null) {
+      throw new Error("Accepted rotation server returned no WebSocket");
+    }
+    server.accept();
+    const clientResponse = await callWorker(request(
+      `/v2/rendezvous/${activeServerId}?role=client`,
+      {
+        headers: {
+          Upgrade: "websocket",
+          "Sec-WebSocket-Protocol":
+            CLASSIC_RENDEZVOUS_INVITE_SUBPROTOCOL,
+        },
+      },
+    ));
+    const client = clientResponse.webSocket;
+    if (client === null) {
+      throw new Error("Accepted rotation client returned no WebSocket");
+    }
+    client.accept();
+
+    const selectedTicket = "7".repeat(64);
+    let relayed = nextWebSocketMessage(server);
+    client.send(JSON.stringify({
+      type: "auth_init",
+      version: 1,
+      ticket: selectedTicket,
+      invite_id: "8".repeat(32),
+    }));
+    await relayed;
+    relayed = nextWebSocketMessage(client);
+    server.send(JSON.stringify({
+      type: "auth_challenge",
+      version: 1,
+      ticket: selectedTicket,
+      challenge: "9".repeat(64),
+    }));
+    await relayed;
+    relayed = nextWebSocketMessage(server);
+    client.send(JSON.stringify({
+      type: "auth_proof",
+      version: 1,
+      ticket: selectedTicket,
+      proof: "a".repeat(64),
+    }));
+    await relayed;
+
+    const serverClosed = nextWebSocketClose(server);
+    const clientClosed = nextWebSocketClose(client);
+    const rotationOtp = await issueOtp();
+    const storedKey = await deriveStoredKey(RAW_KEY, activeServerId);
+    const rotationProof = await deriveUpdateProof(
+      rotationOtp,
+      storedKey,
+      COTP,
+    );
+    const rotatedForm = updateForm(rotationOtp, rotationProof);
+    rotatedForm.set("registration", "0");
+    rotatedForm.set("password_required", "1");
+    const rotated = await postUpdate(rotatedForm);
+    expect(rotated.status).toBe(200);
+    const { rendezvousToken: newToken } = await rotated.json<{
+      rendezvousToken: string;
+    }>();
+    expect(newToken).not.toBe(oldToken);
+    await expect(serverClosed).resolves.toMatchObject({ code: 4_004 });
+    await expect(clientClosed).resolves.toMatchObject({ code: 4_004 });
+
+    const stale = await callWorker(request(
+      `/v2/rendezvous/${activeServerId}?role=server`,
+      {
+        headers: {
+          Authorization: `Bearer ${oldToken}`,
+          Upgrade: "websocket",
+          "Sec-WebSocket-Protocol":
+            CLASSIC_RENDEZVOUS_INVITE_SUBPROTOCOL,
+        },
+      },
+    ));
+    expect(stale.status).toBe(401);
+
+    const replacement = await callWorker(request(
+      `/v2/rendezvous/${activeServerId}?role=server`,
+      {
+        headers: {
+          Authorization: `Bearer ${newToken}`,
+          Upgrade: "websocket",
+          "Sec-WebSocket-Protocol":
+            CLASSIC_RENDEZVOUS_INVITE_SUBPROTOCOL,
+        },
+      },
+    ));
+    expect(replacement.status).toBe(101);
+    closeAcceptedWebSocket(replacement);
+  });
+
+  it("rejects the protected subprotocol for a passwordless client", async () => {
+    expect((await postUpdate(updateForm(await issueOtp(), RAW_KEY))).status)
+      .toBe(200);
+    const response = await callWorker(request(
+      `/v2/rendezvous/${activeServerId}?role=client`,
+      {
+        headers: {
+          Upgrade: "websocket",
+          "Sec-WebSocket-Protocol":
+            CLASSIC_RENDEZVOUS_INVITE_SUBPROTOCOL,
+        },
+      },
+    ));
+    expect(response.status).toBe(400);
+    expect(response.headers.get("Cache-Control")).toBe("no-store");
+    expect(await response.text()).toBe("Invalid WebSocket subprotocol\n");
   });
 
   it("lists opted-in servers and relays rendezvous candidates", async () => {

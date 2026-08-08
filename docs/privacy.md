@@ -146,25 +146,25 @@ Rendezvous attempts at most one best-effort custom metric write for each
 accepted client session and no custom point for rejected room admissions or
 individual frames. The
 `RENDEZVOUS_METRICS` Analytics Engine binding writes to
-`atrinik_metaserver_rendezvous` with this fixed `rendezvous-session-v1`
+`atrinik_metaserver_rendezvous` with this fixed `rendezvous-session-v2`
 layout:
 
 | Field | Meaning |
 | --- | --- |
-| `index1` | `rendezvous-session-v1:<outcome>` |
-| `blob1` | schema name `rendezvous-session-v1` |
+| `index1` | `rendezvous-session-v2:<outcome>` |
+| `blob1` | schema name `rendezvous-session-v2` |
 | `blob2` | closed terminal outcome |
 | `double1` | session count, always `1` |
-| `double2` | accepted client frames, `0..1` |
-| `double3` | matched server frames, `0..13` |
-| `double4` | forwarded frames, `0..14` |
-| `double5` | accepted signaling bytes, `0..7,168` |
+| `double2` | accepted client frames, `0..3` |
+| `double3` | matched server frames, `0..15` |
+| `double4` | forwarded frames, `0..18` |
+| `double5` | accepted signaling bytes, `0..9,216` |
 | `double6` | bounded duration in milliseconds, `0..15,000` |
 
 The closed outcomes are `completed`, `client_disconnected`,
 `session_expired`, `protocol_error`, `server_unavailable`, `server_replaced`,
-and `internal_error`. There is no address, source tag, server identity,
-connection identity, ticket, credential, candidate, exception text, or
+`authorization_failed`, and `internal_error`. There is no address, source tag,
+server identity, connection identity, ticket, credential, candidate, exception text, or
 free-form close reason in the schema. The at-most-one-point-per-accepted-session
 rule also bounds this custom stream to at most 50 terminal-summary attempts per
 server in a rolling day. Zone `101` counts remain the authority for
@@ -184,7 +184,7 @@ SELECT
   SUM(_sample_interval * double5) AS accepted_signal_bytes,
   SUM(_sample_interval * double6) AS total_duration_ms
 FROM atrinik_metaserver_rendezvous
-WHERE blob1 = 'rendezvous-session-v1'
+WHERE blob1 = 'rendezvous-session-v2'
   AND timestamp > NOW() - INTERVAL '1' DAY
 GROUP BY blob2
 ORDER BY sessions DESC
@@ -199,13 +199,17 @@ copied into a custom metric or log.
 
 ## Rendezvous transient state
 
-The first client candidate carries a fresh client-generated 64-hex ticket. The
+The first passwordless client candidate or protected `auth_init` carries a
+fresh client-generated 64-hex ticket. The
 room retains the raw ticket beyond the frame currently being validated or
 forwarded only in that client's compact, versioned WebSocket attachment for the
 at-most-15-second connection. The authenticated server socket's attachment
-keeps its random control ID and opening time plus, for each live attempt, the
-ticket's SHA-256 routing digest, a random client connection ID, opening/expiry
-times, and bounded stage/frame/byte counters. A terminal client attachment
+keeps its random control ID, non-secret token-generation ID, and opening time
+plus, for each live attempt, the ticket's SHA-256 routing digest, a random
+client connection ID, opening/expiry times, and bounded stage/frame/byte
+counters. The client attachment carries the same generation ID so admission
+and signaling cannot cross a publish-time credential rotation. A terminal
+client attachment
 retains only those non-routing counters, its random local IDs/timestamps, the
 closed outcome enum, summary marker, and a bounded close-attempt counter: its
 raw ticket and digest are cleared as part of the terminal transition. Live
@@ -215,6 +219,29 @@ session deadline. Only non-routing terminal metadata can outlive that deadline
 when the platform transport refuses to close. Every attachment is strictly
 decoded and remains below Cloudflare's
 [16,384-byte attachment ceiling](https://developers.cloudflare.com/durable-objects/best-practices/websockets/#websocketserializeattachment).
+
+Invite IDs, invite secrets, expiry values, challenges, proofs, and serialized
+authorization frames are processed only in the current bounded event and are
+never stored in a hibernation attachment, Durable Object table or key-value
+entry, D1, log, or metric. Attachments retain only the authorization stage and
+bounded counters. The Worker never receives the invite secret and cannot
+interpret the proof; only the authenticated current classic server control can
+authorize the exact ticket.
+
+Each successful publish creates a fresh random 64-hex, non-secret rendezvous
+generation alongside the new bearer-token hash. D1 stores the generation in
+both the owner row (as a transaction guard) and the listing row. The per-server
+Durable Object serializes the complete commit, checks the caller's prior D1
+generation, persists the next generation under the fixed
+`rendezvous:token-generation` key, retires all older controls and clients, and
+then writes both D1 rows in one batch. A concurrent request with a stale prior
+generation cannot overwrite the winner. If a batch result is ambiguous, the
+room verifies the exact owner/listing state and otherwise reconciles itself to
+the listing's authoritative generation before returning an error.
+The value is an unlinkable room-local epoch marker, not a credential, address,
+ticket, or actor identifier. Message handling and reconstruction compare it
+before trusting any attachment, so a transport that could not be closed cannot
+continue signaling. The raw bearer token never enters Durable Object storage.
 
 The exceptional case where both attachment persistence and transport close
 fail writes one fixed boolean recovery-quarantine flag to Durable Object
@@ -229,7 +256,8 @@ only after every socket is either durably non-routing or transport-closed.
 Each accepted client reserves one row in the per-room Durable Object SQLite
 admission ledger. Apart from its local numeric row ID, its application fields
 are `accepted_at_ms` and exactly two nullable replay-alias columns. The first
-valid client candidate derives and atomically claims both aliases; the same
+valid passwordless client candidate or protected `auth_init` derives and
+atomically claims both aliases; the same
 transaction rejects a collision against either column before forwarding the
 candidate. A room retains no more than 50 rows and deletes every row whose
 acceptance time is at or before the rolling 24-hour cutoff.
@@ -278,22 +306,28 @@ ticket and perform new authorized signaling.
 
 ## Directory and rendezvous boundary
 
-A public compatibility record without an explicit `quic_host` is already
-rendered with an empty address rather than the request source. Supported client
-work must make that record joinable through rendezvous before this behavior is
-deployed broadly. The final schema replaces the compatibility field with a
-strictly validated optional DNS hostname. That hostname is routing metadata,
-not identity: clients still pin the QUIC certificate, and the Worker never
-resolves it or stores its A/AAAA answers.
+A public compatibility record without an explicit `quic_host` omits both
+`Address` and `Port`; it never substitutes the request source. Such an
+addressless record is joinable only through rendezvous. A present endpoint is
+public direct-connect routing metadata selected by the current classic
+publisher; `PasswordRequired` does not conceal it. The final schema replaces
+the compatibility field with an operator-configured, strictly validated
+optional DNS hostname. That hostname is routing metadata, not identity:
+clients still pin the QUIC certificate, and the Worker never resolves it or
+stores its A/AAAA answers.
 
 The compatibility room routes server candidates only to the client socket that
 originated their fresh ticket. Admission also requires a currently live server
 control authenticated with the listing's rendezvous token. That server-control
-proof is deliberately separate from a player's game password: until issue #20
-implements the bounded password authorization exchange, a password-protected
-listing fails client rendezvous closed with a retryable `503` and
-`Retry-After: 300`. Transient QUIC candidates are therefore not exposed merely
-because a client knows a listed server identity.
+proof is deliberately separate from a player's game password. A protected
+listing requires both peers to negotiate the exact classic invite subprotocol,
+then completes a single high-entropy invite challenge/response before the
+current authenticated server control can authorize that ticket. Unknown,
+expired, revoked, malformed, and incorrect capabilities receive the same
+generic denial from the classic server. The Worker never receives the invite
+secret, and the normal in-game join password remains required after QUIC.
+Transient QUIC candidates are therefore not exposed merely because a client
+knows a listed server identity.
 
 Overwriting or deleting current rows does not immediately erase recoverable
 history. D1

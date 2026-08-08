@@ -84,15 +84,22 @@ also constrained as follows:
 | Active client attempts per server | 16 |
 | Attached client sockets per server | 64 absolute implementation ceiling |
 | Client session lifetime | 15 seconds |
+| Client authorization frames | 2 |
+| Server authorization frames | 2 |
+| Authorization proof attempts | 1 |
+| Authorization signaling bytes | 2,048 bytes |
 | Client candidates | 1 |
 | Server candidates | 12 |
 | Completion frames | 1 |
 | Signaling frame size | 512 bytes |
-| Accepted signaling bytes for the complete attempt | 7,168 bytes |
+| Accepted signaling bytes for the complete attempt | 9,216 bytes |
 
 A client is admitted only when one authenticated server-control socket is live.
-The single client candidate introduces a fresh client-generated 64-hex ticket;
-the room binds it to that client socket and rejects duplicate, replayed, or
+The single client candidate introduces a fresh client-generated 64-hex ticket
+for a passwordless attempt. A protected attempt introduces it in `auth_init`
+and permits no candidate until the authenticated server completes the exact
+four-frame invite authorization exchange. The room binds it to that client
+socket and rejects duplicate, replayed, or
 cross-socket use. Server candidates and completion are routed only to that
 ticket. A completion closes the client immediately, and one hibernation-safe
 alarm closes any attempt and removes its routing state at the at-most-15-second

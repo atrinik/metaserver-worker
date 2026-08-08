@@ -14,6 +14,7 @@ export interface RendezvousServerRecord {
   is_public: number;
   password_required: number;
   rendezvous_token_hash: string;
+  rendezvous_generation: string;
 }
 
 export interface OwnerAuthRecord {

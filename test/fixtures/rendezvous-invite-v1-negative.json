@@ -1,0 +1,9 @@
+{
+  "version": 1,
+  "wrong_ticket": "605152535455565758595a5b5c5d5e5f606162636465666768696a6b6c6d6e6f",
+  "wrong_ticket_server_candidate": "{\"type\":\"server_candidate\",\"host\":\"198.51.100.7\",\"port\":1731,\"kind\":\"srflx\",\"ticket\":\"605152535455565758595a5b5c5d5e5f606162636465666768696a6b6c6d6e6f\"}",
+  "oversized_port_server_candidate": "{\"type\":\"server_candidate\",\"host\":\"198.51.100.7\",\"port\":4294967296,\"kind\":\"srflx\",\"ticket\":\"505152535455565758595a5b5c5d5e5f606162636465666768696a6b6c6d6e6f\"}",
+  "leading_zero_port_server_candidate": "{\"type\":\"server_candidate\",\"host\":\"198.51.100.7\",\"port\":01731,\"kind\":\"srflx\",\"ticket\":\"505152535455565758595a5b5c5d5e5f606162636465666768696a6b6c6d6e6f\"}",
+  "truncated_auth_challenge": "{\"type\":\"auth_challenge\",\"version\":1,\"ticket\":\"505152535455565758595a5b5c5d5e5f606162636465666768696a6b6c6d6e6f\",\"challenge\":\"707172737475767778797a7b7c7d7e7f808182838485868788898a8b8c8d8e8f\"",
+  "wrong_ticket_auth_result": "{\"type\":\"auth_result\",\"version\":1,\"ticket\":\"605152535455565758595a5b5c5d5e5f606162636465666768696a6b6c6d6e6f\",\"authorized\":true}"
+}

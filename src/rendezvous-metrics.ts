@@ -1,9 +1,11 @@
 import { RENDEZVOUS_POLICY_MAXIMUMS } from "./config";
 import {
   MAX_CLIENT_CANDIDATES,
+  MAX_CLIENT_AUTHORIZATION_FRAMES,
   MAX_COMPLETIONS,
   MAX_RENDEZVOUS_SESSION_SIGNAL_BYTES,
   MAX_SERVER_CANDIDATES,
+  MAX_SERVER_AUTHORIZATION_FRAMES,
   RENDEZVOUS_TERMINAL_OUTCOMES,
 } from "./rendezvous-contract";
 import type { RendezvousTerminalOutcome } from "./rendezvous-contract";
@@ -11,7 +13,7 @@ import type { RendezvousTerminalOutcome } from "./rendezvous-contract";
 export { RENDEZVOUS_TERMINAL_OUTCOMES } from "./rendezvous-contract";
 export type { RendezvousTerminalOutcome } from "./rendezvous-contract";
 
-export const RENDEZVOUS_SESSION_METRICS_SCHEMA = "rendezvous-session-v1";
+export const RENDEZVOUS_SESSION_METRICS_SCHEMA = "rendezvous-session-v2";
 
 export interface RendezvousTerminalSummary {
   readonly outcome: RendezvousTerminalOutcome;
@@ -22,8 +24,10 @@ export interface RendezvousTerminalSummary {
   readonly durationMs: number;
 }
 
-const MAX_CLIENT_FRAMES_ACCEPTED = MAX_CLIENT_CANDIDATES;
-const MAX_SERVER_FRAMES_MATCHED = MAX_SERVER_CANDIDATES + MAX_COMPLETIONS;
+const MAX_CLIENT_FRAMES_ACCEPTED =
+  MAX_CLIENT_AUTHORIZATION_FRAMES + MAX_CLIENT_CANDIDATES;
+const MAX_SERVER_FRAMES_MATCHED =
+  MAX_SERVER_AUTHORIZATION_FRAMES + MAX_SERVER_CANDIDATES + MAX_COMPLETIONS;
 const MAX_FRAMES_FORWARDED =
   MAX_CLIENT_FRAMES_ACCEPTED + MAX_SERVER_FRAMES_MATCHED;
 const MAX_DURATION_MS =

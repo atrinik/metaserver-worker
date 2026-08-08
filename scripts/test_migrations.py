@@ -8,6 +8,9 @@ INITIAL_MIGRATION = REPOSITORY_ROOT / "migrations" / "0001_initial.sql"
 REQUEST_CONTROL_MIGRATION = (
     REPOSITORY_ROOT / "migrations" / "0002_request_control.sql"
 )
+RENDEZVOUS_GENERATION_MIGRATION = (
+    REPOSITORY_ROOT / "migrations" / "0003_rendezvous_generation.sql"
+)
 
 
 class RequestControlMigrationTests(unittest.TestCase):
@@ -136,6 +139,44 @@ class RequestControlMigrationTests(unittest.TestCase):
         self.assertEqual(
             self.database.execute("SELECT COUNT(*) FROM request_budgets").fetchone(),
             (2,),
+        )
+
+    def test_rendezvous_generation_preserves_populated_listings(self) -> None:
+        populated = self.populate_initial_schema()
+        owner_before = populated["server_owners"][0]
+        server_before = populated["servers"][0]
+        self.database.executescript(
+            REQUEST_CONTROL_MIGRATION.read_text(encoding="utf-8")
+        )
+        self.database.executescript(
+            RENDEZVOUS_GENERATION_MIGRATION.read_text(encoding="utf-8")
+        )
+
+        stored = self.database.execute(
+            "SELECT * FROM servers WHERE server_id = ?", ("1" * 64,)
+        ).fetchone()
+        self.assertEqual(stored, server_before + ("0" * 64,))
+        owner = self.database.execute(
+            "SELECT * FROM server_owners WHERE server_id = ?", ("1" * 64,)
+        ).fetchone()
+        self.assertEqual(owner, owner_before + ("0" * 64,))
+        for table in ("server_owners", "servers"):
+            with self.subTest(table=table), self.assertRaises(
+                sqlite3.IntegrityError
+            ):
+                self.database.execute(
+                    f"UPDATE {table} SET rendezvous_generation = 'invalid'"
+                )
+            self.database.execute(
+                f"UPDATE {table} SET rendezvous_generation = ?", ("d" * 64,)
+            )
+        self.assertEqual(
+            self.database.execute(
+                "SELECT owners.rendezvous_generation, servers.rendezvous_generation "
+                "FROM server_owners AS owners "
+                "JOIN servers USING (server_id)"
+            ).fetchone(),
+            ("d" * 64, "d" * 64),
         )
 
     def test_transitional_token_sources_are_mutually_exclusive(self) -> None:
