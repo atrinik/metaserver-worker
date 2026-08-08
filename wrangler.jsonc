@@ -3,7 +3,7 @@
   "name": "atrinik-metaserver",
   "main": "src/index.ts",
   "compatibility_date": "2026-08-05",
-  "compatibility_flags": ["nodejs_compat"],
+  "compatibility_flags": ["nodejs_compat", "no_web_socket_compression"],
   "workers_dev": false,
   "preview_urls": false,
   "d1_databases": [
@@ -12,6 +12,12 @@
       "database_name": "atrinik-metaserver",
       "database_id": "00000000-0000-0000-0000-000000000000",
       "migrations_dir": "migrations"
+    }
+  ],
+  "analytics_engine_datasets": [
+    {
+      "binding": "RENDEZVOUS_METRICS",
+      "dataset": "atrinik_metaserver_rendezvous"
     }
   ],
   "durable_objects": {
@@ -113,7 +119,10 @@
     "COMPAT_RENDEZVOUS_CLIENT_SOURCE_DAILY_LIMIT": "50",
     "COMPAT_RENDEZVOUS_CLIENT_PAIR_DAILY_LIMIT": "10",
     "COMPAT_RENDEZVOUS_SERVER_SOURCE_DAILY_LIMIT": "50",
-    "COMPAT_RENDEZVOUS_SERVER_DAILY_LIMIT": "50"
+    "COMPAT_RENDEZVOUS_SERVER_DAILY_LIMIT": "50",
+    "RENDEZVOUS_CLIENT_ROLLING_LIMIT": "50",
+    "RENDEZVOUS_ACTIVE_CLIENT_LIMIT": "16",
+    "RENDEZVOUS_CLIENT_SESSION_SECONDS": "15"
   },
   "triggers": {
     "crons": ["17 * * * *"]

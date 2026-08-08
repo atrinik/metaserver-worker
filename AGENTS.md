@@ -8,6 +8,11 @@
 - Preserve strict request-size, identity, address, ticket, certificate-hash,
   rate-limit, and expiry validation. Keep rendezvous state deterministic and
   bounded; test malformed and replayed input at the boundary.
+- Keep the Worker-to-rendezvous-room upgrade contract explicitly versioned and
+  fail closed across deployment skew. Use hibernation attachments only for
+  bounded live-session routing and terminal-teardown state, the room's SQLite
+  ledger for exact rolling admissions and purpose-separated replay tags, and
+  one alarm for expiry; never add candidate persistence or per-session timers.
 - `wrangler.jsonc` deliberately uses declarative `exports` for the SQLite
   Durable Object and a placeholder D1 ID. Do not add legacy Durable Object
   migration configuration alongside `exports`.
@@ -21,8 +26,10 @@
   Cloudflare secrets or ignored local development files, and fail closed when
   key material or a route circuit breaker is invalid.
 - Keep production `workers.dev` and preview URLs disabled so zone WAF/custom
-  domain policy cannot be bypassed. Use an isolated custom hostname, secrets,
-  and state for canaries.
+  domain policy cannot be bypassed. Use an isolated Worker/Durable Object,
+  custom hostname, secrets, D1 database, Analytics Engine dataset, and native
+  Rate Limiting namespace IDs for canaries; reused namespace IDs share
+  counters across Workers.
 - Preserve the curated `request_rejected`, `blacklist_match`, and
   `unexpected_error` diagnostics with their closed, redacted schemas. Do not
   log routine success, expected `404`, rate-limit, or open-circuit traffic; use

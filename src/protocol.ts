@@ -12,12 +12,12 @@ export const DIRECT_CANDIDATE_KINDS = [
   "directory",
 ] as const;
 export type DirectCandidateKind = typeof DIRECT_CANDIDATE_KINDS[number];
-export const SERVER_SIGNAL_CANDIDATE_KINDS = new Set<DirectCandidateKind>([
+export const SERVER_SIGNAL_CANDIDATE_KINDS = Object.freeze([
   "lan",
   "ipv6",
   "mapped",
   "srflx",
-]);
+] as const satisfies readonly DirectCandidateKind[]);
 
 export class RequestError extends Error {
   constructor(

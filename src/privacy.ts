@@ -3,9 +3,10 @@ import { isCanonicalHostname } from "./hostname";
 
 const KEY_ID_PATTERN = /^[A-Za-z0-9_-]{1,32}$/;
 const SECRET_PATTERN = /^[A-Za-z0-9_-]{43}$/;
-const SERVER_ID_PATTERN = /^[0-9a-f]{64}$/;
+const LOWERCASE_HEX_256_PATTERN = /^[0-9a-f]{64}$/;
 
 export const SOURCE_TAG_VERSION = "v1";
+export const RENDEZVOUS_REPLAY_TAG_VERSION = "v1";
 
 export enum SourceTagPurpose {
   GlobalIngress = "global-ingress",
@@ -35,6 +36,18 @@ export interface SourceTagKeyConfiguration {
   previousSecret?: string | undefined;
 }
 
+export interface SourceTagKeyEnvironment {
+  readonly SOURCE_TAG_KEY_CURRENT_ID?: unknown;
+  readonly SOURCE_TAG_KEY_CURRENT?: unknown;
+  readonly SOURCE_TAG_KEY_PREVIOUS_ID?: unknown;
+  readonly SOURCE_TAG_KEY_PREVIOUS?: unknown;
+}
+
+export type RendezvousReplayTags = readonly [
+  current: string,
+  previous: string,
+];
+
 export interface RequestPrivacyContext {
   tag(purpose: UnscopedSourceTagPurpose): Promise<string>;
   tags(purpose: UnscopedSourceTagPurpose): Promise<readonly string[]>;
@@ -58,6 +71,12 @@ interface ImportedSourceTagKey {
   readonly id: string;
   readonly key: CryptoKey;
 }
+
+interface CachedSourceTagKeyRing extends SourceTagKeyConfiguration {
+  readonly ring: SourceTagKeyRing;
+}
+
+let cachedRequiredSourceTagKeyRing: CachedSourceTagKeyRing | undefined;
 
 export class SourceTagConfigurationError extends Error {
   constructor(message: string) {
@@ -209,12 +228,81 @@ export class SourceTagKeyRing {
       },
     });
   }
+
+  /**
+   * Derive current and previous-key aliases for a replay-ledger entry. The
+   * caller receives only opaque tags; the ticket, HMAC keys, and signing
+   * domain remain private to this module.
+   */
+  async rendezvousReplayTags(
+    namespace: string,
+    roomId: string,
+    clientTicket: string,
+  ): Promise<RendezvousReplayTags> {
+    const validatedNamespace = validateNamespace(namespace);
+    validateRendezvousRoomId(roomId);
+    validateRendezvousClientTicket(clientTicket);
+    const [currentKey, previousKey, unexpectedKey] = this.#keys;
+    if (
+      currentKey === undefined ||
+      previousKey === undefined ||
+      unexpectedKey !== undefined
+    ) {
+      throw new SourceTagConfigurationError(
+        "Rendezvous replay tags require exactly two source-tag keys",
+      );
+    }
+
+    const domain = rendezvousReplayTagDomain(
+      validatedNamespace,
+      roomId,
+      clientTicket,
+    );
+    const [current, previous] = await Promise.all([
+      deriveVersionedTag(currentKey, RENDEZVOUS_REPLAY_TAG_VERSION, domain),
+      deriveVersionedTag(previousKey, RENDEZVOUS_REPLAY_TAG_VERSION, domain),
+    ]);
+    const tags: [string, string] = [current, previous];
+    return Object.freeze(tags);
+  }
 }
 
 export function parseSourceTagKeyRing(
   configuration: SourceTagKeyConfiguration,
 ): Promise<SourceTagKeyRing> {
   return SourceTagKeyRing.parse(configuration);
+}
+
+export async function requiredSourceTagKeyRing(
+  environment: SourceTagKeyEnvironment,
+): Promise<SourceTagKeyRing> {
+  if (
+    typeof environment.SOURCE_TAG_KEY_PREVIOUS_ID !== "string" ||
+    typeof environment.SOURCE_TAG_KEY_PREVIOUS !== "string"
+  ) {
+    throw new SourceTagConfigurationError(
+      "Current and previous source-tag keys are both required",
+    );
+  }
+  const configuration: SourceTagKeyConfiguration = {
+    currentKeyId: optionalString(environment.SOURCE_TAG_KEY_CURRENT_ID),
+    currentSecret: optionalString(environment.SOURCE_TAG_KEY_CURRENT),
+    previousKeyId: environment.SOURCE_TAG_KEY_PREVIOUS_ID,
+    previousSecret: environment.SOURCE_TAG_KEY_PREVIOUS,
+  };
+  if (
+    cachedRequiredSourceTagKeyRing !== undefined &&
+    sameSourceTagKeyConfiguration(
+      cachedRequiredSourceTagKeyRing,
+      configuration,
+    )
+  ) {
+    return cachedRequiredSourceTagKeyRing.ring;
+  }
+
+  const ring = await parseSourceTagKeyRing(configuration);
+  cachedRequiredSourceTagKeyRing = { ...configuration, ring };
+  return ring;
 }
 
 export function createRequestPrivacyContext(
@@ -269,6 +357,20 @@ function validateNamespace(value: unknown): string {
   return value;
 }
 
+function optionalString(value: unknown): string | undefined {
+  return typeof value === "string" ? value : undefined;
+}
+
+function sameSourceTagKeyConfiguration(
+  left: SourceTagKeyConfiguration,
+  right: SourceTagKeyConfiguration,
+): boolean {
+  return left.currentKeyId === right.currentKeyId &&
+    left.currentSecret === right.currentSecret &&
+    left.previousKeyId === right.previousKeyId &&
+    left.previousSecret === right.previousSecret;
+}
+
 function decodeSecret(
   value: string | undefined,
   label: string,
@@ -313,12 +415,20 @@ async function deriveTag(
   key: ImportedSourceTagKey,
   domain: string,
 ): Promise<string> {
+  return deriveVersionedTag(key, SOURCE_TAG_VERSION, domain);
+}
+
+async function deriveVersionedTag(
+  key: ImportedSourceTagKey,
+  version: string,
+  domain: string,
+): Promise<string> {
   const digest = await crypto.subtle.sign(
     "HMAC",
     key.key,
     new TextEncoder().encode(domain),
   );
-  return `${SOURCE_TAG_VERSION}.${key.id}.${encodeBase64Url(new Uint8Array(digest))}`;
+  return `${version}.${key.id}.${encodeBase64Url(new Uint8Array(digest))}`;
 }
 
 function sourceTagDomain(
@@ -329,6 +439,14 @@ function sourceTagDomain(
 ): string {
   const base = `atrinik-metaserver\0source-tag\0${SOURCE_TAG_VERSION}\0${namespace}\0${purpose}\0${canonicalAddress}`;
   return serverId === undefined ? base : `${base}\0${serverId}`;
+}
+
+function rendezvousReplayTagDomain(
+  namespace: string,
+  roomId: string,
+  clientTicket: string,
+): string {
+  return `atrinik-metaserver\0rendezvous-ticket-replay-tag\0${RENDEZVOUS_REPLAY_TAG_VERSION}\0${namespace}\0${roomId}\0${clientTicket}`;
 }
 
 function encodeBase64Url(bytes: Uint8Array): string {
@@ -371,7 +489,31 @@ function assertServerScopedPurpose(
 }
 
 function validateServerId(serverId: string): void {
-  if (!SERVER_ID_PATTERN.test(serverId)) {
+  if (!LOWERCASE_HEX_256_PATTERN.test(serverId)) {
     throw new TypeError("Server ID must contain exactly 64 lowercase hex digits");
+  }
+}
+
+function validateRendezvousRoomId(roomId: unknown): asserts roomId is string {
+  if (
+    typeof roomId !== "string" ||
+    !LOWERCASE_HEX_256_PATTERN.test(roomId)
+  ) {
+    throw new TypeError(
+      "Rendezvous room ID must contain exactly 64 lowercase hex digits",
+    );
+  }
+}
+
+function validateRendezvousClientTicket(
+  clientTicket: unknown,
+): asserts clientTicket is string {
+  if (
+    typeof clientTicket !== "string" ||
+    !LOWERCASE_HEX_256_PATTERN.test(clientTicket)
+  ) {
+    throw new TypeError(
+      "Rendezvous client ticket must contain exactly 64 lowercase hex digits",
+    );
   }
 }

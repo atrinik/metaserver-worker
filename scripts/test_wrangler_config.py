@@ -54,6 +54,44 @@ class WranglerSecurityConfigurationTests(unittest.TestCase):
             self.configuration["triggers"]["crons"], ["17 * * * *"]
         )
 
+    def test_rendezvous_runtime_and_metrics_bindings_are_pinned(self) -> None:
+        self.assertEqual(
+            self.configuration["compatibility_flags"],
+            ["nodejs_compat", "no_web_socket_compression"],
+        )
+        self.assertEqual(
+            self.configuration["analytics_engine_datasets"],
+            [
+                {
+                    "binding": "RENDEZVOUS_METRICS",
+                    "dataset": "atrinik_metaserver_rendezvous",
+                }
+            ],
+        )
+        self.assertEqual(
+            self.configuration["durable_objects"]["bindings"],
+            [{"name": "RENDEZVOUS", "class_name": "RendezvousRoom"}],
+        )
+        self.assertEqual(
+            self.configuration["exports"]["RendezvousRoom"],
+            {"type": "durable-object", "storage": "sqlite"},
+        )
+        self.assertEqual(
+            {
+                name: self.configuration["vars"][name]
+                for name in (
+                    "RENDEZVOUS_CLIENT_ROLLING_LIMIT",
+                    "RENDEZVOUS_ACTIVE_CLIENT_LIMIT",
+                    "RENDEZVOUS_CLIENT_SESSION_SECONDS",
+                )
+            },
+            {
+                "RENDEZVOUS_CLIENT_ROLLING_LIMIT": "50",
+                "RENDEZVOUS_ACTIVE_CLIENT_LIMIT": "16",
+                "RENDEZVOUS_CLIENT_SESSION_SECONDS": "15",
+            },
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

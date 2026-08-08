@@ -5,6 +5,7 @@ import {
 } from "./http";
 import type { HttpRateLimitReason } from "./http";
 import {
+  rendezvousPolicyConfiguration,
   requestControlConfiguration,
   RequestControlConfigurationError,
 } from "./config";
@@ -18,14 +19,12 @@ import type { DiagnosticRoute } from "./diagnostics";
 import { cleanupExpiredState } from "./maintenance";
 import {
   createRequestPrivacyContext,
-  parseSourceTagKeyRing,
+  requiredSourceTagKeyRing,
   SourceTagPurpose,
   SourceTagConfigurationError,
 } from "./privacy";
 import type {
   RequestPrivacyContext,
-  SourceTagKeyConfiguration,
-  SourceTagKeyRing,
   UnscopedSourceTagPurpose,
 } from "./privacy";
 import {
@@ -64,12 +63,6 @@ import type {
 
 export { RendezvousRoom };
 
-interface CachedSourceTagKeyRing extends SourceTagKeyConfiguration {
-  readonly ring: SourceTagKeyRing;
-}
-
-let cachedSourceTagKeyRing: CachedSourceTagKeyRing | undefined;
-
 export default {
   async fetch(
     request: Request,
@@ -85,9 +78,16 @@ export default {
       );
       diagnosticRoute = routeDiagnosticName(route);
       enforceRouteCircuitBreaker(route, env, control);
+      if (route.kind === "compatibility-rendezvous") {
+        // Reject malformed room-only policy before source-tag derivation,
+        // native counters, D1 budgets, server lookup, or a Durable Object
+        // invocation. The room parses the same environment independently as
+        // the final authority across a rolling deployment.
+        rendezvousPolicyConfiguration(env);
+      }
 
       const privacy = createRequestPrivacyContext(request, {
-        keys: await sourceTagKeyRing(env),
+        keys: await requiredSourceTagKeyRing(env),
         namespace: control.compatibilityHostname,
       });
       await enforceNativeBurstAliases(
@@ -226,43 +226,6 @@ function routeDiagnosticName(route: CompatibilityRoute): DiagnosticRoute {
         ? "compat-rendezvous-client"
         : "compat-rendezvous-server";
   }
-}
-
-async function sourceTagKeyRing(env: Env): Promise<SourceTagKeyRing> {
-  if (
-    typeof env.SOURCE_TAG_KEY_PREVIOUS_ID !== "string" ||
-    typeof env.SOURCE_TAG_KEY_PREVIOUS !== "string"
-  ) {
-    throw new SourceTagConfigurationError(
-      "Current and previous source-tag keys are both required",
-    );
-  }
-  const configuration: SourceTagKeyConfiguration = {
-    currentKeyId: env.SOURCE_TAG_KEY_CURRENT_ID,
-    currentSecret: env.SOURCE_TAG_KEY_CURRENT,
-    previousKeyId: env.SOURCE_TAG_KEY_PREVIOUS_ID,
-    previousSecret: env.SOURCE_TAG_KEY_PREVIOUS,
-  };
-  if (
-    cachedSourceTagKeyRing !== undefined &&
-    sameSourceTagKeyConfiguration(cachedSourceTagKeyRing, configuration)
-  ) {
-    return cachedSourceTagKeyRing.ring;
-  }
-
-  const ring = await parseSourceTagKeyRing(configuration);
-  cachedSourceTagKeyRing = { ...configuration, ring };
-  return ring;
-}
-
-function sameSourceTagKeyConfiguration(
-  left: SourceTagKeyConfiguration,
-  right: SourceTagKeyConfiguration,
-): boolean {
-  return left.currentKeyId === right.currentKeyId &&
-    left.currentSecret === right.currentSecret &&
-    left.previousKeyId === right.previousKeyId &&
-    left.previousSecret === right.previousSecret;
 }
 
 function enforceRouteCircuitBreaker(
