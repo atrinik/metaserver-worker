@@ -31,14 +31,44 @@ publisher and rendezvous handlers are exposed:
 
 | Authority | Method | Path | Request contract |
 | --- | --- | --- | --- |
-| `publish.meta.atrinik.org` | `POST` | `/v1/servers/{server-id}/publish` | exact `application/json`, no query or content encoding, body required and at most 65,536 bytes |
-| `publish.meta.atrinik.org` | `POST` | `/v1/classic/servers/{server-id}/publish` | exact `application/json`, no query or content encoding, body required and at most 65,536 bytes |
+| `publish.meta.atrinik.org` | `POST` | `/v1/servers/{server-id}/publish` | reserved Game Protocol 1 envelope; fixed retryable `503` until its publisher is enabled |
+| `publish.meta.atrinik.org` | `POST` | `/v1/classic/servers/{server-id}/publish` | exact `application/json`, no query or content encoding, body required and at most 4,096 bytes |
 | `rendezvous.meta.atrinik.org` | `GET` WebSocket | `/v1/servers/{server-id}?role=client\|server` | no body or content headers; exactly one `role` query |
 | `rendezvous.meta.atrinik.org` | `GET` WebSocket | `/v1/classic/servers/{server-id}?role=client\|server` | no body or content headers; exactly one `role` query |
 
 `server-id` is exactly 64 lowercase hexadecimal characters. The publisher
 payload and signature fields are owned by the signed-publishing contract; the
 route classifier does not parse or authenticate them.
+
+### Signed classic publisher
+
+The classic endpoint implements
+`atrinik-classic-publish-v1` from the protocol repository. It requires an
+RFC 9530 `Content-Digest` and an `ecdsa-p256-sha256` HTTP message signature
+made by the private P-256 key paired with the exact DER certificate whose
+SHA-256 fingerprint is `server-id`. The covered components, their order,
+signature parameters, canonical JSON property order, timestamp window, and
+raw P1363 signature encoding are exact protocol bytes rather than values the
+Worker normalizes.
+
+Every attempt carries a nonzero random 128-bit nonce and a canonical unsigned
+64-bit sequence. The per-server Durable Object serializes replay admission,
+generation rotation, and the D1 publication. It commits only a sequence
+strictly greater than the prior one and a nonce unused in the retention
+window. A stale/equal sequence or reused nonce returns `409` with
+`publish_replay` and a non-secret `minimumNextSequence`; the rejected
+request does not rotate the rendezvous token, refresh presence, or enqueue a
+directory revision. A successful unchanged heartbeat refreshes presence and
+rotates the rendezvous generation but does not advance the visible directory
+revision. A visible field change or public/private transition advances it
+exactly once.
+
+Successful responses contain the new server-role rendezvous token and use
+`Cache-Control: no-store`. Replay responses are also `no-store`. Clients
+must not follow redirects for a signed publish because authority and path are
+covered by the signature. The compatibility OTP/update routes remain
+independent during the rollback window and cannot authenticate an identity
+after its first accepted signed publication upgrades that owner.
 
 The two directory authorities are static origins and are never accepted by a
 dynamic Worker:

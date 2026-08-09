@@ -6,7 +6,7 @@ export const RENDEZVOUS_AUTHORITY = "rendezvous.meta.atrinik.org";
 export const COMPATIBILITY_AUTHORITY = "meta.atrinik.org";
 export const CLASSIC_RENDEZVOUS_INVITE_SUBPROTOCOL =
   "atrinik-classic-rendezvous-invite-v1";
-export const PUBLISH_MAX_BODY_BYTES = 65_536;
+export const PUBLISH_MAX_BODY_BYTES = 4_096;
 export const COMPATIBILITY_UPDATE_MAX_BODY_BYTES = 100_000;
 
 const SERVER_ID = /^[0-9a-f]{64}$/;

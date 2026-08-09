@@ -139,10 +139,17 @@ function generationPublicationRequest(
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({
       serverId,
+      directoryProfile: "classic-v1",
+      publisherAuthentication: "compat-key-v1",
+      publisherSequence: null,
+      publisherNonce: null,
+      publisherNonceExpiresAt: null,
+      commitToken: "d".repeat(64),
       expectedGeneration,
       generation,
       tokenHash: "f".repeat(64),
       now: 2_000_000_000,
+      visibilityCutoff: 1_999_985_600,
       name: "Generation test",
       playersCount: 0,
       version: "4.0.0",
@@ -152,6 +159,7 @@ function generationPublicationRequest(
       quicPort: 1_730,
       quicCertSha256: serverId,
       passwordRequired: true,
+      directoryFingerprint: "c".repeat(64),
     }),
   });
 }

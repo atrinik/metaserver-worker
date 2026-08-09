@@ -40,6 +40,10 @@ import {
   sha256Hex,
 } from "./protocol";
 import {
+  authenticateClassicPublish,
+  readBoundedPublishBody,
+} from "./publisher-auth";
+import {
   consumeAliasedFixedWindowBudget,
   consumeFixedWindowBudget,
   enforceNativeBurst,
@@ -56,10 +60,13 @@ import {
 import type { InternalRendezvousPublication } from "./rendezvous-contract";
 import { readPublishedGeneration } from "./rendezvous-publication";
 import {
+  classifyCanonicalRoute,
   classifyCompatibilityRoute,
+  PUBLISH_AUTHORITY,
+  RENDEZVOUS_AUTHORITY,
   routeInputFromRequest,
 } from "./routes";
-import type { CompatibilityRoute } from "./routes";
+import type { CanonicalDynamicRoute, CompatibilityRoute } from "./routes";
 import type {
   DirectoryServerRecord,
   OwnerAuthRecord,
@@ -76,6 +83,38 @@ export default {
   ): Promise<Response> {
     let diagnosticRoute: DiagnosticRoute = "unclassified";
     try {
+      const hostname = new URL(request.url).hostname.toLowerCase();
+      if (hostname === PUBLISH_AUTHORITY || hostname === RENDEZVOUS_AUTHORITY) {
+        const route = classifyCanonicalRoute(routeInputFromRequest(request));
+        diagnosticRoute = canonicalRouteDiagnosticName(route);
+        if (route.kind !== "publish" || route.generation !== "classic") {
+          throw new HttpError("service_disabled", {
+            retryAfterSeconds: 300,
+          });
+        }
+        const control = requestControlConfiguration(env);
+        enforceCircuitBreaker(
+          env.PUBLISH_ENABLED,
+          control.routeDisabledRetrySeconds,
+        );
+        const privacy = createRequestPrivacyContext(request, {
+          keys: await requiredSourceTagKeyRing(env),
+          namespace: PUBLISH_AUTHORITY,
+        });
+        await enforceNativeBurstAliases(
+          env.GLOBAL_RATE_LIMITER,
+          actorAliases(await privacy.tags(SourceTagPurpose.GlobalIngress)),
+          "global",
+        );
+        return await publishClassicServer(
+          request,
+          env,
+          route,
+          control,
+          Math.floor(Date.now() / 1_000),
+        );
+      }
+
       const control = requestControlConfiguration(env);
       const route = classifyCompatibilityRoute(
         routeInputFromRequest(request),
@@ -200,6 +239,7 @@ export default {
         oneTimeTokensAtOrBefore: now,
         rateLimitsBefore: now - 86_400,
         requestBudgetsAtOrBefore: now,
+        publisherNoncesAtOrBefore: now,
       }, {
         batchSize: 1_000,
         maximumBatches: 8,
@@ -215,6 +255,15 @@ export default {
     }
   },
 } satisfies ExportedHandler<Env>;
+
+function canonicalRouteDiagnosticName(
+  route: CanonicalDynamicRoute,
+): DiagnosticRoute {
+  if (route.kind === "publish") {
+    return route.generation === "classic" ? "publish-classic" : "publish-game";
+  }
+  return "unclassified";
+}
 
 function routeDiagnosticName(route: CompatibilityRoute): DiagnosticRoute {
   switch (route.kind) {
@@ -473,7 +522,8 @@ async function updateServer(
   await enforceBlacklist(env, payload.serverId, sourceIp);
 
   let owner = await env.DB.prepare(
-    "SELECT auth_key FROM server_owners WHERE server_id = ?",
+    `SELECT auth_key, authentication_kind
+       FROM server_owners WHERE server_id = ?`,
   )
     .bind(payload.serverId)
     .first<OwnerAuthRecord>();
@@ -516,7 +566,8 @@ async function updateServer(
       .run();
 
     owner = await env.DB.prepare(
-      "SELECT auth_key FROM server_owners WHERE server_id = ?",
+      `SELECT auth_key, authentication_kind
+         FROM server_owners WHERE server_id = ?`,
     )
       .bind(payload.serverId)
       .first<OwnerAuthRecord>();
@@ -539,10 +590,17 @@ async function updateServer(
   );
   const publication = {
     serverId: payload.serverId,
+    directoryProfile: "classic-v1",
+    publisherAuthentication: "compat-key-v1",
+    publisherSequence: null,
+    publisherNonce: null,
+    publisherNonceExpiresAt: null,
+    commitToken: randomToken(),
     expectedGeneration,
     generation: rendezvousGeneration,
     tokenHash: rendezvousTokenHash,
     now,
+    visibilityCutoff: now - control.listingTtlSeconds,
     name: payload.name,
     playersCount: payload.playersCount,
     version: payload.version,
@@ -552,16 +610,19 @@ async function updateServer(
     quicPort: payload.quicPort,
     quicCertSha256: payload.quicCertSha256,
     passwordRequired: payload.passwordRequired,
-  } satisfies InternalRendezvousPublication;
-  const committed = await env.RENDEZVOUS.getByName(payload.serverId).fetch(
-    new Request(INTERNAL_RENDEZVOUS_PUBLISH_URL, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify(publication),
+    directoryFingerprint: await classicDirectoryFingerprint({
+      serverId: payload.serverId,
+      name: payload.name,
+      playersCount: payload.playersCount,
+      version: payload.version,
+      textComment: payload.textComment,
+      quicHost: payload.quicHost ?? "",
+      quicPort: payload.quicPort,
+      quicCertSha256: payload.quicCertSha256,
+      passwordRequired: payload.passwordRequired,
     }),
-  );
+  } satisfies InternalRendezvousPublication;
+  const committed = await commitRendezvousPublication(env, publication);
   if (committed.status !== 204) {
     await committed.body?.cancel();
   }
@@ -583,6 +644,178 @@ async function updateServer(
   );
 }
 
+async function publishClassicServer(
+  request: Request,
+  env: Env,
+  route: Extract<CanonicalDynamicRoute, { kind: "publish" }>,
+  control: RequestControlConfiguration,
+  now: number,
+): Promise<Response> {
+  const body = await readBoundedPublishBody(request, route.maximumBodyBytes);
+  const authenticated = await authenticateClassicPublish(
+    request,
+    body,
+    route.serverId,
+    route.authority,
+    now,
+  );
+
+  await enforceBlacklist(env, route.serverId, sourceAddress(request));
+  await enforceAuthenticatedPublishBudget(
+    env,
+    route.serverId,
+    control.publishServerDaily,
+    now,
+  );
+
+  const payload = authenticated.payload;
+  const rendezvousToken = randomToken();
+  const publication = {
+    serverId: route.serverId,
+    directoryProfile: "classic-v1",
+    publisherAuthentication: "signed-certificate-v1",
+    publisherSequence: authenticated.sequence,
+    publisherNonce: authenticated.nonce,
+    publisherNonceExpiresAt: authenticated.nonceExpiresAt,
+    commitToken: randomToken(),
+    expectedGeneration: await readPublishedGeneration(env.DB, route.serverId),
+    generation: randomToken(),
+    tokenHash: await sha256Hex(rendezvousToken),
+    now,
+    visibilityCutoff: now - control.listingTtlSeconds,
+    name: payload.name,
+    playersCount: payload.playersCount,
+    version: payload.version,
+    textComment: payload.textComment,
+    isPublic: payload.public,
+    quicHost: payload.hostname ?? "",
+    quicPort: payload.port ?? 1,
+    quicCertSha256: route.serverId,
+    passwordRequired: payload.passwordRequired,
+    directoryFingerprint: await classicDirectoryFingerprint({
+      serverId: route.serverId,
+      name: payload.name,
+      playersCount: payload.playersCount,
+      version: payload.version,
+      textComment: payload.textComment,
+      quicHost: payload.hostname ?? "",
+      quicPort: payload.port ?? 1,
+      quicCertSha256: route.serverId,
+      passwordRequired: payload.passwordRequired,
+    }),
+  } satisfies InternalRendezvousPublication;
+  const committed = await commitRendezvousPublication(env, publication);
+  if (committed.status === 409) {
+    const conflict = await readPublishReplayConflict(committed);
+    if (conflict !== null) {
+      return Response.json(
+        { error: conflict },
+        {
+          status: 409,
+          headers: {
+            "Cache-Control": "no-store",
+            "X-Content-Type-Options": "nosniff",
+          },
+        },
+      );
+    }
+    throw new HttpError("service_disabled", { retryAfterSeconds: 5 });
+  }
+  if (committed.status !== 204) {
+    await committed.body?.cancel();
+    throw new Error("Signed publication did not commit");
+  }
+  return Response.json(
+    { status: "ok", rendezvousToken },
+    {
+      headers: {
+        "Cache-Control": "no-store",
+        "X-Content-Type-Options": "nosniff",
+      },
+    },
+  );
+}
+
+async function commitRendezvousPublication(
+  env: Env,
+  publication: InternalRendezvousPublication,
+): Promise<Response> {
+  return env.RENDEZVOUS.getByName(publication.serverId).fetch(
+    new Request(INTERNAL_RENDEZVOUS_PUBLISH_URL, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify(publication),
+    }),
+  );
+}
+
+async function readPublishReplayConflict(
+  response: Response,
+): Promise<{ readonly code: "publish_replay"; readonly minimumNextSequence: string } | null> {
+  let parsed: unknown;
+  try {
+    parsed = await response.json();
+  } catch {
+    return null;
+  }
+  if (
+    typeof parsed !== "object" ||
+    parsed === null ||
+    Array.isArray(parsed) ||
+    !("error" in parsed) ||
+    typeof parsed.error !== "object" ||
+    parsed.error === null ||
+    Array.isArray(parsed.error)
+  ) {
+    return null;
+  }
+  const error = parsed.error as Record<string, unknown>;
+  if (
+    Object.keys(error).length !== 2 ||
+    error.code !== "publish_replay" ||
+    typeof error.minimumNextSequence !== "string" ||
+    !/^[1-9][0-9]{0,19}$/.test(error.minimumNextSequence)
+  ) {
+    return null;
+  }
+  return {
+    code: "publish_replay",
+    minimumNextSequence: error.minimumNextSequence,
+  };
+}
+
+interface ClassicDirectoryFingerprintInput {
+  readonly serverId: string;
+  readonly name: string;
+  readonly playersCount: number;
+  readonly version: string;
+  readonly textComment: string;
+  readonly quicHost: string;
+  readonly quicPort: number;
+  readonly quicCertSha256: string;
+  readonly passwordRequired: boolean;
+}
+
+async function classicDirectoryFingerprint(
+  input: ClassicDirectoryFingerprintInput,
+): Promise<string> {
+  return sha256Hex(JSON.stringify({
+    schema: "atrinik-classic-directory-entry-v1",
+    serverId: input.serverId,
+    name: input.name,
+    playersCount: input.playersCount,
+    version: input.version,
+    textComment: input.textComment,
+    passwordRequired: input.passwordRequired,
+    certificateSha256: input.quicCertSha256,
+    ...(input.quicHost === ""
+      ? {}
+      : { hostname: input.quicHost, port: input.quicPort }),
+  }));
+}
+
 async function enforceAuthenticatedUpdateBudget(
   env: Env,
   serverId: string,
@@ -597,6 +830,26 @@ async function enforceAuthenticatedUpdateBudget(
   await consumeFixedWindowBudget(env.DB, {
     actorKey: serverId,
     scope: "compat-update-server",
+    limit: dailyLimit,
+    now,
+    window: utcDayWindow(now),
+  });
+}
+
+async function enforceAuthenticatedPublishBudget(
+  env: Env,
+  serverId: string,
+  dailyLimit: number,
+  now: number,
+): Promise<void> {
+  await enforceNativeBurst(
+    env.PUBLISH_IDENTITY_RATE_LIMITER,
+    serverId,
+    "publish-server",
+  );
+  await consumeFixedWindowBudget(env.DB, {
+    actorKey: serverId,
+    scope: "publish-server",
     limit: dailyLimit,
     now,
     window: utcDayWindow(now),
@@ -687,6 +940,9 @@ async function authenticateExistingOwner(
   payload: UpdatePayload,
   owner: OwnerAuthRecord,
 ): Promise<void> {
+  if (owner.authentication_kind !== "compat-key-v1") {
+    throw new RequestError("Invalid metaserver key", 401);
+  }
   const expected = await deriveUpdateProof(
     payload.otp,
     owner.auth_key,

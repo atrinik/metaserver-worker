@@ -2,6 +2,7 @@ import {
   normalizeIpAddress,
   SERVER_SIGNAL_CANDIDATE_KINDS,
 } from "./protocol";
+import { isCanonicalHostname } from "./hostname";
 import type { DirectCandidateKind } from "./protocol";
 import type { RendezvousRole } from "./routes";
 
@@ -193,6 +194,9 @@ export type RendezvousSignalParseResult =
 
 const HEX_64 = /^[0-9a-f]{64}$/;
 const HEX_32 = /^[0-9a-f]{32}$/;
+const PUBLISH_SEQUENCE = /^[1-9][0-9]{0,19}$/;
+const UINT64_MAXIMUM = 18_446_744_073_709_551_615n;
+const PUBLISH_NONCE_RETENTION_SECONDS = 86_400;
 const FORBIDDEN_BODY_HEADERS = [
   "Content-Length",
   "Content-Type",
@@ -226,10 +230,19 @@ export interface InternalRendezvousUpgrade {
 
 export interface InternalRendezvousPublication {
   readonly serverId: string;
+  readonly directoryProfile: "classic-v1" | "game-v1";
+  readonly publisherAuthentication:
+    | "compat-key-v1"
+    | "signed-certificate-v1";
+  readonly publisherSequence: string | null;
+  readonly publisherNonce: string | null;
+  readonly publisherNonceExpiresAt: number | null;
+  readonly commitToken: string;
   readonly expectedGeneration: string | null;
   readonly generation: string;
   readonly tokenHash: string;
   readonly now: number;
+  readonly visibilityCutoff: number;
   readonly name: string;
   readonly playersCount: number;
   readonly version: string;
@@ -239,14 +252,22 @@ export interface InternalRendezvousPublication {
   readonly quicPort: number;
   readonly quicCertSha256: string;
   readonly passwordRequired: boolean;
+  readonly directoryFingerprint: string;
 }
 
 const INTERNAL_PUBLICATION_KEYS = [
   "serverId",
+  "directoryProfile",
+  "publisherAuthentication",
+  "publisherSequence",
+  "publisherNonce",
+  "publisherNonceExpiresAt",
+  "commitToken",
   "expectedGeneration",
   "generation",
   "tokenHash",
   "now",
+  "visibilityCutoff",
   "name",
   "playersCount",
   "version",
@@ -256,6 +277,7 @@ const INTERNAL_PUBLICATION_KEYS = [
   "quicPort",
   "quicCertSha256",
   "passwordRequired",
+  "directoryFingerprint",
 ] as const;
 
 /**
@@ -350,6 +372,13 @@ export async function validateInternalRendezvousPublication(
     !hasExactKeys(parsed, INTERNAL_PUBLICATION_KEYS) ||
     typeof parsed.serverId !== "string" ||
     !HEX_64.test(parsed.serverId) ||
+    (parsed.directoryProfile !== "classic-v1" &&
+      parsed.directoryProfile !== "game-v1") ||
+    (parsed.publisherAuthentication !== "compat-key-v1" &&
+      parsed.publisherAuthentication !== "signed-certificate-v1") ||
+    !isPublisherReplayMetadata(parsed) ||
+    typeof parsed.commitToken !== "string" ||
+    !HEX_64.test(parsed.commitToken) ||
     (parsed.expectedGeneration !== null &&
       (typeof parsed.expectedGeneration !== "string" ||
         !HEX_64.test(parsed.expectedGeneration))) ||
@@ -358,26 +387,36 @@ export async function validateInternalRendezvousPublication(
     typeof parsed.tokenHash !== "string" ||
     !HEX_64.test(parsed.tokenHash) ||
     !isBoundedInteger(parsed.now, 0, Number.MAX_SAFE_INTEGER) ||
+    !isBoundedInteger(parsed.visibilityCutoff, 0, parsed.now) ||
     !isBoundedString(parsed.name, 1, 80) ||
     !isBoundedInteger(parsed.playersCount, 0, 4_294_967_295) ||
     !isBoundedString(parsed.version, 1, 32) ||
-    !isBoundedString(parsed.textComment, 1, 256) ||
+    !isBoundedString(parsed.textComment, 0, 256) ||
     typeof parsed.isPublic !== "boolean" ||
     !isCanonicalPublicationHost(parsed.quicHost) ||
     !isPort(parsed.quicPort) ||
     typeof parsed.quicCertSha256 !== "string" ||
     parsed.quicCertSha256 !== parsed.serverId ||
-    typeof parsed.passwordRequired !== "boolean"
+    typeof parsed.passwordRequired !== "boolean" ||
+    typeof parsed.directoryFingerprint !== "string" ||
+    !HEX_64.test(parsed.directoryFingerprint)
   ) {
     return null;
   }
 
   return {
     serverId: parsed.serverId,
+    directoryProfile: parsed.directoryProfile,
+    publisherAuthentication: parsed.publisherAuthentication,
+    publisherSequence: parsed.publisherSequence,
+    publisherNonce: parsed.publisherNonce,
+    publisherNonceExpiresAt: parsed.publisherNonceExpiresAt,
+    commitToken: parsed.commitToken,
     expectedGeneration: parsed.expectedGeneration,
     generation: parsed.generation,
     tokenHash: parsed.tokenHash,
     now: parsed.now,
+    visibilityCutoff: parsed.visibilityCutoff,
     name: parsed.name,
     playersCount: parsed.playersCount,
     version: parsed.version,
@@ -387,6 +426,7 @@ export async function validateInternalRendezvousPublication(
     quicPort: parsed.quicPort,
     quicCertSha256: parsed.quicCertSha256,
     passwordRequired: parsed.passwordRequired,
+    directoryFingerprint: parsed.directoryFingerprint,
   };
 }
 
@@ -647,14 +687,55 @@ function isBoundedString(
 }
 
 function isCanonicalPublicationHost(value: unknown): value is string {
-  if (value === "") {
-    return true;
+  return value === "" || isCanonicalHostname(value);
+}
+
+type ValidPublisherReplayMetadata =
+  | {
+      readonly directoryProfile: "classic-v1";
+      readonly publisherAuthentication: "compat-key-v1";
+      readonly publisherSequence: null;
+      readonly publisherNonce: null;
+      readonly publisherNonceExpiresAt: null;
+    }
+  | {
+      readonly directoryProfile: "classic-v1" | "game-v1";
+      readonly publisherAuthentication: "signed-certificate-v1";
+      readonly publisherSequence: string;
+      readonly publisherNonce: string;
+      readonly publisherNonceExpiresAt: number;
+    };
+
+function isPublisherReplayMetadata(
+  value: Record<string, unknown>,
+): value is Record<string, unknown> & ValidPublisherReplayMetadata {
+  if (value.publisherAuthentication === "compat-key-v1") {
+    return value.directoryProfile === "classic-v1" &&
+      value.publisherSequence === null &&
+      value.publisherNonce === null &&
+      value.publisherNonceExpiresAt === null;
   }
-  if (typeof value !== "string" || value.length > 64) {
+  if (
+    value.publisherAuthentication !== "signed-certificate-v1" ||
+    typeof value.publisherSequence !== "string" ||
+    !PUBLISH_SEQUENCE.test(value.publisherSequence) ||
+    typeof value.publisherNonce !== "string" ||
+    !HEX_32.test(value.publisherNonce) ||
+    /^0+$/.test(value.publisherNonce) ||
+    !isBoundedInteger(value.now, 0, Number.MAX_SAFE_INTEGER) ||
+    !isBoundedInteger(
+      value.publisherNonceExpiresAt,
+      value.now,
+      Number.MAX_SAFE_INTEGER,
+    ) ||
+    value.publisherNonceExpiresAt !==
+      value.now + PUBLISH_NONCE_RETENTION_SECONDS
+  ) {
     return false;
   }
   try {
-    return normalizeIpAddress(value) === value;
+    const sequence = BigInt(value.publisherSequence);
+    return sequence > 0n && sequence <= UINT64_MAXIMUM;
   } catch {
     return false;
   }

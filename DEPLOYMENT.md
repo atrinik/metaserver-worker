@@ -105,6 +105,20 @@ would rotate a token without rotating either generation, so pause updates for
 the migration and deploy this Worker contract at 100%; do not operate mixed
 writers or roll back to the older publisher while updates are enabled.
 
+Migration `0004_signed_publisher.sql` must be applied before enabling
+`PUBLISH_ENABLED`. It adds the owner authentication discriminator, visible
+directory fingerprint, unsigned-64 sequence/nonce replay ledger, and
+profile-separated directory revision outbox. Apply the migration with
+publishing paused, deploy with the canonical publisher disabled (the checked-in
+configuration deliberately ships `PUBLISH_ENABLED=disabled`), verify the
+new constraints and initial revision rows, then enable the classic publisher
+only after the canonical route is attached to
+`publish.meta.atrinik.org`. Keep compatibility updates available for the
+rollback window, but never run an older Worker after an owner has upgraded to
+certificate authentication: compatibility authentication intentionally fails
+closed for that identity. Do not enable the reserved Game Protocol 1
+publisher until its producer implements the same frozen contract.
+
 ## Canary
 
 1. Create a separate canary D1 database and apply all ordered migrations to it.
@@ -512,8 +526,11 @@ python3 scripts/admin_sql.py blacklist-remove '1111*'
 ```
 
 An owner reset deletes both ownership and listing rows for exactly one
-64-character server identity. The server must also reset its local metaserver
-authentication key before re-registering. Treat this as destructive recovery.
+64-character server identity. Verify certificate-holder authorization first,
+then preserve the matching local publisher identity and sequence state or
+deliberately rotate both before re-registering. Never reset only the sequence:
+doing so can replay values retained by another deployment or backup. Treat this
+as destructive recovery.
 
 ## Roll back
 

@@ -32,8 +32,10 @@ def command_reset_owner(args: argparse.Namespace) -> str:
     server_id = server_identity(args.server_id)
     quoted = sql_string(server_id)
     return (
-        "-- Destructive recovery: the server must delete its local metaserver key "
-        "before re-registering this identity.\n"
+        "-- Destructive recovery: verify certificate-holder authorization and "
+        "preserve or deliberately rotate the matching local publisher identity "
+        "and sequence state before re-registering this identity.\n"
+        f"DELETE FROM publisher_replay WHERE server_id = {quoted};\n"
         f"DELETE FROM servers WHERE server_id = {quoted};\n"
         f"DELETE FROM server_owners WHERE server_id = {quoted};\n"
     )

@@ -37,6 +37,19 @@ class AdminSqlTest(unittest.TestCase):
                        1, 1, '192.0.2.1', 1730, ?, 0, ?)""",
             (server_id, server_id, "f" * 64),
         )
+        connection.execute(
+            """INSERT INTO publisher_replay
+                   (server_id, profile, last_sequence, last_nonce,
+                    commit_token, updated_at)
+               VALUES (?, 'classic-v1', '1', ?, ?, 1)""",
+            (server_id, "1" * 32, server_id),
+        )
+        connection.execute(
+            """INSERT INTO publisher_nonces
+                   (server_id, profile, nonce, expires_at, created_at)
+               VALUES (?, 'classic-v1', ?, 86400, 0)""",
+            (server_id, "1" * 32),
+        )
 
     def test_reset_owner_executes_and_is_scoped_to_one_identity(self) -> None:
         connection = self.database()
@@ -48,7 +61,12 @@ class AdminSqlTest(unittest.TestCase):
         )
         connection.executescript(sql)
 
-        for table in ("servers", "server_owners"):
+        for table in (
+            "servers",
+            "server_owners",
+            "publisher_replay",
+            "publisher_nonces",
+        ):
             identities = connection.execute(
                 f"SELECT server_id FROM {table} ORDER BY server_id",
             ).fetchall()

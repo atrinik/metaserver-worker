@@ -17,6 +17,7 @@ export const REQUEST_CONTROL_POLICY_MAXIMUMS = Object.freeze({
   compatibilityOtpDaily: 48,
   compatibilityUpdateSourceDaily: 48,
   compatibilityUpdateServerDaily: 48,
+  publishServerDaily: 48,
   compatibilityRendezvousClientSourceDaily: 50,
   compatibilityRendezvousClientPairDaily: 10,
   compatibilityRendezvousServerSourceDaily: 50,
@@ -46,6 +47,7 @@ export interface RequestControlConfigurationInput {
   readonly COMPAT_OTP_DAILY_LIMIT?: string;
   readonly COMPAT_UPDATE_SOURCE_DAILY_LIMIT?: string;
   readonly COMPAT_UPDATE_SERVER_DAILY_LIMIT?: string;
+  readonly PUBLISH_SERVER_DAILY_LIMIT?: string;
   readonly COMPAT_RENDEZVOUS_CLIENT_SOURCE_DAILY_LIMIT?: string;
   readonly COMPAT_RENDEZVOUS_CLIENT_PAIR_DAILY_LIMIT?: string;
   readonly COMPAT_RENDEZVOUS_SERVER_SOURCE_DAILY_LIMIT?: string;
@@ -63,6 +65,7 @@ export interface RequestControlConfiguration {
   readonly compatibilityOtpDaily: number;
   readonly compatibilityUpdateSourceDaily: number;
   readonly compatibilityUpdateServerDaily: number;
+  readonly publishServerDaily: number;
   readonly compatibilityRendezvousClientSourceDaily: number;
   readonly compatibilityRendezvousClientPairDaily: number;
   readonly compatibilityRendezvousServerSourceDaily: number;
@@ -174,6 +177,12 @@ export function requestControlConfiguration(
       "COMPAT_UPDATE_SERVER_DAILY_LIMIT",
       1,
       REQUEST_CONTROL_POLICY_MAXIMUMS.compatibilityUpdateServerDaily,
+    ),
+    publishServerDaily: strictInteger(
+      input.PUBLISH_SERVER_DAILY_LIMIT,
+      "PUBLISH_SERVER_DAILY_LIMIT",
+      1,
+      REQUEST_CONTROL_POLICY_MAXIMUMS.publishServerDaily,
     ),
     compatibilityRendezvousClientSourceDaily: strictInteger(
       input.COMPAT_RENDEZVOUS_CLIENT_SOURCE_DAILY_LIMIT,

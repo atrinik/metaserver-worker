@@ -29,6 +29,7 @@ const valid: RequestControlConfigurationInput &
   COMPAT_OTP_DAILY_LIMIT: "48",
   COMPAT_UPDATE_SOURCE_DAILY_LIMIT: "48",
   COMPAT_UPDATE_SERVER_DAILY_LIMIT: "48",
+  PUBLISH_SERVER_DAILY_LIMIT: "48",
   COMPAT_RENDEZVOUS_CLIENT_SOURCE_DAILY_LIMIT: "50",
   COMPAT_RENDEZVOUS_CLIENT_PAIR_DAILY_LIMIT: "10",
   COMPAT_RENDEZVOUS_SERVER_SOURCE_DAILY_LIMIT: "50",
@@ -90,15 +91,18 @@ describe("request-control configuration", () => {
       routeDisabledRetrySeconds: 300,
       compatibilityStatusDaily: 100,
       compatibilityDirectoryDaily: 100,
+      publishServerDaily: 48,
       compatibilityRendezvousClientPairDaily: 10,
       compatibilityRendezvousServerSourceDaily: 50,
     });
     expect(requestControlConfiguration({
       ...valid,
       COMPAT_DIRECTORY_DAILY_LIMIT: "8",
+      PUBLISH_SERVER_DAILY_LIMIT: "8",
       COMPAT_RENDEZVOUS_SERVER_SOURCE_DAILY_LIMIT: "8",
     })).toMatchObject({
       compatibilityDirectoryDaily: 8,
+      publishServerDaily: 8,
       compatibilityRendezvousServerSourceDaily: 8,
     });
   });
@@ -130,6 +134,7 @@ describe("request-control configuration", () => {
       ["COMPAT_OTP_DAILY_LIMIT", "0"],
       ["COMPAT_UPDATE_SOURCE_DAILY_LIMIT", " 48"],
       ["COMPAT_UPDATE_SERVER_DAILY_LIMIT", "48.0"],
+      ["PUBLISH_SERVER_DAILY_LIMIT", "49"],
       ["COMPAT_RENDEZVOUS_CLIENT_SOURCE_DAILY_LIMIT", "+50"],
       ["COMPAT_RENDEZVOUS_CLIENT_PAIR_DAILY_LIMIT", "11"],
       ["COMPAT_RENDEZVOUS_SERVER_SOURCE_DAILY_LIMIT", "51"],

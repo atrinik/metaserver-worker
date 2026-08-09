@@ -11,6 +11,9 @@ REQUEST_CONTROL_MIGRATION = (
 RENDEZVOUS_GENERATION_MIGRATION = (
     REPOSITORY_ROOT / "migrations" / "0003_rendezvous_generation.sql"
 )
+SIGNED_PUBLISHER_MIGRATION = (
+    REPOSITORY_ROOT / "migrations" / "0004_signed_publisher.sql"
+)
 
 
 class RequestControlMigrationTests(unittest.TestCase):
@@ -293,6 +296,77 @@ class RequestControlMigrationTests(unittest.TestCase):
             ).fetchall(),
             [("maximum",), ("minimum",)],
         )
+
+    def test_signed_publisher_schema_preserves_rows_and_bounds_replay(self) -> None:
+        populated = self.populate_initial_schema()
+        self.database.executescript(
+            REQUEST_CONTROL_MIGRATION.read_text(encoding="utf-8")
+        )
+        self.database.executescript(
+            RENDEZVOUS_GENERATION_MIGRATION.read_text(encoding="utf-8")
+        )
+        self.database.executescript(
+            SIGNED_PUBLISHER_MIGRATION.read_text(encoding="utf-8")
+        )
+
+        owner = self.database.execute(
+            "SELECT authentication_kind FROM server_owners WHERE server_id = ?",
+            ("1" * 64,),
+        ).fetchone()
+        fingerprint = self.database.execute(
+            "SELECT directory_fingerprint FROM servers WHERE server_id = ?",
+            ("1" * 64,),
+        ).fetchone()
+        self.assertEqual(owner, ("compat-key-v1",))
+        self.assertEqual(fingerprint, ("0" * 64,))
+        self.assertEqual(
+            self.database.execute(
+                "SELECT profile, revision, updated_at "
+                "FROM directory_revisions ORDER BY profile"
+            ).fetchall(),
+            [("classic-v1", 0, 0), ("game-v1", 0, 0)],
+        )
+
+        insert_replay = """
+            INSERT INTO publisher_replay
+                (server_id, profile, last_sequence, last_nonce,
+                 commit_token, updated_at)
+            VALUES (?, 'classic-v1', ?, ?, ?, 1)
+        """
+        nonce = "1" * 32
+        self.database.execute(
+            insert_replay,
+            ("2" * 64, "18446744073709551615", nonce, "3" * 64),
+        )
+        self.database.execute(
+            "INSERT INTO publisher_nonces "
+            "(server_id, profile, nonce, expires_at, created_at) "
+            "VALUES (?, 'classic-v1', ?, 86400, 0)",
+            ("2" * 64, nonce),
+        )
+        for label, sequence in (
+            ("zero", "0"),
+            ("leading-zero", "01"),
+            ("overflow", "18446744073709551616"),
+            ("nondigit", "1x"),
+        ):
+            with self.subTest(sequence=label), self.assertRaises(
+                sqlite3.IntegrityError
+            ):
+                self.database.execute(
+                    insert_replay,
+                    ("4" * 64, sequence, "2" * 32, "5" * 64),
+                )
+
+        self.assertEqual(populated["server_owners"][0][0], "1" * 64)
+        with self.assertRaises(sqlite3.IntegrityError):
+            self.database.execute(
+                "UPDATE server_owners SET authentication_kind = 'unknown'"
+            )
+        with self.assertRaises(sqlite3.IntegrityError):
+            self.database.execute(
+                "UPDATE servers SET directory_fingerprint = 'invalid'"
+            )
 
 
 if __name__ == "__main__":
