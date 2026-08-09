@@ -164,6 +164,51 @@ breakers are in [docs/rate-limits.md](docs/rate-limits.md); the reviewed
 edge-policy specification and deployment gate are in
 [docs/edge-policy.md](docs/edge-policy.md).
 
+## Static directory publication
+
+Visible directory mutations and expiry advance one profile-scoped D1 revision
+and coalesce its durable outbox to the newest unpublished revision. Accepted
+heartbeats refresh presence without changing the revision. A private,
+profile-named `DirectoryBuilder` Durable Object receives an O(1), alarm-only
+nudge after a visible commit and reconciles durable truth every five minutes
+and by alarm; a Queue is deliberately unnecessary. It
+serializes R2 work, persists bounded retry intent, coalesces revisions, and
+publishes all immutable generation objects before compare-and-swap replacement
+of the four public aliases (`index.html`, `index.xml`, `index.json`, and
+`manifest.json`). D1 acknowledges an outbox revision only after all aliases are
+read back with the exact generation, checksum, size, content type, cache
+metadata, and privacy-safe custom metadata.
+
+`manifest.json` is private coordination metadata even though it lives in the
+alias bucket; the later static-host allowlist must deny public access to it.
+R2 cannot replace the four objects atomically. Readers can therefore observe
+cross-format skew while aliases converge, even though D1 never acknowledges a
+partial cohort. The static-host rollout must resolve that mismatch with the
+Game Protocol 1 atomic-alias contract before DNS attachment.
+
+Freshness rollover may create a newer artifact generation for an unchanged D1
+revision. This is required so empty and heartbeat-only directories do not
+expire; the heartbeat itself still creates no build or R2 write. Each body is
+valid for at most four hours and no later than the earliest backing listing
+expiry. The latest eight D1-acknowledged immutable four-object cohorts are
+retained as a bounded rollback window; a durable paginated sweep deletes at
+most 64 unacknowledged, older, or partial private objects per reconciliation,
+so a pre-existing backlog converges without an unbounded scan. The outbox holds
+at most one row per profile during an R2 outage.
+
+Public expiry is rounded down to a conservative 15-minute boundary, and
+backing presence expires on the same boundary. An artifact therefore never
+reveals the exact server heartbeat timestamp and never outlives its backing
+row.
+
+The Game Protocol 1 renderer consumes the frozen protocol schema and fixtures,
+but non-empty Game publication remains fail-closed until the authoritative Game
+publisher model lands. Classic protocol 4 is specified in
+[docs/classic-directory-v4.md](docs/classic-directory-v4.md). Neither static
+authority is attached by this foundation change: direct-R2 cache, headers,
+CORS, CSP, purge/removal behavior, custom-domain isolation, and consumer
+cutover remain explicit service-split canary gates.
+
 ## Observability
 
 Automatic invocation logs are explicitly disabled. Deliberate custom logs are
@@ -182,9 +227,13 @@ write of an anonymous, bounded terminal summary to the
 `atrinik_metaserver_rendezvous` Analytics Engine dataset; no room-admission
 rejection or individual frame creates a custom point or room log. The schema
 and sampling-correct query are documented in
-[docs/privacy.md](docs/privacy.md). Directory hosts that are later moved to
-direct static storage should be monitored as storage/cache traffic rather than
-Worker traffic.
+[docs/privacy.md](docs/privacy.md). Each private builder reconciliation or
+alarm also emits one best-effort fixed-schema point to
+`atrinik_metaserver_directory`; the O(1) nudge emits no point. The schema
+contains only profile, closed build/retention outcomes, count, bounded duration,
+and a bounded cleanup count. Static client reads
+are direct R2/cache traffic and create neither a Worker invocation nor a custom
+builder point.
 
 ## License
 

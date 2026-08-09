@@ -30,6 +30,10 @@ learns a selected peer endpoint.
    separately from renderable public directory metadata. Private publication
    retains that verifier and generation but no listing or endpoint, and neither
    rendezvous role is admitted without a fresh public directory row.
+6. Static R2 artifacts contain only the bounded public directory model plus a
+   profile, schema, generation, freshness timestamps, body sizes, and keyed-by-
+   content SHA-256 values. The D1 revision and outbox are builder-private and
+   never appear in a body, object key, HTTP metadata, or custom metadata.
 
 Neither an unkeyed IP digest nor a raw IP is an acceptable durable actor key.
 IPv4 is enumerable, and a single cross-purpose pseudonym would unnecessarily
@@ -126,6 +130,41 @@ request-scoped address, but the address and matching pattern/reason are not
 written or logged. Move operational address/CIDR rules to Cloudflare WAF before
 removing that compatibility lookup and its raw patterns.
 
+## Static artifact state
+
+Migration `0006_directory_artifacts.sql` adds one fixed checkpoint and commit
+marker per profile plus at most eight acknowledged generation/timestamp rows.
+The checkpoint and rollback ledger store only revision/generation/timestamps,
+representation sizes, and SHA-256 values; they store no listing field or actor
+identifier. The D1 outbox coalesces transactionally to at most its newest row
+per profile because old revisions cannot reconstruct historical models.
+
+The profile-named builder Durable Object stores one version number, a
+generation high-water mark, an opaque bounded cleanup cursor, and at most one
+pending build containing a random local token, revision, generation, freshness
+times, and model digest. It never
+stores a server ID, listing field, hostname, source tag, credential, ticket, or
+candidate. The private R2 bucket uses only
+`v1/<profile>/<generation>/<fixed-name>` keys. The public buckets contain only
+the fixed `index.html`, `index.xml`, `index.json`, and `manifest.json` aliases.
+Custom metadata is an exact allowlist of schema, profile, format, generation,
+freshness, model/body digest, and desired strong ETag.
+
+The latest eight D1-acknowledged four-object immutable cohorts form the
+application rollback window. A durable paginated sweep removes at most 64
+unacknowledged, older, or partial system-shaped objects per reconciliation,
+and a separate 30-day lifecycle rule on only the private bucket's exact `v1/`
+prefix provides defense in depth. The application never selects unknown keys
+or malformed generation paths for deletion; the prefix lifecycle may expire
+them after 30 days.
+No lifecycle rule applies to a public alias bucket. Direct custom domains and
+public development URLs remain disabled until the cache/header/removal canary.
+
+The public `expiresAt`/`expires-at` value is conservatively rounded down to a
+15-minute boundary, and membership expires on the same boundary. It is not the
+exact `last_seen + TTL` value and cannot be subtracted to recover an exact
+heartbeat timestamp.
+
 ## Logs and metrics
 
 Automatic invocation logs are disabled. The deliberately retained custom
@@ -185,6 +224,42 @@ free-form close reason in the schema. The at-most-one-point-per-accepted-session
 rule also bounds this custom stream to at most 50 terminal-summary attempts per
 server in a rolling day. Zone `101` counts remain the authority for
 finding a missing best-effort terminal point.
+
+The production `DIRECTORY_METRICS` target is
+`atrinik_metaserver_directory`; a canary uses only
+`atrinik_metaserver_directory_canary`. Each scheduled or alarm reconciliation
+attempts one best-effort `directory-build-v1` point:
+
+| Field | Meaning |
+| --- | --- |
+| `index1` | `directory-build-v1:<profile>:<outcome>:<cleanup>` |
+| `blob1` | schema name `directory-build-v1` |
+| `blob2` | `classic-v1` or `game-v1` |
+| `blob3` | `current`, `published`, or `failed` |
+| `blob4` | retention cleanup `current` or `deferred` |
+| `double1` | invocation count, always `1` |
+| `double2` | duration in milliseconds, `0..300,000` |
+| `double3` | immutable objects deleted, `0..64` |
+
+There is no revision, generation, server count, server identity, hostname,
+object key, digest, exception, or R2/D1 value in this schema. A metrics write
+failure cannot change builder state or publication outcome. Static client reads
+bypass the Worker and create no custom metric point.
+
+```sql
+SELECT
+  blob2 AS profile,
+  blob3 AS outcome,
+  blob4 AS cleanup,
+  SUM(_sample_interval * double1) AS reconciliations,
+  SUM(_sample_interval * double2) AS total_duration_ms,
+  SUM(_sample_interval * double3) AS deleted_objects
+FROM atrinik_metaserver_directory
+WHERE blob1 = 'directory-build-v1'
+  AND timestamp > NOW() - INTERVAL '1' DAY
+GROUP BY blob2, blob3, blob4
+ORDER BY profile, outcome, cleanup
+```
 
 [Analytics Engine can sample rows](https://developers.cloudflare.com/analytics/analytics-engine/sampling/).
 This is the canonical sampling-weighted operational query; change only the time

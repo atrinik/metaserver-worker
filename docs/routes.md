@@ -77,6 +77,27 @@ dynamic Worker:
   Game Protocol 1.
 - `classic.meta.atrinik.org`: the same four paths for the classic generation.
 
+The current implementation builds those fixed aliases in isolated R2 buckets,
+but this foundation release does not attach either authority. Game JSON/XML
+follow the protocol-owned `atrinik-directory-v1` fixtures; non-empty Game
+publication remains disabled. Classic JSON/XML follow
+[classic directory protocol 4](classic-directory-v4.md). The later service
+split must prove exact GET/HEAD/path/query handling, validator and
+`Last-Modified` semantics, CSP/nosniff/CORS/root redirect rules, cache expiry,
+public-to-private and endpoint-removal bounds, `r2.dev` disablement, and zero
+Worker invocations before DNS cutover.
+The internal `/manifest.json` alias is builder coordination and is not a public
+route; the static-host edge allowlist must deny it and every other path.
+
+R2 has no multi-object transaction. Although the builder writes every
+immutable object first, compare-and-swap replaces the fixed aliases one at a
+time, so an external reader could observe bounded cross-format generation skew
+during an update or after a partial R2 failure. The D1 checkpoint advances only
+after the complete cohort converges, but that does not make public reads
+atomic. The service-split work must reconcile this behavior with the Game
+Protocol 1 atomic-alias wording, or provide an equivalent zero-Worker atomic
+selection mechanism, before either authority is attached.
+
 Compatibility updates are always represented addresslessly: their numeric
 endpoint input is discarded, and the Worker never fills an address from the
 HTTPS request source. Signed publication can opt into a canonical DNS hostname

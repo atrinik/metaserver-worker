@@ -60,16 +60,19 @@ not a Cloudflare deployment.
 
    Preserve the resolved binding summary in the reviewed release record. In
    particular, record that production `RENDEZVOUS_METRICS` resolves to
-   `atrinik_metaserver_rendezvous`; this is the comparison baseline for the
+   `atrinik_metaserver_rendezvous` and `DIRECTORY_METRICS` resolves to
+   `atrinik_metaserver_directory`; these are the comparison baselines for the
    canary dry run below.
 
 8. Confirm the production artifact has `workers_dev: false` and
    `preview_urls: false`. Review and stage
    [docs/edge-policy.md](docs/edge-policy.md); no production custom domain may
    be attached before its raw-target gate and rate-policy decision pass review.
-9. Confirm the artifact has the `RENDEZVOUS_METRICS` Analytics Engine binding
-   targeting only `atrinik_metaserver_rendezvous`, the SQLite `RENDEZVOUS`
-   Durable Object binding, and all three rendezvous policy variables. The
+9. Confirm the artifact has the `RENDEZVOUS_METRICS` and `DIRECTORY_METRICS`
+   Analytics Engine bindings targeting only their reviewed datasets, the
+   SQLite `RENDEZVOUS` and `DIRECTORY_BUILDER` Durable Object bindings, and the
+   three isolated R2 bucket bindings. Confirm all three rendezvous policy
+   variables. The
    production values are
    `RENDEZVOUS_CLIENT_ROLLING_LIMIT=50`,
    `RENDEZVOUS_ACTIVE_CLIENT_LIMIT=16`, and
@@ -142,19 +145,70 @@ canaries below pass. A rollback to an older Worker must keep both publication
 circuits disabled; an older Worker cannot write the canonical tables and must
 never receive mixed update traffic.
 
+Migration `0006_directory_artifacts.sql` adds the two profile publication
+checkpoints, bounded commit markers, and the outbox coalescing trigger. Apply it
+before deploying `DirectoryBuilder`. The migration preserves directory
+revisions and retains only the greatest pre-existing outbox revision per
+profile because the authoritative model is current-state, not an historical
+event stream. Confirm both checkpoints begin at unpublished generation zero,
+both outboxes contain at most one row, and no public artifact or metadata
+contains the private D1 revision.
+
+Before the first builder deployment, provision three environment-isolated R2
+buckets: one private immutable-generation bucket and one public alias-only
+bucket for each profile. Keep `r2.dev` disabled. Do not attach either custom
+domain yet. Provision the `atrinik_metaserver_directory` Analytics Engine
+dataset and a new SQLite `DirectoryBuilder` namespace; canary and production
+must not share any of these resources. The checked-in names are illustrative,
+not authorization to create or reuse live resources.
+
+Configure one defense-in-depth lifecycle rule on the private generation bucket
+for the exact `v1/` prefix with a 30-day object age. The application normally
+retains the latest eight D1-acknowledged four-object cohorts and uses a durable
+paginated sweep to delete at most 64 unacknowledged, older, or partial objects
+per reconciliation; the longer lifecycle limit bounds storage after a
+prolonged application outage without serving historical data.
+No lifecycle rule may target either public alias bucket. Record and verify the
+bucket, prefix, and 30-day value through the R2 lifecycle API before rollout.
+Alert when a profile outbox remains non-empty for more than ten
+minutes, a checkpoint approaches expiry without a later generation, aliases
+diverge, or retention cleanup stops converging.
+
+Static aliases use absolute expiry rather than a relative `max-age`, preventing
+a late cache fill from remaining fresh after the timestamp embedded in its
+body. R2 overwrite does not itself purge custom-domain cache entries, and
+direct R2 cannot supply the application-selected SHA ETag, generated-time
+`Last-Modified`, CSP, nosniff, or root redirect contract. Therefore this
+foundation deployment MUST remain domainless. The service-split canary must
+resolve the exact header/validator contract and the public-to-private/endpoint
+removal cache bound before either static hostname is attached. A rollback may
+rerender the current authoritative model with a reviewed renderer; it must not
+blindly restore an older generation that could re-expose removed data.
+
+The edge path allowlist must deny the builder's `/manifest.json` coordination
+alias. R2 also has no multi-object transaction: fixed aliases are replaced
+sequentially, so readers can observe mixed generations until the cohort
+converges even though D1 never acknowledges it early. Do not attach a hostname
+until the canary proves an accepted resolution of the Game Protocol 1
+atomic-alias requirement (or a reviewed protocol amendment); final cohort
+readback is recovery evidence, not public-read atomicity.
+
 ## Canary
 
 1. Create a separate canary D1 database and apply all ordered migrations to it.
-   Provision a separate Analytics Engine dataset named
-   `atrinik_metaserver_rendezvous_canary`. The code-facing binding remains
-   `RENDEZVOUS_METRICS`, but its canary resource target must never be the
-   production `atrinik_metaserver_rendezvous` dataset. Give every one of the
+   Provision separate Analytics Engine datasets named
+   `atrinik_metaserver_rendezvous_canary` and
+   `atrinik_metaserver_directory_canary`. The code-facing bindings remain
+   `RENDEZVOUS_METRICS` and `DIRECTORY_METRICS`, but neither canary resource may
+   target its production dataset. Give every one of the
    seven native Rate Limiting bindings a canary-only `namespace_id` that is
    distinct from every production ID and from the other canary IDs. Cloudflare
    deliberately shares counters between Workers that reuse a namespace ID, so
    copied IDs would couple canary traffic to production. The separate canary
-   Worker must also own its declarative `RendezvousRoom` namespace; do not bind
-   it to the production script/class namespace.
+   Worker must also own its declarative `RendezvousRoom` and
+   `DirectoryBuilder` namespaces; do not bind either to a production
+   script/class namespace. Provision three empty canary-only R2 buckets and
+   keep their public development URLs disabled.
 2. Before any canary deployment, run a local-only dry run with the exact canary
    target and configuration:
 
@@ -385,46 +439,54 @@ never receive mixed update traffic.
     room-admission rejection or individual frame created a custom point/log or
     exposed an identifier, ticket, credential, candidate, exception, or
     free-form close reason.
+19. With both R2 public development URLs and custom domains still disabled,
+    invoke the canary five-minute schedule and inspect only the canary buckets.
+    Confirm both profiles publish coherent empty generation 1 aliases, the D1
+    checkpoint acknowledges the same generation, and no public artifact or
+    custom metadata contains a D1 revision, source address, credential,
+    candidate, ticket, or private row. Publish one controlled classic listing
+    and confirm generation 2 changes all aliases; send an accepted unchanged
+    heartbeat and confirm it extends presence without a revision, generation,
+    or R2 write. Then withdraw an explicit endpoint and make the listing
+    private; each visible transition must create one later coherent generation
+    and the private server must be absent. Exercise exact-cutoff expiry,
+    deletion of one alias, a failed D1 checkpoint, and a later retry. Confirm
+    recovery never assigns different bytes to one generation and outbox depth
+    remains at most one per profile.
+20. Query only `atrinik_metaserver_directory_canary`. Confirm each scheduled or
+    alarm builder invocation attempts one `directory-build-v1` point with only
+    profile, closed build/retention outcomes, count, bounded duration, and a
+    bounded cleanup count. Force one build
+    failure and confirm no server ID, generation, revision, hostname, digest,
+    object key, exception, or D1 value appears. Verify the private immutable
+    bucket converges to the latest eight D1-acknowledged cohorts, removes
+    abandoned complete and partial cohorts across multiple pages, and that
+    no retention operation targets the public alias buckets. This is builder
+    evidence only; do not attach a custom domain or claim cache/header
+    acceptance until the later service-split canary resolves the explicit
+    direct-R2 blockers above.
 
-## Stage and inspect the production version
+## Review the exports lifecycle deployment
 
 The production configuration selected above must contain the approved D1,
-Durable Object, Analytics Engine, rate-limit, hostname, key-ID, route,
-observability,
-`workers_dev: false`, and `preview_urls: false` settings. Do not fall back to
-the checked-in placeholder configuration or an implicit account. Upload the
-initial current and previous secrets together with that exact configuration:
+Durable Object, R2, Analytics Engine, rate-limit, hostname, key-ID, route,
+schedule, observability, `workers_dev: false`, and `preview_urls: false`
+settings. Do not fall back to the checked-in placeholder configuration or an
+implicit account.
 
-```sh
-npx wrangler versions upload --strict \
-  --config "$ATRINIK_PROD_CONFIG" \
-  --name "$ATRINIK_PROD_WORKER" \
-  --profile "$ATRINIK_CF_PROFILE" \
-  --tag rendezvous-work-budgets \
-  --secrets-file "$ATRINIK_SOURCE_TAG_SECRETS"
-```
+This release adds `DirectoryBuilder` through Wrangler's declarative `exports`
+lifecycle. Cloudflare applies that lifecycle only through `wrangler deploy`:
+`wrangler versions upload` fails when `exports` is present, gradual deployment
+is unsupported, and rollback cannot cross the lifecycle change. The local dry
+run reviews the bundle and bindings but cannot stage or prove namespace
+creation. Treat the cutover as an atomic 100% control-plane change. Both
+publisher circuits must remain disabled and both static domains detached so
+the new builder can be verified without public writes or reads.
 
-That single upload stages the current and previous encrypted secrets with the
-exact code, variables, and bindings that consume them; it does not send the new
-version traffic. Record the returned version ID as `REVIEWED_VERSION_ID`, then
-inspect it before deployment:
-
-```sh
-readonly REVIEWED_VERSION_ID=replace-with-returned-version-id
-
-npx wrangler versions view "$REVIEWED_VERSION_ID" --json \
-  --config "$ATRINIK_PROD_CONFIG" \
-  --name "$ATRINIK_PROD_WORKER" \
-  --profile "$ATRINIK_CF_PROFILE"
-```
-
-Confirm the version's Worker name, code/tag, compatibility settings (including
-`no_web_socket_compression`), variables, D1, Durable Object, Analytics Engine,
-and rate-limit bindings, and both secret binding names against the release
-record. Secret values must not be printed or copied into the record. Stop if
-any binding or ID is absent, unexpected, or belongs to another environment.
-Delete the protected secret file according to the credential-handling policy
-only after the inspected version no longer needs to be recreated.
+Review the exact config, source revision, dry-run binding summary, protected
+two-secret file, D1 bookmark/migration plan, and forward-fix package before
+entering the cutover. Secret values must not be printed or copied into the
+release record.
 
 ## Cut over
 
@@ -432,26 +494,37 @@ only after the inspected version no longer needs to be recreated.
    fresh D1 recovery bookmark.
 2. Apply only pending ordered migrations to the approved production D1
    database and verify the migration ledger.
-3. Deploy only `REVIEWED_VERSION_ID`, whose production bindings and two secret
-   names were inspected above; do not use `wrangler deploy`, which would upload
-   a different unreviewed version:
+3. Deploy the reviewed source and exact production configuration directly to
+   100%, atomically applying the `exports` lifecycle and both encrypted source
+   tag secrets:
 
    ```sh
-   npx wrangler versions deploy "$REVIEWED_VERSION_ID@100%" \
+   npx wrangler deploy --strict \
      --config "$ATRINIK_PROD_CONFIG" \
      --name "$ATRINIK_PROD_WORKER" \
-     --profile "$ATRINIK_CF_PROFILE"
+     --profile "$ATRINIK_CF_PROFILE" \
+     --tag static-directory-foundation \
+     --secrets-file "$ATRINIK_SOURCE_TAG_SECRETS"
    npx wrangler deployments list --json \
      --config "$ATRINIK_PROD_CONFIG" \
      --name "$ATRINIK_PROD_WORKER" \
      --profile "$ATRINIK_CF_PROFILE"
    ```
 
-   Verify the active deployment references that exact version and has no public
-   alternate hostname. Version inspection does not replace separate review of
-   the Custom Domain, route, and scheduled-trigger state.
+   Capture and review Wrangler's `Durable Object exports reconciliation`; it
+   must preserve `RendezvousRoom` and create exactly `DirectoryBuilder`, with
+   no deletion, rename, or transfer. Record the active version ID, inspect it
+   with `wrangler versions view`, and verify its source tag, compatibility
+   settings, variables, D1, R2, Durable Object, Analytics Engine, rate-limit,
+   schedule, and both secret binding names. Verify there is no public alternate
+   hostname. Delete the protected secret file only after the forward-fix
+   package no longer needs it.
 
-   Assign this security-contract release directly to 100%. Do not gradually
+   The lifecycle deployment is already assigned directly to 100%. Do not
+   attempt a gradual deployment or rollback to a pre-`DirectoryBuilder`
+   version; Cloudflare does not support either across an `exports` lifecycle
+   change. A failed post-deploy canary must disable circuits and fix forward
+   with the same live exports map. Do not gradually
    split public rendezvous traffic between the former unversioned broadcast
    room and the ticket-scoped room. The private Worker-to-Durable-Object upgrade
    uses a new versioned URL/header contract: a new Worker reaching an old room,
@@ -461,8 +534,8 @@ only after the inspected version no longer needs to be recreated.
    propagation; it must never be bypassed with an unversioned fallback.
 4. Install and re-read the reviewed zone edge rules. Confirm the reviewed
    production configuration contains only the intended Custom Domain/route and
-   the exact hourly cron `17 * * * *`. A version upload does not apply either
-   trigger class. `wrangler triggers deploy` changes both trigger classes
+   the exact crons `*/5 * * * *` and `17 * * * *`. Version inspection does not
+   prove the external trigger state. `wrangler triggers deploy` changes both trigger classes
    immediately; before running it, compare the resolved production config with
    the current route/domain and Cron Trigger API state and stop on any
    unreviewed hostname or schedule. Only after both the canary and edge-policy
@@ -477,7 +550,9 @@ only after the inspected version no longer needs to be recreated.
 
    Re-read the Cloudflare route/Custom Domain and Cron Trigger state through the
    dashboard or API; verify only `meta.atrinik.org` reaches this Worker and the
-   active schedule is exactly `17 * * * *` before resuming publishing.
+   active schedules are exactly `*/5 * * * *` and `17 * * * *` before resuming
+   publishing. The builder buckets remain domainless in this foundation
+   release.
 5. Use only a classic server/client/libatrinik release that supports
    addressless directory entries, ticket-scoped QUIC rendezvous, bounded
    publisher cadence, and `Retry-After`. Older publishers remain paused rather
@@ -508,26 +583,25 @@ only after the inspected version no longer needs to be recreated.
 Treat key IDs, secret values, code, and hostname namespace as one versioned
 contract. For an `A/Z` to `B/A` rotation, update the reviewed Wrangler IDs to
 `B/A` and prepare a protected, ignored secrets file containing the corresponding
-current `B` and previous `A` values. Upload them together as one version:
+current `B` and previous `A` values. Run the bidirectional test against the
+isolated canary Worker first, then deploy the reviewed pair atomically to 100%
+with the unchanged live `exports` map:
 
 ```sh
-npx wrangler versions upload --strict --tag source-tag-b-a \
+npx wrangler deploy --strict --tag source-tag-b-a \
   --config "$ATRINIK_PROD_CONFIG" \
   --name "$ATRINIK_PROD_WORKER" \
   --profile "$ATRINIK_CF_PROFILE" \
   --secrets-file /secure/path/source-tags-b-a.env
 ```
 
-Before assigning traffic, pass the returned rotation version ID to
-`wrangler versions view` with the same explicit `--config`, `--name`, and
-`--profile` arguments used above. Verify the `B/A` IDs, both secret binding
-names, hostname namespace, and every non-secret binding against the release
-record. Use `npx wrangler versions deploy` with those same target arguments to
-split traffic only after the bidirectional canary in step 10 passes, then move
-the reviewed version to 100%. Do not use sequential `wrangler secret put`
-operations: each command can create an intermediate version whose IDs and
-secrets do not form the reviewed pair. Never roll traffic between disjoint
-pairs.
+Inspect the active rotation version with the same explicit `--config`, `--name`,
+and `--profile` arguments. Verify the `B/A` IDs, both secret binding names,
+hostname namespace, unchanged exports reconciliation, and every non-secret
+binding against the release record. Do not use sequential `wrangler secret
+put` operations: each command can create an intermediate version whose IDs and
+secrets do not form the reviewed pair. The production rotation is atomic at
+100%; do not attempt a gradual split or roll traffic between disjoint pairs.
 
 An `A/Z` rendezvous writer stores both aliases in the admission row; `B/A`
 detects the same ticket through shared `A` even after server reconnect and room
