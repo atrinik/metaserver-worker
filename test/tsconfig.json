@@ -3,10 +3,14 @@
   "compilerOptions": {
     "resolveJsonModule": true,
     "types": [
+      "../worker-runtime.d.ts",
       "../worker-configuration.d.ts",
+      "../publisher-worker-configuration.d.ts",
+      "../rendezvous-worker-configuration.d.ts",
       "@cloudflare/vitest-pool-workers/types",
       "vitest/globals"
     ]
   },
-  "include": ["../src/**/*.ts", "./**/*.ts"]
+  "include": ["../src/**/*.ts", "./**/*.ts"],
+  "exclude": []
 }

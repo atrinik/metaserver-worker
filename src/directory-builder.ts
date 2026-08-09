@@ -1,5 +1,7 @@
 import { DurableObject } from "cloudflare:workers";
 
+import type { CoreEnv } from "./core-env";
+
 import {
   DIRECTORY_ARTIFACT_POLICY_MAXIMUMS,
   directoryArtifactConfiguration,
@@ -134,11 +136,11 @@ class DirectoryObjectConflictError extends Error {}
  * D1 revisions/outbox remain authoritative; the object only persists bounded
  * retry intent across R2 awaits, alarms, hibernation, and deployment.
  */
-export class DirectoryBuilder extends DurableObject<Env> {
+export class DirectoryBuilder extends DurableObject<CoreEnv> {
   private readonly initialized: Promise<void>;
   private operationTail: Promise<void> = Promise.resolve();
 
-  constructor(ctx: DurableObjectState, env: Env) {
+  constructor(ctx: DurableObjectState, env: CoreEnv) {
     super(ctx, env);
     this.initialized = ctx.blockConcurrencyWhile(async () => {
       directoryProfile(ctx.id.name);

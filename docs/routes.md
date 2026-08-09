@@ -36,6 +36,17 @@ publisher and rendezvous handlers are exposed:
 | `rendezvous.meta.atrinik.org` | `GET` WebSocket | `/v1/servers/{server-id}?role=client\|server` | no body or content headers; exactly one `role` query |
 | `rendezvous.meta.atrinik.org` | `GET` WebSocket | `/v1/classic/servers/{server-id}?role=client\|server` | no body or content headers; exactly one `role` query |
 
+The checked-in service-boundary foundation does not attach those authorities.
+The publisher and rendezvous edge Workers start domainless and disabled. Each
+edge rejects every other host/method/path/query/body shape, derives only the
+route-specific pseudonymous admission aliases, strips raw request-source and
+browser headers, and calls one named core Worker entrypoint. The core parses the
+same canonical contract again before authentication, D1, or Durable Object
+work. The Service Binding is private routing and is not an alias, redirect, or
+additional public URL. Compatibility routes remain on the core until the
+coordinated consumer cutover; static directory authorities never pass through
+any Worker.
+
 `server-id` is exactly 64 lowercase hexadecimal characters. The publisher
 payload and signature fields are owned by the signed-publishing contract; the
 route classifier does not parse or authenticate them.
@@ -241,7 +252,7 @@ HTTP fragments are never transmitted to the server. Canary this with real edge
 requests and do not treat a unit fixture as evidence of pre-normalization
 enforcement.
 
-Publisher and rendezvous deployments will each repeat the automatic
-invocation-log opt-out and receive only their required bindings. A route test
-does not by itself prove binding isolation; each deployable Wrangler
-configuration must also generate types and pass a dry run.
+Publisher and rendezvous deployments each repeat the automatic invocation-log
+opt-out and receive only their required bindings. A route test does not by
+itself prove binding isolation; each deployable Wrangler configuration also
+generates isolated types and passes a distinct dry run.

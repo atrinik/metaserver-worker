@@ -2,7 +2,12 @@
   "extends": "./tsconfig.json",
   "compilerOptions": {
     "lib": ["ES2022"],
-    "types": ["node", "./worker-configuration.d.ts"]
+    "types": [
+      "node",
+      "vitest/globals",
+      "./worker-runtime.d.ts",
+      "./worker-configuration.d.ts"
+    ]
   },
-  "include": ["vitest.config.ts"]
+  "include": ["vitest.config.ts", "vitest.service.config.ts", "test-node/**/*.ts"]
 }

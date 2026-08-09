@@ -33,6 +33,17 @@ The final hostname and route contract is documented in
 `publish.meta.atrinik.org` and `rendezvous.meta.atrinik.org` are isolated
 dynamic services.
 
+The dynamic split is implemented as three deployable Workers. The existing
+`atrinik-metaserver` core remains the sole owner of D1, R2, schedules, and the
+`RendezvousRoom` and `DirectoryBuilder` Durable Objects. Domainless
+`atrinik-metaserver-publisher` and `atrinik-metaserver-rendezvous` edge Workers
+own only their route-specific breakers, source-tag secrets, and native burst
+bindings, then call one named core entrypoint through a Service Binding. The
+edges derive pseudonymous aliases and reconstruct a fixed allowlisted request,
+so the raw request address and browser state never cross into the state owner;
+the core independently validates the complete route and protocol again. The
+checked-in edge configurations have no public route and both circuits disabled.
+
 There is deliberately no TCP directory, DNS ownership proof, game-port probe,
 or game relay. A server is owned by the SHA-256 identity derived from its
 persistent QUIC certificate. The temporary publisher retains the classic
@@ -76,20 +87,23 @@ npm ci
 npm run check
 ```
 
-`npm run check` runs TypeScript checks, the local Workers runtime tests, the
-Python SQL-generator tests, and a Wrangler dry-run. Generated output belongs in
-`dist/` and must not be edited.
+`npm run check` generates and verifies isolated core/publisher/rendezvous
+Wrangler declarations, runs every TypeScript project, the local Workers runtime
+tests, the Python administrative tests, and one distinct Wrangler dry run per
+deployable. Generated declarations and `dist/` output are untracked and must
+not be edited.
 
-The checked-in Wrangler file has a placeholder D1 ID and no production route.
-Supply reviewed production bindings during the deployment procedure. Never run
-remote migrations, deployments, or owner resets merely to validate a change.
+The checked-in core Wrangler file has a placeholder D1 ID. All three checked-in
+Wrangler files have no production route. Supply reviewed production bindings
+during the provider-first deployment procedure. Never run remote migrations,
+deployments, or owner resets merely to validate a change.
 
 The Worker requires current and previous source-tag HMAC secrets. Their names
-are declared in `wrangler.jsonc`; values belong only in Cloudflare encrypted
-secrets or ignored `.dev.vars` files. See [docs/privacy.md](docs/privacy.md) for
-rotation and retention rules. Consecutive key pairs must overlap for strictly
-more than the 24-hour rendezvous replay window. Do not substitute plaintext
-Wrangler variables.
+are declared in all three dynamic-service configurations; values belong only in
+Cloudflare encrypted secrets or ignored `.dev.vars` files. See
+[docs/privacy.md](docs/privacy.md) for rotation and retention rules.
+Consecutive key pairs must overlap for strictly more than the 24-hour
+rendezvous replay window. Do not substitute plaintext Wrangler variables.
 
 ## Storage
 

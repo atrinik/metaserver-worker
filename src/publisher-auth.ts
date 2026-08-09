@@ -65,7 +65,7 @@ export async function authenticateClassicPublish(
   }
 
   const sequence = requireHeader(request.headers, "Atrinik-Publish-Sequence");
-  if (!validSequence(sequence)) {
+  if (!isValidPublisherSequence(sequence)) {
     throw new HttpError("unauthorized");
   }
   const signedServerId = requireHeader(request.headers, "Atrinik-Server-ID");
@@ -330,7 +330,7 @@ function parseClassicPublishPayload(body: Uint8Array): ClassicPublishPayload {
   return Object.freeze(payload);
 }
 
-function validSequence(value: string): boolean {
+export function isValidPublisherSequence(value: string): boolean {
   if (!SEQUENCE.test(value)) {
     return false;
   }

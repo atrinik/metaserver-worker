@@ -5,6 +5,7 @@ import {
   INTERNAL_RENDEZVOUS_ROLE_HEADER,
   INTERNAL_RENDEZVOUS_URL,
 } from "./rendezvous-contract";
+import type { CoreEnv } from "./core-env";
 import { constantTimeEqual, sha256Hex } from "./protocol";
 import { CLASSIC_RENDEZVOUS_INVITE_SUBPROTOCOL } from "./routes";
 import type { RendezvousRole } from "./routes";
@@ -54,7 +55,7 @@ export interface RendezvousAdmissionHooks {
 
 export async function openRendezvous(
   request: Request,
-  env: Env,
+  env: CoreEnv,
   serverId: string,
   role: RendezvousRole,
   hooks: RendezvousAdmissionHooks,

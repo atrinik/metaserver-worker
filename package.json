@@ -5,14 +5,23 @@
   "type": "module",
   "scripts": {
     "deploy": "wrangler deploy",
+    "deploy:publisher": "wrangler deploy -c wrangler.publisher.jsonc",
+    "deploy:rendezvous": "wrangler deploy -c wrangler.rendezvous.jsonc",
     "dev": "wrangler dev",
+    "dev:publisher": "wrangler dev -c wrangler.publisher.jsonc -c wrangler.jsonc",
+    "dev:rendezvous": "wrangler dev -c wrangler.rendezvous.jsonc -c wrangler.jsonc",
     "test": "vitest run",
     "test:watch": "vitest",
     "test:admin": "python3 -m unittest discover -s scripts -p 'test_*.py'",
-    "check": "npm run types:check && npm run typecheck && npm test && npm run test:admin && npm run deploy:dry-run",
-    "deploy:dry-run": "wrangler deploy --dry-run --outdir dist",
-    "types:check": "wrangler types",
-    "typecheck": "tsc --noEmit && tsc -p test/tsconfig.json --noEmit && tsc -p tsconfig.node.json --noEmit"
+    "check": "npm run types:generate && npm run types:check && npm run typecheck && npm test && npm run test:admin && npm run deploy:dry-run && npm run test:service-bindings",
+    "test:service-bindings": "vitest run --config vitest.service.config.ts",
+    "deploy:dry-run": "npm run deploy:dry-run:core && npm run deploy:dry-run:publisher && npm run deploy:dry-run:rendezvous",
+    "deploy:dry-run:core": "wrangler deploy --dry-run --outdir dist/core -c wrangler.jsonc",
+    "deploy:dry-run:publisher": "wrangler deploy --dry-run --outdir dist/publisher -c wrangler.publisher.jsonc",
+    "deploy:dry-run:rendezvous": "wrangler deploy --dry-run --outdir dist/rendezvous -c wrangler.rendezvous.jsonc",
+    "types:generate": "wrangler types worker-runtime.d.ts --include-env=false -c wrangler.jsonc && wrangler types worker-configuration.d.ts --include-runtime=false -c wrangler.jsonc && wrangler types publisher-worker-configuration.d.ts --env-interface PublisherEnv --include-runtime=false -c wrangler.publisher.jsonc -c wrangler.jsonc && wrangler types rendezvous-worker-configuration.d.ts --env-interface RendezvousEnv --include-runtime=false -c wrangler.rendezvous.jsonc -c wrangler.jsonc",
+    "types:check": "wrangler types worker-runtime.d.ts --include-env=false --check -c wrangler.jsonc && wrangler types worker-configuration.d.ts --include-runtime=false --check -c wrangler.jsonc && wrangler types publisher-worker-configuration.d.ts --env-interface PublisherEnv --include-runtime=false --check -c wrangler.publisher.jsonc -c wrangler.jsonc && wrangler types rendezvous-worker-configuration.d.ts --env-interface RendezvousEnv --include-runtime=false --check -c wrangler.rendezvous.jsonc -c wrangler.jsonc",
+    "typecheck": "tsc --noEmit && tsc -p tsconfig.publisher.json --noEmit && tsc -p tsconfig.rendezvous.json --noEmit && tsc -p test/tsconfig.json --noEmit && tsc -p tsconfig.node.json --noEmit"
   },
   "engines": {
     "node": ">=20"

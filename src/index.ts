@@ -1,15 +1,23 @@
+import { WorkerEntrypoint } from "cloudflare:workers";
+
+import type { CoreEnv } from "./core-env";
+
 import {
   enforceCircuitBreaker,
   HttpError,
   httpErrorResponse,
 } from "./http";
-import type { HttpRateLimitReason } from "./http";
 import {
+  publisherCoordinatorConfiguration,
+  rendezvousCoordinatorConfiguration,
   rendezvousPolicyConfiguration,
   requestControlConfiguration,
-  RequestControlConfigurationError,
 } from "./config";
-import type { RequestControlConfiguration } from "./config";
+import type {
+  PublisherCoordinatorConfiguration,
+  RendezvousCoordinatorConfiguration,
+  RequestControlConfiguration,
+} from "./config";
 import {
   DIRECTORY_PROFILES,
   expireDirectoryEntries,
@@ -18,10 +26,14 @@ import { DirectoryBuilder } from "./directory-builder";
 import { isCanonicalHostname } from "./hostname";
 import {
   logBlacklistMatch,
-  logRequestRejected,
   logUnexpectedError,
 } from "./diagnostics";
 import type { DiagnosticRoute } from "./diagnostics";
+import {
+  consumePublisherCoordinatorRequest,
+  consumeRendezvousAdmissionAliases,
+} from "./internal-service";
+import type { RendezvousAdmissionAliases } from "./internal-service";
 import { cleanupExpiredState } from "./maintenance";
 import {
   createRequestPrivacyContext,
@@ -47,6 +59,7 @@ import {
 } from "./protocol";
 import {
   authenticateClassicPublish,
+  isValidPublisherSequence,
   readBoundedPublishBody,
 } from "./publisher-auth";
 import {
@@ -54,11 +67,10 @@ import {
   consumeFixedWindowBudget,
   enforceNativeBurst,
   enforceNativeBurstAliases,
-  RequestBudgetExceeded,
-  RequestControlUnavailable,
   utcDayWindow,
 } from "./rate-limit";
 import type { RequestBudgetScope } from "./rate-limit";
+import { handleRequestError } from "./request-errors";
 import { openRendezvous, RendezvousRoom } from "./rendezvous";
 import {
   INTERNAL_DIRECTORY_CHANGED_HEADER,
@@ -68,6 +80,8 @@ import type { InternalRendezvousPublication } from "./rendezvous-contract";
 import { readPublishedGeneration } from "./rendezvous-publication";
 import {
   classifyCanonicalRoute,
+  classifyCanonicalPublisherRoute,
+  classifyCanonicalRendezvousRoute,
   classifyCompatibilityRoute,
   PUBLISH_AUTHORITY,
   RENDEZVOUS_AUTHORITY,
@@ -82,10 +96,24 @@ import type {
 
 export { DirectoryBuilder, RendezvousRoom };
 
+/** Narrow internal publisher capability for the domainless publisher edge. */
+export class PublisherCoordinator extends WorkerEntrypoint<CoreEnv> {
+  async fetch(request: Request): Promise<Response> {
+    return handlePublisherCoordinatorRequest(request, this.env, this.ctx);
+  }
+}
+
+/** Narrow internal rendezvous capability for the domainless WebSocket edge. */
+export class RendezvousCoordinator extends WorkerEntrypoint<CoreEnv> {
+  async fetch(request: Request): Promise<Response> {
+    return handleRendezvousCoordinatorRequest(request, this.env);
+  }
+}
+
 export default {
   async fetch(
     request: Request,
-    env: Env,
+    env: CoreEnv,
     ctx: ExecutionContext,
   ): Promise<Response> {
     let diagnosticRoute: DiagnosticRoute = "unclassified";
@@ -94,33 +122,7 @@ export default {
       if (hostname === PUBLISH_AUTHORITY || hostname === RENDEZVOUS_AUTHORITY) {
         const route = classifyCanonicalRoute(routeInputFromRequest(request));
         diagnosticRoute = canonicalRouteDiagnosticName(route);
-        if (route.kind !== "publish" || route.generation !== "classic") {
-          throw new HttpError("service_disabled", {
-            retryAfterSeconds: 300,
-          });
-        }
-        const control = requestControlConfiguration(env);
-        enforceCircuitBreaker(
-          env.PUBLISH_ENABLED,
-          control.routeDisabledRetrySeconds,
-        );
-        const privacy = createRequestPrivacyContext(request, {
-          keys: await requiredSourceTagKeyRing(env),
-          namespace: PUBLISH_AUTHORITY,
-        });
-        await enforceNativeBurstAliases(
-          env.GLOBAL_RATE_LIMITER,
-          actorAliases(await privacy.tags(SourceTagPurpose.GlobalIngress)),
-          "global",
-        );
-        return await publishClassicServer(
-          request,
-          env,
-          route,
-          control,
-          Math.floor(Date.now() / 1_000),
-          ctx,
-        );
+        throw new HttpError("misdirected_request");
       }
 
       const control = requestControlConfiguration(env);
@@ -236,7 +238,7 @@ export default {
 
   async scheduled(
     controller: ScheduledController,
-    env: Env,
+    env: CoreEnv,
     _ctx: ExecutionContext,
   ): Promise<void> {
     try {
@@ -278,7 +280,76 @@ export default {
       throw new Error("Scheduled maintenance failed");
     }
   },
-} satisfies ExportedHandler<Env>;
+} satisfies ExportedHandler<CoreEnv>;
+
+export async function handlePublisherCoordinatorRequest(
+  request: Request,
+  env: CoreEnv,
+  ctx: ExecutionContext,
+): Promise<Response> {
+  let diagnosticRoute: DiagnosticRoute = "unclassified";
+  try {
+    const internal = consumePublisherCoordinatorRequest(request);
+    const control = publisherCoordinatorConfiguration(env);
+    const route = classifyCanonicalPublisherRoute(
+      routeInputFromRequest(internal),
+      control.authority,
+    );
+    diagnosticRoute = canonicalRouteDiagnosticName(route);
+    if (route.generation !== "classic") {
+      throw new HttpError("service_disabled", { retryAfterSeconds: 300 });
+    }
+    enforceCircuitBreaker(
+      env.PUBLISH_ENABLED,
+      control.routeDisabledRetrySeconds,
+    );
+    return await publishClassicServer(
+      internal,
+      env,
+      route,
+      control,
+      Math.floor(Date.now() / 1_000),
+      ctx,
+    );
+  } catch (error) {
+    return handleRequestError(error, diagnosticRoute, "coordinator");
+  }
+}
+
+export async function handleRendezvousCoordinatorRequest(
+  request: Request,
+  env: CoreEnv,
+): Promise<Response> {
+  let diagnosticRoute: DiagnosticRoute = "unclassified";
+  try {
+    const control = rendezvousCoordinatorConfiguration(env);
+    const route = classifyCanonicalRendezvousRoute(
+      routeInputFromRequest(request),
+      control.authority,
+    );
+    diagnosticRoute = canonicalRouteDiagnosticName(route);
+    if (route.generation !== "classic") {
+      throw new HttpError("service_disabled", { retryAfterSeconds: 300 });
+    }
+    enforceCircuitBreaker(
+      env.RENDEZVOUS_ENABLED,
+      control.routeDisabledRetrySeconds,
+    );
+    // The room independently parses this same policy across rolling deploys.
+    rendezvousPolicyConfiguration(env);
+    const internal = consumeRendezvousAdmissionAliases(request, route.role);
+    return await openCanonicalRendezvous(
+      internal.request,
+      env,
+      route,
+      internal.aliases,
+      control,
+      Math.floor(Date.now() / 1_000),
+    );
+  } catch (error) {
+    return handleRequestError(error, diagnosticRoute, "coordinator");
+  }
+}
 
 function canonicalRouteDiagnosticName(
   route: CanonicalDynamicRoute,
@@ -286,7 +357,7 @@ function canonicalRouteDiagnosticName(
   if (route.kind === "publish") {
     return route.generation === "classic" ? "publish-classic" : "publish-game";
   }
-  return "unclassified";
+  return route.role === "client" ? "rendezvous-client" : "rendezvous-server";
 }
 
 function routeDiagnosticName(route: CompatibilityRoute): DiagnosticRoute {
@@ -308,7 +379,7 @@ function routeDiagnosticName(route: CompatibilityRoute): DiagnosticRoute {
 
 function enforceRouteCircuitBreaker(
   route: CompatibilityRoute,
-  env: Env,
+  env: CoreEnv,
   control: RequestControlConfiguration,
 ): void {
   switch (route.kind) {
@@ -346,7 +417,7 @@ function enforceRouteCircuitBreaker(
 }
 
 async function enforceAnonymousBudget(
-  env: Env,
+  env: CoreEnv,
   privacy: RequestPrivacyContext,
   purpose: UnscopedSourceTagPurpose,
   limiter: RateLimit,
@@ -376,9 +447,67 @@ function actorAliases(
   return previous === undefined ? [current] : [current, previous];
 }
 
+async function openCanonicalRendezvous(
+  request: Request,
+  env: CoreEnv,
+  route: Extract<CanonicalDynamicRoute, { kind: "rendezvous" }>,
+  aliases: RendezvousAdmissionAliases,
+  control: RendezvousCoordinatorConfiguration,
+  now: number,
+): Promise<Response> {
+  if (route.role === "client") {
+    if (aliases.pair === null) {
+      throw new Error("Client rendezvous omitted pair admission aliases");
+    }
+    await consumeAliasedFixedWindowBudget(env.DB, {
+      actorKeys: aliases.source,
+      scope: "rendezvous-client-source",
+      limit: control.compatibilityRendezvousClientSourceDaily,
+      now,
+      window: utcDayWindow(now),
+    });
+    await consumeAliasedFixedWindowBudget(env.DB, {
+      actorKeys: aliases.pair,
+      scope: "rendezvous-client-source-server",
+      limit: control.compatibilityRendezvousClientPairDaily,
+      now,
+      window: utcDayWindow(now),
+    });
+  } else {
+    if (aliases.pair !== null) {
+      throw new Error("Server rendezvous included pair admission aliases");
+    }
+    await consumeAliasedFixedWindowBudget(env.DB, {
+      actorKeys: aliases.source,
+      scope: "rendezvous-server-source",
+      limit: control.compatibilityRendezvousServerSourceDaily,
+      now,
+      window: utcDayWindow(now),
+    });
+  }
+
+  return openRendezvous(request, env, route.serverId, route.role, {
+    listingTtlSeconds: control.listingTtlSeconds,
+    async serverAuthenticated(): Promise<void> {
+      await enforceNativeBurst(
+        env.RENDEZVOUS_SERVER_RATE_LIMITER,
+        route.serverId,
+        "rendezvous-server",
+      );
+      await consumeFixedWindowBudget(env.DB, {
+        actorKey: route.serverId,
+        scope: "rendezvous-server",
+        limit: control.compatibilityRendezvousServerDaily,
+        now,
+        window: utcDayWindow(now),
+      });
+    },
+  });
+}
+
 async function openCompatibilityRendezvous(
   request: Request,
-  env: Env,
+  env: CoreEnv,
   privacy: RequestPrivacyContext,
   route: Extract<CompatibilityRoute, { kind: "compatibility-rendezvous" }>,
   control: RequestControlConfiguration,
@@ -436,7 +565,7 @@ async function openCompatibilityRendezvous(
 }
 
 async function listDirectServers(
-  env: Env,
+  env: CoreEnv,
   now: number,
   listingTtlSeconds: number,
 ): Promise<Response> {
@@ -501,7 +630,7 @@ async function listDirectServers(
 }
 
 async function issueOtp(
-  env: Env,
+  env: CoreEnv,
   privacy: RequestPrivacyContext,
   otpTtlSeconds: number,
   now: number,
@@ -547,7 +676,7 @@ async function issueOtp(
 
 async function updateServer(
   request: Request,
-  env: Env,
+  env: CoreEnv,
   privacy: RequestPrivacyContext,
   control: RequestControlConfiguration,
   maximumBodyBytes: number,
@@ -773,9 +902,9 @@ async function rollbackProvisionalOwner(
 
 async function publishClassicServer(
   request: Request,
-  env: Env,
+  env: CoreEnv,
   route: Extract<CanonicalDynamicRoute, { kind: "publish" }>,
-  control: RequestControlConfiguration,
+  control: PublisherCoordinatorConfiguration,
   now: number,
   ctx: ExecutionContext,
 ): Promise<Response> {
@@ -788,13 +917,13 @@ async function publishClassicServer(
     now,
   );
 
-  await enforceBlacklist(env, route.serverId, sourceAddress(request));
   await enforceAuthenticatedPublishBudget(
     env,
     route.serverId,
     control.publishServerDaily,
     now,
   );
+  await enforceServerIdentityBlacklist(env, route.serverId);
 
   const payload = authenticated.payload;
   const rendezvousToken = randomToken();
@@ -870,7 +999,7 @@ async function publishClassicServer(
 }
 
 async function commitRendezvousPublication(
-  env: Env,
+  env: CoreEnv,
   publication: InternalRendezvousPublication,
 ): Promise<Response> {
   return env.RENDEZVOUS.getByName(publication.serverId).fetch(
@@ -885,7 +1014,7 @@ async function commitRendezvousPublication(
 }
 
 function scheduleDirectoryReconciliation(
-  env: Env,
+  env: CoreEnv,
   ctx: ExecutionContext,
   response: Response,
   profile: typeof DIRECTORY_PROFILES[number],
@@ -930,7 +1059,7 @@ async function readPublishReplayConflict(
     Object.keys(error).length !== 2 ||
     error.code !== "publish_replay" ||
     typeof error.minimumNextSequence !== "string" ||
-    !/^[1-9][0-9]{0,19}$/.test(error.minimumNextSequence)
+    !isValidPublisherSequence(error.minimumNextSequence)
   ) {
     return null;
   }
@@ -971,7 +1100,7 @@ async function classicDirectoryFingerprint(
 }
 
 async function enforceAuthenticatedUpdateBudget(
-  env: Env,
+  env: CoreEnv,
   serverId: string,
   dailyLimit: number,
   now: number,
@@ -991,7 +1120,7 @@ async function enforceAuthenticatedUpdateBudget(
 }
 
 async function enforceAuthenticatedPublishBudget(
-  env: Env,
+  env: CoreEnv,
   serverId: string,
   dailyLimit: number,
   now: number,
@@ -1061,7 +1190,7 @@ async function readUpdateForm(
 }
 
 async function enforceBlacklist(
-  env: Env,
+  env: CoreEnv,
   serverId: string,
   sourceIp: string,
 ): Promise<void> {
@@ -1085,7 +1214,23 @@ async function enforceBlacklist(
     ) {
       throw new Error("Blacklist query returned an invalid dimension");
     }
-    logBlacklistMatch(dimension);
+    logBlacklistMatch("compat-update", dimension);
+    throw new RequestError("The server is blacklisted", 403);
+  }
+}
+
+async function enforceServerIdentityBlacklist(
+  env: CoreEnv,
+  serverId: string,
+): Promise<void> {
+  const matched = await env.DB.prepare(
+    `SELECT 1 AS matched
+       FROM server_blacklist
+      WHERE ? GLOB pattern
+      LIMIT 1`,
+  ).bind(serverId).first<number>("matched");
+  if (matched !== null) {
+    logBlacklistMatch("publish-classic", "server_identity");
     throw new RequestError("The server is blacklisted", 403);
   }
 }
@@ -1121,7 +1266,7 @@ async function authenticateCompatibilityRegistration(
 }
 
 async function consumeOtp(
-  env: Env,
+  env: CoreEnv,
   token: string,
   privacy: RequestPrivacyContext,
   now: number,
@@ -1185,119 +1330,5 @@ function sourceAddress(request: Request): string {
     return normalizeIpAddress(address);
   } catch {
     throw new RequestError("The source address is invalid", 400);
-  }
-}
-
-function handleRequestError(
-  error: unknown,
-  route: DiagnosticRoute,
-): Response {
-  if (error instanceof RequestBudgetExceeded) {
-    const reason = rateLimitReason(error);
-    const httpError = new HttpError("rate_limited", {
-      rateLimitReason: reason,
-      retryAfterSeconds: error.retryAfterSeconds,
-    });
-    return httpErrorResponse(httpError);
-  }
-
-  if (error instanceof HttpError) {
-    if (
-      error.code !== "not_found" &&
-      error.code !== "rate_limited" &&
-      error.code !== "service_disabled"
-    ) {
-      logRequestRejected(route, error.code, error.status);
-    }
-    return httpErrorResponse(error);
-  }
-
-  if (error instanceof RequestControlUnavailable) {
-    logUnexpectedError(
-      "fetch",
-      "request_control_dependency",
-      error.dependency,
-    );
-    return httpErrorResponse(new HttpError("request_control_unavailable", {
-      retryAfterSeconds: 60,
-    }));
-  }
-
-  if (error instanceof RequestControlConfigurationError) {
-    logUnexpectedError("fetch", "request_control_configuration");
-    return httpErrorResponse(new HttpError("request_control_unavailable", {
-      retryAfterSeconds: 60,
-    }));
-  }
-
-  if (error instanceof SourceTagConfigurationError) {
-    logUnexpectedError("fetch", "source_tag_configuration");
-    return httpErrorResponse(new HttpError("request_control_unavailable", {
-      retryAfterSeconds: 60,
-    }));
-  }
-
-  if (error instanceof RequestError) {
-    const httpError = requestErrorToHttpError(error);
-    logRequestRejected(route, httpError.code, httpError.status);
-    return httpErrorResponse(httpError);
-  }
-
-  logUnexpectedError("fetch", "unhandled_exception");
-  return httpErrorResponse(new HttpError("internal_error"));
-}
-
-function requestErrorToHttpError(error: RequestError): HttpError {
-  switch (error.status) {
-    case 400:
-      return new HttpError("bad_request");
-    case 401:
-      return new HttpError("unauthorized");
-    case 403:
-      return new HttpError("forbidden");
-    case 404:
-      return new HttpError("not_found");
-    case 409:
-      return new HttpError("conflict");
-    case 413:
-      return new HttpError("payload_too_large");
-    default:
-      return new HttpError("internal_error");
-  }
-}
-
-function rateLimitReason(error: RequestBudgetExceeded): HttpRateLimitReason {
-  const burst = error.reason === "burst_limit_exceeded";
-  switch (error.scope) {
-    case "global":
-      return "global_burst";
-    case "compat-status":
-      return "compat_status_daily";
-    case "compat-directory":
-      return burst ? "compat_directory_burst" : "compat_directory_daily";
-    case "compat-otp":
-      return burst ? "compat_otp_burst" : "compat_otp_daily";
-    case "compat-update-source":
-      return burst
-        ? "compat_update_source_burst"
-        : "compat_update_source_daily";
-    case "compat-update-server":
-      return burst
-        ? "compat_update_server_burst"
-        : "compat_update_server_daily";
-    case "publish-server":
-      return burst ? "publish_burst" : "publish_daily";
-    case "rendezvous-client-source":
-      return burst
-        ? "rendezvous_client_burst"
-        : "rendezvous_client_source_daily";
-    case "rendezvous-client-source-server":
-      return "rendezvous_client_pair_daily";
-    case "rendezvous-server-source":
-      return "rendezvous_server_source_daily";
-    case "rendezvous-server":
-      return burst
-        ? "rendezvous_server_burst"
-        : "rendezvous_server_daily";
   }
 }

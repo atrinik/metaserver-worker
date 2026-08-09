@@ -13,11 +13,17 @@
   bounded live-session routing and terminal-teardown state, the room's SQLite
   ledger for exact rolling admissions and purpose-separated replay tags, and
   one alarm for expiry; never add candidate persistence or per-session timers.
-- `wrangler.jsonc` deliberately uses declarative `exports` for the SQLite
-  Durable Object and a placeholder D1 ID. Do not add legacy Durable Object
-  migration configuration alongside `exports`. Lifecycle changes require a
-  direct 100% `wrangler deploy`; `versions upload`, gradual rollout, and
-  rollback across that lifecycle boundary are unsupported.
+- `wrangler.jsonc` is the sole state-owning core configuration. It deliberately
+  uses declarative `exports` for both SQLite Durable Objects and the narrow
+  publisher/rendezvous Worker entrypoints, and contains a placeholder D1 ID.
+  `wrangler.publisher.jsonc` and `wrangler.rendezvous.jsonc` are stateless,
+  domainless public-edge configurations with one named service binding each;
+  never add D1, R2, Durable Object, cron, or cross-service authority to them.
+  Do not add legacy Durable Object migration configuration alongside
+  `exports`. Apply every pending D1 migration before deploying this provider;
+  then deploy the core before either caller. Lifecycle changes require a direct
+  100% `wrangler deploy`; `versions upload`, gradual rollout, and rollback
+  across that lifecycle boundary are unsupported.
 - Production state exists. `migrations/0001_initial.sql` is applied history:
   never rewrite, reorder, or reuse it. Add every schema transition as a new,
   ordered migration and test the complete populated-schema upgrade path.
@@ -52,8 +58,10 @@
   `unexpected_error` diagnostics with their closed, redacted schemas. Do not
   log routine success, expected `404`, rate-limit, or open-circuit traffic; use
   aggregate platform metrics/WAF analytics for traffic measurements.
-- Keep generated Wrangler types and `dist/` untracked. Update bindings, runtime
-  types, tests, and dry-run configuration together.
+- Keep generated Wrangler types and `dist/` untracked. Generate and check each
+  configuration's types independently, and keep caller declarations isolated
+  from the core `Cloudflare.Env`. Update bindings, runtime types, tests, and all
+  three dry-run configurations together.
 - Never deploy, run remote D1 migrations, reset ownership, or mutate Cloudflare
   resources merely to validate a change. Those external actions require
   explicit authorization and reviewed production bindings.

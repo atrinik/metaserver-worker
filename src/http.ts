@@ -85,6 +85,9 @@ const HTTP_ERROR_DEFINITIONS = {
 } as const;
 
 export type HttpErrorCode = keyof typeof HTTP_ERROR_DEFINITIONS;
+export const HTTP_ERROR_CODES = Object.freeze(
+  Object.keys(HTTP_ERROR_DEFINITIONS) as HttpErrorCode[],
+);
 export type AllowedMethod = "GET" | "HEAD" | "POST";
 export const HTTP_RATE_LIMIT_REASONS = [
   "global_burst",

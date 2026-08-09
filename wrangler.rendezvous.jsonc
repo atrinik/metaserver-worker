@@ -1,0 +1,55 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "atrinik-metaserver-rendezvous",
+  "main": "src/rendezvous-worker.ts",
+  "compatibility_date": "2026-08-05",
+  "compatibility_flags": ["nodejs_compat", "no_web_socket_compression"],
+  "workers_dev": false,
+  "preview_urls": false,
+  "services": [
+    {
+      "binding": "COORDINATOR",
+      "service": "atrinik-metaserver",
+      "entrypoint": "RendezvousCoordinator"
+    }
+  ],
+  "ratelimits": [
+    {
+      "name": "GLOBAL_RATE_LIMITER",
+      "namespace_id": "1201",
+      "simple": {
+        "limit": 10,
+        "period": 60
+      }
+    },
+    {
+      "name": "RENDEZVOUS_CLIENT_RATE_LIMITER",
+      "namespace_id": "1202",
+      "simple": {
+        "limit": 5,
+        "period": 60
+      }
+    }
+  ],
+  "secrets": {
+    "required": [
+      "SOURCE_TAG_KEY_CURRENT",
+      "SOURCE_TAG_KEY_PREVIOUS"
+    ]
+  },
+  "vars": {
+    "RENDEZVOUS_HOSTNAME": "rendezvous.meta.atrinik.org",
+    "RENDEZVOUS_ENABLED": "disabled",
+    "ROUTE_DISABLED_RETRY_SECONDS": "300",
+    "SOURCE_TAG_KEY_CURRENT_ID": "2026-08-a",
+    "SOURCE_TAG_KEY_PREVIOUS_ID": "2026-07-a"
+  },
+  "observability": {
+    "enabled": true,
+    "logs": {
+      "enabled": true,
+      "head_sampling_rate": 1,
+      "invocation_logs": false
+    }
+  }
+}

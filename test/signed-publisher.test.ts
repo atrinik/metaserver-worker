@@ -7,7 +7,8 @@ import {
 } from "cloudflare:test";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
-import worker from "../src/index";
+import worker, { handlePublisherCoordinatorRequest } from "../src/index";
+import { publisherServiceRequest } from "../src/internal-service";
 import { sha256Hex } from "../src/protocol";
 import publisherFixture from "./fixtures/metaserver-publisher-v1.json";
 
@@ -62,13 +63,18 @@ async function callWorker(
   workerEnv: Env = env,
 ): Promise<Response> {
   const context = createExecutionContext();
-  const response = await worker.fetch(request, workerEnv, context);
+  const response = await handlePublisherCoordinatorRequest(
+    publisherServiceRequest(request),
+    workerEnv,
+    context,
+  );
   await waitOnExecutionContext(context);
   return response;
 }
 
 function testEnvironment(options: {
   readonly publishBurstAllowed?: boolean;
+  readonly publishLimiter?: RateLimit;
 } = {}): Env {
   const allowed = {
     limit: async () => ({ success: true }),
@@ -84,7 +90,7 @@ function testEnvironment(options: {
         return allowed;
       }
       if (property === "PUBLISH_IDENTITY_RATE_LIMITER") {
-        return publish;
+        return options.publishLimiter ?? publish;
       }
       if (property === "PUBLISH_ENABLED") {
         return "enabled";
@@ -131,6 +137,7 @@ beforeEach(async () => {
     env.DB.prepare("DELETE FROM server_presence"),
     env.DB.prepare("DELETE FROM servers"),
     env.DB.prepare("DELETE FROM server_owners"),
+    env.DB.prepare("DELETE FROM server_blacklist"),
     env.DB.prepare("DELETE FROM request_budgets"),
     env.DB.prepare(
       "UPDATE directory_revisions SET revision = 0, updated_at = 0",
@@ -152,6 +159,18 @@ beforeEach(async () => {
 });
 
 describe("classic signed publisher", () => {
+  it("cannot bypass the public publisher edge through the core default handler", async () => {
+    const context = createExecutionContext();
+    const response = await worker.fetch(
+      publishRequest(initialVector()),
+      testEnvironment(),
+      context,
+    );
+    await waitOnExecutionContext(context);
+    expect(response.status).toBe(421);
+    expect(await storedPublication()).toBeNull();
+  });
+
   it.each([null, "legacy-unknown"])(
     "preserves a committed legacy Room success for change marker %s",
     async (marker) => {
@@ -304,6 +323,28 @@ describe("classic signed publisher", () => {
     });
     expect(await storedPublication()).toBeNull();
     expect(await directoryState()).toEqual({ revision: 0, outbox: [] });
+  });
+
+  it("charges an authenticated blacklisted identity before rejecting it", async () => {
+    const limit = vi.fn(async () => ({ success: true }));
+    const workerEnv = testEnvironment({
+      publishLimiter: { limit } as RateLimit,
+    });
+    await env.DB.prepare(
+      "INSERT INTO server_blacklist (pattern, reason, created_at) VALUES (?, ?, ?)",
+    ).bind(
+      `${publisherFixture.server_id.slice(0, 8)}*`,
+      "test identity block",
+      1,
+    ).run();
+
+    const response = await callWorker(
+      publishRequest(initialVector()),
+      workerEnv,
+    );
+    expect(response.status).toBe(403);
+    expect(limit).toHaveBeenCalledTimes(1);
+    expect(await storedPublication()).toBeNull();
   });
 
   it("registers, rejects replay, and revises only visible content", async () => {

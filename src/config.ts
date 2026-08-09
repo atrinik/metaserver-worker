@@ -46,6 +46,60 @@ export interface DirectoryArtifactConfiguration {
   readonly artifactLifetimeSeconds: number;
 }
 
+export interface PublisherEdgeConfigurationInput {
+  readonly PUBLISH_HOSTNAME?: string;
+  readonly ROUTE_DISABLED_RETRY_SECONDS?: string;
+}
+
+export interface PublisherEdgeConfiguration {
+  readonly authority: string;
+  readonly routeDisabledRetrySeconds: number;
+}
+
+export interface RendezvousEdgeConfigurationInput {
+  readonly RENDEZVOUS_HOSTNAME?: string;
+  readonly ROUTE_DISABLED_RETRY_SECONDS?: string;
+}
+
+export interface RendezvousEdgeConfiguration {
+  readonly authority: string;
+  readonly routeDisabledRetrySeconds: number;
+}
+
+export interface PublisherCoordinatorConfigurationInput {
+  readonly PUBLISH_HOSTNAME?: string;
+  readonly LISTING_TTL_SECONDS?: string;
+  readonly PUBLISH_SERVER_DAILY_LIMIT?: string;
+  readonly ROUTE_DISABLED_RETRY_SECONDS?: string;
+}
+
+export interface PublisherCoordinatorConfiguration {
+  readonly authority: string;
+  readonly listingTtlSeconds: number;
+  readonly publishServerDaily: number;
+  readonly routeDisabledRetrySeconds: number;
+}
+
+export interface RendezvousCoordinatorConfigurationInput {
+  readonly RENDEZVOUS_HOSTNAME?: string;
+  readonly LISTING_TTL_SECONDS?: string;
+  readonly ROUTE_DISABLED_RETRY_SECONDS?: string;
+  readonly COMPAT_RENDEZVOUS_CLIENT_SOURCE_DAILY_LIMIT?: string;
+  readonly COMPAT_RENDEZVOUS_CLIENT_PAIR_DAILY_LIMIT?: string;
+  readonly COMPAT_RENDEZVOUS_SERVER_SOURCE_DAILY_LIMIT?: string;
+  readonly COMPAT_RENDEZVOUS_SERVER_DAILY_LIMIT?: string;
+}
+
+export interface RendezvousCoordinatorConfiguration {
+  readonly authority: string;
+  readonly listingTtlSeconds: number;
+  readonly routeDisabledRetrySeconds: number;
+  readonly compatibilityRendezvousClientSourceDaily: number;
+  readonly compatibilityRendezvousClientPairDaily: number;
+  readonly compatibilityRendezvousServerSourceDaily: number;
+  readonly compatibilityRendezvousServerDaily: number;
+}
+
 export interface RendezvousPolicyConfigurationInput {
   readonly RENDEZVOUS_CLIENT_ROLLING_LIMIT?: string;
   readonly RENDEZVOUS_ACTIVE_CLIENT_LIMIT?: string;
@@ -101,16 +155,115 @@ export class RequestControlConfigurationError extends Error {
   }
 }
 
+/** Parse only the fail-closed policy required by the publisher edge. */
+export function publisherEdgeConfiguration(
+  input: PublisherEdgeConfigurationInput,
+): PublisherEdgeConfiguration {
+  return Object.freeze({
+    authority: strictDynamicAuthority(
+      input.PUBLISH_HOSTNAME,
+      "PUBLISH_HOSTNAME",
+    ),
+    routeDisabledRetrySeconds: strictInteger(
+      input.ROUTE_DISABLED_RETRY_SECONDS,
+      "ROUTE_DISABLED_RETRY_SECONDS",
+      1,
+      MAXIMUM_RETRY_AFTER_SECONDS,
+    ),
+  });
+}
+
+/** Parse only the fail-closed policy required by the rendezvous edge. */
+export function rendezvousEdgeConfiguration(
+  input: RendezvousEdgeConfigurationInput,
+): RendezvousEdgeConfiguration {
+  return Object.freeze({
+    authority: strictDynamicAuthority(
+      input.RENDEZVOUS_HOSTNAME,
+      "RENDEZVOUS_HOSTNAME",
+    ),
+    routeDisabledRetrySeconds: strictInteger(
+      input.ROUTE_DISABLED_RETRY_SECONDS,
+      "ROUTE_DISABLED_RETRY_SECONDS",
+      1,
+      MAXIMUM_RETRY_AFTER_SECONDS,
+    ),
+  });
+}
+
+/** Parse only policy consumed by the named publisher coordinator. */
+export function publisherCoordinatorConfiguration(
+  input: PublisherCoordinatorConfigurationInput,
+): PublisherCoordinatorConfiguration {
+  return Object.freeze({
+    authority: strictDynamicAuthority(
+      input.PUBLISH_HOSTNAME,
+      "PUBLISH_HOSTNAME",
+    ),
+    listingTtlSeconds: parseListingTtlSeconds(input.LISTING_TTL_SECONDS),
+    publishServerDaily: strictInteger(
+      input.PUBLISH_SERVER_DAILY_LIMIT,
+      "PUBLISH_SERVER_DAILY_LIMIT",
+      1,
+      REQUEST_CONTROL_POLICY_MAXIMUMS.publishServerDaily,
+    ),
+    routeDisabledRetrySeconds: strictInteger(
+      input.ROUTE_DISABLED_RETRY_SECONDS,
+      "ROUTE_DISABLED_RETRY_SECONDS",
+      1,
+      MAXIMUM_RETRY_AFTER_SECONDS,
+    ),
+  });
+}
+
+/** Parse only policy consumed by the named rendezvous coordinator. */
+export function rendezvousCoordinatorConfiguration(
+  input: RendezvousCoordinatorConfigurationInput,
+): RendezvousCoordinatorConfiguration {
+  return Object.freeze({
+    authority: strictDynamicAuthority(
+      input.RENDEZVOUS_HOSTNAME,
+      "RENDEZVOUS_HOSTNAME",
+    ),
+    listingTtlSeconds: parseListingTtlSeconds(input.LISTING_TTL_SECONDS),
+    routeDisabledRetrySeconds: strictInteger(
+      input.ROUTE_DISABLED_RETRY_SECONDS,
+      "ROUTE_DISABLED_RETRY_SECONDS",
+      1,
+      MAXIMUM_RETRY_AFTER_SECONDS,
+    ),
+    compatibilityRendezvousClientSourceDaily: strictInteger(
+      input.COMPAT_RENDEZVOUS_CLIENT_SOURCE_DAILY_LIMIT,
+      "COMPAT_RENDEZVOUS_CLIENT_SOURCE_DAILY_LIMIT",
+      1,
+      REQUEST_CONTROL_POLICY_MAXIMUMS.compatibilityRendezvousClientSourceDaily,
+    ),
+    compatibilityRendezvousClientPairDaily: strictInteger(
+      input.COMPAT_RENDEZVOUS_CLIENT_PAIR_DAILY_LIMIT,
+      "COMPAT_RENDEZVOUS_CLIENT_PAIR_DAILY_LIMIT",
+      1,
+      REQUEST_CONTROL_POLICY_MAXIMUMS.compatibilityRendezvousClientPairDaily,
+    ),
+    compatibilityRendezvousServerSourceDaily: strictInteger(
+      input.COMPAT_RENDEZVOUS_SERVER_SOURCE_DAILY_LIMIT,
+      "COMPAT_RENDEZVOUS_SERVER_SOURCE_DAILY_LIMIT",
+      1,
+      REQUEST_CONTROL_POLICY_MAXIMUMS.compatibilityRendezvousServerSourceDaily,
+    ),
+    compatibilityRendezvousServerDaily: strictInteger(
+      input.COMPAT_RENDEZVOUS_SERVER_DAILY_LIMIT,
+      "COMPAT_RENDEZVOUS_SERVER_DAILY_LIMIT",
+      1,
+      REQUEST_CONTROL_POLICY_MAXIMUMS.compatibilityRendezvousServerDaily,
+    ),
+  });
+}
+
 /** Parse the bounded freshness and cache contract used by the static builder. */
 export function directoryArtifactConfiguration(
   input: DirectoryArtifactConfigurationInput,
 ): DirectoryArtifactConfiguration {
-  const listingTtlSeconds = strictInteger(
-    input.LISTING_TTL_SECONDS,
-    "LISTING_TTL_SECONDS",
-    MINIMUM_LISTING_TTL_SECONDS,
-    REQUEST_CONTROL_POLICY_MAXIMUMS.listingTtlSeconds,
-  );
+  const listingTtlSeconds = parseListingTtlSeconds(input.LISTING_TTL_SECONDS);
   const refreshLeadSeconds = strictInteger(
     input.DIRECTORY_REFRESH_LEAD_SECONDS,
     "DIRECTORY_REFRESH_LEAD_SECONDS",
@@ -262,6 +415,25 @@ export function requestControlConfiguration(
       REQUEST_CONTROL_POLICY_MAXIMUMS.compatibilityRendezvousServerDaily,
     ),
   });
+}
+
+function parseListingTtlSeconds(value: string | undefined): number {
+  return strictInteger(
+    value,
+    "LISTING_TTL_SECONDS",
+    MINIMUM_LISTING_TTL_SECONDS,
+    REQUEST_CONTROL_POLICY_MAXIMUMS.listingTtlSeconds,
+  );
+}
+
+function strictDynamicAuthority(
+  value: string | undefined,
+  variable: string,
+): string {
+  if (value === undefined || !isCanonicalHostname(value)) {
+    throw new RequestControlConfigurationError(variable);
+  }
+  return value;
 }
 
 function strictInteger(
