@@ -39,6 +39,13 @@ class WranglerSecurityConfigurationTests(unittest.TestCase):
                 self.assertEqual(binding["simple"]["period"], 60)
                 self.assertEqual(binding["simple"]["limit"], limit)
 
+        self.assertEqual(
+            self.configuration["vars"]["PUBLISH_ENABLED"], "disabled"
+        )
+        self.assertEqual(
+            self.configuration["vars"]["PUBLISH_SERVER_DAILY_LIMIT"], "48"
+        )
+
     def test_source_tag_secrets_and_logging_policy_are_pinned(self) -> None:
         self.assertEqual(
             set(self.configuration["secrets"]["required"]),

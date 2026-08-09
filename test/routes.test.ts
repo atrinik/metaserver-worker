@@ -89,7 +89,7 @@ describe("canonical dynamic route grammar", () => {
       generation: "game-protocol-1",
       serverId: SERVER_ID,
       authority: PUBLISH_AUTHORITY,
-      maximumBodyBytes: 65_536,
+      maximumBodyBytes: 4_096,
     });
     expect(classifyCanonicalRoute(publisherInput(
       `/v1/classic/servers/${SERVER_ID}/publish`,
@@ -213,7 +213,7 @@ describe("canonical dynamic route grammar", () => {
     })).code).toBe("not_found");
   });
 
-  it("requires one unencoded JSON publisher body within 64 KiB", () => {
+  it("requires one unencoded JSON publisher body within 4 KiB", () => {
     expect(canonicalError(publisherInput(undefined, {
       hasBody: false,
     })).code).toBe("body_required");

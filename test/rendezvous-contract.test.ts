@@ -33,19 +33,27 @@ const TICKET = "a".repeat(64);
 const GENERATION = "0".repeat(64);
 const PUBLICATION = Object.freeze({
   serverId: "1".repeat(64),
+  directoryProfile: "classic-v1",
+  publisherAuthentication: "compat-key-v1",
+  publisherSequence: null,
+  publisherNonce: null,
+  publisherNonceExpiresAt: null,
+  commitToken: "4".repeat(64),
   expectedGeneration: GENERATION,
   generation: "2".repeat(64),
   tokenHash: "3".repeat(64),
   now: 2_000_000_000,
+  visibilityCutoff: 1_999_985_600,
   name: "Classic Server",
   playersCount: 2,
   version: "4.0.0",
   textComment: "Protected rendezvous",
   isPublic: true,
-  quicHost: "198.51.100.20",
+  quicHost: "play.example.test",
   quicPort: 1_730,
   quicCertSha256: "1".repeat(64),
   passwordRequired: true,
+  directoryFingerprint: "5".repeat(64),
 });
 
 function publicationRequest(

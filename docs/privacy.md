@@ -20,6 +20,13 @@ learns a selected peer endpoint.
 4. The final direct-directory fallback stores only an operator-published,
    validated DNS hostname and UDP port. The compatibility schema temporarily
    retains its existing explicit `quic_host` field while consumers migrate.
+5. Signed publication stores the public certificate-bound server ID, visible
+   listing fields, the last accepted unsigned-64 sequence, bounded random nonce
+   values until expiry, and non-secret commit/fingerprint/revision values. The
+   certificate is authenticated from the request body but is not persisted.
+   Signatures, signature inputs, request bodies, private key material, and
+   returned rendezvous tokens are never written to logs or durable storage;
+   only the token's SHA-256 verifier is stored with the listing.
 
 Neither an unkeyed IP digest nor a raw IP is an acceptable durable actor key.
 IPv4 is enumerable, and a single cross-purpose pseudonym would unnecessarily
@@ -103,6 +110,15 @@ non-empty owner/listing sentinel, remove expired legacy raw-source challenges
 and counters, and verify the live tables contain no such values. Physical
 removal of the legacy columns and OTP table remains gated on the single-request
 signed publisher and consumer cutover.
+
+The signed replay ledger stores canonical decimal sequences as text because
+SQLite cannot represent the complete unsigned 64-bit range. Nonces are scoped
+by server ID and publisher profile, expire after the fixed replay window, and
+are pruned by scheduled maintenance. Sequence rows deliberately remain for the
+life of an identity so a stale state backup cannot lower replay protection.
+The server can consume the authenticated `minimumNextSequence` response to
+advance its protected local high-water mark; it never deletes or replaces its
+identity as a recovery shortcut.
 
 Stable server-ID blacklist entries remain the application policy. During the
 transition, existing raw-address glob entries can still be evaluated against a

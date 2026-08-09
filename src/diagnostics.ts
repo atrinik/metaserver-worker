@@ -7,6 +7,8 @@ export type DiagnosticRoute =
   | "compat-directory"
   | "compat-otp"
   | "compat-update"
+  | "publish-classic"
+  | "publish-game"
   | "compat-rendezvous-client"
   | "compat-rendezvous-server";
 

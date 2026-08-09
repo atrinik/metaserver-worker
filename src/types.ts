@@ -19,6 +19,7 @@ export interface RendezvousServerRecord {
 
 export interface OwnerAuthRecord {
   auth_key: string;
+  authentication_kind: "compat-key-v1" | "signed-certificate-v1";
 }
 
 export interface UpdatePayload {

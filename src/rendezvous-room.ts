@@ -56,6 +56,7 @@ import type { InternalRendezvousPublication } from "./rendezvous-contract";
 import {
   persistRendezvousPublication,
   readPublishedGeneration,
+  readPublisherReplayState,
   rendezvousPublicationMatches,
 } from "./rendezvous-publication";
 
@@ -265,6 +266,12 @@ export class RendezvousRoom extends DurableObject<Env> {
   private async commitPublication(
     publication: InternalRendezvousPublication,
   ): Promise<Response> {
+    if (publication.publisherAuthentication === "signed-certificate-v1") {
+      const conflict = await this.signedPublicationConflict(publication);
+      if (conflict !== null) {
+        return publishReplayResponse(conflict);
+      }
+    }
     const publishedGeneration = await this.reconcilePublishedGeneration(
       publication.serverId,
     );
@@ -274,7 +281,18 @@ export class RendezvousRoom extends DurableObject<Env> {
 
     await this.rotateTokenGeneration(publication.generation);
     try {
-      await this.publicationPersister(this.env.DB, publication);
+      const persisted = await this.publicationPersister(
+        this.env.DB,
+        publication,
+      );
+      if (!persisted.accepted) {
+        await this.reconcilePublishedGeneration(publication.serverId);
+        const conflict = await this.signedPublicationConflict(publication);
+        if (conflict === null) {
+          throw new Error("Publisher replay state did not explain rejection");
+        }
+        return publishReplayResponse(conflict);
+      }
     } catch (error) {
       if (await this.publicationMatcher(this.env.DB, publication)) {
         return new Response(null, { status: 204 });
@@ -286,6 +304,32 @@ export class RendezvousRoom extends DurableObject<Env> {
       throw error;
     }
     return new Response(null, { status: 204 });
+  }
+
+  private async signedPublicationConflict(
+    publication: InternalRendezvousPublication,
+  ): Promise<string | null> {
+    const sequence = publication.publisherSequence;
+    const nonce = publication.publisherNonce;
+    if (sequence === null || nonce === null) {
+      throw new Error("Signed publication omitted replay metadata");
+    }
+    const state = await readPublisherReplayState(
+      this.env.DB,
+      publication.serverId,
+      publication.directoryProfile,
+      nonce,
+    );
+    if (
+      state === null ||
+      (!state.nonceSeen && comparePublishSequences(
+        sequence,
+        state.lastSequence,
+      ) > 0)
+    ) {
+      return null;
+    }
+    return minimumNextPublishSequence(state.lastSequence);
   }
 
   private async reconcileUpgradeGeneration(generation: string): Promise<void> {
@@ -2661,6 +2705,40 @@ function rememberBounded(
 
 function earlier(current: number | null, candidate: number): number {
   return current === null ? candidate : Math.min(current, candidate);
+}
+
+function comparePublishSequences(left: string, right: string): number {
+  if (left.length !== right.length) {
+    return left.length > right.length ? 1 : -1;
+  }
+  if (left === right) {
+    return 0;
+  }
+  return left > right ? 1 : -1;
+}
+
+function minimumNextPublishSequence(lastSequence: string): string {
+  const maximum = 18_446_744_073_709_551_615n;
+  const next = BigInt(lastSequence) + 1n;
+  return (next > maximum ? maximum : next).toString();
+}
+
+function publishReplayResponse(minimumNextSequence: string): Response {
+  return Response.json(
+    {
+      error: {
+        code: "publish_replay",
+        minimumNextSequence,
+      },
+    },
+    {
+      status: 409,
+      headers: {
+        "Cache-Control": "no-store",
+        "X-Content-Type-Options": "nosniff",
+      },
+    },
+  );
 }
 
 function roomError(code: RoomErrorCode): Response {

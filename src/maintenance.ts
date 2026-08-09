@@ -8,6 +8,7 @@ export const MAINTENANCE_TARGETS = [
   "one_time_tokens",
   "rate_limits",
   "request_budgets",
+  "publisher_nonces",
 ] as const;
 
 export type MaintenanceTarget = typeof MAINTENANCE_TARGETS[number];
@@ -17,6 +18,7 @@ export interface MaintenanceCutoffs {
   readonly oneTimeTokensAtOrBefore: number;
   readonly rateLimitsBefore: number;
   readonly requestBudgetsAtOrBefore: number;
+  readonly publisherNoncesAtOrBefore: number;
 }
 
 export interface MaintenanceOptions {
@@ -52,7 +54,7 @@ interface MaintenanceStatement {
 /**
  * Delete every expirable state class in bounded, round-robin batches.
  *
- * At production bounds this performs at most 32 deletes and four probes.
+ * At production bounds this performs at most 40 deletes and five probes.
  * Round-robin ordering keeps a backlog in one legacy table from starving
  * cleanup of newer state.
  */
@@ -200,6 +202,19 @@ function maintenanceStatements(
         )`,
       probeSql:
         "SELECT 1 AS present FROM request_budgets WHERE expires_at <= ? LIMIT 1",
+    },
+    {
+      target: "publisher_nonces",
+      cutoff: cutoffs.publisherNoncesAtOrBefore,
+      deleteSql: `DELETE FROM publisher_nonces
+        WHERE (server_id, profile, nonce) IN (
+          SELECT server_id, profile, nonce FROM publisher_nonces
+           WHERE expires_at <= ?1
+           ORDER BY expires_at
+           LIMIT ?2
+        )`,
+      probeSql:
+        "SELECT 1 AS present FROM publisher_nonces WHERE expires_at <= ? LIMIT 1",
     },
   ];
 }

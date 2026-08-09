@@ -14,6 +14,8 @@ beforeEach(async () => {
     env.DB.prepare("DELETE FROM one_time_tokens"),
     env.DB.prepare("DELETE FROM rate_limits"),
     env.DB.prepare("DELETE FROM request_budgets"),
+    env.DB.prepare("DELETE FROM publisher_nonces"),
+    env.DB.prepare("DELETE FROM publisher_replay"),
   ]);
 });
 
@@ -54,6 +56,21 @@ describe("bounded state maintenance", () => {
         index,
         timestamp,
       ).run();
+      await env.DB.prepare(
+        `INSERT INTO publisher_replay
+           (server_id, profile, last_sequence, last_nonce, commit_token,
+            updated_at)
+         VALUES (?, 'classic-v1', '1', ?, ?, 0)`,
+      ).bind(serverId, "1".repeat(32), serverId).run();
+      await env.DB.prepare(
+        `INSERT INTO publisher_nonces
+           (server_id, profile, nonce, expires_at, created_at)
+         VALUES (?, 'classic-v1', ?, ?, 0)`,
+      ).bind(
+        serverId,
+        index.toString(16).padStart(32, "1"),
+        timestamp,
+      ).run();
     }
 
     const cutoffs = {
@@ -61,6 +78,7 @@ describe("bounded state maintenance", () => {
       oneTimeTokensAtOrBefore: CUTOFF,
       rateLimitsBefore: CUTOFF,
       requestBudgetsAtOrBefore: CUTOFF,
+      publisherNoncesAtOrBefore: CUTOFF,
     };
     const first = await cleanupExpiredState(env.DB, cutoffs, {
       batchSize: 2,
@@ -71,6 +89,7 @@ describe("bounded state maintenance", () => {
       "one_time_tokens",
       "rate_limits",
       "request_budgets",
+      "publisher_nonces",
     ]);
     for (const result of Object.values(first.targets)) {
       expect(result).toEqual({
@@ -98,6 +117,7 @@ describe("bounded state maintenance", () => {
       "one_time_tokens",
       "rate_limits",
       "request_budgets",
+      "publisher_nonces",
     ]) {
       expect(await env.DB.prepare(
         `SELECT COUNT(*) AS count FROM ${table}`,
@@ -120,6 +140,7 @@ describe("bounded state maintenance", () => {
         oneTimeTokensAtOrBefore: CUTOFF,
         rateLimitsBefore: CUTOFF,
         requestBudgetsAtOrBefore: CUTOFF,
+        publisherNoncesAtOrBefore: CUTOFF,
       }, options)).rejects.toBeInstanceOf(RangeError);
     }
 
@@ -128,6 +149,7 @@ describe("bounded state maintenance", () => {
       oneTimeTokensAtOrBefore: CUTOFF,
       rateLimitsBefore: CUTOFF,
       requestBudgetsAtOrBefore: CUTOFF,
+      publisherNoncesAtOrBefore: CUTOFF,
     })).rejects.toBeInstanceOf(RangeError);
   });
 });
