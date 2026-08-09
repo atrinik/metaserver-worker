@@ -17,6 +17,8 @@ import type { RendezvousRole } from "./routes";
 export const INTERNAL_RENDEZVOUS_URL = "https://rendezvous.internal/v2";
 export const INTERNAL_RENDEZVOUS_PUBLISH_URL =
   "https://rendezvous.internal/v2/publish";
+export const INTERNAL_DIRECTORY_CHANGED_HEADER =
+  "X-Atrinik-Directory-Changed";
 export const INTERNAL_RENDEZVOUS_ROLE_HEADER =
   "X-Atrinik-Rendezvous-V2-Role";
 export const INTERNAL_RENDEZVOUS_PROTOCOL_HEADER =

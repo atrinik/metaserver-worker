@@ -18,6 +18,24 @@
     {
       "binding": "RENDEZVOUS_METRICS",
       "dataset": "atrinik_metaserver_rendezvous"
+    },
+    {
+      "binding": "DIRECTORY_METRICS",
+      "dataset": "atrinik_metaserver_directory"
+    }
+  ],
+  "r2_buckets": [
+    {
+      "binding": "DIRECTORY_GENERATIONS",
+      "bucket_name": "atrinik-metaserver-directory-generations"
+    },
+    {
+      "binding": "CLASSIC_DIRECTORY_PUBLIC",
+      "bucket_name": "atrinik-metaserver-directory-classic"
+    },
+    {
+      "binding": "GAME_DIRECTORY_PUBLIC",
+      "bucket_name": "atrinik-metaserver-directory-game"
     }
   ],
   "durable_objects": {
@@ -25,11 +43,19 @@
       {
         "name": "RENDEZVOUS",
         "class_name": "RendezvousRoom"
+      },
+      {
+        "name": "DIRECTORY_BUILDER",
+        "class_name": "DirectoryBuilder"
       }
     ]
   },
   "exports": {
     "RendezvousRoom": {
+      "type": "durable-object",
+      "storage": "sqlite"
+    },
+    "DirectoryBuilder": {
       "type": "durable-object",
       "storage": "sqlite"
     }
@@ -124,10 +150,11 @@
     "COMPAT_RENDEZVOUS_SERVER_DAILY_LIMIT": "50",
     "RENDEZVOUS_CLIENT_ROLLING_LIMIT": "50",
     "RENDEZVOUS_ACTIVE_CLIENT_LIMIT": "16",
-    "RENDEZVOUS_CLIENT_SESSION_SECONDS": "15"
+    "RENDEZVOUS_CLIENT_SESSION_SECONDS": "15",
+    "DIRECTORY_REFRESH_LEAD_SECONDS": "3600"
   },
   "triggers": {
-    "crons": ["17 * * * *"]
+    "crons": ["*/5 * * * *", "17 * * * *"]
   },
   "observability": {
     "enabled": true,

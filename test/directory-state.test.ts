@@ -6,8 +6,11 @@ import {
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import {
+  commitDirectoryArtifactPublication,
   DIRECTORY_PROFILES,
   expireDirectoryEntries,
+  readDirectoryArtifactHistory,
+  readDirectoryArtifactPublication,
 } from "../src/directory-state";
 import worker from "../src/index";
 import { persistRendezvousPublication } from "../src/rendezvous-publication";
@@ -18,6 +21,8 @@ const NOW = 300;
 
 beforeEach(async () => {
   await env.DB.batch([
+    env.DB.prepare("DELETE FROM directory_artifact_history"),
+    env.DB.prepare("DELETE FROM directory_artifact_commits"),
     env.DB.prepare("DELETE FROM directory_expiry_commits"),
     env.DB.prepare("DELETE FROM directory_transaction_assertions"),
     env.DB.prepare("DELETE FROM directory_entries"),
@@ -29,6 +34,18 @@ beforeEach(async () => {
     env.DB.prepare("DELETE FROM server_owners"),
     env.DB.prepare(
       "UPDATE directory_revisions SET revision = 0, updated_at = 0",
+    ),
+    env.DB.prepare(
+      `UPDATE directory_artifact_publications
+          SET published_revision = 0, generation = 0, generated_at = 0,
+              expires_at = 0,
+              model_sha256 = '${"0".repeat(64)}',
+              html_sha256 = '${"0".repeat(64)}',
+              xml_sha256 = '${"0".repeat(64)}',
+              json_sha256 = '${"0".repeat(64)}',
+              manifest_sha256 = '${"0".repeat(64)}',
+              html_bytes = 0, xml_bytes = 0, json_bytes = 0,
+              manifest_bytes = 0, published_at = 0`,
     ),
   ]);
 });
@@ -47,26 +64,13 @@ describe("profile-scoped directory expiry", () => {
       results.push(await expireDirectoryEntries(env.DB, profile, CUTOFF, NOW));
     }
     expect(results).toEqual([
-      { expiredEntries: 1, visibleChanged: true },
+      { expiredEntries: 2, visibleChanged: true },
       { expiredEntries: 1, visibleChanged: true },
     ]);
     expect(await env.DB.prepare(
       `SELECT profile, server_id, last_seen
          FROM server_presence ORDER BY profile, server_id`,
-    ).all()).toMatchObject({
-      results: [
-        {
-          profile: "classic-v1",
-          server_id: "2".repeat(64),
-          last_seen: CUTOFF,
-        },
-        {
-          profile: "classic-v1",
-          server_id: "7".repeat(64),
-          last_seen: CUTOFF,
-        },
-      ],
-    });
+    ).all()).toMatchObject({ results: [] });
     expect(await env.DB.prepare(
       `SELECT profile, revision, updated_at
          FROM directory_revisions ORDER BY profile`,
@@ -106,6 +110,24 @@ describe("profile-scoped directory expiry", () => {
     ).first<number>("revision")).toBe(1);
   });
 
+  it("never moves a visible revision timestamp backward", async () => {
+    await seedPublic("b".repeat(64), "classic-v1", CUTOFF - 1);
+    await env.DB.prepare(
+      `UPDATE directory_revisions SET updated_at = 500
+        WHERE profile = 'classic-v1'`,
+    ).run();
+    await expect(expireDirectoryEntries(
+      env.DB,
+      "classic-v1",
+      CUTOFF,
+      NOW,
+    )).resolves.toEqual({ expiredEntries: 1, visibleChanged: true });
+    expect(await env.DB.prepare(
+      `SELECT revision, updated_at FROM directory_revisions
+        WHERE profile = 'classic-v1'`,
+    ).first()).toEqual({ revision: 1, updated_at: 500 });
+  });
+
   it("rolls back expiry when its required outbox write is ignored", async () => {
     await seedPublic("a".repeat(64), "classic-v1", CUTOFF - 1);
     const before = await snapshotDirectoryState();
@@ -132,6 +154,37 @@ describe("profile-scoped directory expiry", () => {
       CUTOFF,
       NOW,
     )).resolves.toEqual({ expiredEntries: 1, visibleChanged: true });
+  });
+
+  it("rolls back expiry when outbox coalescing is ignored", async () => {
+    await seedPublic("8".repeat(64), "classic-v1", CUTOFF - 1);
+    await env.DB.batch([
+      env.DB.prepare(
+        `UPDATE directory_revisions SET revision = 1, updated_at = 1
+          WHERE profile = 'classic-v1'`,
+      ),
+      env.DB.prepare(
+        `INSERT INTO directory_outbox (profile, revision, created_at)
+         VALUES ('classic-v1', 1, 1)`,
+      ),
+      env.DB.prepare(
+        `CREATE TRIGGER directory_outbox_test_ignore_expiry_coalesce
+         BEFORE DELETE ON directory_outbox
+         WHEN OLD.profile = 'classic-v1' AND OLD.revision = 1
+         BEGIN SELECT RAISE(IGNORE); END`,
+      ),
+    ]);
+    const before = await snapshotDirectoryState();
+    await expect(expireDirectoryEntries(
+      env.DB,
+      "classic-v1",
+      CUTOFF,
+      NOW,
+    )).rejects.toThrow();
+    await env.DB.prepare(
+      "DROP TRIGGER directory_outbox_test_ignore_expiry_coalesce",
+    ).run();
+    expect(await snapshotDirectoryState()).toEqual(before);
   });
 
   it("expires private presence without a visible revision or outbox row", async () => {
@@ -318,6 +371,27 @@ describe("profile-scoped directory expiry", () => {
     });
   });
 
+  it("rolls back a publication when outbox coalescing is ignored", async () => {
+    const serverId = "f".repeat(64);
+    const initial = publication(serverId, "classic-v1", "Initial", "1");
+    await persistRendezvousPublication(env.DB, initial);
+    const before = await snapshotDirectoryState();
+    await env.DB.prepare(
+      `CREATE TRIGGER directory_outbox_test_ignore_publication_coalesce
+       BEFORE DELETE ON directory_outbox
+       WHEN OLD.profile = 'classic-v1' AND OLD.revision = 1
+       BEGIN SELECT RAISE(IGNORE); END`,
+    ).run();
+    await expect(persistRendezvousPublication(env.DB, nextPublication(initial, {
+      name: "Changed",
+      directoryFingerprint: "2".repeat(64),
+    }))).rejects.toThrow();
+    await env.DB.prepare(
+      "DROP TRIGGER directory_outbox_test_ignore_publication_coalesce",
+    ).run();
+    expect(await snapshotDirectoryState()).toEqual(before);
+  });
+
   it("emits exactly one removal revision across private and expiry races", async () => {
     const privateFirstId = "c".repeat(64);
     const privateFirst = publication(
@@ -376,6 +450,298 @@ describe("profile-scoped directory expiry", () => {
   });
 });
 
+describe("static artifact publication checkpoints", () => {
+  const DIGESTS = Object.freeze({
+    modelSha256: "1".repeat(64),
+    htmlSha256: "2".repeat(64),
+    xmlSha256: "3".repeat(64),
+    jsonSha256: "4".repeat(64),
+    manifestSha256: "5".repeat(64),
+    htmlBytes: 100,
+    xmlBytes: 101,
+    jsonBytes: 102,
+    manifestBytes: 103,
+  });
+
+  it("checkpoints idempotently and acknowledges its exact current revision", async () => {
+    await env.DB.batch([
+      env.DB.prepare(
+        `UPDATE directory_revisions SET revision = 2, updated_at = 100
+          WHERE profile = 'classic-v1'`,
+      ),
+      ...[1, 2].map((revision) => env.DB.prepare(
+        `INSERT INTO directory_outbox (profile, revision, created_at)
+         VALUES ('classic-v1', ?, 100)`,
+      ).bind(revision)),
+    ]);
+    const commit = {
+      profile: "classic-v1",
+      publishedRevision: 2,
+      generation: 1,
+      generatedAt: 100,
+      expiresAt: 200,
+      ...DIGESTS,
+      publishedAt: 101,
+    } as const;
+
+    await expect(commitDirectoryArtifactPublication(env.DB, commit)).resolves
+      .toBeUndefined();
+    await expect(commitDirectoryArtifactPublication(env.DB, commit)).resolves
+      .toBeUndefined();
+    expect(await readDirectoryArtifactPublication(
+      env.DB,
+      "classic-v1",
+    )).toEqual({
+      publishedRevision: 2,
+      generation: 1,
+      generatedAt: 100,
+      expiresAt: 200,
+      ...DIGESTS,
+      publishedAt: 101,
+    });
+    expect(await env.DB.prepare(
+      `SELECT revision FROM directory_outbox
+        WHERE profile = 'classic-v1' ORDER BY revision`,
+    ).all()).toMatchObject({ results: [] });
+    expect(await readDirectoryArtifactHistory(env.DB, "classic-v1"))
+      .toEqual([1]);
+  });
+
+  it("rejects a checkpoint when D1 advances after artifact verification", async () => {
+    await env.DB.batch([
+      env.DB.prepare(
+        `UPDATE directory_revisions SET revision = 1, updated_at = 100
+          WHERE profile = 'classic-v1'`,
+      ),
+      env.DB.prepare(
+        `INSERT INTO directory_outbox (profile, revision, created_at)
+         VALUES ('classic-v1', 1, 100)`,
+      ),
+    ]);
+
+    await expect(commitDirectoryArtifactPublication(env.DB, {
+      profile: "classic-v1",
+      publishedRevision: 0,
+      generation: 1,
+      generatedAt: 100,
+      expiresAt: 200,
+      ...DIGESTS,
+      publishedAt: 101,
+    })).rejects.toThrow();
+    expect((await readDirectoryArtifactPublication(
+      env.DB,
+      "classic-v1",
+    )).generation).toBe(0);
+    expect(await env.DB.prepare(
+      `SELECT revision FROM directory_outbox
+        WHERE profile = 'classic-v1'`,
+    ).all()).toMatchObject({ results: [{ revision: 1 }] });
+  });
+
+  it("requires one public model hash after the generation-zero sentinel", async () => {
+    const initial = {
+      profile: "classic-v1",
+      publishedRevision: 0,
+      generation: 1,
+      generatedAt: 100,
+      expiresAt: 200,
+      ...DIGESTS,
+      publishedAt: 101,
+    } as const;
+    await commitDirectoryArtifactPublication(env.DB, initial);
+
+    await expect(commitDirectoryArtifactPublication(env.DB, {
+      ...initial,
+      generation: 2,
+      htmlSha256: "6".repeat(64),
+      publishedAt: 102,
+    })).resolves.toBeUndefined();
+    await expect(commitDirectoryArtifactPublication(env.DB, {
+      ...initial,
+      generation: 3,
+      modelSha256: "7".repeat(64),
+      publishedAt: 103,
+    })).rejects.toThrow();
+    expect(await readDirectoryArtifactPublication(
+      env.DB,
+      "classic-v1",
+    )).toMatchObject({
+      publishedRevision: 0,
+      generation: 2,
+      modelSha256: DIGESTS.modelSha256,
+      htmlSha256: "6".repeat(64),
+    });
+  });
+
+  it("rejects generation rollback and preserves the newer checkpoint", async () => {
+    await env.DB.prepare(
+      `UPDATE directory_revisions SET revision = 2, updated_at = 100
+        WHERE profile = 'classic-v1'`,
+    ).run();
+    const newer = {
+      profile: "classic-v1",
+      publishedRevision: 2,
+      generation: 4,
+      generatedAt: 100,
+      expiresAt: 200,
+      ...DIGESTS,
+      publishedAt: 101,
+    } as const;
+    await commitDirectoryArtifactPublication(env.DB, newer);
+    await expect(commitDirectoryArtifactPublication(env.DB, {
+      ...newer,
+      publishedRevision: 1,
+      generation: 3,
+    })).rejects.toThrow();
+    expect(await readDirectoryArtifactPublication(
+      env.DB,
+      "classic-v1",
+    )).toEqual({
+      publishedRevision: 2,
+      generation: 4,
+      generatedAt: 100,
+      expiresAt: 200,
+      ...DIGESTS,
+      publishedAt: 101,
+    });
+  });
+
+  it("rolls back when a required checkpoint write is ignored", async () => {
+    await env.DB.prepare(
+      `CREATE TRIGGER directory_artifact_publication_test_ignore
+       BEFORE UPDATE ON directory_artifact_publications
+       WHEN NEW.profile = 'classic-v1'
+       BEGIN SELECT RAISE(IGNORE); END`,
+    ).run();
+    await expect(commitDirectoryArtifactPublication(env.DB, {
+      profile: "classic-v1",
+      publishedRevision: 0,
+      generation: 1,
+      generatedAt: 100,
+      expiresAt: 200,
+      ...DIGESTS,
+      publishedAt: 101,
+    })).rejects.toThrow();
+    await env.DB.prepare(
+      "DROP TRIGGER directory_artifact_publication_test_ignore",
+    ).run();
+    expect((await readDirectoryArtifactPublication(
+      env.DB,
+      "classic-v1",
+    )).generation).toBe(0);
+    expect(await env.DB.prepare(
+      `SELECT COUNT(*) AS count FROM directory_artifact_commits
+        WHERE profile = 'classic-v1'`,
+    ).first<number>("count")).toBe(0);
+  });
+
+  it("rolls back when required rollback-history persistence is ignored", async () => {
+    await env.DB.prepare(
+      `CREATE TRIGGER directory_artifact_history_test_ignore_insert
+       BEFORE INSERT ON directory_artifact_history
+       WHEN NEW.profile = 'classic-v1'
+       BEGIN SELECT RAISE(IGNORE); END`,
+    ).run();
+    await expect(commitDirectoryArtifactPublication(env.DB, {
+      profile: "classic-v1",
+      publishedRevision: 0,
+      generation: 1,
+      generatedAt: 100,
+      expiresAt: 200,
+      ...DIGESTS,
+      publishedAt: 101,
+    })).rejects.toThrow();
+    await env.DB.prepare(
+      "DROP TRIGGER directory_artifact_history_test_ignore_insert",
+    ).run();
+    expect((await readDirectoryArtifactPublication(
+      env.DB,
+      "classic-v1",
+    )).generation).toBe(0);
+    expect(await readDirectoryArtifactHistory(env.DB, "classic-v1"))
+      .toEqual([]);
+  });
+
+  it("rolls back when bounded rollback-history pruning is ignored", async () => {
+    const base = {
+      profile: "classic-v1",
+      publishedRevision: 0,
+      generatedAt: 100,
+      expiresAt: 1_000,
+      ...DIGESTS,
+    } as const;
+    for (let generation = 1; generation <= 8; generation += 1) {
+      await commitDirectoryArtifactPublication(env.DB, {
+        ...base,
+        generation,
+        publishedAt: 100 + generation,
+      });
+    }
+    await env.DB.prepare(
+      `CREATE TRIGGER directory_artifact_history_test_ignore_prune
+       BEFORE DELETE ON directory_artifact_history
+       WHEN OLD.profile = 'classic-v1' AND OLD.generation = 1
+       BEGIN SELECT RAISE(IGNORE); END`,
+    ).run();
+    await expect(commitDirectoryArtifactPublication(env.DB, {
+      ...base,
+      generation: 9,
+      publishedAt: 109,
+    })).rejects.toThrow();
+    await env.DB.prepare(
+      "DROP TRIGGER directory_artifact_history_test_ignore_prune",
+    ).run();
+    expect((await readDirectoryArtifactPublication(
+      env.DB,
+      "classic-v1",
+    )).generation).toBe(8);
+    expect(await readDirectoryArtifactHistory(env.DB, "classic-v1"))
+      .toEqual([1, 2, 3, 4, 5, 6, 7, 8]);
+  });
+
+  it("rolls back when required outbox acknowledgement is ignored", async () => {
+    await env.DB.batch([
+      env.DB.prepare(
+        `UPDATE directory_revisions SET revision = 1, updated_at = 100
+          WHERE profile = 'classic-v1'`,
+      ),
+      env.DB.prepare(
+        `INSERT INTO directory_outbox (profile, revision, created_at)
+         VALUES ('classic-v1', 1, 100)`,
+      ),
+      env.DB.prepare(
+        `CREATE TRIGGER directory_outbox_test_ignore_acknowledgement
+         BEFORE DELETE ON directory_outbox
+         WHEN OLD.profile = 'classic-v1'
+         BEGIN SELECT RAISE(IGNORE); END`,
+      ),
+    ]);
+    await expect(commitDirectoryArtifactPublication(env.DB, {
+      profile: "classic-v1",
+      publishedRevision: 1,
+      generation: 1,
+      generatedAt: 100,
+      expiresAt: 200,
+      ...DIGESTS,
+      publishedAt: 101,
+    })).rejects.toThrow();
+    await env.DB.prepare(
+      "DROP TRIGGER directory_outbox_test_ignore_acknowledgement",
+    ).run();
+    expect((await readDirectoryArtifactPublication(
+      env.DB,
+      "classic-v1",
+    )).generation).toBe(0);
+    expect(await env.DB.prepare(
+      `SELECT revision FROM directory_outbox WHERE profile = 'classic-v1'`,
+    ).all()).toMatchObject({ results: [{ revision: 1 }] });
+    expect(await env.DB.prepare(
+      `SELECT COUNT(*) AS count FROM directory_artifact_commits
+        WHERE profile = 'classic-v1'`,
+    ).first<number>("count")).toBe(0);
+  });
+});
+
 function nextPublication(
   original: InternalRendezvousPublication,
   overrides: Partial<InternalRendezvousPublication>,
@@ -395,6 +761,7 @@ function nextPublication(
 
 async function snapshotDirectoryState(): Promise<unknown> {
   const tables = [
+    "directory_artifact_history",
     "directory_entries",
     "directory_expiry_commits",
     "directory_outbox",

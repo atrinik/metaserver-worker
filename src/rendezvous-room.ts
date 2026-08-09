@@ -37,6 +37,7 @@ import {
   MAX_SERVER_CANDIDATES,
   MAX_SERVER_AUTHORIZATION_FRAMES,
   MAX_TERMINAL_CLOSE_ATTEMPTS,
+  INTERNAL_DIRECTORY_CHANGED_HEADER,
   NORMAL_RENDEZVOUS_CLOSE,
   parseRendezvousSignal,
   RENDEZVOUS_CLOSE,
@@ -284,6 +285,7 @@ export class RendezvousRoom extends DurableObject<Env> {
     }
 
     await this.rotateTokenGeneration(publication.generation);
+    let visibleChanged = false;
     try {
       const persisted = await this.publicationPersister(
         this.env.DB,
@@ -297,9 +299,14 @@ export class RendezvousRoom extends DurableObject<Env> {
         }
         return publishReplayResponse(conflict);
       }
+      visibleChanged = persisted.visibleChanged;
     } catch (error) {
       if (await this.publicationMatcher(this.env.DB, publication)) {
-        return new Response(null, { status: 204 });
+        // The exact matcher proves the required outbox when the mutation was
+        // visible. Conservatively nudging after an ambiguous-but-committed
+        // neutral mutation avoids adding another fallible D1 read after the
+        // transaction is already authoritative.
+        return publicationCommittedResponse(true);
       }
       // D1 is authoritative after an ambiguous batch result. Re-read it rather
       // than assuming whether the transaction committed, then make the room
@@ -307,7 +314,7 @@ export class RendezvousRoom extends DurableObject<Env> {
       await this.reconcilePublishedGeneration(publication.serverId);
       throw error;
     }
-    return new Response(null, { status: 204 });
+    return publicationCommittedResponse(visibleChanged);
   }
 
   private async signedPublicationConflict(
@@ -2729,6 +2736,15 @@ function minimumNextPublishSequence(lastSequence: string): string {
   const maximum = 18_446_744_073_709_551_615n;
   const next = BigInt(lastSequence) + 1n;
   return (next > maximum ? maximum : next).toString();
+}
+
+function publicationCommittedResponse(visibleChanged: boolean): Response {
+  return new Response(null, {
+    status: 204,
+    headers: {
+      [INTERNAL_DIRECTORY_CHANGED_HEADER]: visibleChanged ? "1" : "0",
+    },
+  });
 }
 
 function publishReplayResponse(minimumNextSequence: string): Response {

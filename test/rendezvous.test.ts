@@ -15,6 +15,7 @@ import type {
   RendezvousTerminalSummary,
 } from "../src/rendezvous-metrics";
 import {
+  INTERNAL_DIRECTORY_CHANGED_HEADER,
   INTERNAL_RENDEZVOUS_AUTHORIZATION_HEADER,
   INTERNAL_RENDEZVOUS_GENERATION_HEADER,
   INTERNAL_RENDEZVOUS_PUBLISH_URL,
@@ -937,6 +938,31 @@ describe("RendezvousRoom HTTP and admission boundary", () => {
 
     closeForCleanup(server);
   });
+
+  it("reports only actual visible publication changes to the outer Worker", async () => {
+    const serverId = ticket(40_001);
+    const firstGeneration = "1".repeat(64);
+    const secondGeneration = "2".repeat(64);
+    const thirdGeneration = "3".repeat(64);
+    await seedPublishedGeneration(serverId, firstGeneration);
+    const stub = env.RENDEZVOUS.getByName(serverId);
+
+    const changed = await stub.fetch(generationPublicationRequest(
+      serverId,
+      firstGeneration,
+      secondGeneration,
+    ));
+    expect(changed.status).toBe(204);
+    expect(changed.headers.get(INTERNAL_DIRECTORY_CHANGED_HEADER)).toBe("1");
+
+    const heartbeat = await stub.fetch(generationPublicationRequest(
+      serverId,
+      secondGeneration,
+      thirdGeneration,
+    ));
+    expect(heartbeat.status).toBe(204);
+    expect(heartbeat.headers.get(INTERNAL_DIRECTORY_CHANGED_HEADER)).toBe("0");
+  });
 });
 
 describe("RendezvousRoom protected authorization", () => {
@@ -1153,6 +1179,8 @@ describe("RendezvousRoom protected authorization", () => {
       ]);
       expect(upgradeResponse.status).toBe(101);
       expect(publicationResponse.status).toBe(204);
+      expect(publicationResponse.headers.get(INTERNAL_DIRECTORY_CHANGED_HEADER))
+        .toBe("1");
       const oldSocket = upgradeResponse.webSocket;
       if (oldSocket === null) {
         throw new Error("Serialized stale upgrade returned no WebSocket");
@@ -1220,6 +1248,7 @@ describe("RendezvousRoom protected authorization", () => {
           newGeneration,
         ));
         expect(response.status).toBe(204);
+        expect(response.headers.get(INTERNAL_DIRECTORY_CHANGED_HEADER)).toBe("1");
         expect(await state.storage.get("rendezvous:token-generation"))
           .toBe(newGeneration);
       } finally {

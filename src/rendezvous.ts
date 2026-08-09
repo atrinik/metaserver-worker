@@ -85,7 +85,7 @@ export async function openRendezvous(
         AND entries.server_id = presence.server_id
       WHERE presence.profile = 'classic-v1'
         AND presence.server_id = ?
-        AND presence.last_seen >= ?`,
+        AND presence.last_seen > ?`,
   ).bind(serverId, cutoff).first<RendezvousServerRecord>();
 
   if (server === null) {

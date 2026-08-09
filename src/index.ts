@@ -14,6 +14,7 @@ import {
   DIRECTORY_PROFILES,
   expireDirectoryEntries,
 } from "./directory-state";
+import { DirectoryBuilder } from "./directory-builder";
 import { isCanonicalHostname } from "./hostname";
 import {
   logBlacklistMatch,
@@ -60,6 +61,7 @@ import {
 import type { RequestBudgetScope } from "./rate-limit";
 import { openRendezvous, RendezvousRoom } from "./rendezvous";
 import {
+  INTERNAL_DIRECTORY_CHANGED_HEADER,
   INTERNAL_RENDEZVOUS_PUBLISH_URL,
 } from "./rendezvous-contract";
 import type { InternalRendezvousPublication } from "./rendezvous-contract";
@@ -78,13 +80,13 @@ import type {
   UpdatePayload,
 } from "./types";
 
-export { RendezvousRoom };
+export { DirectoryBuilder, RendezvousRoom };
 
 export default {
   async fetch(
     request: Request,
     env: Env,
-    _ctx: ExecutionContext,
+    ctx: ExecutionContext,
   ): Promise<Response> {
     let diagnosticRoute: DiagnosticRoute = "unclassified";
     try {
@@ -117,6 +119,7 @@ export default {
           route,
           control,
           Math.floor(Date.now() / 1_000),
+          ctx,
         );
       }
 
@@ -214,6 +217,7 @@ export default {
             control,
             route.maximumBodyBytes,
             now,
+            ctx,
           );
         case "compatibility-rendezvous":
           return await openCompatibilityRendezvous(
@@ -231,13 +235,24 @@ export default {
   },
 
   async scheduled(
-    _controller: ScheduledController,
+    controller: ScheduledController,
     env: Env,
     _ctx: ExecutionContext,
   ): Promise<void> {
     try {
       const now = Math.floor(Date.now() / 1_000);
       const control = requestControlConfiguration(env);
+      if (controller.cron === "*/5 * * * *") {
+        const builds = await Promise.allSettled(
+          DIRECTORY_PROFILES.map((profile) =>
+            env.DIRECTORY_BUILDER.getByName(profile).reconcile()
+          ),
+        );
+        if (builds.some((build) => build.status === "rejected")) {
+          throw new Error("Static directory reconciliation failed");
+        }
+        return;
+      }
       const listingCutoff = now - control.listingTtlSeconds;
       for (const profile of DIRECTORY_PROFILES) {
         await expireDirectoryEntries(env.DB, profile, listingCutoff, now);
@@ -436,7 +451,7 @@ async function listDirectServers(
          ON presence.profile = entries.profile
         AND presence.server_id = entries.server_id
       WHERE entries.profile = 'classic-v1'
-        AND presence.last_seen >= ?
+        AND presence.last_seen > ?
       ORDER BY entries.name COLLATE NOCASE, entries.server_id`,
   )
     .bind(cutoff)
@@ -537,6 +552,7 @@ async function updateServer(
   control: RequestControlConfiguration,
   maximumBodyBytes: number,
   now: number,
+  ctx: ExecutionContext,
 ): Promise<Response> {
   const payload = parseUpdatePayload(await readUpdateForm(
     request,
@@ -684,6 +700,7 @@ async function updateServer(
   if (committed.status !== 204) {
     throw new Error("Rendezvous publication did not commit");
   }
+  scheduleDirectoryReconciliation(env, ctx, committed, "classic-v1");
 
   return Response.json(
     { status: "ok", rendezvousToken },
@@ -760,6 +777,7 @@ async function publishClassicServer(
   route: Extract<CanonicalDynamicRoute, { kind: "publish" }>,
   control: RequestControlConfiguration,
   now: number,
+  ctx: ExecutionContext,
 ): Promise<Response> {
   const body = await readBoundedPublishBody(request, route.maximumBodyBytes);
   const authenticated = await authenticateClassicPublish(
@@ -839,6 +857,7 @@ async function publishClassicServer(
     await committed.body?.cancel();
     throw new Error("Signed publication did not commit");
   }
+  scheduleDirectoryReconciliation(env, ctx, committed, "classic-v1");
   return Response.json(
     { status: "ok", rendezvousToken },
     {
@@ -863,6 +882,27 @@ async function commitRendezvousPublication(
       body: JSON.stringify(publication),
     }),
   );
+}
+
+function scheduleDirectoryReconciliation(
+  env: Env,
+  ctx: ExecutionContext,
+  response: Response,
+  profile: typeof DIRECTORY_PROFILES[number],
+): void {
+  const changed = response.headers.get(INTERNAL_DIRECTORY_CHANGED_HEADER);
+  // A previous Room version returns a headerless 204. The D1 commit is already
+  // authoritative at this boundary, so any value other than an exact neutral
+  // marker is treated conservatively as work instead of turning success into a
+  // public error during rolling replacement.
+  if (changed !== "0") {
+    ctx.waitUntil(
+      env.DIRECTORY_BUILDER.getByName(profile).nudge().then(
+        () => undefined,
+        () => undefined,
+      ),
+    );
+  }
 }
 
 async function readPublishReplayConflict(

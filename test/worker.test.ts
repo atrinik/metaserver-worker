@@ -175,6 +175,9 @@ beforeEach(async () => {
     await env.DB.prepare(`DROP TRIGGER IF EXISTS ${trigger}`).run();
   }
   await env.DB.batch([
+    env.DB.prepare("DELETE FROM directory_artifact_history"),
+    env.DB.prepare("DELETE FROM directory_artifact_commits"),
+    env.DB.prepare("DELETE FROM directory_expiry_commits"),
     env.DB.prepare("DELETE FROM directory_entries"),
     env.DB.prepare("DELETE FROM server_presence"),
     env.DB.prepare("DELETE FROM servers"),
@@ -188,6 +191,18 @@ beforeEach(async () => {
     env.DB.prepare("DELETE FROM publisher_replay"),
     env.DB.prepare(
       "UPDATE directory_revisions SET revision = 0, updated_at = 0",
+    ),
+    env.DB.prepare(
+      `UPDATE directory_artifact_publications
+          SET published_revision = 0, generation = 0, generated_at = 0,
+              expires_at = 0,
+              model_sha256 = '${"0".repeat(64)}',
+              html_sha256 = '${"0".repeat(64)}',
+              xml_sha256 = '${"0".repeat(64)}',
+              json_sha256 = '${"0".repeat(64)}',
+              manifest_sha256 = '${"0".repeat(64)}',
+              html_bytes = 0, xml_bytes = 0, json_bytes = 0,
+              manifest_bytes = 0, published_at = 0`,
     ),
   ]);
 });
@@ -549,6 +564,7 @@ describe("metaserver Worker", () => {
   it("registers and accepts a second authenticated identity update", async () => {
     const firstOtp = await issueOtp();
     expect((await postUpdate(updateForm(firstOtp, RAW_KEY))).status).toBe(200);
+    await env.DIRECTORY_BUILDER.getByName("classic-v1").reconcile();
 
     const storedKey = await deriveStoredKey(RAW_KEY, activeServerId);
     const owner = await env.DB.prepare(
@@ -567,6 +583,14 @@ describe("metaserver Worker", () => {
       `SELECT hostname FROM directory_entries
         WHERE profile = 'classic-v1' AND server_id = ?`,
     ).bind(activeServerId).first<string | null>("hostname")).toBeNull();
+    expect(await env.DB.prepare(
+      `SELECT published_revision FROM directory_artifact_publications
+        WHERE profile = 'classic-v1'`,
+    ).first<number>("published_revision")).toBe(1);
+    expect(await (await env.CLASSIC_DIRECTORY_PUBLIC.get("index.xml"))?.text())
+      .toContain(`<Id>${activeServerId}</Id>`);
+    const staticEtag = (await env.CLASSIC_DIRECTORY_PUBLIC.head("index.xml"))
+      ?.etag;
 
     const secondOtp = await issueOtp();
     const proof = await deriveUpdateProof(secondOtp, storedKey, COTP);
@@ -575,6 +599,8 @@ describe("metaserver Worker", () => {
     secondForm.set("quic_host", "198.51.100.21");
     secondForm.set("quic_port", "1731");
     expect((await postUpdate(secondForm)).status).toBe(200);
+    expect((await env.CLASSIC_DIRECTORY_PUBLIC.head("index.xml"))?.etag)
+      .toBe(staticEtag);
 
     const body = await (await callWorker(request("/v2/servers"))).text();
     expect(body).toContain(`<Id>${activeServerId}</Id>`);

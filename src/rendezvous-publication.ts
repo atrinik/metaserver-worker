@@ -255,7 +255,12 @@ function publicationResult(
   outboxIndex: number,
 ): PublicationPersistenceResult {
   const revisionChanges = changes(results, revisionIndex);
-  if (revisionChanges !== changes(results, outboxIndex) || revisionChanges > 1) {
+  const outboxChanges = changes(results, outboxIndex);
+  if (
+    revisionChanges > 1 ||
+    (revisionChanges === 0 && outboxChanges !== 0) ||
+    (revisionChanges === 1 && (outboxChanges < 1 || outboxChanges > 2))
+  ) {
     throw new Error("Directory revision and outbox diverged");
   }
   return { accepted: true, visibleChanged: revisionChanges === 1 };
@@ -297,7 +302,7 @@ function visibleRevisionStatement(
                  AND presence.server_id = ?
                  AND presence.publication_commit_token = ?
             ),
-            updated_at = ?
+            updated_at = max(updated_at, ?)
       WHERE profile = ?
         AND EXISTS (
           SELECT 1 FROM server_presence AS presence
@@ -546,7 +551,7 @@ function visibleContentChangedPredicate(): string {
          AND presence.server_id = entries.server_id
        WHERE entries.profile = ?
          AND entries.server_id = ?
-         AND presence.last_seen >= ?
+         AND presence.last_seen > ?
          AND entries.directory_fingerprint = ?
     )) OR
     (? = 0 AND EXISTS (
@@ -678,6 +683,11 @@ function publicationPresencePredicate(
                 WHERE outbox.profile = presence.profile
                   AND outbox.revision = presence.publication_visible_revision
                   AND outbox.created_at = ?
+             ) AND NOT EXISTS (
+               SELECT 1 FROM directory_outbox AS obsolete
+                WHERE obsolete.profile = presence.profile
+                  AND obsolete.revision <>
+                      presence.publication_visible_revision
              )
            )
          )

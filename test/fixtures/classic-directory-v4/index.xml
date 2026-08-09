@@ -1,0 +1,23 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<Servers protocol="4" schema="atrinik-classic-directory-v4" generation="42" generated-at="1786219200" expires-at="1786222800">
+  <Server>
+    <Id>0000000000000000000000000000000000000000000000000000000000000000</Id>
+    <Name>Classic server</Name>
+    <PlayersCount>2</PlayersCount>
+    <Version>3.0</Version>
+    <TextComment>Welcome</TextComment>
+    <CertificateSha256>0000000000000000000000000000000000000000000000000000000000000000</CertificateSha256>
+    <PasswordRequired>false</PasswordRequired>
+  </Server>
+  <Server>
+    <Id>ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff</Id>
+    <Name>Public fallback</Name>
+    <PlayersCount>4294967295</PlayersCount>
+    <Version>3.0</Version>
+    <TextComment></TextComment>
+    <Address>play.example.net</Address>
+    <Port>13327</Port>
+    <CertificateSha256>ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff</CertificateSha256>
+    <PasswordRequired>true</PasswordRequired>
+  </Server>
+</Servers>
