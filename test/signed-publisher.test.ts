@@ -24,7 +24,6 @@ interface StoredSignedPublication {
   readonly authentication_kind: string;
   readonly auth_key: string;
   readonly directory_fingerprint: string;
-  readonly is_public: number;
   readonly last_nonce: string;
   readonly last_sequence: string;
   readonly rendezvous_generation: string;
@@ -98,13 +97,20 @@ function testEnvironment(options: {
 async function storedPublication(): Promise<StoredSignedPublication | null> {
   return env.DB.prepare(
     `SELECT owners.authentication_kind, owners.auth_key,
-            servers.directory_fingerprint, servers.is_public,
+            entries.directory_fingerprint,
             replay.last_nonce, replay.last_sequence,
-            servers.rendezvous_generation, servers.rendezvous_token_hash
-       FROM servers
+            presence.rendezvous_generation,
+            presence.rendezvous_token_hash
+       FROM server_presence AS presence
+       JOIN directory_entries AS entries
+         ON entries.profile = presence.profile
+        AND entries.server_id = presence.server_id
        JOIN server_owners AS owners USING (server_id)
-       JOIN publisher_replay AS replay USING (server_id)
-      WHERE servers.server_id = ? AND replay.profile = 'classic-v1'`,
+       JOIN publisher_replay AS replay
+         ON replay.server_id = presence.server_id
+        AND replay.profile = presence.profile
+      WHERE presence.server_id = ?
+        AND presence.profile = 'classic-v1'`,
   ).bind(publisherFixture.server_id).first<StoredSignedPublication>();
 }
 
@@ -118,6 +124,8 @@ beforeEach(async () => {
     env.DB.prepare("DELETE FROM directory_outbox"),
     env.DB.prepare("DELETE FROM publisher_nonces"),
     env.DB.prepare("DELETE FROM publisher_replay"),
+    env.DB.prepare("DELETE FROM directory_entries"),
+    env.DB.prepare("DELETE FROM server_presence"),
     env.DB.prepare("DELETE FROM servers"),
     env.DB.prepare("DELETE FROM server_owners"),
     env.DB.prepare("DELETE FROM request_budgets"),
@@ -271,7 +279,6 @@ describe("classic signed publisher", () => {
     expect(storedInitial).toMatchObject({
       authentication_kind: "signed-certificate-v1",
       auth_key: "0".repeat(128),
-      is_public: 1,
       last_nonce: publisherFixture.nonce,
       last_sequence: publisherFixture.sequence,
       rendezvous_token_hash: await sha256Hex(initialBody.rendezvousToken),
@@ -344,7 +351,32 @@ describe("classic signed publisher", () => {
       workerEnv,
     );
     expect(madePrivate.status).toBe(200);
-    expect((await storedPublication())?.is_public).toBe(0);
+    const privateBody = await madePrivate.json<{
+      status: string;
+      rendezvousToken: string;
+    }>();
+    expect(privateBody.status).toBe("ok");
+    expect(await storedPublication()).toBeNull();
+    expect(await env.DB.prepare(
+      `SELECT last_seen, rendezvous_token_hash, rendezvous_generation
+         FROM server_presence
+        WHERE profile = 'classic-v1' AND server_id = ?`,
+    ).bind(publisherFixture.server_id).first()).toMatchObject({
+      last_seen: publisherFixture.created,
+      rendezvous_token_hash: await sha256Hex(privateBody.rendezvousToken),
+      rendezvous_generation: expect.stringMatching(/^[0-9a-f]{64}$/),
+    });
+    expect(await env.DB.prepare(
+      `SELECT owners.authentication_kind, replay.last_sequence,
+              replay.last_nonce
+         FROM server_owners AS owners
+         JOIN publisher_replay AS replay USING (server_id)
+        WHERE owners.server_id = ? AND replay.profile = 'classic-v1'`,
+    ).bind(publisherFixture.server_id).first()).toEqual({
+      authentication_kind: "signed-certificate-v1",
+      last_sequence: publisherFixture.private.sequence,
+      last_nonce: publisherFixture.private.nonce,
+    });
     expect(await directoryState()).toEqual({
       revision: 3,
       outbox: [1, 2, 3],

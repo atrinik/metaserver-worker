@@ -11,6 +11,11 @@ import {
 } from "./config";
 import type { RequestControlConfiguration } from "./config";
 import {
+  DIRECTORY_PROFILES,
+  expireDirectoryEntries,
+} from "./directory-state";
+import { isCanonicalHostname } from "./hostname";
+import {
   logBlacklistMatch,
   logRequestRejected,
   logUnexpectedError,
@@ -233,6 +238,10 @@ export default {
     try {
       const now = Math.floor(Date.now() / 1_000);
       const control = requestControlConfiguration(env);
+      const listingCutoff = now - control.listingTtlSeconds;
+      for (const profile of DIRECTORY_PROFILES) {
+        await expireDirectoryEntries(env.DB, profile, listingCutoff, now);
+      }
       const staleCutoff = now - control.staleDataRetentionSeconds;
       const cleanup = await cleanupExpiredState(env.DB, {
         serversBefore: staleCutoff,
@@ -418,22 +427,37 @@ async function listDirectServers(
 ): Promise<Response> {
   const cutoff = now - listingTtlSeconds;
   const result = await env.DB.prepare(
-    `SELECT server_id, name, players_count, version, text_comment,
-            quic_host, quic_port, quic_cert_sha256,
-            password_required
-       FROM servers
-      WHERE last_seen >= ?
-        AND is_public = 1
-      ORDER BY name COLLATE NOCASE, server_id`,
+    `SELECT entries.server_id, entries.name, entries.players_count,
+            entries.version, entries.text_comment, entries.hostname,
+            entries.port, entries.quic_cert_sha256,
+            entries.password_required
+       FROM directory_entries AS entries
+       JOIN server_presence AS presence
+         ON presence.profile = entries.profile
+        AND presence.server_id = entries.server_id
+      WHERE entries.profile = 'classic-v1'
+        AND presence.last_seen >= ?
+      ORDER BY entries.name COLLATE NOCASE, entries.server_id`,
   )
     .bind(cutoff)
     .all<DirectoryServerRecord>();
 
   const body = result.results.map((server) => {
-    const directEndpoint = server.quic_host === ""
+    if (
+      (server.hostname === null) !== (server.port === null) ||
+      (server.hostname !== null &&
+        (!isCanonicalHostname(server.hostname) ||
+          server.port === null ||
+          !Number.isSafeInteger(server.port) ||
+          server.port < 1 ||
+          server.port > 65_535))
+    ) {
+      throw new Error("Stored directory endpoint is invalid");
+    }
+    const directEndpoint = server.hostname === null
       ? ""
-      : `<Address>${escapeXml(server.quic_host)}</Address>` +
-        `<Port>${server.quic_port}</Port>`;
+      : `<Address>${escapeXml(server.hostname)}</Address>` +
+        `<Port>${server.port}</Port>`;
 
     return (
       "<Server>" +
@@ -527,9 +551,15 @@ async function updateServer(
   )
     .bind(payload.serverId)
     .first<OwnerAuthRecord>();
+  let provisionalOwner: { readonly authKey: string; readonly createdAt: number } |
+    null = null;
 
   if (owner !== null) {
-    await authenticateExistingOwner(payload, owner);
+    if (payload.registration) {
+      await authenticateCompatibilityRegistration(payload, owner);
+    } else {
+      await authenticateExistingOwner(payload, owner);
+    }
     await enforceAuthenticatedUpdateBudget(
       env,
       payload.serverId,
@@ -579,6 +609,9 @@ async function updateServer(
         !await constantTimeEqual(storedKey, owner.auth_key)) {
       throw new RequestError("Invalid metaserver key", 401);
     }
+    if (insertion.meta.changes === 1) {
+      provisionalOwner = { authKey: storedKey, createdAt: now };
+    }
   }
 
   const rendezvousToken = randomToken();
@@ -586,6 +619,7 @@ async function updateServer(
   const rendezvousGeneration = randomToken();
   const expectedGeneration = await readPublishedGeneration(
     env.DB,
+    "classic-v1",
     payload.serverId,
   );
   const publication = {
@@ -606,8 +640,11 @@ async function updateServer(
     version: payload.version,
     textComment: payload.textComment,
     isPublic: payload.isPublic,
-    quicHost: payload.quicHost ?? "",
-    quicPort: payload.quicPort,
+    // Compatibility updates carry numeric endpoints. Keep accepting their
+    // legacy wire shape during the sunset, but never promote a discovered IP
+    // into the explicit persisted hostname field.
+    quicHost: "",
+    quicPort: 1,
     quicCertSha256: payload.quicCertSha256,
     passwordRequired: payload.passwordRequired,
     directoryFingerprint: await classicDirectoryFingerprint({
@@ -616,15 +653,30 @@ async function updateServer(
       playersCount: payload.playersCount,
       version: payload.version,
       textComment: payload.textComment,
-      quicHost: payload.quicHost ?? "",
-      quicPort: payload.quicPort,
+      quicHost: "",
+      quicPort: 1,
       quicCertSha256: payload.quicCertSha256,
       passwordRequired: payload.passwordRequired,
     }),
   } satisfies InternalRendezvousPublication;
-  const committed = await commitRendezvousPublication(env, publication);
+  let committed: Response;
+  try {
+    committed = await commitRendezvousPublication(env, publication);
+  } catch (error) {
+    await rollbackProvisionalOwner(
+      env.DB,
+      payload.serverId,
+      provisionalOwner,
+    );
+    throw error;
+  }
   if (committed.status !== 204) {
     await committed.body?.cancel();
+    await rollbackProvisionalOwner(
+      env.DB,
+      payload.serverId,
+      provisionalOwner,
+    );
   }
   if (committed.status === 409) {
     throw new HttpError("service_disabled", { retryAfterSeconds: 5 });
@@ -642,6 +694,64 @@ async function updateServer(
       },
     },
   );
+}
+
+async function rollbackProvisionalOwner(
+  db: D1Database,
+  serverId: string,
+  provisional: { readonly authKey: string; readonly createdAt: number } | null,
+): Promise<void> {
+  if (provisional === null) {
+    return;
+  }
+  const removed = await db.prepare(
+    `DELETE FROM server_owners
+      WHERE server_id = ? AND auth_key = ?
+        AND authentication_kind = 'compat-key-v1'
+        AND current_ip = ''
+        AND created_at = ? AND updated_at = ?
+        AND rendezvous_generation = ?
+        AND NOT EXISTS (
+          SELECT 1 FROM server_presence WHERE server_id = ?
+        )
+        AND NOT EXISTS (
+          SELECT 1 FROM publisher_replay WHERE server_id = ?
+        )`,
+  ).bind(
+    serverId,
+    provisional.authKey,
+    provisional.createdAt,
+    provisional.createdAt,
+    "0".repeat(64),
+    serverId,
+    serverId,
+  ).run();
+  if (removed.meta.changes === 1) {
+    return;
+  }
+  const stranded = await db.prepare(
+    `SELECT COUNT(*) AS count FROM server_owners AS owners
+      WHERE owners.server_id = ? AND owners.auth_key = ?
+        AND owners.authentication_kind = 'compat-key-v1'
+        AND owners.current_ip = ''
+        AND owners.created_at = ? AND owners.updated_at = ?
+        AND owners.rendezvous_generation = ?
+        AND NOT EXISTS (
+          SELECT 1 FROM server_presence WHERE server_id = owners.server_id
+        )
+        AND NOT EXISTS (
+          SELECT 1 FROM publisher_replay WHERE server_id = owners.server_id
+        )`,
+  ).bind(
+    serverId,
+    provisional.authKey,
+    provisional.createdAt,
+    provisional.createdAt,
+    "0".repeat(64),
+  ).first<number>("count");
+  if (stranded !== 0) {
+    throw new Error("Provisional owner rollback did not complete");
+  }
 }
 
 async function publishClassicServer(
@@ -678,7 +788,11 @@ async function publishClassicServer(
     publisherNonce: authenticated.nonce,
     publisherNonceExpiresAt: authenticated.nonceExpiresAt,
     commitToken: randomToken(),
-    expectedGeneration: await readPublishedGeneration(env.DB, route.serverId),
+    expectedGeneration: await readPublishedGeneration(
+      env.DB,
+      "classic-v1",
+      route.serverId,
+    ),
     generation: randomToken(),
     tokenHash: await sha256Hex(rendezvousToken),
     now,
@@ -949,6 +1063,19 @@ async function authenticateExistingOwner(
     payload.cotp,
   );
   if (!await constantTimeEqual(expected, payload.key)) {
+    throw new RequestError("Invalid metaserver key", 401);
+  }
+}
+
+async function authenticateCompatibilityRegistration(
+  payload: UpdatePayload,
+  owner: OwnerAuthRecord,
+): Promise<void> {
+  if (owner.authentication_kind !== "compat-key-v1") {
+    throw new RequestError("Invalid metaserver key", 401);
+  }
+  const expected = await deriveStoredKey(payload.key, payload.serverId);
+  if (!await constantTimeEqual(expected, owner.auth_key)) {
     throw new RequestError("Invalid metaserver key", 401);
   }
 }

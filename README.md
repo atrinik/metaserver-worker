@@ -107,9 +107,13 @@ purpose-separated HMAC-SHA-256 replay aliases derived with the current and
 previous source-tag keys. Raw tickets, SHA-256 routing digests, connection IDs,
 and candidate addresses never enter SQLite. Invite IDs, secrets, challenges,
 proofs, and serialized authorization frames do not enter SQLite, Durable Object
-key-value storage, hibernation attachments, logs, or metrics. The D1 owner and
-listing rows, the room's fixed key-value marker, and both attachment roles
-retain only the same random, non-secret token-generation ID needed to
+key-value storage, hibernation attachments, logs, or metrics. Profile-scoped D1
+presence stores the bearer-token hash, last-seen time, and random non-secret
+token generation; a separate public-only directory row stores only renderable
+metadata and an optional operator-published DNS hostname/UDP port pair. A
+private publication retains minimal authentication presence but deletes the
+public directory row and cannot admit either rendezvous role. The room's fixed
+key-value marker and both attachment roles retain only the generation needed to
 invalidate a previous control.
 Outside the transient signaling frame, retained raw-ticket state exists only
 in its client WebSocket attachment
@@ -136,10 +140,16 @@ See [DEPLOYMENT.md](DEPLOYMENT.md) for the release checklist.
 For requests handled by the foundation Worker, newly observed raw addresses
 remain request-scoped. New challenge and request-control writes use
 purpose-separated, rotating HMAC tags with bounded retention; authenticated
-stages use the server identity. The additive migration does not erase dormant
-historical owner/listing values: the next accepted publish clears those legacy
-columns for that server, while a later ordered sanitization migration owns any
-remaining dormant rows. No update infers a QUIC endpoint from the HTTPS source.
+stages use the server identity. Migration `0005_directory_state.sql` clears
+historical owner/listing address columns, deletes private legacy listing rows,
+and imports public rows without their former endpoint. Compatibility address
+inputs remain accepted at the sunset wire boundary but are discarded; only a
+signed, canonical DNS hostname is eligible for persistence. Canonical `xn--`
+labels are checked with strict, non-transitional UTS #46 processing, including
+STD3, hyphen, joiner, bidirectional, and DNS-length checks. Raw legacy
+OTP/rate-limit columns and address blacklist policy remain governed by the
+later signed-publisher compatibility-removal migration. No update infers a
+QUIC endpoint from the HTTPS source.
 The request path emits only the closed, redacted diagnostic events described in
 [docs/privacy.md](docs/privacy.md).
 

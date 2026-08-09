@@ -23,9 +23,13 @@
   "devDependencies": {
     "@cloudflare/vitest-pool-workers": "^0.20.1",
     "@types/node": "^26.1.2",
+    "@types/tr46": "5.0.1",
     "tsx": "^4.23.5",
     "typescript": "^7.0.2",
     "vitest": "^4.1.10",
     "wrangler": "^4.118.0"
+  },
+  "dependencies": {
+    "tr46": "6.0.0"
   }
 }

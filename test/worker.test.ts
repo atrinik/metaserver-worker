@@ -23,8 +23,8 @@ const RAW_KEY = "a".repeat(128);
 const COTP = "b".repeat(128);
 const PERSISTENCE_TEST_TRIGGERS = [
   "server_owners_test_ignore_update",
-  "servers_test_ignore_insert",
-  "servers_test_ignore_update",
+  "server_presence_test_ignore_insert",
+  "server_presence_test_ignore_update",
 ] as const;
 let activeSourceIp = SOURCE_IP;
 let activeServerId = INITIAL_SERVER_ID;
@@ -175,12 +175,20 @@ beforeEach(async () => {
     await env.DB.prepare(`DROP TRIGGER IF EXISTS ${trigger}`).run();
   }
   await env.DB.batch([
+    env.DB.prepare("DELETE FROM directory_entries"),
+    env.DB.prepare("DELETE FROM server_presence"),
     env.DB.prepare("DELETE FROM servers"),
     env.DB.prepare("DELETE FROM server_owners"),
     env.DB.prepare("DELETE FROM one_time_tokens"),
     env.DB.prepare("DELETE FROM rate_limits"),
     env.DB.prepare("DELETE FROM request_budgets"),
     env.DB.prepare("DELETE FROM server_blacklist"),
+    env.DB.prepare("DELETE FROM directory_outbox"),
+    env.DB.prepare("DELETE FROM publisher_nonces"),
+    env.DB.prepare("DELETE FROM publisher_replay"),
+    env.DB.prepare(
+      "UPDATE directory_revisions SET revision = 0, updated_at = 0",
+    ),
   ]);
 });
 
@@ -555,6 +563,10 @@ describe("metaserver Worker", () => {
     expect(await env.DB.prepare(
       "SELECT source_ip FROM servers WHERE server_id = ?",
     ).bind(activeServerId).first<string>("source_ip")).toBe("");
+    expect(await env.DB.prepare(
+      `SELECT hostname FROM directory_entries
+        WHERE profile = 'classic-v1' AND server_id = ?`,
+    ).bind(activeServerId).first<string | null>("hostname")).toBeNull();
 
     const secondOtp = await issueOtp();
     const proof = await deriveUpdateProof(secondOtp, storedKey, COTP);
@@ -566,8 +578,9 @@ describe("metaserver Worker", () => {
 
     const body = await (await callWorker(request("/v2/servers"))).text();
     expect(body).toContain(`<Id>${activeServerId}</Id>`);
-    expect(body).toContain("<Address>198.51.100.21</Address><Port>1731</Port>");
+    expect(body).not.toContain("<Address>");
     expect(body).not.toContain("198.51.100.20");
+    expect(body).not.toContain("198.51.100.21");
   });
 
   it("serializes concurrent generation commits and returns only one usable token", async () => {
@@ -635,16 +648,15 @@ describe("metaserver Worker", () => {
     }
     const { rendezvousToken } = await winner.json<{ rendezvousToken: string }>();
     const stored = await env.DB.prepare(
-      `SELECT rendezvous_token_hash, rendezvous_generation, quic_port
-         FROM servers WHERE server_id = ?`,
+      `SELECT rendezvous_token_hash, rendezvous_generation
+         FROM server_presence
+        WHERE profile = 'classic-v1' AND server_id = ?`,
     ).bind(activeServerId).first<{
       rendezvous_token_hash: string;
       rendezvous_generation: string;
-      quic_port: number;
     }>();
     expect(stored).not.toBeNull();
     expect(stored?.rendezvous_token_hash).toBe(await sha256Hex(rendezvousToken));
-    expect([1_731, 1_732]).toContain(stored?.quic_port);
     expect(initialToken).not.toBe(rendezvousToken);
 
     const stub = env.RENDEZVOUS.getByName(activeServerId);
@@ -672,7 +684,8 @@ describe("metaserver Worker", () => {
     const { rendezvousToken } = await initial.json<{ rendezvousToken: string }>();
     const before = await env.DB.prepare(
       `SELECT rendezvous_token_hash, rendezvous_generation
-         FROM servers WHERE server_id = ?`,
+         FROM server_presence
+        WHERE profile = 'classic-v1' AND server_id = ?`,
     ).bind(activeServerId).first<{
       rendezvous_token_hash: string;
       rendezvous_generation: string;
@@ -699,8 +712,8 @@ describe("metaserver Worker", () => {
     const closed = nextWebSocketClose(socket);
 
     await env.DB.prepare(
-      `CREATE TRIGGER servers_test_ignore_update
-       BEFORE UPDATE ON servers
+      `CREATE TRIGGER server_presence_test_ignore_update
+       BEFORE UPDATE ON server_presence
        WHEN NEW.server_id = '${activeServerId}'
        BEGIN
          SELECT RAISE(IGNORE);
@@ -717,17 +730,17 @@ describe("metaserver Worker", () => {
     expect((await postUpdate(rejected)).status).toBe(500);
     expect(socket.readyState).not.toBe(WebSocket.OPEN);
     await expect(closed).resolves.toMatchObject({ code: 4_004 });
-    await env.DB.prepare("DROP TRIGGER servers_test_ignore_update").run();
+    await env.DB.prepare("DROP TRIGGER server_presence_test_ignore_update").run();
 
     const after = await env.DB.prepare(
-      `SELECT rendezvous_token_hash, rendezvous_generation, quic_port
-         FROM servers WHERE server_id = ?`,
+      `SELECT rendezvous_token_hash, rendezvous_generation
+         FROM server_presence
+        WHERE profile = 'classic-v1' AND server_id = ?`,
     ).bind(activeServerId).first<{
       rendezvous_token_hash: string;
       rendezvous_generation: string;
-      quic_port: number;
     }>();
-    expect(after).toEqual({ ...before, quic_port: 1_730 });
+    expect(after).toEqual(before);
 
     const stub = env.RENDEZVOUS.getByName(activeServerId);
     await evictDurableObject(stub);
@@ -773,8 +786,9 @@ describe("metaserver Worker", () => {
       "SELECT COUNT(*) AS count FROM one_time_tokens WHERE token_hash = ?",
     ).bind(await sha256Hex(token)).first<number>("count")).toBe(1);
     expect(await env.DB.prepare(
-      "SELECT quic_host FROM servers WHERE server_id = ?",
-    ).bind(activeServerId).first<string>("quic_host")).toBe("198.51.100.20");
+      `SELECT hostname FROM directory_entries
+        WHERE profile = 'classic-v1' AND server_id = ?`,
+    ).bind(activeServerId).first<string | null>("hostname")).toBeNull();
 
     await env.DB.prepare(
       "DELETE FROM request_budgets WHERE actor_key = ? AND scope = 'compat-update-server'",
@@ -1100,12 +1114,38 @@ describe("metaserver Worker", () => {
     ).bind(missingId).first()).toBeNull();
   });
 
+  it("retries an interrupted first registration with the same raw key", async () => {
+    const serverId = "7".repeat(64);
+    const storedKey = await deriveStoredKey(RAW_KEY, serverId);
+    await env.DB.prepare(
+      `INSERT INTO server_owners
+         (server_id, auth_key, current_ip, ip_changed_at, created_at, updated_at)
+       VALUES (?, ?, '', 0, 100, 100)`,
+    ).bind(serverId, storedKey).run();
+    const otp = await issueOtp();
+
+    expect((await postUpdate(updateForm(
+      otp,
+      "f".repeat(128),
+      serverId,
+    ))).status).toBe(401);
+    expect(await readStoredOtp(otp)).not.toBeNull();
+
+    expect((await postUpdate(updateForm(otp, RAW_KEY, serverId))).status)
+      .toBe(200);
+    expect(await env.DB.prepare(
+      `SELECT COUNT(*) AS count FROM server_presence
+        WHERE profile = 'classic-v1' AND server_id = ?`,
+    ).bind(serverId).first<number>("count")).toBe(1);
+  });
+
   it("never reports success when a required persistence write is ignored", async () => {
     const logged = vi.spyOn(console, "error").mockImplementation(() => {});
     expect((await postUpdate(updateForm(
       await issueOtp(),
       RAW_KEY,
     ))).status).toBe(200);
+    const beforeIgnoredOwner = await publicationSnapshot(activeServerId);
 
     await env.DB.prepare(
       `CREATE TRIGGER server_owners_test_ignore_update
@@ -1130,6 +1170,9 @@ describe("metaserver Worker", () => {
         message: "An internal error occurred.",
       },
     });
+    expect(await publicationSnapshot(activeServerId)).toEqual(
+      beforeIgnoredOwner,
+    );
     await env.DB.prepare(
       "DROP TRIGGER server_owners_test_ignore_update",
     ).run();
@@ -1137,8 +1180,8 @@ describe("metaserver Worker", () => {
     const secondServerId = "e".repeat(64);
     const registrationOtp = await issueOtp();
     await env.DB.prepare(
-      `CREATE TRIGGER servers_test_ignore_insert
-       BEFORE INSERT ON servers
+      `CREATE TRIGGER server_presence_test_ignore_insert
+       BEFORE INSERT ON server_presence
        WHEN NEW.server_id = '${secondServerId}'
        BEGIN
          SELECT RAISE(IGNORE);
@@ -1156,13 +1199,62 @@ describe("metaserver Worker", () => {
         message: "An internal error occurred.",
       },
     });
-    await env.DB.prepare("DROP TRIGGER servers_test_ignore_insert").run();
+    await env.DB.prepare("DROP TRIGGER server_presence_test_ignore_insert").run();
+    expect(await env.DB.prepare(
+      "SELECT server_id FROM server_owners WHERE server_id = ?",
+    ).bind(secondServerId).first()).toBeNull();
+    const retriedRegistration = await postUpdate(updateForm(
+      await issueOtp(),
+      RAW_KEY,
+      secondServerId,
+    ));
+    expect(retriedRegistration.status).toBe(200);
 
     expect(logged.mock.calls).toEqual(Array.from({ length: 2 }, () => [{
       event: "unexpected_error",
       handler: "fetch",
       code: "unhandled_exception",
     }]));
+  });
+
+  it("rolls back a first owner claim when room publication fails", async () => {
+    const logged = vi.spyOn(console, "error").mockImplementation(() => {});
+    const serverId = "9".repeat(64);
+    const stub = env.RENDEZVOUS.getByName(serverId);
+    type PublicationPersister = (
+      db: D1Database,
+      publication: unknown,
+    ) => Promise<{ readonly accepted: boolean; readonly visibleChanged: boolean }>;
+    let original: PublicationPersister | null = null;
+    await runInDurableObject(stub, (instance) => {
+      original = Reflect.get(instance, "publicationPersister") as
+        PublicationPersister;
+      Reflect.set(instance, "publicationPersister", async () => {
+        throw new Error("Injected first-claim publication failure");
+      });
+    });
+    const failed = await postUpdate(updateForm(
+      await issueOtp(),
+      RAW_KEY,
+      serverId,
+    ));
+    expect(failed.status).toBe(500);
+    expect(await env.DB.prepare(
+      "SELECT server_id FROM server_owners WHERE server_id = ?",
+    ).bind(serverId).first()).toBeNull();
+
+    if (original === null) {
+      throw new Error("Publication persister was not captured");
+    }
+    await runInDurableObject(stub, (instance) => {
+      Reflect.set(instance, "publicationPersister", original);
+    });
+    expect((await postUpdate(updateForm(
+      await issueOtp(),
+      RAW_KEY,
+      serverId,
+    ))).status).toBe(200);
+    expect(logged).toHaveBeenCalledTimes(1);
   });
 
   it("allows only one concurrent first claim for an identity", async () => {
@@ -1279,6 +1371,20 @@ describe("metaserver Worker", () => {
       "f".repeat(64),
     ).run();
     await env.DB.prepare(
+      `INSERT INTO server_presence
+         (profile, server_id, last_seen, rendezvous_token_hash,
+          rendezvous_generation)
+       VALUES ('classic-v1', ?, 0, ?, ?)`,
+    ).bind(activeServerId, "f".repeat(64), "0".repeat(64)).run();
+    await env.DB.prepare(
+      `INSERT INTO directory_entries
+         (profile, server_id, name, players_count, version, text_comment,
+          hostname, port, quic_cert_sha256, password_required,
+          directory_fingerprint)
+       VALUES ('classic-v1', ?, 'Stale', 0, '4.0.0', 'stale',
+               NULL, NULL, ?, 0, ?)`,
+    ).bind(activeServerId, activeServerId, "0".repeat(64)).run();
+    await env.DB.prepare(
       "INSERT INTO one_time_tokens (token_hash, source_ip, expires_at, created_at) VALUES ('old', ?, 0, 0)",
     ).bind(SOURCE_IP).run();
     await env.DB.prepare(
@@ -1293,6 +1399,8 @@ describe("metaserver Worker", () => {
     await worker.scheduled(createScheduledController(), env, createExecutionContext());
 
     for (const table of [
+      "directory_entries",
+      "server_presence",
       "servers",
       "one_time_tokens",
       "rate_limits",
@@ -1305,6 +1413,12 @@ describe("metaserver Worker", () => {
     const owners = await env.DB.prepare("SELECT COUNT(*) AS count FROM server_owners")
       .first<{ count: number }>();
     expect(owners?.count).toBe(1);
+    expect(await env.DB.prepare(
+      "SELECT revision FROM directory_revisions WHERE profile = 'classic-v1'",
+    ).first<number>("revision")).toBe(1);
+    expect(await env.DB.prepare(
+      "SELECT COUNT(*) AS count FROM directory_outbox WHERE profile = 'classic-v1'",
+    ).first<number>("count")).toBe(1);
   });
 
   it("sanitizes scheduled-maintenance failures before they escape", async () => {
@@ -1656,7 +1770,11 @@ describe("metaserver Worker", () => {
     const form = updateForm(await issueOtp(), RAW_KEY);
     form.set("public", "0");
     form.set("password_required", "1");
-    expect((await postUpdate(form)).status).toBe(200);
+    const published = await postUpdate(form);
+    expect(published.status).toBe(200);
+    const { rendezvousToken } = await published.json<{
+      rendezvousToken: string;
+    }>();
 
     for (const protocol of [null, CLASSIC_RENDEZVOUS_INVITE_SUBPROTOCOL]) {
       const headers = new Headers({ Upgrade: "websocket" });
@@ -1667,10 +1785,24 @@ describe("metaserver Worker", () => {
         `/v2/rendezvous/${activeServerId}?role=client`,
         { headers },
       ));
-      expect(response.status).toBe(403);
+      expect(response.status).toBe(404);
       expect(response.headers.get("Cache-Control")).toBe("no-store");
-      expect(await response.text()).toBe("Server is private\n");
+      expect(await response.text()).toBe("Server is offline\n");
     }
+
+    const server = await callWorker(request(
+      `/v2/rendezvous/${activeServerId}?role=server`,
+      {
+        headers: {
+          Authorization: `Bearer ${rendezvousToken}`,
+          Upgrade: "websocket",
+          "Sec-WebSocket-Protocol":
+            CLASSIC_RENDEZVOUS_INVITE_SUBPROTOCOL,
+        },
+      },
+    ));
+    expect(server.status).toBe(404);
+    expect(await server.text()).toBe("Server is offline\n");
   });
 
   it("rotates the control generation before publishing a new token", async () => {
@@ -1815,7 +1947,8 @@ describe("metaserver Worker", () => {
 
     const body = await (await callWorker(request("/v2/servers"))).text();
     expect(body).toContain(`<Id>${activeServerId}</Id>`);
-    expect(body).toContain("<Address>198.51.100.20</Address>");
+    expect(body).not.toContain("<Address>");
+    expect(body).not.toContain("198.51.100.20");
     expect(body).not.toContain("<Hostname>");
 
     const upgradeRequired = await callWorker(
@@ -1890,3 +2023,28 @@ describe("metaserver Worker", () => {
     serverSocket.close(1000, "Test complete");
   });
 });
+
+async function publicationSnapshot(serverId: string): Promise<unknown> {
+  const statements = [
+    env.DB.prepare(
+      "SELECT * FROM server_owners WHERE server_id = ?",
+    ).bind(serverId),
+    env.DB.prepare(
+      "SELECT * FROM server_presence WHERE server_id = ? ORDER BY profile",
+    ).bind(serverId),
+    env.DB.prepare(
+      "SELECT * FROM directory_entries WHERE server_id = ? ORDER BY profile",
+    ).bind(serverId),
+    env.DB.prepare(
+      "SELECT * FROM servers WHERE server_id = ?",
+    ).bind(serverId),
+    env.DB.prepare(
+      "SELECT * FROM directory_revisions ORDER BY profile",
+    ),
+    env.DB.prepare(
+      "SELECT * FROM directory_outbox ORDER BY profile, revision",
+    ),
+  ];
+  return Promise.all(statements.map(async (statement) =>
+    (await statement.all()).results));
+}

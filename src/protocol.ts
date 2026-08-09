@@ -1,3 +1,4 @@
+import { isDirectoryText } from "./directory-state";
 import type { UpdatePayload } from "./types";
 
 const HEX_64 = /^[0-9a-f]{64}$/;
@@ -123,13 +124,24 @@ export function parseUpdatePayload(form: FormData): UpdatePayload {
     throw new RequestError("Invalid authentication value");
   }
 
+  const name = requiredField(form, "name", 80);
+  const version = requiredField(form, "version", 32);
+  const textComment = optionalField(form, "text_comment", 256) ??
+    "No description.";
+  if (
+    !isDirectoryText(name, 80, false) ||
+    !isDirectoryText(version, 32, false) ||
+    !isDirectoryText(textComment, 256, true)
+  ) {
+    throw new RequestError("Invalid directory text");
+  }
+
   return {
     serverId,
-    name: requiredField(form, "name", 80),
+    name,
     playersCount,
-    version: requiredField(form, "version", 32),
-    textComment:
-      optionalField(form, "text_comment", 256) ?? "No description.",
+    version,
+    textComment,
     otp: requiredField(form, "otp", 256),
     cotp,
     key,
@@ -229,7 +241,7 @@ function parseUnsignedInteger(
 
 export function escapeXml(value: string): string {
   return value
-    .replace(/[\u0000-\u0008\u000b\u000c\u000e-\u001f]/g, "")
+    .replace(/[\u0000-\u0008\u000b\u000c\u000e-\u001f\ufffe\uffff]/g, "")
     .replace(/&/g, "&amp;")
     .replace(/</g, "&lt;")
     .replace(/>/g, "&gt;")

@@ -17,4 +17,7 @@ updates:
         dependency-type: development
         patterns:
           - "*"
-
+      npm-production:
+        dependency-type: production
+        patterns:
+          - "*"

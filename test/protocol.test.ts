@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 
+import { isDirectoryText } from "../src/directory-state";
 import {
   constantTimeEqual,
   deriveStoredKey,
@@ -114,6 +115,32 @@ describe("protocol helpers", () => {
     }
   });
 
+  it("enforces directory text byte and control-character bounds", () => {
+    for (const [field, value] of [
+      ["name", "😀".repeat(21)],
+      ["version", "é".repeat(17)],
+      ["text_comment", "😀".repeat(65)],
+      ["name", "contains\nnewline"],
+      ["version", "contains\u007fdelete"],
+      ["text_comment", "contains\u0000nul"],
+      ["name", "contains\ufffenoncharacter"],
+      ["text_comment", "contains\uffffnoncharacter"],
+    ]) {
+      const form = validForm();
+      form.set(field, value);
+      expect(() => parseUpdatePayload(form), field).toThrow(RequestError);
+    }
+
+    const unicode = validForm();
+    unicode.set("name", "Café 🐉");
+    unicode.set("text_comment", "Bienvenue — 游んでいって");
+    expect(parseUpdatePayload(unicode)).toMatchObject({
+      name: "Café 🐉",
+      textComment: "Bienvenue — 游んでいって",
+    });
+    expect(isDirectoryText("unpaired\ud800surrogate", 80, false)).toBe(false);
+  });
+
   it("rejects duplicate required and optional update fields", () => {
     for (const [field, value] of [
       ["otp", "second-token"],
@@ -131,6 +158,8 @@ describe("protocol helpers", () => {
   });
 
   it("escapes XML control and markup characters", () => {
-    expect(escapeXml("<&a\u0000b'\"")).toBe("&lt;&amp;ab&apos;&quot;");
+    expect(escapeXml("<&a\u0000b\ufffe\uffff'\"")).toBe(
+      "&lt;&amp;ab&apos;&quot;",
+    );
   });
 });
