@@ -4,14 +4,13 @@ export interface DirectoryServerRecord {
   players_count: number;
   version: string;
   text_comment: string;
-  quic_host: string;
-  quic_port: number;
+  hostname: string | null;
+  port: number | null;
   quic_cert_sha256: string;
   password_required: number;
 }
 
 export interface RendezvousServerRecord {
-  is_public: number;
   password_required: number;
   rendezvous_token_hash: string;
   rendezvous_generation: string;

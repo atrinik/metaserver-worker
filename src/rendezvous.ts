@@ -34,10 +34,6 @@ const RENDEZVOUS_ERROR_DEFINITIONS = {
     status: 401,
     headers: { "WWW-Authenticate": "Bearer" },
   },
-  server_private: {
-    body: "Server is private\n",
-    status: 403,
-  },
   rendezvous_authorization_unavailable: {
     body: "Protected rendezvous authorization is unavailable\n",
     status: 503,
@@ -81,10 +77,15 @@ export async function openRendezvous(
 
   const cutoff = Math.floor(Date.now() / 1_000) - hooks.listingTtlSeconds;
   const server = await env.DB.prepare(
-    `SELECT is_public, password_required, rendezvous_token_hash,
-            rendezvous_generation
-       FROM servers
-      WHERE server_id = ? AND last_seen >= ?`,
+    `SELECT entries.password_required, presence.rendezvous_token_hash,
+            presence.rendezvous_generation
+       FROM server_presence AS presence
+       JOIN directory_entries AS entries
+         ON entries.profile = presence.profile
+        AND entries.server_id = presence.server_id
+      WHERE presence.profile = 'classic-v1'
+        AND presence.server_id = ?
+        AND presence.last_seen >= ?`,
   ).bind(serverId, cutoff).first<RendezvousServerRecord>();
 
   if (server === null) {
@@ -101,9 +102,6 @@ export async function openRendezvous(
     }
     await hooks.serverAuthenticated();
   } else {
-    if (server.is_public !== 1) {
-      return fixedError("server_private");
-    }
     if (server.password_required === 1) {
       if (!inviteProtocol) {
         return fixedError("rendezvous_authorization_unavailable");

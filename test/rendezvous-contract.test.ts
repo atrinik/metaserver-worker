@@ -231,29 +231,45 @@ describe("internal rendezvous upgrade contract", () => {
       ...PUBLICATION,
       expectedGeneration: null,
       quicHost: "",
+      quicPort: 1,
     }))).resolves.toMatchObject({
       expectedGeneration: null,
       quicHost: "",
+      quicPort: 1,
     });
-    const maximallyEscaped = {
+    const gamePublication = {
       ...PUBLICATION,
-      name: "\0".repeat(80),
-      version: "\0".repeat(32),
-      textComment: "\0".repeat(256),
-    };
-    expect(JSON.stringify(maximallyEscaped).length).toBeGreaterThan(2_048);
+      directoryProfile: "game-v1",
+      publisherAuthentication: "signed-certificate-v1",
+      publisherSequence: "1",
+      publisherNonce: "6".repeat(32),
+      publisherNonceExpiresAt: PUBLICATION.now + 86_400,
+    } as const;
     await expect(validateInternalRendezvousPublication(
-      publicationRequest(maximallyEscaped),
-    )).resolves.toEqual(maximallyEscaped);
+      publicationRequest(gamePublication),
+    )).resolves.toEqual(gamePublication);
+    const maximumText = {
+      ...PUBLICATION,
+      name: "é".repeat(40),
+      version: "é".repeat(16),
+      textComment: "é".repeat(128),
+    };
+    await expect(validateInternalRendezvousPublication(
+      publicationRequest(maximumText),
+    )).resolves.toEqual(maximumText);
 
     const invalidBodies = [
       { ...PUBLICATION, generation: "A".repeat(64) },
       { ...PUBLICATION, serverId: "4".repeat(64) },
       { ...PUBLICATION, quicHost: "EXAMPLE.invalid" },
+      { ...PUBLICATION, quicHost: "xn--a.example.org" },
+      { ...PUBLICATION, quicHost: "", quicPort: 1_730 },
       { ...PUBLICATION, quicPort: 0 },
       { ...PUBLICATION, playersCount: -1 },
       { ...PUBLICATION, extra: true },
       { ...PUBLICATION, name: "x".repeat(81) },
+      { ...PUBLICATION, name: "é".repeat(41) },
+      { ...PUBLICATION, textComment: "line\nbreak" },
     ];
     for (const body of invalidBodies) {
       await expect(validateInternalRendezvousPublication(

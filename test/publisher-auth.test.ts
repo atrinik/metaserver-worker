@@ -145,7 +145,13 @@ describe("signed publisher authentication", () => {
       headers: { "Content-Digest": await digestHeader(extra) },
     }), "bad_request");
 
-    for (const invalidName of ["\\ud800", "\\ud800A", "\\udc00"]) {
+    for (const invalidName of [
+      "\\ud800",
+      "\\ud800A",
+      "\\udc00",
+      "\ufffe",
+      "\uffff",
+    ]) {
       const invalidScalar = publisherFixture.body.replace(
         '"name":"Atrinik Classic"',
         `"name":"${invalidName}"`,
@@ -153,6 +159,36 @@ describe("signed publisher authentication", () => {
       await expectCode(fixtureRequest({
         body: invalidScalar,
         headers: { "Content-Digest": await digestHeader(invalidScalar) },
+      }), "bad_request");
+    }
+  });
+
+  it("accepts only a canonical paired explicit hostname before signature verification", async () => {
+    const parsed = JSON.parse(publisherFixture.body) as Record<string, unknown>;
+    for (const hostname of [
+      "play.example.net",
+      "xn--bcher-kva.example.org",
+    ]) {
+      const withHostname = JSON.stringify({
+        ...parsed,
+        hostname,
+        port: 1730,
+      });
+      await expectCode(fixtureRequest({
+        body: withHostname,
+        headers: { "Content-Digest": await digestHeader(withHostname) },
+      }), "unauthorized");
+    }
+
+    for (const hostname of ["192.0.2.1", "xn--a.example.org"]) {
+      const invalidHostname = JSON.stringify({
+        ...parsed,
+        hostname,
+        port: 1730,
+      });
+      await expectCode(fixtureRequest({
+        body: invalidHostname,
+        headers: { "Content-Digest": await digestHeader(invalidHostname) },
       }), "bad_request");
     }
   });

@@ -45,6 +45,22 @@ class AdminSqlTest(unittest.TestCase):
             (server_id, "1" * 32, server_id),
         )
         connection.execute(
+            """INSERT INTO server_presence
+                   (profile, server_id, last_seen, rendezvous_token_hash,
+                    rendezvous_generation)
+               VALUES ('classic-v1', ?, 1, ?, ?)""",
+            (server_id, "f" * 64, "0" * 64),
+        )
+        connection.execute(
+            """INSERT INTO directory_entries
+                   (profile, server_id, name, players_count, version,
+                    text_comment, hostname, port, quic_cert_sha256,
+                    password_required, directory_fingerprint)
+               VALUES ('classic-v1', ?, 'Test', 0, '4.0.0', 'Test server',
+                       NULL, NULL, ?, 0, ?)""",
+            (server_id, server_id, "0" * 64),
+        )
+        connection.execute(
             """INSERT INTO publisher_nonces
                    (server_id, profile, nonce, expires_at, created_at)
                VALUES (?, 'classic-v1', ?, 86400, 0)""",
@@ -55,13 +71,44 @@ class AdminSqlTest(unittest.TestCase):
         connection = self.database()
         self.seed_server(connection, SERVER_ID)
         self.seed_server(connection, OTHER_SERVER_ID)
+        connection.execute(
+            """INSERT INTO server_presence
+                   (profile, server_id, last_seen, rendezvous_token_hash,
+                    rendezvous_generation)
+               VALUES ('game-v1', ?, 1, ?, ?)""",
+            (SERVER_ID, "e" * 64, "d" * 64),
+        )
+        connection.execute(
+            """INSERT INTO directory_entries
+                   (profile, server_id, name, players_count, version,
+                    text_comment, hostname, port, quic_cert_sha256,
+                    password_required, directory_fingerprint)
+               VALUES ('game-v1', ?, 'Game', 0, '1.0.0', '', NULL, NULL,
+                       ?, 0, ?)""",
+            (SERVER_ID, SERVER_ID, "c" * 64),
+        )
 
         sql = admin_sql.command_reset_owner(
             argparse.Namespace(server_id=SERVER_ID.upper()),
         )
         connection.executescript(sql)
 
+        self.assertEqual(
+            connection.execute(
+                "SELECT profile, revision FROM directory_revisions ORDER BY profile"
+            ).fetchall(),
+            [("classic-v1", 1), ("game-v1", 1)],
+        )
+        self.assertEqual(
+            connection.execute(
+                "SELECT profile, revision FROM directory_outbox ORDER BY profile"
+            ).fetchall(),
+            [("classic-v1", 1), ("game-v1", 1)],
+        )
+
         for table in (
+            "directory_entries",
+            "server_presence",
             "servers",
             "server_owners",
             "publisher_replay",
@@ -71,6 +118,29 @@ class AdminSqlTest(unittest.TestCase):
                 f"SELECT server_id FROM {table} ORDER BY server_id",
             ).fetchall()
             self.assertEqual(identities, [(OTHER_SERVER_ID,)])
+
+    def test_reset_owner_keeps_private_only_presence_revision_neutral(self) -> None:
+        connection = self.database()
+        self.seed_server(connection, SERVER_ID)
+        connection.execute(
+            "DELETE FROM directory_entries WHERE server_id = ?", (SERVER_ID,)
+        )
+        connection.execute("DELETE FROM servers WHERE server_id = ?", (SERVER_ID,))
+
+        connection.executescript(admin_sql.command_reset_owner(
+            argparse.Namespace(server_id=SERVER_ID),
+        ))
+
+        self.assertEqual(
+            connection.execute(
+                "SELECT profile, revision FROM directory_revisions ORDER BY profile"
+            ).fetchall(),
+            [("classic-v1", 0), ("game-v1", 0)],
+        )
+        self.assertEqual(
+            connection.execute("SELECT count(*) FROM directory_outbox").fetchone(),
+            (0,),
+        )
 
     def test_blacklist_commands_execute_and_escape_operator_input(self) -> None:
         connection = self.database()

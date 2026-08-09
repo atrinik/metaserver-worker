@@ -200,7 +200,11 @@ export class RendezvousRoom extends DurableObject<Env> {
         // Body stream failures are indistinguishable from other malformed
         // private requests and must not enter the publication queue.
       }
-      if (publication === null || this.ctx.id.name !== publication.serverId) {
+      if (
+        publication === null ||
+        publication.directoryProfile !== "classic-v1" ||
+        this.ctx.id.name !== publication.serverId
+      ) {
         return roomError("forbidden");
       }
       return this.serializeRoomOperation(async () => {
@@ -346,7 +350,11 @@ export class RendezvousRoom extends DurableObject<Env> {
   private async reconcilePublishedGeneration(
     serverId: string,
   ): Promise<string | null> {
-    const generation = await readPublishedGeneration(this.env.DB, serverId);
+    const generation = await readPublishedGeneration(
+      this.env.DB,
+      "classic-v1",
+      serverId,
+    );
     await this.rotateTokenGeneration(generation);
     return generation;
   }

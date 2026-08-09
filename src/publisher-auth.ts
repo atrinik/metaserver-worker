@@ -1,3 +1,4 @@
+import { isDirectoryText } from "./directory-state";
 import { isCanonicalHostname } from "./hostname";
 import { HttpError } from "./http";
 
@@ -297,10 +298,10 @@ function parseClassicPublishPayload(body: Uint8Array): ClassicPublishPayload {
     !SERVER_ID.test(parsed.serverId) ||
     typeof parsed.certificate !== "string" ||
     parsed.certificate.length > 2_736 ||
-    !validText(parsed.name, 80, false) ||
+    !isDirectoryText(parsed.name, 80, false) ||
     !validUnsignedInteger(parsed.playersCount, 4_294_967_295) ||
-    !validText(parsed.version, 32, false) ||
-    !validText(parsed.textComment, 256, true) ||
+    !isDirectoryText(parsed.version, 32, false) ||
+    !isDirectoryText(parsed.textComment, 256, true) ||
     typeof parsed.public !== "boolean" ||
     typeof parsed.passwordRequired !== "boolean" ||
     (hasHostname && !isCanonicalHostname(parsed.hostname)) ||
@@ -339,31 +340,6 @@ function validSequence(value: string): boolean {
   } catch {
     return false;
   }
-}
-
-function validText(value: unknown, maximum: number, allowEmpty: boolean): value is string {
-  if (typeof value !== "string") {
-    return false;
-  }
-  const size = TEXT_ENCODER.encode(value).byteLength;
-  return (allowEmpty || size > 0) && size <= maximum &&
-    !/[\u0000-\u001f\u007f]/.test(value) && hasOnlyUnicodeScalars(value);
-}
-
-function hasOnlyUnicodeScalars(value: string): boolean {
-  for (let index = 0; index < value.length; index += 1) {
-    const current = value.charCodeAt(index);
-    if (current >= 0xd800 && current <= 0xdbff) {
-      const next = value.charCodeAt(index + 1);
-      if (index + 1 >= value.length || next < 0xdc00 || next > 0xdfff) {
-        return false;
-      }
-      index += 1;
-    } else if (current >= 0xdc00 && current <= 0xdfff) {
-      return false;
-    }
-  }
-  return true;
 }
 
 function validUnsignedInteger(

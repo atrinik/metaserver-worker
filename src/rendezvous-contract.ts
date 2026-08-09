@@ -3,6 +3,8 @@ import {
   SERVER_SIGNAL_CANDIDATE_KINDS,
 } from "./protocol";
 import { isCanonicalHostname } from "./hostname";
+import { isDirectoryText } from "./directory-state";
+import type { DirectoryProfile } from "./directory-state";
 import type { DirectCandidateKind } from "./protocol";
 import type { RendezvousRole } from "./routes";
 
@@ -230,7 +232,7 @@ export interface InternalRendezvousUpgrade {
 
 export interface InternalRendezvousPublication {
   readonly serverId: string;
-  readonly directoryProfile: "classic-v1" | "game-v1";
+  readonly directoryProfile: DirectoryProfile;
   readonly publisherAuthentication:
     | "compat-key-v1"
     | "signed-certificate-v1";
@@ -388,13 +390,13 @@ export async function validateInternalRendezvousPublication(
     !HEX_64.test(parsed.tokenHash) ||
     !isBoundedInteger(parsed.now, 0, Number.MAX_SAFE_INTEGER) ||
     !isBoundedInteger(parsed.visibilityCutoff, 0, parsed.now) ||
-    !isBoundedString(parsed.name, 1, 80) ||
+    !isDirectoryText(parsed.name, 80, false) ||
     !isBoundedInteger(parsed.playersCount, 0, 4_294_967_295) ||
-    !isBoundedString(parsed.version, 1, 32) ||
-    !isBoundedString(parsed.textComment, 0, 256) ||
+    !isDirectoryText(parsed.version, 32, false) ||
+    !isDirectoryText(parsed.textComment, 256, true) ||
     typeof parsed.isPublic !== "boolean" ||
-    !isCanonicalPublicationHost(parsed.quicHost) ||
     !isPort(parsed.quicPort) ||
+    !isCanonicalPublicationEndpoint(parsed.quicHost, parsed.quicPort) ||
     typeof parsed.quicCertSha256 !== "string" ||
     parsed.quicCertSha256 !== parsed.serverId ||
     typeof parsed.passwordRequired !== "boolean" ||
@@ -686,8 +688,13 @@ function isBoundedString(
     value.length <= maximumLength;
 }
 
-function isCanonicalPublicationHost(value: unknown): value is string {
-  return value === "" || isCanonicalHostname(value);
+function isCanonicalPublicationEndpoint(
+  host: unknown,
+  port: number,
+): host is string {
+  return host === ""
+    ? port === 1
+    : isCanonicalHostname(host);
 }
 
 type ValidPublisherReplayMetadata =
@@ -699,7 +706,7 @@ type ValidPublisherReplayMetadata =
       readonly publisherNonceExpiresAt: null;
     }
   | {
-      readonly directoryProfile: "classic-v1" | "game-v1";
+      readonly directoryProfile: DirectoryProfile;
       readonly publisherAuthentication: "signed-certificate-v1";
       readonly publisherSequence: string;
       readonly publisherNonce: string;

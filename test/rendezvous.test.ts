@@ -133,17 +133,22 @@ function generationPublicationRequest(
   serverId: string,
   expectedGeneration: string,
   generation: string,
+  directoryProfile: "classic-v1" | "game-v1" = "classic-v1",
 ): Request {
   return new Request(INTERNAL_RENDEZVOUS_PUBLISH_URL, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({
       serverId,
-      directoryProfile: "classic-v1",
-      publisherAuthentication: "compat-key-v1",
-      publisherSequence: null,
-      publisherNonce: null,
-      publisherNonceExpiresAt: null,
+      directoryProfile,
+      publisherAuthentication: directoryProfile === "classic-v1"
+        ? "compat-key-v1"
+        : "signed-certificate-v1",
+      publisherSequence: directoryProfile === "classic-v1" ? null : "1",
+      publisherNonce: directoryProfile === "classic-v1" ? null : "a".repeat(32),
+      publisherNonceExpiresAt: directoryProfile === "classic-v1"
+        ? null
+        : 2_000_086_400,
       commitToken: "d".repeat(64),
       expectedGeneration,
       generation,
@@ -156,7 +161,7 @@ function generationPublicationRequest(
       textComment: "Generation rotation",
       isPublic: true,
       quicHost: "",
-      quicPort: 1_730,
+      quicPort: 1,
       quicCertSha256: serverId,
       passwordRequired: true,
       directoryFingerprint: "c".repeat(64),
@@ -175,13 +180,19 @@ async function seedPublishedGeneration(
        VALUES (?, ?, '', 0, 0, 0)`,
     ).bind(serverId, "0".repeat(128)),
     env.DB.prepare(
-      `INSERT INTO servers
-         (server_id, source_ip, name, players_count, version, text_comment,
-          last_seen, is_public, quic_host, quic_port, quic_cert_sha256,
-          password_required, rendezvous_token_hash, rendezvous_generation)
-       VALUES (?, '', 'Generation test', 0, '4.0.0', 'Generation rotation',
-               0, 1, '', 1730, ?, 1, ?, ?)`,
-    ).bind(serverId, serverId, "e".repeat(64), generation),
+      `INSERT INTO server_presence
+         (profile, server_id, last_seen, rendezvous_token_hash,
+          rendezvous_generation)
+       VALUES ('classic-v1', ?, 2000000000, ?, ?)`,
+    ).bind(serverId, "e".repeat(64), generation),
+    env.DB.prepare(
+      `INSERT INTO directory_entries
+         (profile, server_id, name, players_count, version, text_comment,
+          hostname, port, quic_cert_sha256, password_required,
+          directory_fingerprint)
+       VALUES ('classic-v1', ?, 'Generation test', 0, '4.0.0',
+               'Generation rotation', NULL, NULL, ?, 1, ?)`,
+    ).bind(serverId, serverId, "b".repeat(64)),
   ]);
 }
 
@@ -622,6 +633,31 @@ describe("RendezvousRoom HTTP and admission boundary", () => {
         "Forbidden\n",
       );
     }
+  });
+
+  it("rejects a contract-valid game publication at the classic room boundary", async () => {
+    const serverId = ticket(49_999);
+    const oldGeneration = "1".repeat(64);
+    const newGeneration = "2".repeat(64);
+    await seedPublishedGeneration(serverId, oldGeneration);
+    const stub = env.RENDEZVOUS.getByName(serverId);
+
+    await expectFixedError(
+      await stub.fetch(generationPublicationRequest(
+        serverId,
+        oldGeneration,
+        newGeneration,
+        "game-v1",
+      )),
+      403,
+      "Forbidden\n",
+    );
+    expect(await env.DB.prepare(
+      `SELECT rendezvous_generation
+         FROM server_presence
+        WHERE profile = 'classic-v1' AND server_id = ?`,
+    ).bind(serverId).first<string>("rendezvous_generation"))
+      .toBe(oldGeneration);
   });
 
   it("requires one live server control connection before client admission", async () => {
@@ -1104,7 +1140,9 @@ describe("RendezvousRoom protected authorization", () => {
       await new Promise((resolve) => setTimeout(resolve, 25));
       expect(publicationSettled).toBe(false);
       expect(await roomEnv.DB.prepare(
-        "SELECT rendezvous_generation FROM servers WHERE server_id = ?",
+        `SELECT rendezvous_generation
+           FROM server_presence
+          WHERE profile = 'classic-v1' AND server_id = ?`,
       ).bind(serverId).first<string>("rendezvous_generation"))
         .toBe(oldGeneration);
       releaseStaleRead();
@@ -1131,7 +1169,9 @@ describe("RendezvousRoom protected authorization", () => {
       })).toHaveLength(0);
     });
     expect(await env.DB.prepare(
-      "SELECT rendezvous_generation FROM servers WHERE server_id = ?",
+      `SELECT rendezvous_generation
+         FROM server_presence
+        WHERE profile = 'classic-v1' AND server_id = ?`,
     ).bind(serverId).first<string>("rendezvous_generation")).toBe(newGeneration);
 
     await evictDurableObject(stub);
@@ -1189,15 +1229,20 @@ describe("RendezvousRoom protected authorization", () => {
 
     expect(await env.DB.prepare(
       `SELECT owners.rendezvous_generation AS owner_generation,
-              servers.rendezvous_generation AS listing_generation,
-              servers.rendezvous_token_hash
+              presence.rendezvous_generation AS listing_generation,
+              presence.rendezvous_token_hash,
+              legacy.rendezvous_generation AS shadow_generation,
+              legacy.rendezvous_token_hash AS shadow_token_hash
          FROM server_owners AS owners
-         JOIN servers USING (server_id)
-        WHERE server_id = ?`,
+         JOIN server_presence AS presence USING (server_id)
+         JOIN servers AS legacy USING (server_id)
+        WHERE presence.profile = 'classic-v1' AND owners.server_id = ?`,
     ).bind(serverId).first()).toEqual({
       owner_generation: newGeneration,
       listing_generation: newGeneration,
       rendezvous_token_hash: "f".repeat(64),
+      shadow_generation: newGeneration,
+      shadow_token_hash: "f".repeat(64),
     });
     await evictDurableObject(stub);
     const current = await connect(stub, "server", {
@@ -1256,7 +1301,9 @@ describe("RendezvousRoom protected authorization", () => {
     });
 
     expect(await env.DB.prepare(
-      "SELECT rendezvous_generation FROM servers WHERE server_id = ?",
+      `SELECT rendezvous_generation
+         FROM server_presence
+        WHERE profile = 'classic-v1' AND server_id = ?`,
     ).bind(serverId).first<string>("rendezvous_generation")).toBe(oldGeneration);
     await evictDurableObject(stub);
     const recovered = await connect(stub, "server", {
