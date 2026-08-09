@@ -6,6 +6,9 @@ __pycache__/
 *.py[cod]
 *.log
 worker-configuration.d.ts
+worker-runtime.d.ts
+publisher-worker-configuration.d.ts
+rendezvous-worker-configuration.d.ts
 *:Zone.Identifier
 .dev.vars
 .dev.vars.*

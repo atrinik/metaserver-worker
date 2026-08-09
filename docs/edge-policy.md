@@ -14,13 +14,17 @@ record, not in this repository.
 
 ## Public-host boundary
 
-The production Wrangler configuration sets both `workers_dev` and
-`preview_urls` to `false`. Do not enable either on the production Worker: a
-public `workers.dev` or preview hostname bypasses zone rules attached to
-`atrinik.org`. A canary must use a separately reviewed canary Worker and
-Durable Object namespace, hostname, secrets, D1 database, Analytics Engine
-dataset, `COMPAT_HOSTNAME` value, and unique account-wide `namespace_id` for
-each native Rate Limiting binding. The [Worker Rate Limiting binding
+All three production Wrangler configurations set both `workers_dev` and
+`preview_urls` to `false`. Do not enable either: a public `workers.dev` or
+preview hostname bypasses zone rules attached to `atrinik.org`. The canonical
+publisher/rendezvous configurations are deliberately domainless and disabled
+until their own exact-host rules pass this gate. The core alone owns D1, R2,
+schedules, Analytics Engine, and both Durable Objects; each edge has one named
+Service Binding and distinct native rate namespace IDs. A canary must use
+separately reviewed Workers, hostname, secrets, D1 database, Durable Object
+namespaces, Analytics Engine datasets, `COMPAT_HOSTNAME` value, and unique
+account-wide `namespace_id` values for each native Rate Limiting binding. The
+[Worker Rate Limiting binding
 contract][worker-rate-binding] shares counters across Workers that reuse a
 namespace, so a production ID invalidates both isolation and results.
 

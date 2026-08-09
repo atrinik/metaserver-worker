@@ -1,5 +1,7 @@
 import { DurableObject } from "cloudflare:workers";
 
+import type { CoreEnv } from "./core-env";
+
 import {
   RENDEZVOUS_POLICY_MAXIMUMS,
   rendezvousPolicyConfiguration,
@@ -123,7 +125,7 @@ type RoomErrorCode = keyof typeof ROOM_ERROR_DEFINITIONS;
  * SQLite contains the exact rolling admissions and purpose-separated replay
  * tags, but never raw tickets or candidate endpoints.
  */
-export class RendezvousRoom extends DurableObject<Env> {
+export class RendezvousRoom extends DurableObject<CoreEnv> {
   private readonly admissions: RendezvousAdmissionStore;
   private readonly initialized: Promise<void>;
   private readonly finalizedConnections = new Set<string>();
@@ -148,7 +150,7 @@ export class RendezvousRoom extends DurableObject<Env> {
   private replayTagKeys!: SourceTagKeyRing;
   private terminalMetricWriter = writeRendezvousTerminalMetric;
 
-  constructor(ctx: DurableObjectState, env: Env) {
+  constructor(ctx: DurableObjectState, env: CoreEnv) {
     super(ctx, env);
     this.admissions = new RendezvousAdmissionStore(ctx.storage);
     this.initialized = ctx.blockConcurrencyWhile(async () => {
@@ -1656,9 +1658,16 @@ export class RendezvousRoom extends DurableObject<Env> {
     socket: WebSocket,
     inviteProtocol: boolean,
   ): Response {
-    const headers = inviteProtocol
-      ? { "Sec-WebSocket-Protocol": CLASSIC_RENDEZVOUS_INVITE_SUBPROTOCOL }
-      : undefined;
+    const headers = new Headers({
+      "Cache-Control": "no-store",
+      "X-Content-Type-Options": "nosniff",
+    });
+    if (inviteProtocol) {
+      headers.set(
+        "Sec-WebSocket-Protocol",
+        CLASSIC_RENDEZVOUS_INVITE_SUBPROTOCOL,
+      );
+    }
     return new Response(null, { status: 101, headers, webSocket: socket });
   }
 

@@ -1,0 +1,16 @@
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "types": [
+      "./worker-runtime.d.ts",
+      "./publisher-worker-configuration.d.ts"
+    ]
+  },
+  "include": [
+    "publisher-worker-configuration.d.ts",
+    "worker-runtime.d.ts",
+    "src/publisher-worker.ts",
+    "type-tests/publisher-env.ts"
+  ],
+  "exclude": []
+}

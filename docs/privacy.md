@@ -6,8 +6,12 @@ learns a selected peer endpoint.
 
 ## Data classes
 
-1. For requests processed by the foundation Worker, a newly observed source
-   address exists only while handling that request. It may be compared with a
+1. For compatibility requests processed by the core Worker, a newly observed
+   source address exists only while handling that request. For canonical
+   publisher/rendezvous requests, the stateless edge derives the required
+   purpose-separated aliases and reconstructs a fixed allowlisted request;
+   neither the raw source address nor browser state crosses the Service Binding
+   into the state-owning core. A compatibility source may be compared with a
    transitional blacklist rule or legacy challenge, but it is not written to a
    new row or application diagnostic.
 2. Anonymous abuse correlation uses a purpose-separated, keyed HMAC tag with a
@@ -54,11 +58,13 @@ atrinik-metaserver\0source-tag\0v1\0<deployment-hostname>\0<purpose>\0<canonical
 ```
 
 The source/server-pair purpose appends the canonical 64-hex server identity.
-The configured compatibility hostname separates production, canary, and local
-domains even if an operator accidentally reuses key material; operators must
-still provision independent secrets for every environment. Current and previous
-key IDs and secrets must be distinct; malformed or duplicated material fails
-request admission closed.
+The configured compatibility or canonical edge hostname separates production,
+canary, and local domains even if an operator accidentally reuses key material;
+operators must still provision independent secrets for every environment. The
+two canonical edge Workers receive the same reviewed overlapping key pair but
+derive in distinct authority namespaces. Current and previous key IDs and
+secrets must be distinct; malformed or duplicated material fails request
+admission closed.
 The stored tag is versioned and contains only the key label plus base64url
 HMAC-SHA-256 output; it never contains the address. Purposes are a closed set
 covering global ingress, each compatibility route, canonical publishing, and
@@ -400,6 +406,22 @@ failed attempt, but every connection attempt must create a fresh socket and
 ticket and perform new authorized signaling.
 
 ## Directory and rendezvous boundary
+
+The core Worker is the only service with D1, R2, schedules, or Durable Object
+bindings. The canonical publisher and rendezvous edges each have one named
+Service Binding capability and cannot call the other coordinator. Internal
+routing rejects caller-supplied transfer encodings at the public edge; the
+publisher coordinator consumes only Workerd's exact internal `chunked` body
+marker and removes it before canonical route and signature processing.
+Internal rendezvous alias headers are rejected on public ingress, validated as
+a strict current/previous tuple at the coordinator, and removed before server lookup or
+the room upgrade. Dynamic HTTP responses are accepted only when their status-
+specific headers and canonical JSON/text body match the fixed public contract
+within a 2,048-byte and 15-second ceiling; every accepted HTTP body is
+reconstructed instead of streamed from the coordinator. A successful
+WebSocket must contain only the exact selected subprotocol/security headers and
+a live socket. This internal envelope contains only keyed aliases, never the
+source address.
 
 Every compatibility update is stored addressless: its numeric `quic_host` and
 port are discarded, and the directory omits both `Address` and `Port` rather

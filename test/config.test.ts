@@ -2,6 +2,10 @@ import { describe, expect, it } from "vitest";
 
 import {
   directoryArtifactConfiguration,
+  publisherEdgeConfiguration,
+  publisherCoordinatorConfiguration,
+  rendezvousEdgeConfiguration,
+  rendezvousCoordinatorConfiguration,
   rendezvousPolicyConfiguration,
   requestControlConfiguration,
   RequestControlConfigurationError,
@@ -42,6 +46,89 @@ const valid: RequestControlConfigurationInput &
   COMPAT_RENDEZVOUS_SERVER_SOURCE_DAILY_LIMIT: "50",
   COMPAT_RENDEZVOUS_SERVER_DAILY_LIMIT: "50",
 };
+
+describe("dynamic edge configuration", () => {
+  it("accepts only a bounded retry and canonical dedicated authority", () => {
+    const control = publisherEdgeConfiguration({
+      PUBLISH_HOSTNAME: "publish-canary.example.test",
+      ROUTE_DISABLED_RETRY_SECONDS: "300",
+    });
+    expect(control).toEqual({
+      authority: "publish-canary.example.test",
+      routeDisabledRetrySeconds: 300,
+    });
+    expect(Object.isFrozen(control)).toBe(true);
+
+    expect(rendezvousEdgeConfiguration({
+      RENDEZVOUS_HOSTNAME: "rendezvous-canary.example.test",
+      ROUTE_DISABLED_RETRY_SECONDS: "60",
+    })).toEqual({
+      authority: "rendezvous-canary.example.test",
+      routeDisabledRetrySeconds: 60,
+    });
+
+    for (const value of [undefined, "", "0", " 300", "86401"]) {
+      expect(() => publisherEdgeConfiguration({
+        PUBLISH_HOSTNAME: "publish.example.test",
+        ROUTE_DISABLED_RETRY_SECONDS: value,
+      })).toThrowError(expect.objectContaining({
+        name: "RequestControlConfigurationError",
+        variable: "ROUTE_DISABLED_RETRY_SECONDS",
+      } satisfies Partial<RequestControlConfigurationError>));
+    }
+
+    for (const value of [
+      undefined,
+      "PUBLISH.example.test",
+      "192.0.2.1",
+      "single-label",
+    ]) {
+      expect(() => publisherEdgeConfiguration({
+        PUBLISH_HOSTNAME: value,
+        ROUTE_DISABLED_RETRY_SECONDS: "300",
+      })).toThrowError(expect.objectContaining({
+        name: "RequestControlConfigurationError",
+        variable: "PUBLISH_HOSTNAME",
+      } satisfies Partial<RequestControlConfigurationError>));
+    }
+  });
+});
+
+describe("named coordinator configuration", () => {
+  it("keeps publisher policy independent from compatibility-only settings", () => {
+    expect(publisherCoordinatorConfiguration({
+      PUBLISH_HOSTNAME: "publish-canary.example.test",
+      LISTING_TTL_SECONDS: "14400",
+      PUBLISH_SERVER_DAILY_LIMIT: "48",
+      ROUTE_DISABLED_RETRY_SECONDS: "300",
+    })).toEqual({
+      authority: "publish-canary.example.test",
+      listingTtlSeconds: 14_400,
+      publishServerDaily: 48,
+      routeDisabledRetrySeconds: 300,
+    });
+  });
+
+  it("keeps rendezvous policy independent from publisher and compatibility settings", () => {
+    expect(rendezvousCoordinatorConfiguration({
+      RENDEZVOUS_HOSTNAME: "rendezvous-canary.example.test",
+      LISTING_TTL_SECONDS: "14400",
+      ROUTE_DISABLED_RETRY_SECONDS: "300",
+      COMPAT_RENDEZVOUS_CLIENT_SOURCE_DAILY_LIMIT: "50",
+      COMPAT_RENDEZVOUS_CLIENT_PAIR_DAILY_LIMIT: "10",
+      COMPAT_RENDEZVOUS_SERVER_SOURCE_DAILY_LIMIT: "50",
+      COMPAT_RENDEZVOUS_SERVER_DAILY_LIMIT: "50",
+    })).toEqual({
+      authority: "rendezvous-canary.example.test",
+      listingTtlSeconds: 14_400,
+      routeDisabledRetrySeconds: 300,
+      compatibilityRendezvousClientSourceDaily: 50,
+      compatibilityRendezvousClientPairDaily: 10,
+      compatibilityRendezvousServerSourceDaily: 50,
+      compatibilityRendezvousServerDaily: 50,
+    });
+  });
+});
 
 describe("rendezvous policy configuration", () => {
   it("accepts the reviewed maxima and minimum canary boundaries", () => {

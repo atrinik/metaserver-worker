@@ -50,7 +50,7 @@ export type CanonicalDynamicRoute =
       readonly kind: "publish";
       readonly generation: ProtocolGeneration;
       readonly serverId: string;
-      readonly authority: typeof PUBLISH_AUTHORITY;
+      readonly authority: string;
       readonly maximumBodyBytes: typeof PUBLISH_MAX_BODY_BYTES;
     }
   | {
@@ -59,7 +59,7 @@ export type CanonicalDynamicRoute =
       readonly serverId: string;
       readonly role: RendezvousRole;
       readonly subprotocol: ClassicRendezvousSubprotocol | null;
-      readonly authority: typeof RENDEZVOUS_AUTHORITY;
+      readonly authority: string;
     };
 
 export type CompatibilityRoute =
@@ -115,14 +115,42 @@ export function classifyCanonicalRoute(
 
   if (target.authority === PUBLISH_AUTHORITY) {
     enforceHostHeader(input.headers, PUBLISH_AUTHORITY);
-    return classifyPublisher(input, target);
+    return classifyPublisher(input, target, PUBLISH_AUTHORITY);
   }
   if (target.authority === RENDEZVOUS_AUTHORITY) {
     enforceHostHeader(input.headers, RENDEZVOUS_AUTHORITY);
-    return classifyRendezvous(input, target);
+    return classifyRendezvous(input, target, RENDEZVOUS_AUTHORITY);
   }
 
   throw new HttpError("misdirected_request");
+}
+
+/** Classify only the publisher contract for one configured authority. */
+export function classifyCanonicalPublisherRoute(
+  input: RouteInput,
+  authority: string,
+): Extract<CanonicalDynamicRoute, { kind: "publish" }> {
+  rejectAmbiguousCriticalHeaders(input.headers);
+  const target = parseTarget(input.target);
+  if (target.authority !== authority) {
+    throw new HttpError("misdirected_request");
+  }
+  enforceHostHeader(input.headers, authority);
+  return classifyPublisher(input, target, authority);
+}
+
+/** Classify only the rendezvous contract for one configured authority. */
+export function classifyCanonicalRendezvousRoute(
+  input: RouteInput,
+  authority: string,
+): Extract<CanonicalDynamicRoute, { kind: "rendezvous" }> {
+  rejectAmbiguousCriticalHeaders(input.headers);
+  const target = parseTarget(input.target);
+  if (target.authority !== authority) {
+    throw new HttpError("misdirected_request");
+  }
+  enforceHostHeader(input.headers, authority);
+  return classifyRendezvous(input, target, authority);
 }
 
 /**
@@ -186,7 +214,8 @@ function validateCompatibilityAuthority(value: string): string {
 function classifyPublisher(
   input: RouteInput,
   target: ParsedTarget,
-): CanonicalDynamicRoute {
+  authority: string,
+): Extract<CanonicalDynamicRoute, { kind: "publish" }> {
   const route = matchCanonicalServerPath(target.path, true);
   if (route === null) {
     throw new HttpError("not_found");
@@ -200,7 +229,7 @@ function classifyPublisher(
     kind: "publish",
     generation: route.generation,
     serverId: route.serverId,
-    authority: PUBLISH_AUTHORITY,
+    authority,
     maximumBodyBytes: PUBLISH_MAX_BODY_BYTES,
   };
 }
@@ -208,7 +237,8 @@ function classifyPublisher(
 function classifyRendezvous(
   input: RouteInput,
   target: ParsedTarget,
-): CanonicalDynamicRoute {
+  authority: string,
+): Extract<CanonicalDynamicRoute, { kind: "rendezvous" }> {
   const route = matchCanonicalServerPath(target.path, false);
   if (route === null) {
     throw new HttpError("not_found");
@@ -228,7 +258,7 @@ function classifyRendezvous(
     serverId: route.serverId,
     role,
     subprotocol,
-    authority: RENDEZVOUS_AUTHORITY,
+    authority,
   };
 }
 

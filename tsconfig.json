@@ -9,5 +9,6 @@
     "noEmit": true,
     "skipLibCheck": true
   },
-  "include": ["worker-configuration.d.ts", "src/**/*.ts"]
+  "include": ["worker-runtime.d.ts", "worker-configuration.d.ts", "src/**/*.ts"],
+  "exclude": ["src/publisher-worker.ts", "src/rendezvous-worker.ts"]
 }

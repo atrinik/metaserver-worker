@@ -58,6 +58,18 @@
     "DirectoryBuilder": {
       "type": "durable-object",
       "storage": "sqlite"
+    },
+    "PublisherCoordinator": {
+      "type": "worker",
+      "cache": {
+        "enabled": false
+      }
+    },
+    "RendezvousCoordinator": {
+      "type": "worker",
+      "cache": {
+        "enabled": false
+      }
     }
   },
   "ratelimits": [
@@ -126,11 +138,14 @@
   },
   "vars": {
     "COMPAT_HOSTNAME": "meta.atrinik.org",
+    "PUBLISH_HOSTNAME": "publish.meta.atrinik.org",
+    "RENDEZVOUS_HOSTNAME": "rendezvous.meta.atrinik.org",
     "COMPAT_STATUS_ENABLED": "enabled",
     "COMPAT_DIRECTORY_ENABLED": "enabled",
     "COMPAT_OTP_ENABLED": "enabled",
     "COMPAT_UPDATE_ENABLED": "enabled",
     "PUBLISH_ENABLED": "disabled",
+    "RENDEZVOUS_ENABLED": "disabled",
     "COMPAT_RENDEZVOUS_ENABLED": "enabled",
     "SOURCE_TAG_KEY_CURRENT_ID": "2026-08-a",
     "SOURCE_TAG_KEY_PREVIOUS_ID": "2026-07-a",

@@ -34,12 +34,14 @@ one server's exact rolling allowance. A WAF or native rejection is not proof
 that the exact room quota is exhausted, and a Durable Object rejection still
 costs the preceding Worker invocation.
 
-The compatibility Worker checks the 10/minute global binding before the
+The compatibility/core Worker checks the 10/minute global binding before the
 10/minute directory, OTP, and update bindings, so an all-one-route burst may
 surface the global reason first. The separate bindings are intentional
-defense-in-depth and become independently effective when issue #18 moves those
-routes to separate entrypoints; they also prevent a later global-ceiling change
-from silently removing route policy.
+defense-in-depth. The domainless canonical publisher and rendezvous edge
+Workers now have independent namespace IDs and only the native bindings needed
+by their own routes; the core retains the exact authenticated and D1 budgets.
+No namespace ID is reused across the three Workers because native counters are
+shared by ID. Public routing remains disabled until the WAF/canary cutover.
 
 ## Initial ceilings
 
@@ -192,10 +194,13 @@ missing, differently cased, padded, or malformed values fail closed. A disabled
 route returns a stable non-cacheable `503` and bounded `Retry-After`; it never
 falls back to another authentication or routing path.
 
-The final publisher and rendezvous deployments have independent flags,
-bindings, WAF rules, and observability. Changing a limit requires reviewing all
-three enforcement layers, shared-NAT recovery allowance, consumer retry
-behavior, and the corresponding test boundary.
+The publisher and rendezvous edges and their core coordinators each require the
+corresponding breaker to be exactly `enabled`; both checked-in edge breakers and
+both core canonical breakers ship disabled. The public deployments have
+independent flags, native bindings, WAF rules, and observability, while D1 and
+Durable Object authority remains only in the core. Changing a limit requires
+reviewing all three enforcement layers, shared-NAT recovery allowance, consumer
+retry behavior, and the corresponding test boundary.
 
 ## Operations and measurement
 

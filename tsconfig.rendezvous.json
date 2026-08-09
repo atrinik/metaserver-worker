@@ -1,0 +1,16 @@
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "types": [
+      "./worker-runtime.d.ts",
+      "./rendezvous-worker-configuration.d.ts"
+    ]
+  },
+  "include": [
+    "rendezvous-worker-configuration.d.ts",
+    "worker-runtime.d.ts",
+    "src/rendezvous-worker.ts",
+    "type-tests/rendezvous-env.ts"
+  ],
+  "exclude": []
+}

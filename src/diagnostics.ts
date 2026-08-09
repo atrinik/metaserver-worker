@@ -9,11 +9,20 @@ export type DiagnosticRoute =
   | "compat-update"
   | "publish-classic"
   | "publish-game"
+  | "rendezvous-client"
+  | "rendezvous-server"
   | "compat-rendezvous-client"
   | "compat-rendezvous-server";
 
 export type BlacklistDimension = "server_identity" | "request_source";
-export type DiagnosticHandler = "fetch" | "scheduled" | "rendezvous";
+export type BlacklistRoute = "compat-update" | "publish-classic";
+export type DiagnosticHandler =
+  | "fetch"
+  | "publisher"
+  | "rendezvous-edge"
+  | "coordinator"
+  | "scheduled"
+  | "rendezvous";
 export type UnexpectedErrorCode =
   | "request_control_dependency"
   | "request_control_configuration"
@@ -33,10 +42,13 @@ export function logRequestRejected(
   console.warn({ event: "request_rejected", route, code, status });
 }
 
-export function logBlacklistMatch(dimension: BlacklistDimension): void {
+export function logBlacklistMatch(
+  route: BlacklistRoute,
+  dimension: BlacklistDimension,
+): void {
   console.warn({
     event: "blacklist_match",
-    route: "compat-update",
+    route,
     dimension,
   });
 }

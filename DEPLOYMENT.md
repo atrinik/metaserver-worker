@@ -195,44 +195,67 @@ readback is recovery evidence, not public-read atomicity.
 
 ## Canary
 
-1. Create a separate canary D1 database and apply all ordered migrations to it.
+1. Create an isolated three-Worker canary cohort: a core/state provider plus
+   publisher and rendezvous ingress Workers. The two ingress `COORDINATOR`
+   bindings must target the exact canary core service and matching named
+   entrypoints; a copied production target is a stop condition. Create a
+   dedicated publisher hostname and rendezvous hostname, and set
+   `PUBLISH_HOSTNAME` / `RENDEZVOUS_HOSTNAME` to those exact values in both the
+   matching ingress config and the canary core config. The canary values must
+   differ from production and from each other; they are also the source-tag
+   namespace and signed authority, so an edge/core mismatch fails closed.
+   Create a
+   separate canary D1 database and apply all ordered migrations to it.
    Provision separate Analytics Engine datasets named
    `atrinik_metaserver_rendezvous_canary` and
    `atrinik_metaserver_directory_canary`. The code-facing bindings remain
    `RENDEZVOUS_METRICS` and `DIRECTORY_METRICS`, but neither canary resource may
    target its production dataset. Give every one of the
-   seven native Rate Limiting bindings a canary-only `namespace_id` that is
+   ten native Rate Limiting bindings across the cohort (seven core, one
+   publisher, and two rendezvous) a canary-only `namespace_id` that is
    distinct from every production ID and from the other canary IDs. Cloudflare
    deliberately shares counters between Workers that reuse a namespace ID, so
    copied IDs would couple canary traffic to production. The separate canary
-   Worker must also own its declarative `RendezvousRoom` and
-   `DirectoryBuilder` namespaces; do not bind either to a production
-   script/class namespace. Provision three empty canary-only R2 buckets and
-   keep their public development URLs disabled.
-2. Before any canary deployment, run a local-only dry run with the exact canary
-   target and configuration:
+   core Worker must also own its declarative `RendezvousRoom` and
+   `DirectoryBuilder` namespaces; neither ingress Worker may have a state
+   binding. Do not bind any of the three Workers to a production service,
+   script/class namespace, limiter, dataset, database, or bucket. Provision
+   three empty canary-only R2 buckets and keep their public development URLs
+   disabled.
+2. Before any canary deployment, run local-only dry runs with the three exact
+   canary targets and configurations:
 
    ```sh
-   readonly ATRINIK_CANARY_CONFIG=/secure/path/atrinik-metaserver.canary.jsonc
-   readonly ATRINIK_CANARY_WORKER=atrinik-metaserver-canary
+   readonly ATRINIK_CANARY_CORE_CONFIG=/secure/path/atrinik-metaserver.canary.jsonc
+   readonly ATRINIK_CANARY_PUBLISHER_CONFIG=/secure/path/atrinik-publisher.canary.jsonc
+   readonly ATRINIK_CANARY_RENDEZVOUS_CONFIG=/secure/path/atrinik-rendezvous.canary.jsonc
    readonly ATRINIK_CANARY_CF_PROFILE=atrinik-canary
-   readonly ATRINIK_CANARY_DRY_RUN_DIR="$(mktemp -d)"
+   readonly ATRINIK_CANARY_DRY_RUN_ROOT="$(mktemp -d)"
 
-   npx wrangler deploy --dry-run --outdir "$ATRINIK_CANARY_DRY_RUN_DIR" \
-     --config "$ATRINIK_CANARY_CONFIG" \
-     --name "$ATRINIK_CANARY_WORKER" \
+   npx wrangler deploy --dry-run --outdir "$ATRINIK_CANARY_DRY_RUN_ROOT/core" \
+     --config "$ATRINIK_CANARY_CORE_CONFIG" \
+     --name atrinik-metaserver-canary \
+     --profile "$ATRINIK_CANARY_CF_PROFILE"
+   npx wrangler deploy --dry-run --outdir "$ATRINIK_CANARY_DRY_RUN_ROOT/publisher" \
+     --config "$ATRINIK_CANARY_PUBLISHER_CONFIG" \
+     --name atrinik-metaserver-publisher-canary \
+     --profile "$ATRINIK_CANARY_CF_PROFILE"
+   npx wrangler deploy --dry-run --outdir "$ATRINIK_CANARY_DRY_RUN_ROOT/rendezvous" \
+     --config "$ATRINIK_CANARY_RENDEZVOUS_CONFIG" \
+     --name atrinik-metaserver-rendezvous-canary \
      --profile "$ATRINIK_CANARY_CF_PROFILE"
    ```
 
-   Compare the resolved binding summary with the production dry run recorded in
-   Prepare step 7. It must show the canary Worker name, canary-owned
-   `RendezvousRoom`, canary D1 database, all seven Rate Limiting bindings, and
+   Compare all resolved binding summaries with the production dry runs recorded
+   in Prepare step 7. The core must show the canary Worker name, canary-owned
+   `RendezvousRoom`, canary D1 database, all seven core Rate Limiting bindings, and
    `RENDEZVOUS_METRICS` targeting
    `atrinik_metaserver_rendezvous_canary`, not the exact production target
    `atrinik_metaserver_rendezvous`. Wrangler's dry-run summary shows each
-   binding's rate but does not display its `namespace_id`. Separately inspect
-   the exact canary configuration selected by `--config` and compare all seven
-   IDs with each other and with the production configuration/release record;
+   binding's rate but does not display its `namespace_id`. Each ingress summary
+   must show only its canary `COORDINATOR` entrypoint and own limiter set.
+   Separately inspect the exact canary configurations selected by `--config`
+   and compare all ten IDs with each other and with production;
    record only the comparison result, not secret configuration. A matching
    binding name or clean dry run does not prove isolated counters. Stop on any
    ambiguity or shared state.
@@ -243,11 +266,19 @@ readback is recovery evidence, not public-read atomicity.
    the reviewed results, remove that local bundle:
 
    ```sh
-   rm -r -- "$ATRINIK_CANARY_DRY_RUN_DIR"
+   rm -r -- "$ATRINIK_CANARY_DRY_RUN_ROOT"
    ```
-3. Deploy the dry-run-reviewed canary Worker on a separately reviewed canary
-   custom hostname. Use only that canary configuration and keep both
-   `workers.dev` and preview URLs off.
+3. Deploy the dry-run-reviewed canary provider first, verify both named
+   entrypoints and both existing Durable Object namespaces, then deploy the two
+   disabled canary ingress Workers. Install a default-deny canary WAF rule and
+   allow only the controlled test sources before attaching the separately
+   reviewed canary hostnames to their matching ingress Workers. Keep all three
+   `workers.dev` and preview URLs off. Temporarily enable each matching edge
+   and core breaker only behind that allowlist, prove real Service Binding
+   preservation of the signed authority/body/headers, request-source isolation,
+   and WebSocket 101/subprotocol handoff, then disable both breakers again
+   before changing or widening the exposure. An open circuit cannot exercise a
+   Service Binding and is not canary evidence.
 4. Verify `/`, OTP issuance, authenticated registration/update,
    `/v2/servers`, and both rendezvous WebSocket roles.
 5. Confirm malformed identities, expired/replayed OTPs, missing bearer tokens,
@@ -488,15 +519,56 @@ two-secret file, D1 bookmark/migration plan, and forward-fix package before
 entering the cutover. Secret values must not be printed or copied into the
 release record.
 
+## Stage the domainless service boundary
+
+The state-owning provider remains exactly `atrinik-metaserver` with
+`wrangler.jsonc`. It owns D1, R2, both schedules, both Analytics Engine
+datasets, and both Durable Object namespaces. Its declarative exports now also
+include the cache-disabled `PublisherCoordinator` and `RendezvousCoordinator`
+Worker entrypoints. Do not move either Durable Object, add `script_name`, or
+copy any state binding into a caller.
+
+The callers are `atrinik-metaserver-publisher` from
+`wrangler.publisher.jsonc` and `atrinik-metaserver-rendezvous` from
+`wrangler.rendezvous.jsonc`. Each has exactly one named `COORDINATOR` Service
+Binding to the provider, distinct native rate namespace IDs, no state or cron
+binding, no route, no Custom Domain, and a disabled circuit. Generate/check all
+three type surfaces and review all three distinct dry-run directories before
+any deployment.
+
+`PUBLISH_HOSTNAME` and `RENDEZVOUS_HOSTNAME` are explicit, fail-closed
+authorities. Production pins the canonical hostnames in both the corresponding
+caller and provider. An isolated canary pins its own non-production values on
+both sides; copying only one side is a stop condition.
+
+Do not deploy this topology before the pending D1 migrations in Cut over step 2
+have completed. The provider-first and caller deployments are one ordered part
+of Cut over step 3, not a pre-migration staging operation. The callers cannot
+bind to entrypoints that are not active, and the provider's existing `exports`
+lifecycle forbids `versions upload` and gradual rollout. Deploying callers does
+not authorize route attachment.
+
+Re-read all three deployments. Both callers must still have no public route,
+no alternate URL, and disabled breakers. Their source-tag IDs and encrypted
+secret pair must match the core's reviewed rotation epoch, while every native
+rate namespace ID remains unique. A later isolated canary must prove that the
+HTTP signature bytes and WebSocket upgrade/subprotocol survive the Service
+Binding, that source addresses/browser headers do not cross into the core, and
+that either caller cannot dispatch the other's entrypoint. Only after the
+host-specific WAF, observability, rollback, and consumer gates pass may a
+separate reviewed change attach a canonical Custom Domain and enable both the
+edge and core breaker for that service.
+
 ## Cut over
 
 1. Pause server updates for the additive migration and Worker switch. Record a
    fresh D1 recovery bookmark.
 2. Apply only pending ordered migrations to the approved production D1
    database and verify the migration ledger.
-3. Deploy the reviewed source and exact production configuration directly to
-   100%, atomically applying the `exports` lifecycle and both encrypted source
-   tag secrets:
+3. Deploy the reviewed source and exact production configurations in provider-
+   first order. The provider deploy applies its `exports` lifecycle directly to
+   100%; the three deployments are not one cross-Worker atomic operation. Keep
+   all breakers disabled and every new ingress domain detached throughout:
 
    ```sh
    npx wrangler deploy --strict \
@@ -509,11 +581,23 @@ release record.
      --config "$ATRINIK_PROD_CONFIG" \
      --name "$ATRINIK_PROD_WORKER" \
      --profile "$ATRINIK_CF_PROFILE"
+   npx wrangler deploy --strict \
+     --config /secure/path/atrinik-publisher.production.jsonc \
+     --name atrinik-metaserver-publisher \
+     --profile "$ATRINIK_CF_PROFILE" \
+     --secrets-file "$ATRINIK_SOURCE_TAG_SECRETS"
+   npx wrangler deploy --strict \
+     --config /secure/path/atrinik-rendezvous.production.jsonc \
+     --name atrinik-metaserver-rendezvous \
+     --profile "$ATRINIK_CF_PROFILE" \
+     --secrets-file "$ATRINIK_SOURCE_TAG_SECRETS"
    ```
 
    Capture and review Wrangler's `Durable Object exports reconciliation`; it
    must preserve `RendezvousRoom` and create exactly `DirectoryBuilder`, with
-   no deletion, rename, or transfer. Record the active version ID, inspect it
+   no deletion, rename, or transfer. Re-read both caller deployments and prove
+   they remain domainless, disabled, state-free, and bound only to the matching
+   named provider entrypoint. Record the active provider version ID, inspect it
    with `wrangler versions view`, and verify its source tag, compatibility
    settings, variables, D1, R2, Durable Object, Analytics Engine, rate-limit,
    schedule, and both secret binding names. Verify there is no public alternate
@@ -584,8 +668,18 @@ Treat key IDs, secret values, code, and hostname namespace as one versioned
 contract. For an `A/Z` to `B/A` rotation, update the reviewed Wrangler IDs to
 `B/A` and prepare a protected, ignored secrets file containing the corresponding
 current `B` and previous `A` values. Run the bidirectional test against the
-isolated canary Worker first, then deploy the reviewed pair atomically to 100%
-with the unchanged live `exports` map:
+isolated canary cohort first, then deploy the reviewed pair to all three
+services in provider-first order with the unchanged live `exports` map. There
+is no cross-Worker atomic deploy; shared `A` preserves overlap while the cohort
+converges:
+
+The provider deploy restarts every live Durable Object and disconnects its
+WebSockets. Announce a controlled reconnect window, confirm the classic server
+cohort is on the bounded-backoff release, watch server-control reconnect and
+rate-limit counts, and keep the rendezvous edge breaker ready to close. Prove
+this restart/reconnect behavior in the isolated canary before rotating
+production. If reconnect pressure is unsafe, disable the public breaker and
+fix forward; do not raise budgets or bypass authentication.
 
 ```sh
 npx wrangler deploy --strict --tag source-tag-b-a \
@@ -593,19 +687,31 @@ npx wrangler deploy --strict --tag source-tag-b-a \
   --name "$ATRINIK_PROD_WORKER" \
   --profile "$ATRINIK_CF_PROFILE" \
   --secrets-file /secure/path/source-tags-b-a.env
+npx wrangler deploy --strict --tag source-tag-b-a \
+  --config /secure/path/atrinik-publisher.production.jsonc \
+  --name atrinik-metaserver-publisher \
+  --profile "$ATRINIK_CF_PROFILE" \
+  --secrets-file /secure/path/source-tags-b-a.env
+npx wrangler deploy --strict --tag source-tag-b-a \
+  --config /secure/path/atrinik-rendezvous.production.jsonc \
+  --name atrinik-metaserver-rendezvous \
+  --profile "$ATRINIK_CF_PROFILE" \
+  --secrets-file /secure/path/source-tags-b-a.env
 ```
 
-Inspect the active rotation version with the same explicit `--config`, `--name`,
-and `--profile` arguments. Verify the `B/A` IDs, both secret binding names,
+Inspect all three active rotation versions with their explicit `--config`,
+`--name`, and `--profile` arguments. Verify the `B/A` IDs, both secret binding names,
 hostname namespace, unchanged exports reconciliation, and every non-secret
 binding against the release record. Do not use sequential `wrangler secret
 put` operations: each command can create an intermediate version whose IDs and
-secrets do not form the reviewed pair. The production rotation is atomic at
-100%; do not attempt a gradual split or roll traffic between disjoint pairs.
+secrets do not form the reviewed pair. Keep at least one shared key valid at
+every step; do not attempt a gradual split or roll traffic between disjoint
+pairs.
 
 An `A/Z` rendezvous writer stores both aliases in the admission row; `B/A`
 detects the same ticket through shared `A` even after server reconnect and room
-reconstruction. Keep `A` until all `A/Z` traffic has stopped, strictly more than
+reconstruction. Keep `A` until the last old writer among all three services has
+stopped, strictly more than
 24 hours has elapsed since the last possible old-pair replay claim, and the
 longest UTC-day budget, OTP lifetime, propagation interval, and cleanup run
 have also elapsed. Rotate at the next UTC budget boundary and verify no backlog
