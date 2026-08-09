@@ -1,14 +1,21 @@
 import { describe, expect, it } from "vitest";
 
 import {
+  directoryArtifactConfiguration,
   rendezvousPolicyConfiguration,
   requestControlConfiguration,
   RequestControlConfigurationError,
 } from "../src/config";
 import type {
+  DirectoryArtifactConfigurationInput,
   RendezvousPolicyConfigurationInput,
   RequestControlConfigurationInput,
 } from "../src/config";
+
+const validDirectoryArtifacts = {
+  LISTING_TTL_SECONDS: "14400",
+  DIRECTORY_REFRESH_LEAD_SECONDS: "3600",
+} satisfies DirectoryArtifactConfigurationInput;
 
 const validRendezvousPolicy = {
   RENDEZVOUS_CLIENT_ROLLING_LIMIT: "50",
@@ -81,6 +88,57 @@ describe("rendezvous policy configuration", () => {
   });
 });
 
+describe("directory artifact configuration", () => {
+  it("caps protocol lifetime independently from presence retention", () => {
+    expect(directoryArtifactConfiguration(validDirectoryArtifacts)).toEqual({
+      listingTtlSeconds: 14_400,
+      artifactLifetimeSeconds: 14_400,
+      refreshLeadSeconds: 3_600,
+    });
+    expect(directoryArtifactConfiguration({
+      LISTING_TTL_SECONDS: "86400",
+      DIRECTORY_REFRESH_LEAD_SECONDS: "7200",
+    })).toEqual({
+      listingTtlSeconds: 86_400,
+      artifactLifetimeSeconds: 14_400,
+      refreshLeadSeconds: 7_200,
+    });
+  });
+
+  it("accepts a buildable minimum and rejects incoherent bounds", () => {
+    expect(directoryArtifactConfiguration({
+      LISTING_TTL_SECONDS: "960",
+      DIRECTORY_REFRESH_LEAD_SECONDS: "60",
+    })).toEqual({
+      listingTtlSeconds: 960,
+      artifactLifetimeSeconds: 960,
+      refreshLeadSeconds: 60,
+    });
+    for (const [variable, value] of [
+      ["LISTING_TTL_SECONDS", undefined],
+      ["LISTING_TTL_SECONDS", "959"],
+      ["LISTING_TTL_SECONDS", "86401"],
+      ["DIRECTORY_REFRESH_LEAD_SECONDS", undefined],
+      ["DIRECTORY_REFRESH_LEAD_SECONDS", "0"],
+      ["DIRECTORY_REFRESH_LEAD_SECONDS", "7201"],
+    ] as const) {
+      expect(() => directoryArtifactConfiguration({
+        ...validDirectoryArtifacts,
+        [variable]: value,
+      })).toThrowError(expect.objectContaining({
+        name: "RequestControlConfigurationError",
+        variable,
+      } satisfies Partial<RequestControlConfigurationError>));
+    }
+    expect(() => directoryArtifactConfiguration({
+      LISTING_TTL_SECONDS: "960",
+      DIRECTORY_REFRESH_LEAD_SECONDS: "61",
+    })).toThrowError(expect.objectContaining({
+      variable: "DIRECTORY_REFRESH_LEAD_SECONDS",
+    } satisfies Partial<RequestControlConfigurationError>));
+  });
+});
+
 describe("request-control configuration", () => {
   it("accepts the reviewed maxima and canary reductions", () => {
     expect(requestControlConfiguration(valid)).toMatchObject({
@@ -97,10 +155,12 @@ describe("request-control configuration", () => {
     });
     expect(requestControlConfiguration({
       ...valid,
+      LISTING_TTL_SECONDS: "960",
       COMPAT_DIRECTORY_DAILY_LIMIT: "8",
       PUBLISH_SERVER_DAILY_LIMIT: "8",
       COMPAT_RENDEZVOUS_SERVER_SOURCE_DAILY_LIMIT: "8",
     })).toMatchObject({
+      listingTtlSeconds: 960,
       compatibilityDirectoryDaily: 8,
       publishServerDaily: 8,
       compatibilityRendezvousServerSourceDaily: 8,
@@ -128,7 +188,7 @@ describe("request-control configuration", () => {
       ["COMPAT_HOSTNAME", "meta.example.test:443"],
       ["COMPAT_STATUS_DAILY_LIMIT", undefined],
       ["OTP_TTL_SECONDS", "301"],
-      ["LISTING_TTL_SECONDS", "59"],
+      ["LISTING_TTL_SECONDS", "959"],
       ["STALE_DATA_RETENTION_SECONDS", "14399"],
       ["COMPAT_DIRECTORY_DAILY_LIMIT", "1000"],
       ["COMPAT_OTP_DAILY_LIMIT", "0"],

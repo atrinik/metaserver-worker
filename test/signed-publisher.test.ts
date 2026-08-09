@@ -121,6 +121,9 @@ beforeEach(async () => {
   });
   await evictDurableObject(stub);
   await env.DB.batch([
+    env.DB.prepare("DELETE FROM directory_artifact_history"),
+    env.DB.prepare("DELETE FROM directory_artifact_commits"),
+    env.DB.prepare("DELETE FROM directory_expiry_commits"),
     env.DB.prepare("DELETE FROM directory_outbox"),
     env.DB.prepare("DELETE FROM publisher_nonces"),
     env.DB.prepare("DELETE FROM publisher_replay"),
@@ -132,11 +135,60 @@ beforeEach(async () => {
     env.DB.prepare(
       "UPDATE directory_revisions SET revision = 0, updated_at = 0",
     ),
+    env.DB.prepare(
+      `UPDATE directory_artifact_publications
+          SET published_revision = 0, generation = 0, generated_at = 0,
+              expires_at = 0,
+              model_sha256 = '${"0".repeat(64)}',
+              html_sha256 = '${"0".repeat(64)}',
+              xml_sha256 = '${"0".repeat(64)}',
+              json_sha256 = '${"0".repeat(64)}',
+              manifest_sha256 = '${"0".repeat(64)}',
+              html_bytes = 0, xml_bytes = 0, json_bytes = 0,
+              manifest_bytes = 0, published_at = 0`,
+    ),
   ]);
   vi.spyOn(Date, "now").mockReturnValue(publisherFixture.created * 1_000);
 });
 
 describe("classic signed publisher", () => {
+  it.each([null, "legacy-unknown"])(
+    "preserves a committed legacy Room success for change marker %s",
+    async (marker) => {
+      const nudge = vi.fn(async () => {});
+      const roomFetch = vi.fn(async () => new Response(null, {
+        status: 204,
+        ...(marker === null
+          ? {}
+          : { headers: { "X-Atrinik-Directory-Changed": marker } }),
+      }));
+      const base = testEnvironment();
+      const mixedVersionEnv = new Proxy(base, {
+        get(target, property, receiver) {
+          if (property === "RENDEZVOUS") {
+            return {
+              getByName: () => ({ fetch: roomFetch }),
+            } as unknown as DurableObjectNamespace;
+          }
+          if (property === "DIRECTORY_BUILDER") {
+            return {
+              getByName: () => ({ nudge }),
+            } as unknown as DurableObjectNamespace;
+          }
+          return Reflect.get(target, property, receiver);
+        },
+      });
+
+      const response = await callWorker(
+        publishRequest(initialVector()),
+        mixedVersionEnv,
+      );
+      expect(response.status).toBe(200);
+      expect(roomFetch).toHaveBeenCalledTimes(1);
+      expect(nudge).toHaveBeenCalledTimes(1);
+    },
+  );
+
   it("ships fail closed until the staged rollout explicitly enables it", async () => {
     const response = await callWorker(publishRequest(initialVector()));
     expect(response.status).toBe(503);
@@ -225,6 +277,7 @@ describe("classic signed publisher", () => {
         await sha256Hex(result.rendezvousToken),
       );
       expect(await directoryState()).toEqual({ revision: 1, outbox: [1] });
+      expect(await publishedRevision()).toBe(0);
     } finally {
       if (originalPersister !== null) {
         await runInDurableObject(stub, (instance) => {
@@ -284,6 +337,7 @@ describe("classic signed publisher", () => {
       rendezvous_token_hash: await sha256Hex(initialBody.rendezvousToken),
     });
     expect(await directoryState()).toEqual({ revision: 1, outbox: [1] });
+    expect(await publishedRevision()).toBe(0);
 
     const replay = await callWorker(publishRequest(initialVector()), workerEnv);
     expect(replay.status).toBe(409);
@@ -328,7 +382,8 @@ describe("classic signed publisher", () => {
       workerEnv,
     );
     expect(changed.status).toBe(200);
-    expect(await directoryState()).toEqual({ revision: 2, outbox: [1, 2] });
+    expect(await directoryState()).toEqual({ revision: 2, outbox: [2] });
+    expect(await publishedRevision()).toBe(0);
 
     const nonceReplay = await callWorker(
       publishRequest(publisherFixture.reused_nonce),
@@ -344,7 +399,7 @@ describe("classic signed publisher", () => {
     expect((await storedPublication())?.last_sequence).toBe(
       publisherFixture.changed.sequence,
     );
-    expect(await directoryState()).toEqual({ revision: 2, outbox: [1, 2] });
+    expect(await directoryState()).toEqual({ revision: 2, outbox: [2] });
 
     const madePrivate = await callWorker(
       publishRequest(publisherFixture.private),
@@ -379,8 +434,9 @@ describe("classic signed publisher", () => {
     });
     expect(await directoryState()).toEqual({
       revision: 3,
-      outbox: [1, 2, 3],
+      outbox: [3],
     });
+    expect(await publishedRevision()).toBe(0);
     expect(await env.DB.prepare(
       `SELECT COUNT(*) AS count FROM publisher_nonces
         WHERE server_id = ? AND profile = 'classic-v1'`,
@@ -406,4 +462,11 @@ async function directoryState(): Promise<{
     revision,
     outbox: outbox.results.map((row) => row.revision),
   };
+}
+
+async function publishedRevision(): Promise<number | null> {
+  return env.DB.prepare(
+    `SELECT published_revision FROM directory_artifact_publications
+      WHERE profile = 'classic-v1'`,
+  ).first<number>("published_revision");
 }

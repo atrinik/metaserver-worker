@@ -15,7 +15,9 @@
   one alarm for expiry; never add candidate persistence or per-session timers.
 - `wrangler.jsonc` deliberately uses declarative `exports` for the SQLite
   Durable Object and a placeholder D1 ID. Do not add legacy Durable Object
-  migration configuration alongside `exports`.
+  migration configuration alongside `exports`. Lifecycle changes require a
+  direct 100% `wrangler deploy`; `versions upload`, gradual rollout, and
+  rollback across that lifecycle boundary are unsupported.
 - Production state exists. `migrations/0001_initial.sql` is applied history:
   never rewrite, reorder, or reuse it. Add every schema transition as a new,
   ordered migration and test the complete populated-schema upgrade path.
@@ -25,6 +27,13 @@
   private publishers; `directory_entries` alone is public. Visible expiry must
   advance `directory_revisions` and `directory_outbox` atomically before
   removing expired entries; stale private presence is revision-neutral.
+- Treat D1 revision/outbox as the static-directory authority and the
+  profile-named `DirectoryBuilder` only as a serialized, retryable publisher.
+  Persist pending intent before R2 awaits, publish immutable objects before
+  aliases, compare-and-swap every alias, verify the complete alias cohort
+  before checkpointing, coalesce the outbox, and keep rollback retention
+  bounded. Never expose the private D1 revision or historical removed models in
+  a public body, key, or metadata field.
 - Route every direct-hostname write through `isCanonicalHostname()` before D1.
   SQLite independently enforces the bounded ASCII representation but has no
   Unicode/IDNA tables; direct administrative hostname writes are unsupported.

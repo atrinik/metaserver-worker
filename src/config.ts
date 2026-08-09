@@ -24,6 +24,28 @@ export const REQUEST_CONTROL_POLICY_MAXIMUMS = Object.freeze({
   compatibilityRendezvousServerDaily: 50,
 } as const);
 
+export const DIRECTORY_ARTIFACT_POLICY_MAXIMUMS = Object.freeze({
+  refreshLeadSeconds: 7_200,
+  lifetimeSeconds: 14_400,
+  expiryQuantumSeconds: 900,
+  minimumAliasPublicationLifetimeSeconds: 60,
+} as const);
+
+export const MINIMUM_LISTING_TTL_SECONDS =
+  DIRECTORY_ARTIFACT_POLICY_MAXIMUMS.expiryQuantumSeconds +
+  DIRECTORY_ARTIFACT_POLICY_MAXIMUMS.minimumAliasPublicationLifetimeSeconds;
+
+export interface DirectoryArtifactConfigurationInput {
+  readonly DIRECTORY_REFRESH_LEAD_SECONDS?: string;
+  readonly LISTING_TTL_SECONDS?: string;
+}
+
+export interface DirectoryArtifactConfiguration {
+  readonly refreshLeadSeconds: number;
+  readonly listingTtlSeconds: number;
+  readonly artifactLifetimeSeconds: number;
+}
+
 export interface RendezvousPolicyConfigurationInput {
   readonly RENDEZVOUS_CLIENT_ROLLING_LIMIT?: string;
   readonly RENDEZVOUS_ACTIVE_CLIENT_LIMIT?: string;
@@ -79,6 +101,37 @@ export class RequestControlConfigurationError extends Error {
   }
 }
 
+/** Parse the bounded freshness and cache contract used by the static builder. */
+export function directoryArtifactConfiguration(
+  input: DirectoryArtifactConfigurationInput,
+): DirectoryArtifactConfiguration {
+  const listingTtlSeconds = strictInteger(
+    input.LISTING_TTL_SECONDS,
+    "LISTING_TTL_SECONDS",
+    MINIMUM_LISTING_TTL_SECONDS,
+    REQUEST_CONTROL_POLICY_MAXIMUMS.listingTtlSeconds,
+  );
+  const refreshLeadSeconds = strictInteger(
+    input.DIRECTORY_REFRESH_LEAD_SECONDS,
+    "DIRECTORY_REFRESH_LEAD_SECONDS",
+    1,
+    Math.min(
+      DIRECTORY_ARTIFACT_POLICY_MAXIMUMS.refreshLeadSeconds,
+      DIRECTORY_ARTIFACT_POLICY_MAXIMUMS.lifetimeSeconds - 1,
+      listingTtlSeconds -
+        DIRECTORY_ARTIFACT_POLICY_MAXIMUMS.expiryQuantumSeconds,
+    ),
+  );
+  return Object.freeze({
+    refreshLeadSeconds,
+    listingTtlSeconds,
+    artifactLifetimeSeconds: Math.min(
+      listingTtlSeconds,
+      DIRECTORY_ARTIFACT_POLICY_MAXIMUMS.lifetimeSeconds,
+    ),
+  });
+}
+
 /**
  * Parse the policy shared by every rendezvous route and Durable Object room.
  * Missing, malformed, and policy-raising values fail closed.
@@ -123,7 +176,7 @@ export function requestControlConfiguration(
   const listingTtlSeconds = strictInteger(
     input.LISTING_TTL_SECONDS,
     "LISTING_TTL_SECONDS",
-    60,
+    MINIMUM_LISTING_TTL_SECONDS,
     REQUEST_CONTROL_POLICY_MAXIMUMS.listingTtlSeconds,
   );
   const staleDataRetentionSeconds = strictInteger(

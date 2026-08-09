@@ -5,6 +5,7 @@ from pathlib import Path
 
 REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
 WRANGLER_CONFIG = REPOSITORY_ROOT / "wrangler.jsonc"
+DEPLOYMENT_GUIDE = REPOSITORY_ROOT / "DEPLOYMENT.md"
 
 
 class WranglerSecurityConfigurationTests(unittest.TestCase):
@@ -58,7 +59,8 @@ class WranglerSecurityConfigurationTests(unittest.TestCase):
         self.assertEqual(logs["head_sampling_rate"], 1)
         self.assertIs(logs["invocation_logs"], False)
         self.assertEqual(
-            self.configuration["triggers"]["crons"], ["17 * * * *"]
+            self.configuration["triggers"]["crons"],
+            ["*/5 * * * *", "17 * * * *"],
         )
 
     def test_rendezvous_runtime_and_metrics_bindings_are_pinned(self) -> None:
@@ -72,16 +74,51 @@ class WranglerSecurityConfigurationTests(unittest.TestCase):
                 {
                     "binding": "RENDEZVOUS_METRICS",
                     "dataset": "atrinik_metaserver_rendezvous",
-                }
+                },
+                {
+                    "binding": "DIRECTORY_METRICS",
+                    "dataset": "atrinik_metaserver_directory",
+                },
             ],
         )
         self.assertEqual(
             self.configuration["durable_objects"]["bindings"],
-            [{"name": "RENDEZVOUS", "class_name": "RendezvousRoom"}],
+            [
+                {"name": "RENDEZVOUS", "class_name": "RendezvousRoom"},
+                {
+                    "name": "DIRECTORY_BUILDER",
+                    "class_name": "DirectoryBuilder",
+                },
+            ],
         )
         self.assertEqual(
             self.configuration["exports"]["RendezvousRoom"],
             {"type": "durable-object", "storage": "sqlite"},
+        )
+        self.assertEqual(
+            self.configuration["exports"]["DirectoryBuilder"],
+            {"type": "durable-object", "storage": "sqlite"},
+        )
+        self.assertEqual(
+            self.configuration["vars"]["DIRECTORY_REFRESH_LEAD_SECONDS"],
+            "3600",
+        )
+        self.assertEqual(
+            self.configuration["r2_buckets"],
+            [
+                {
+                    "binding": "DIRECTORY_GENERATIONS",
+                    "bucket_name": "atrinik-metaserver-directory-generations",
+                },
+                {
+                    "binding": "CLASSIC_DIRECTORY_PUBLIC",
+                    "bucket_name": "atrinik-metaserver-directory-classic",
+                },
+                {
+                    "binding": "GAME_DIRECTORY_PUBLIC",
+                    "bucket_name": "atrinik-metaserver-directory-game",
+                },
+            ],
         )
         self.assertEqual(
             {
@@ -98,6 +135,14 @@ class WranglerSecurityConfigurationTests(unittest.TestCase):
                 "RENDEZVOUS_CLIENT_SESSION_SECONDS": "15",
             },
         )
+
+    def test_exports_rollout_uses_direct_deploy_only(self) -> None:
+        guide = DEPLOYMENT_GUIDE.read_text(encoding="utf-8")
+        self.assertNotIn("npx wrangler versions upload", guide)
+        self.assertNotIn("npx wrangler versions deploy", guide)
+        self.assertIn("npx wrangler deploy --strict", guide)
+        self.assertIn("Durable Object exports reconciliation", guide)
+        self.assertIn("rollback cannot cross the lifecycle change", guide)
 
 
 if __name__ == "__main__":

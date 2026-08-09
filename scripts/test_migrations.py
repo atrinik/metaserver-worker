@@ -17,6 +17,9 @@ SIGNED_PUBLISHER_MIGRATION = (
 DIRECTORY_STATE_MIGRATION = (
     REPOSITORY_ROOT / "migrations" / "0005_directory_state.sql"
 )
+DIRECTORY_ARTIFACTS_MIGRATION = (
+    REPOSITORY_ROOT / "migrations" / "0006_directory_artifacts.sql"
+)
 
 
 class RequestControlMigrationTests(unittest.TestCase):
@@ -1059,6 +1062,137 @@ class DirectoryStateMigrationTests(unittest.TestCase):
                 "WHERE profile = 'game-v1'"
             ).fetchone(),
             (1,),
+        )
+
+
+class DirectoryArtifactsMigrationTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.database = sqlite3.connect(":memory:")
+        self.addCleanup(self.database.close)
+        for migration in (
+            INITIAL_MIGRATION,
+            REQUEST_CONTROL_MIGRATION,
+            RENDEZVOUS_GENERATION_MIGRATION,
+            SIGNED_PUBLISHER_MIGRATION,
+            DIRECTORY_STATE_MIGRATION,
+        ):
+            self.database.executescript(migration.read_text(encoding="utf-8"))
+
+    def test_adds_exact_unpublished_profile_checkpoints(self) -> None:
+        before_revisions = self.database.execute(
+            "SELECT * FROM directory_revisions ORDER BY profile"
+        ).fetchall()
+        self.database.executescript(
+            DIRECTORY_ARTIFACTS_MIGRATION.read_text(encoding="utf-8")
+        )
+
+        self.assertEqual(
+            self.database.execute(
+                "SELECT profile, published_revision, generation, "
+                "generated_at, expires_at, html_bytes, xml_bytes, "
+                "json_bytes, manifest_bytes, published_at "
+                "FROM directory_artifact_publications ORDER BY profile"
+            ).fetchall(),
+            [
+                ("classic-v1", 0, 0, 0, 0, 0, 0, 0, 0, 0),
+                ("game-v1", 0, 0, 0, 0, 0, 0, 0, 0, 0),
+            ],
+        )
+        self.assertEqual(
+            self.database.execute(
+                "SELECT * FROM directory_revisions ORDER BY profile"
+            ).fetchall(),
+            before_revisions,
+        )
+        self.assertEqual(
+            self.database.execute(
+                "SELECT count(*) FROM directory_artifact_commits"
+            ).fetchone(),
+            (0,),
+        )
+        self.assertEqual(
+            self.database.execute(
+                "SELECT count(*) FROM directory_artifact_history"
+            ).fetchone(),
+            (0,),
+        )
+
+    def test_coalesces_existing_and_future_outbox_rows_per_profile(self) -> None:
+        self.database.executemany(
+            "INSERT INTO directory_outbox (profile, revision, created_at) "
+            "VALUES (?, ?, ?)",
+            [
+                ("classic-v1", 1, 10),
+                ("classic-v1", 2, 20),
+                ("game-v1", 1, 30),
+            ],
+        )
+        self.database.executescript(
+            DIRECTORY_ARTIFACTS_MIGRATION.read_text(encoding="utf-8")
+        )
+        self.assertEqual(
+            self.database.execute(
+                "SELECT profile, revision FROM directory_outbox "
+                "ORDER BY profile"
+            ).fetchall(),
+            [("classic-v1", 2), ("game-v1", 1)],
+        )
+
+        self.database.execute(
+            "INSERT INTO directory_outbox (profile, revision, created_at) "
+            "VALUES ('classic-v1', 3, 40)"
+        )
+        self.assertEqual(
+            self.database.execute(
+                "SELECT profile, revision FROM directory_outbox "
+                "ORDER BY profile"
+            ).fetchall(),
+            [("classic-v1", 3), ("game-v1", 1)],
+        )
+
+    def test_checkpoint_constraints_fail_closed(self) -> None:
+        self.database.executescript(
+            DIRECTORY_ARTIFACTS_MIGRATION.read_text(encoding="utf-8")
+        )
+        for mutation in (
+            "generation = -1",
+            "published_revision = 1",
+            "model_sha256 = '" + "1" * 64 + "'",
+            "generation = 1, generated_at = 10, expires_at = 10, "
+            "published_at = 10, html_bytes = 1, xml_bytes = 1, "
+            "json_bytes = 1, manifest_bytes = 1",
+            "generation = 1, generated_at = 10, expires_at = 20, "
+            "published_at = 20, html_bytes = 1, xml_bytes = 1, "
+            "json_bytes = 1, manifest_bytes = 1",
+            "model_sha256 = 'invalid'",
+            "manifest_bytes = 262145",
+        ):
+            with self.subTest(mutation=mutation), self.assertRaises(
+                sqlite3.IntegrityError
+            ):
+                self.database.execute(
+                    f"UPDATE directory_artifact_publications SET {mutation} "
+                    "WHERE profile = 'classic-v1'"
+                )
+
+        for generation in range(1, 9):
+            self.database.execute(
+                "INSERT INTO directory_artifact_history "
+                "(profile, generation, committed_at) VALUES (?, ?, ?)",
+                ("classic-v1", generation, generation),
+            )
+        with self.assertRaises(sqlite3.IntegrityError):
+            self.database.execute(
+                "INSERT INTO directory_artifact_history "
+                "(profile, generation, committed_at) "
+                "VALUES ('classic-v1', 9, 9)"
+            )
+        self.assertEqual(
+            self.database.execute(
+                "SELECT generation FROM directory_artifact_history "
+                "WHERE profile = 'classic-v1' ORDER BY generation"
+            ).fetchall(),
+            [(generation,) for generation in range(1, 9)],
         )
 
 
