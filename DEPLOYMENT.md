@@ -119,6 +119,29 @@ certificate authentication: compatibility authentication intentionally fails
 closed for that identity. Do not enable the reserved Game Protocol 1
 publisher until its producer implements the same frozen contract.
 
+Migration `0005_directory_state.sql` is the profile-aware directory-state
+cutover. It creates minimal presence and public-only directory tables, imports
+up to 512 classic presence credentials but only public directory rows, advances
+the classic revision/outbox once for a non-empty public import, clears
+historical raw owner/listing address columns, and deletes private legacy
+listing rows. First deploy the prior release at 100% with both
+`COMPAT_UPDATE_ENABLED=disabled` and `PUBLISH_ENABLED=disabled`, verify
+accepted update traffic has
+drained, and then verify the total legacy presence count does not exceed 512.
+The retry-safe migration preflight fails before canonical schema/data changes
+when this ceiling is exceeded or a legacy row is malformed/orphaned. Repair
+only the exact reviewed legacy identity or metadata before retrying. Record only
+aggregate public/private/import counts; do not select or export raw addresses.
+Apply the migration, deploy the reviewed Worker
+at 100% with both publication circuits still disabled, then verify canonical
+presence matches the preflight set, public identities match its public subset,
+and all imported `hostname`/`port` pairs are NULL. Re-enable only after the new
+Worker reads and writes `server_presence`/`directory_entries`, the legacy
+rollback shadow is confirmed addressless, and the addressless rendezvous
+canaries below pass. A rollback to an older Worker must keep both publication
+circuits disabled; an older Worker cannot write the canonical tables and must
+never receive mixed update traffic.
+
 ## Canary
 
 1. Create a separate canary D1 database and apply all ordered migrations to it.
@@ -455,8 +478,15 @@ only after the inspected version no longer needs to be recreated.
    Re-read the Cloudflare route/Custom Domain and Cron Trigger state through the
    dashboard or API; verify only `meta.atrinik.org` reaches this Worker and the
    active schedule is exactly `17 * * * *` before resuming publishing.
-5. Register controlled servers and verify their certificate identity,
-   endpoint, visibility, and rendezvous flow from a current client.
+5. Use only a classic server/client/libatrinik release that supports
+   addressless directory entries, ticket-scoped QUIC rendezvous, bounded
+   publisher cadence, and `Retry-After`. Older publishers remain paused rather
+   than advertising an entry their clients cannot join. Register controlled
+   servers and complete supervised friend joins from a current client for an
+   addressless passwordless server, an addressless invite-protected server
+   with no pre-authorization candidate, and an explicit DNS fallback with
+   certificate pinning. Verify a private update removes discovery and denies
+   both rendezvous roles.
 6. Monitor aggregate status counts, WAF mitigations, D1 errors/overload,
    Durable Object failures, response time, request-control `503`s, and
    stale-record cleanup through at least one scheduled run. Any scheduled

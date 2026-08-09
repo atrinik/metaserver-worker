@@ -77,12 +77,12 @@ dynamic Worker:
   Game Protocol 1.
 - `classic.meta.atrinik.org`: the same four paths for the classic generation.
 
-In the compatibility XML, `Address` and `Port` appear only when the server
-explicitly publishes a direct endpoint. Their absence denotes an addressless
-listing that clients must join through rendezvous; the Worker never fills an
-address from the HTTPS request source. A present compatibility endpoint is
-public even when `PasswordRequired` is true; the password remains an in-game
-authentication step and does not conceal published routing metadata.
+Compatibility updates are always represented addresslessly: their numeric
+endpoint input is discarded, and the Worker never fills an address from the
+HTTPS request source. Signed publication can opt into a canonical DNS hostname
+and UDP port; only that explicit pair may produce `Address` and `Port`. A
+present endpoint is public even when `PasswordRequired` is true; the password
+remains an in-game authentication step and does not conceal routing metadata.
 
 ## Rendezvous signaling semantics
 
@@ -104,7 +104,7 @@ not accepted for the protected flow.
 
 | Listing policy | Client without invite subprotocol | Client with invite subprotocol |
 | --- | --- | --- |
-| private, either password mode | fixed `403`; no room admission | fixed `403`; the invite is not a discovery grant |
+| private/absent, either password mode | fixed `404`; no room admission | fixed `404`; the invite is not a discovery grant |
 | public, passwordless | admitted only while a server control is live | fixed `400`; protected and passwordless modes cannot be mixed |
 | public, password-protected | fixed retryable `503` | admitted only while an invite-capable server control is live; authorization is mandatory |
 

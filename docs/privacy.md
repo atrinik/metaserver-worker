@@ -18,15 +18,18 @@ learns a selected peer endpoint.
    never serialized into a WebSocket attachment or written to Durable Object
    SQLite, D1, KV, R2, Analytics Engine, or an application log.
 4. The final direct-directory fallback stores only an operator-published,
-   validated DNS hostname and UDP port. The compatibility schema temporarily
-   retains its existing explicit `quic_host` field while consumers migrate.
+   validated DNS hostname and UDP port. Numeric compatibility endpoints are
+   accepted only to preserve the old request shape and are discarded.
 5. Signed publication stores the public certificate-bound server ID, visible
    listing fields, the last accepted unsigned-64 sequence, bounded random nonce
    values until expiry, and non-secret commit/fingerprint/revision values. The
    certificate is authenticated from the request body but is not persisted.
    Signatures, signature inputs, request bodies, private key material, and
    returned rendezvous tokens are never written to logs or durable storage;
-   only the token's SHA-256 verifier is stored with the listing.
+   only the token's SHA-256 verifier is stored in minimal profile presence,
+   separately from renderable public directory metadata. Private publication
+   retains that verifier and generation but no listing or endpoint, and neither
+   rendezvous role is admitted without a fresh public directory row.
 
 Neither an unkeyed IP digest nor a raw IP is an acceptable durable actor key.
 IPv4 is enumerable, and a single cross-purpose pseudonym would unnecessarily
@@ -92,24 +95,21 @@ one-time-consumption boundary, and a wrong source does not burn the token.
 The pair intentionally links the two rotation pseudonyms only for the OTP's
 short lifetime and cleanup retention; it is never reused across purposes.
 
-Compatibility updates write empty sentinels into the unused
-`server_owners.current_ip` and `servers.source_ip` columns. The next accepted
-publish for a server therefore clears an older value in both of that server's
-live rows. Migration `0002_request_control.sql` is additive, however: it does
-not rewrite historical owner or listing rows. A dormant ownership row remains
-unchanged indefinitely because scheduled maintenance does not delete ownership
-state; a dormant listing keeps its value until the next accepted publish or
-until bounded stale-listing cleanup deletes the row. Deployment of the
-foundation Worker must consequently be described as preventing new raw-source
-writes, not as erasing every raw value already present in D1.
+Migration `0005_directory_state.sql` creates profile-keyed minimal
+`server_presence` and public-only `directory_entries` tables. It imports every
+classic presence credential but only public directory rows, intentionally
+drops every historical direct endpoint during the import, clears every
+`server_owners.current_ip` and `servers.source_ip`, and deletes private legacy
+rows. New compatibility writes keep the public legacy rollback shadow
+addressless; private writes delete it. A missing direct hostname remains NULL
+in canonical state, and the HTTPS request address is never inferred.
 
-A missing `quic_host` now remains empty; the HTTPS request address is never
-inferred as the public QUIC endpoint. After rollback to the old writer is
-impossible, an ordered sanitization migration must clear every remaining
-non-empty owner/listing sentinel, remove expired legacy raw-source challenges
-and counters, and verify the live tables contain no such values. Physical
-removal of the legacy columns and OTP table remains gated on the single-request
-signed publisher and consumer cutover.
+The old raw-source OTP and rate-limit columns remain during the compatibility
+window, as do request-address blacklist patterns. After rollback to the old
+writer is impossible, the ordered compatibility-removal migration must remove
+those tables, columns, and policies after their retention and WAF gates.
+Physical removal—not merely empty sentinels—is required before declaring final
+schema completion.
 
 The signed replay ledger stores canonical decimal sequences as text because
 SQLite cannot represent the complete unsigned 64-bit range. Nonces are scoped
@@ -244,16 +244,20 @@ bounded counters. The Worker never receives the invite secret and cannot
 interpret the proof; only the authenticated current classic server control can
 authorize the exact ticket.
 
-Each successful publish creates a fresh random 64-hex, non-secret rendezvous
-generation alongside the new bearer-token hash. D1 stores the generation in
-both the owner row (as a transaction guard) and the listing row. The per-server
+Each successful publish creates a fresh random 64-hex, non-secret
+rendezvous generation alongside the new bearer-token hash. D1 stores both in
+profile-scoped minimal presence; the legacy owner generation remains only a
+temporary compatibility transaction guard. A private publish deletes its
+public directory row and retires the room while retaining the verifier promised
+by the successful response contract. The per-server
 Durable Object serializes the complete commit, checks the caller's prior D1
 generation, persists the next generation under the fixed
 `rendezvous:token-generation` key, retires all older controls and clients, and
-then writes both D1 rows in one batch. A concurrent request with a stale prior
+then writes the D1 transaction in one batch. A concurrent request with a stale prior
 generation cannot overwrite the winner. If a batch result is ambiguous, the
-room verifies the exact owner/listing state and otherwise reconciles itself to
-the listing's authoritative generation before returning an error.
+room verifies the exact owner/presence/directory state and otherwise reconciles
+itself to the profile presence's authoritative generation before returning an
+error.
 The value is an unlinkable room-local epoch marker, not a credential, address,
 ticket, or actor identifier. Message handling and reconstruction compare it
 before trusting any attachment, so a transport that could not be closed cannot
@@ -322,15 +326,16 @@ ticket and perform new authorized signaling.
 
 ## Directory and rendezvous boundary
 
-A public compatibility record without an explicit `quic_host` omits both
-`Address` and `Port`; it never substitutes the request source. Such an
-addressless record is joinable only through rendezvous. A present endpoint is
-public direct-connect routing metadata selected by the current classic
-publisher; `PasswordRequired` does not conceal it. The final schema replaces
-the compatibility field with an operator-configured, strictly validated
-optional DNS hostname. That hostname is routing metadata, not identity:
-clients still pin the QUIC certificate, and the Worker never resolves it or
-stores its A/AAAA answers.
+Every compatibility update is stored addressless: its numeric `quic_host` and
+port are discarded, and the directory omits both `Address` and `Port` rather
+than substituting the request source. Such a record is joinable only through
+rendezvous. Signed publication may add an operator-configured, strictly
+validated optional DNS hostname/UDP port pair. That endpoint is public routing
+metadata even when `PasswordRequired` is true; it is not identity. Clients
+still pin the QUIC certificate. Canonical `xn--` labels must round-trip through
+the protocol's strict non-transitional UTS #46 profile; Unicode U-labels and
+malformed or bidi-invalid A-labels fail before persistence. The Worker never
+resolves the hostname or stores its A/AAAA answers.
 
 The compatibility room routes server candidates only to the client socket that
 originated their fresh ticket. Admission also requires a currently live server

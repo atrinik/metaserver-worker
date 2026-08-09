@@ -19,6 +19,15 @@
 - Production state exists. `migrations/0001_initial.sql` is applied history:
   never rewrite, reorder, or reuse it. Add every schema transition as a new,
   ordered migration and test the complete populated-schema upgrade path.
+- Treat `server_presence` plus `directory_entries` as authoritative,
+  profile-scoped publication state. Presence retains only the accepted
+  rendezvous verifier, generation, and last-seen time for both public and
+  private publishers; `directory_entries` alone is public. Visible expiry must
+  advance `directory_revisions` and `directory_outbox` atomically before
+  removing expired entries; stale private presence is revision-neutral.
+- Route every direct-hostname write through `isCanonicalHostname()` before D1.
+  SQLite independently enforces the bounded ASCII representation but has no
+  Unicode/IDNA tables; direct administrative hostname writes are unsupported.
 - Treat request addresses as request-scoped data. Persist only authenticated
   identities or purpose-separated, rotating HMAC tags with bounded retention;
   never log raw addresses, tags, credentials, tokens, or rendezvous candidates.
