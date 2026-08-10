@@ -1,4 +1,8 @@
-import { MAX_DIRECTORY_ENTRIES_PER_PROFILE } from "./directory-state";
+import {
+  isDirectoryText,
+  isGameDirectoryText,
+  MAX_DIRECTORY_ENTRIES_PER_PROFILE,
+} from "./directory-state";
 import { isCanonicalHostname } from "./hostname";
 
 export const CLASSIC_DIRECTORY_SCHEMA = "atrinik-classic-directory-v4";
@@ -780,44 +784,8 @@ function directoryText(
   gameProfile: boolean,
   context: string,
 ): string {
-  if (
-    typeof input !== "string" ||
-    (!allowEmpty && input.length === 0) ||
-    input.length > maximumBytes ||
-    TEXT_ENCODER.encode(input).byteLength > maximumBytes
-  ) {
-    return invalidModel(context);
-  }
-  for (let index = 0; index < input.length; index += 1) {
-    const current = input.charCodeAt(index);
-    let scalar = current;
-    if (current >= 0xd800 && current <= 0xdbff) {
-      if (index + 1 >= input.length) {
-        return invalidModel(context);
-      }
-      const next = input.charCodeAt(index + 1);
-      if (next < 0xdc00 || next > 0xdfff) {
-        return invalidModel(context);
-      }
-      scalar = 0x10000 + ((current - 0xd800) << 10) + (next - 0xdc00);
-      index += 1;
-    } else if (current >= 0xdc00 && current <= 0xdfff) {
-      return invalidModel(context);
-    }
-    if (
-      scalar <= 0x1f ||
-      scalar === 0x7f ||
-      scalar === 0xfffe ||
-      scalar === 0xffff ||
-      (gameProfile &&
-        ((scalar >= 0x80 && scalar <= 0x9f) ||
-          scalar === 0x2028 ||
-          scalar === 0x2029))
-    ) {
-      return invalidModel(context);
-    }
-  }
-  return input;
+  const valid = gameProfile ? isGameDirectoryText : isDirectoryText;
+  return valid(input, maximumBytes, allowEmpty) ? input : invalidModel(context);
 }
 
 function digest(input: unknown, context: string): string {

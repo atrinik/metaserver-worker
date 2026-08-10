@@ -335,9 +335,33 @@ export function isDirectoryText(
   maximumBytes: number,
   allowEmpty: boolean,
 ): value is string {
+  return isProfileDirectoryText(value, maximumBytes, allowEmpty, false);
+}
+
+/**
+ * Apply the stricter Game Protocol 1 display-text scalar contract. In
+ * addition to the classic directory exclusions, GP1 rejects C1 controls and
+ * the JSON line/paragraph separators so its canonical JSON and XML projection
+ * remain semantically identical.
+ */
+export function isGameDirectoryText(
+  value: unknown,
+  maximumBytes: number,
+  allowEmpty: boolean,
+): value is string {
+  return isProfileDirectoryText(value, maximumBytes, allowEmpty, true);
+}
+
+function isProfileDirectoryText(
+  value: unknown,
+  maximumBytes: number,
+  allowEmpty: boolean,
+  gameProfile: boolean,
+): value is string {
   if (
     typeof value !== "string" ||
     (!allowEmpty && value.length === 0) ||
+    value.length > maximumBytes ||
     TEXT_ENCODER.encode(value).byteLength > maximumBytes ||
     /[\u0000-\u001f\u007f\ufffe\uffff]/.test(value)
   ) {
@@ -345,6 +369,7 @@ export function isDirectoryText(
   }
   for (let index = 0; index < value.length; index += 1) {
     const current = value.charCodeAt(index);
+    let scalar = current;
     if (current >= 0xd800 && current <= 0xdbff) {
       const next = value.charCodeAt(index + 1);
       if (
@@ -354,8 +379,17 @@ export function isDirectoryText(
       ) {
         return false;
       }
+      scalar = 0x10000 + ((current - 0xd800) << 10) + (next - 0xdc00);
       index += 1;
     } else if (current >= 0xdc00 && current <= 0xdfff) {
+      return false;
+    }
+    if (
+      gameProfile &&
+      ((scalar >= 0x80 && scalar <= 0x9f) ||
+        scalar === 0x2028 ||
+        scalar === 0x2029)
+    ) {
       return false;
     }
   }
