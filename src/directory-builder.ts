@@ -22,8 +22,6 @@ import type {
 import { writeDirectoryBuildMetric } from "./directory-metrics";
 import type { DirectoryBuildOutcome } from "./directory-metrics";
 import {
-  CLASSIC_DIRECTORY_SCHEMA,
-  GAME_DIRECTORY_SCHEMA,
   gameDirectoryServerJsonByteLength,
   renderDirectoryArtifacts,
 } from "./directory-artifacts";
@@ -34,12 +32,17 @@ import type {
   GameDirectoryServer,
   RenderedDirectoryGeneration,
 } from "./directory-artifacts";
+import {
+  directoryOriginValidatorsMatchBytes,
+  isDirectoryOriginPublicationTime,
+  isDirectoryOriginStrongEtag,
+} from "./directory-origin";
 import { sha256Hex } from "./protocol";
 
 const BUILDER_STATE_KEY = "directory-builder:state:v1";
 const BUILDER_NUDGE_KEY = "directory-builder:nudge:v1";
 const BUILDER_STATE_VERSION = 1;
-const MANIFEST_SCHEMA = "atrinik-directory-manifest-v1";
+const MANIFEST_SCHEMA = "atrinik-directory-manifest-v2";
 const MAX_BUILD_COALESCE_ATTEMPTS = 4;
 const MIN_ALIAS_PUBLICATION_LIFETIME_SECONDS =
   DIRECTORY_ARTIFACT_POLICY_MAXIMUMS.minimumAliasPublicationLifetimeSeconds;
@@ -120,7 +123,6 @@ interface ManifestArtifact {
   readonly contentType: string;
   readonly byteLength: number;
   readonly sha256: string;
-  readonly strongEtag: string;
 }
 
 interface RenderedObject {
@@ -130,7 +132,6 @@ interface RenderedObject {
   readonly bodyBytes: Uint8Array;
   readonly byteLength: number;
   readonly sha256: string;
-  readonly strongEtag: string;
 }
 
 interface RetentionResult {
@@ -366,10 +367,20 @@ export class DirectoryBuilder extends DurableObject<CoreEnv> {
     }
     const aliasStart = Math.floor(Date.now() / 1_000);
     if (
+      !isDirectoryOriginPublicationTime(
+        aliasStart * 1_000,
+        pending.generatedAt,
+        pending.expiresAt,
+      ) ||
       aliasStart + MIN_ALIAS_PUBLICATION_LIFETIME_SECONDS >= pending.expiresAt
     ) {
       await this.abandonPending(pending);
-      await this.scheduleAlarm(pending.expiresAt + 1, aliasStart);
+      await this.scheduleAlarm(
+        aliasStart < pending.generatedAt
+          ? pending.generatedAt
+          : pending.expiresAt + 1,
+        aliasStart,
+      );
       return Object.freeze({
         profile,
         outcome: "current",
@@ -406,13 +417,14 @@ export class DirectoryBuilder extends DurableObject<CoreEnv> {
       throw new SupersededBuildError();
     }
 
-    const publishedAt = Math.max(
+    const publishedAt = Math.floor(Date.now() / 1_000);
+    if (!isDirectoryOriginPublicationTime(
+      publishedAt * 1_000,
       pending.generatedAt,
-      Math.floor(Date.now() / 1_000),
-    );
-    if (publishedAt >= pending.expiresAt) {
+      pending.expiresAt,
+    )) {
       await this.abandonPending(pending);
-      throw new Error("Directory build expired before it could commit");
+      throw new Error("Directory build left its publication interval");
     }
     const manifest = objects.find((object) => object.format === "manifest");
     if (manifest === undefined) {
@@ -671,12 +683,16 @@ export class DirectoryBuilder extends DurableObject<CoreEnv> {
 
   private async assertFresh(pending: PendingBuild): Promise<void> {
     await this.assertPending(pending);
+    const now = Math.floor(Date.now() / 1_000);
     if (
-      Math.floor(Date.now() / 1_000) +
-          MIN_ALIAS_PUBLICATION_LIFETIME_SECONDS >= pending.expiresAt
+      !isDirectoryOriginPublicationTime(
+        now * 1_000,
+        pending.generatedAt,
+        pending.expiresAt,
+      ) || now + MIN_ALIAS_PUBLICATION_LIFETIME_SECONDS >= pending.expiresAt
     ) {
       await this.abandonPending(pending);
-      throw new Error("Directory build expired before alias publication");
+      throw new Error("Directory build left its alias publication interval");
     }
   }
 
@@ -959,6 +975,7 @@ async function publishedAliasesMatch(
     modelSha256: checkpoint.modelSha256,
   });
   const objects = checkpointObjects(profile, checkpoint);
+  const representations: Array<{ etag: unknown; bodySha256: unknown }> = [];
   for (const object of objects) {
     const head = await bucket.head(object.path.slice(1));
     if (head === null) {
@@ -971,21 +988,22 @@ async function publishedAliasesMatch(
         profile,
         pending,
         publicHttpMetadata(object, pending),
+        "public",
       );
     } catch {
       return false;
     }
+    if (object.format !== "manifest") {
+      representations.push({ etag: head.httpEtag, bodySha256: object.sha256 });
+    }
   }
-  return true;
+  return directoryOriginValidatorsMatchBytes(representations);
 }
 
 function checkpointObjects(
   profile: DirectoryProfile,
   checkpoint: DirectoryArtifactPublication,
 ): readonly RenderedObject[] {
-  const schema = profile === "classic-v1"
-    ? CLASSIC_DIRECTORY_SCHEMA
-    : GAME_DIRECTORY_SCHEMA;
   const descriptors = [
     ["html", "/index.html", "text/html; charset=utf-8",
       checkpoint.htmlSha256, checkpoint.htmlBytes],
@@ -997,11 +1015,6 @@ function checkpointObjects(
       checkpoint.manifestSha256, checkpoint.manifestBytes],
   ] as const;
   return descriptors.map(([format, path, contentType, sha256, byteLength]) => {
-    const namespace = format === "manifest"
-      ? MANIFEST_SCHEMA
-      : profile === "game-v1" && format === "json"
-      ? schema
-      : `${schema}-${format}`;
     return {
       format,
       path,
@@ -1009,7 +1022,6 @@ function checkpointObjects(
       bodyBytes: new Uint8Array(),
       byteLength,
       sha256,
-      strongEtag: `"${namespace}-sha256-${sha256}"`,
     } satisfies RenderedObject;
   });
 }
@@ -1042,7 +1054,6 @@ async function renderedObjects(
       bodyBytes: artifact.bodyBytes,
       byteLength: artifact.byteLength,
       sha256: artifact.sha256,
-      strongEtag: artifact.strongEtag,
     } as RenderedObject)),
     {
       format: "manifest",
@@ -1051,7 +1062,6 @@ async function renderedObjects(
       bodyBytes: manifestBytes,
       byteLength: manifestBytes.byteLength,
       sha256: manifestSha256,
-      strongEtag: `"${MANIFEST_SCHEMA}-sha256-${manifestSha256}"`,
     } satisfies RenderedObject,
   ]);
 }
@@ -1064,7 +1074,6 @@ function manifestArtifact(
     contentType: artifact.contentType,
     byteLength: artifact.byteLength,
     sha256: artifact.sha256,
-    strongEtag: artifact.strongEtag,
   };
 }
 
@@ -1111,6 +1120,7 @@ async function putImmutableGeneration(
         profile,
         pending,
         httpMetadata,
+        "private",
       );
     } catch (error) {
       if (!(error instanceof DirectoryObjectConflictError)) {
@@ -1142,6 +1152,7 @@ async function putImmutableGeneration(
       profile,
       pending,
       httpMetadata,
+      "private",
     );
   } catch (error) {
     if (!(error instanceof DirectoryObjectConflictError)) {
@@ -1180,6 +1191,7 @@ async function putPublicAlias(
       profile,
       pending,
       httpMetadata,
+      "public",
     );
     return;
   }
@@ -1208,6 +1220,7 @@ async function putPublicAlias(
     profile,
     pending,
     httpMetadata,
+    "public",
   );
 }
 
@@ -1245,7 +1258,6 @@ function objectMetadata(
     "expires-at": String(pending.expiresAt),
     "model-sha256": pending.modelSha256,
     "body-sha256": object.sha256,
-    "strong-etag": object.strongEtag,
   };
 }
 
@@ -1257,6 +1269,7 @@ async function verifyObject(
   profile: DirectoryProfile,
   pending: PendingBuild,
   expectedHttpMetadata: R2HTTPMetadata,
+  visibility: "private" | "public",
 ): Promise<void> {
   const body = await bucket.get(key, {
     onlyIf: { etagMatches: head.etag },
@@ -1268,7 +1281,14 @@ async function verifyObject(
       "Directory artifact metadata verification failed",
     );
   }
-  verifyObjectHead(body, object, profile, pending, expectedHttpMetadata);
+  verifyObjectHead(
+    body,
+    object,
+    profile,
+    pending,
+    expectedHttpMetadata,
+    visibility,
+  );
   const actual = new Uint8Array(await body.arrayBuffer());
   if (await sha256Bytes(actual) !== object.sha256) {
     throw new DirectoryObjectConflictError(
@@ -1283,13 +1303,16 @@ function verifyObjectHead(
   profile: DirectoryProfile,
   pending: PendingBuild,
   expectedHttpMetadata: R2HTTPMetadata,
+  visibility: "private" | "public",
 ): void {
   const checksum = head.checksums.sha256;
   if (
     head.size !== object.byteLength ||
     checksum === undefined || bytesHex(new Uint8Array(checksum)) !== object.sha256 ||
     !httpMetadataEquals(head.httpMetadata, expectedHttpMetadata) ||
-    !metadataEquals(head.customMetadata, objectMetadata(object, profile, pending))
+    !metadataEquals(head.customMetadata, objectMetadata(object, profile, pending)) ||
+    (visibility === "public" &&
+      !isDirectoryOriginStrongEtag(head.httpEtag))
   ) {
     throw new DirectoryObjectConflictError(
       "Directory artifact metadata verification failed",
@@ -1303,6 +1326,7 @@ async function verifyPublishedObjects(
   profile: DirectoryProfile,
   pending: PendingBuild,
 ): Promise<void> {
+  const representations: Array<{ etag: unknown; bodySha256: unknown }> = [];
   for (const object of objects) {
     const key = object.path.slice(1);
     const head = await bucket.head(key);
@@ -1319,6 +1343,15 @@ async function verifyPublishedObjects(
       profile,
       pending,
       publicHttpMetadata(object, pending),
+      "public",
+    );
+    if (object.format !== "manifest") {
+      representations.push({ etag: head.httpEtag, bodySha256: object.sha256 });
+    }
+  }
+  if (!directoryOriginValidatorsMatchBytes(representations)) {
+    throw new DirectoryObjectConflictError(
+      "Directory aliases reused a validator for different bytes",
     );
   }
 }

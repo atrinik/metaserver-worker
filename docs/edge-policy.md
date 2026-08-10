@@ -28,7 +28,73 @@ account-wide `namespace_id` values for each native Rate Limiting binding. The
 contract][worker-rate-binding] shares counters across Workers that reuse a
 namespace, so a production ID invalidates both isolation and results.
 
-Before attaching `meta.atrinik.org`, install a zone custom rule named
+## Static directory hostnames
+
+`meta.atrinik.org` and `classic.meta.atrinik.org` are [direct R2 custom
+domains][r2-public], not Worker routes. Keep each bucket's `r2.dev` URL
+disabled. Before attaching a hostname, install one exact-host custom rule per
+environment (or one reviewed equivalent expression) whose action is `Block`
+outside this allowlist:
+
+```text
+http.host in {"meta.atrinik.org" "classic.meta.atrinik.org"} and not (
+  http.request.method in {"GET" "HEAD"} and
+  raw.http.request.uri.query eq "" and
+  raw.http.request.uri.path eq http.request.uri.path and
+  not (raw.http.request.uri.path contains "%") and
+  not (raw.http.request.uri.path contains "\\") and
+  raw.http.request.uri.path in {
+    "/" "/index.html" "/index.json" "/index.xml"
+  }
+)
+```
+
+This denies `/manifest.json`, immutable generation keys, uploads, alternate
+path spellings, queries, and every unreviewed object even if it exists in the
+public alias bucket. Attach no Worker route to either hostname. Add an exact
+root Redirect Rule from `/` with no query to the same host's `/index.html`
+using permanent `308`; it must not redirect a machine alias, cross hosts, or
+introduce a Worker invocation.
+
+Do not enable the static rule for `meta.atrinik.org` while the temporary
+compatibility Worker owns that hostname: it would block the compatibility
+publisher and rendezvous routes. Canary with isolated hostnames, attach
+`classic.meta.atrinik.org` first, complete the documented consumer window,
+then detach the compatibility Worker before enabling the static `meta` rule and
+R2 custom domain. A canary substitutes its exact non-production hostnames in
+the expression; copying either production hostname is a stop condition.
+
+Add a Cache Rule for only the three `index.*` paths and `GET`/`HEAD` that makes
+HTML, JSON, and XML cache eligible while respecting the origin's
+`Cache-Control` and absolute `Expires`. Do not configure an edge TTL override,
+stale-if-error, cache-key query normalization, or serve-stale behavior. A cache
+fill late in an alias lifetime must expire at the same absolute instant as the
+body. The resulting hard stale-data bound is the embedded artifact expiry,
+which is at most four hours; clients also reject an expired body. R2's
+[custom-domain cache consistency][r2-consistency] is necessarily weaker than
+direct bucket reads. Purge may reduce normal removal latency but is not a
+correctness or rollback dependency.
+
+Use Response Header Transform Rules on the three `index.*` paths to set:
+
+- `X-Content-Type-Options: nosniff`;
+- `Access-Control-Allow-Origin: *`; and
+- `Content-Security-Policy: default-src 'none'; style-src 'unsafe-inline';
+  base-uri 'none'; form-action 'none'; frame-ancestors 'none'`.
+
+Do not replace or synthesize `ETag`, `Last-Modified`, `Content-Type`,
+`Cache-Control`, or `Expires`. R2 owns the opaque strong ETag and alias-upload
+Last-Modified. The builder owns the exact media type and absolute expiry. The
+application SHA-256 in private coordination metadata is an independent body
+integrity value, not an HTTP validator.
+
+Apply and fetch these rules through their owning Cloudflare ruleset phases,
+preserve unrelated rule ordering, and record only the rule IDs and reviewed
+expressions in the private deployment record. The isolated custom-domain
+canary in `DEPLOYMENT.md` is required before production attachment.
+
+Before attaching `meta.atrinik.org` to the temporary compatibility Worker,
+install a zone custom rule named
 `Atrinik metaserver canonical compatibility targets`. Its action is `Block` and
 its logical allowlist is:
 
@@ -191,4 +257,6 @@ Do not attach or move the production custom domain until all of these are true:
 [rate-params]: https://developers.cloudflare.com/waf/rate-limiting-rules/parameters/
 [rate-rules]: https://developers.cloudflare.com/waf/rate-limiting-rules/
 [raw-uri]: https://developers.cloudflare.com/ruleset-engine/rules-language/fields/reference/raw.http.request.full_uri/
+[r2-consistency]: https://developers.cloudflare.com/r2/reference/consistency/
+[r2-public]: https://developers.cloudflare.com/r2/buckets/public-buckets/
 [worker-rate-binding]: https://developers.cloudflare.com/workers/runtime-apis/bindings/rate-limit/

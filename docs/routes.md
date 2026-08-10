@@ -93,13 +93,14 @@ dynamic Worker:
 
 The current implementation builds those fixed aliases in isolated R2 buckets,
 but this foundation release does not attach either authority. Game JSON/XML
-follow the protocol-owned `atrinik-directory-v1` fixtures and accept non-empty
+follow the protocol-owned `atrinik-directory-v1` version 2 fixtures, keep body
+SHA-256 independent from the public origin validator, and accept non-empty
 state only through the signed Game publisher. Classic JSON/XML follow
 [classic directory protocol 4](classic-directory-v4.md). The later service
-split must prove exact GET/HEAD/path/query handling, validator and
-`Last-Modified` semantics, CSP/nosniff/CORS/root redirect rules, cache expiry,
-public-to-private and endpoint-removal bounds, `r2.dev` disablement, and zero
-Worker invocations before DNS cutover.
+split canary must prove exact GET/HEAD/path/query handling, R2's opaque strong
+ETag, alias-upload `Last-Modified`, CSP/nosniff/CORS/root redirect rules, cache
+expiry, public-to-private and endpoint-removal bounds, `r2.dev` disablement,
+and zero Worker invocations before DNS cutover.
 The internal `/manifest.json` alias is builder coordination and is not a public
 route; the static-host edge allowlist must deny it and every other path.
 
@@ -108,9 +109,9 @@ immutable object first, compare-and-swap replaces the fixed aliases one at a
 time, so an external reader could observe bounded cross-format generation skew
 during an update or after a partial R2 failure. The D1 checkpoint advances only
 after the complete cohort converges, but that does not make public reads
-atomic. The service-split work must reconcile this behavior with the Game
-Protocol 1 atomic-alias wording, or provide an equivalent zero-Worker atomic
-selection mechanism, before either authority is attached.
+atomic. Game Protocol 1 explicitly permits bounded monotonic cross-format
+convergence; the service-split canary must measure that bound and prove
+interrupted convergence repairs before either authority is attached.
 
 Compatibility updates are always represented addresslessly: their numeric
 endpoint input is discarded, and the Worker never fills an address from the

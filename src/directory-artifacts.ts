@@ -99,7 +99,6 @@ export interface DirectoryArtifactDescriptor {
   readonly bodyBytes: Uint8Array;
   readonly byteLength: number;
   readonly sha256: string;
-  readonly strongEtag: string;
 }
 
 export interface RenderedDirectoryGeneration {
@@ -119,8 +118,9 @@ export interface RenderedDirectoryGeneration {
 
 /**
  * Validate one bounded profile model, render every representation from the
- * same isolated canonical copy, then calculate representation-specific body metadata.
- * Hashes and ETags deliberately remain outside the hashed bodies.
+ * same isolated canonical copy, then calculate representation-specific body
+ * metadata. Body hashes deliberately remain outside the hashed bodies and are
+ * independent of the static origin's opaque HTTP validators.
  */
 export async function renderDirectoryArtifacts(
   snapshot: DirectorySnapshot,
@@ -138,9 +138,9 @@ export async function renderDirectoryArtifacts(
     : renderGameXml(canonical);
 
   const [html, xml, json] = await Promise.all([
-    createArtifact(canonical.profile, schema, "html", htmlBody),
-    createArtifact(canonical.profile, schema, "xml", xmlBody),
-    createArtifact(canonical.profile, schema, "json", jsonBody),
+    createArtifact(canonical.profile, "html", htmlBody),
+    createArtifact(canonical.profile, "xml", xmlBody),
+    createArtifact(canonical.profile, "json", jsonBody),
   ]);
 
   return {
@@ -659,7 +659,6 @@ function renderHtmlEndpoint(endpoint: DirectDirectoryEndpoint | undefined): stri
 
 async function createArtifact(
   profile: DirectoryArtifactProfile,
-  schema: string,
   format: DirectoryArtifactFormat,
   body: string,
 ): Promise<DirectoryArtifactDescriptor> {
@@ -676,9 +675,6 @@ async function createArtifact(
   const sha256 = bytesToHex(
     new Uint8Array(await crypto.subtle.digest("SHA-256", bodyBytes)),
   );
-  const etagNamespace = profile === "game-v1" && format === "json"
-    ? schema
-    : `${schema}-${format}`;
   const path = `/index.${format}` as DirectoryArtifactDescriptor["path"];
   const contentType = format === "html"
     ? "text/html; charset=utf-8"
@@ -693,7 +689,6 @@ async function createArtifact(
     bodyBytes,
     byteLength,
     sha256,
-    strongEtag: `"${etagNamespace}-sha256-${sha256}"`,
   };
 }
 

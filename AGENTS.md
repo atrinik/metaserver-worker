@@ -42,8 +42,11 @@
   Persist pending intent before R2 awaits, publish immutable objects before
   aliases, compare-and-swap every alias, verify the complete alias cohort
   before checkpointing, coalesce the outbox, and keep rollback retention
-  bounded. Never expose the private D1 revision or historical removed models in
-  a public body, key, or metadata field.
+  bounded. Keep application SHA-256 as independent body-integrity metadata;
+  R2's opaque native strong ETag and alias upload time are the public
+  conditional validator and Last-Modified. Never publish an alias before its
+  generated time or at/after its expiry. Never expose the private D1 revision
+  or historical removed models in a public body, key, or metadata field.
 - Route every direct-hostname write through `isCanonicalHostname()` before D1.
   SQLite independently enforces the bounded ASCII representation but has no
   Unicode/IDNA tables; direct administrative hostname writes are unsupported.

@@ -6,6 +6,7 @@ import gameJsonFixture from "./fixtures/game-directory-v1/canonical.json?raw";
 import invalidAlabelFixture from "./fixtures/game-directory-v1/negative-invalid-alabel.json?raw";
 import invalidXmlNoncharacterFixture from "./fixtures/game-directory-v1/negative-xml-noncharacter.json?raw";
 import gameXmlFixture from "./fixtures/game-directory-v1/projection.xml?raw";
+import protocolManifestFixture from "./fixtures/game-directory-v1/manifest.json?raw";
 import protocolSource from "./fixtures/game-directory-v1/protocol-source.json";
 
 import {
@@ -22,6 +23,7 @@ import {
   MAX_GAME_DIRECTORY_PROJECTION_BYTES,
   renderDirectoryArtifacts,
 } from "../src/directory-artifacts";
+import { isDirectoryOriginStrongEtag } from "../src/directory-origin";
 
 const GENERATED_AT = 1_786_219_200;
 const EXPIRES_AT = GENERATED_AT + 3_600;
@@ -100,9 +102,6 @@ async function expectValidArtifact(
   expect(Array.from(artifact.bodyBytes)).toEqual(Array.from(encoded));
   expect(artifact.byteLength).toBe(encoded.byteLength);
   expect(artifact.sha256).toBe(await sha256Hex(encoded));
-  expect(artifact.strongEtag).toMatch(
-    new RegExp(`^\"[^\"]+-sha256-${artifact.sha256}\"$`),
-  );
 }
 
 describe("static directory artifact rendering", () => {
@@ -141,7 +140,7 @@ describe("static directory artifact rendering", () => {
     expect(rendered.artifacts.xml.body).toContain(`expires-at="${EXPIRES_AT}"`);
   });
 
-  it("emits the exact canonical empty game JSON and protocol ETag", async () => {
+  it("emits the exact canonical empty game JSON and body digest", async () => {
     const artifact = (await renderDirectoryArtifacts(gameSnapshot())).artifacts.json;
     const expected =
       '{"schema":"atrinik-directory-v1","generation":"42",' +
@@ -149,8 +148,8 @@ describe("static directory artifact rendering", () => {
       '"servers":[]}\n';
 
     expect(artifact.body).toBe(expected);
-    expect(artifact.strongEtag).toBe(
-      `"atrinik-directory-v1-sha256-${await sha256Hex(new TextEncoder().encode(expected))}"`,
+    expect(artifact.sha256).toBe(
+      await sha256Hex(new TextEncoder().encode(expected)),
     );
   });
 
@@ -196,21 +195,40 @@ describe("static directory artifact rendering", () => {
 
     expect(rendered.artifacts.json.body).toBe(expectedJson);
     expect(rendered.artifacts.xml.body).toBe(expectedXml);
-    expect(rendered.artifacts.json.strongEtag).toBe(
-      '"atrinik-directory-v1-sha256-' +
-        '059f559d0fe439576cae10bd623eb79ab6dfd6d0a78420563730c07cf9727d78"',
+    expect(rendered.artifacts.json.sha256).toBe(
+      "059f559d0fe439576cae10bd623eb79ab6dfd6d0a78420563730c07cf9727d78",
     );
   });
 
   it("pins the selected producer fixtures to one reviewed protocol revision", async () => {
     expect(protocolSource).toMatchObject({
       repository: "atrinik/protocol",
-      commit: "80a808a77cf6256c1dad5579b682c4481d2fb3e3",
+      commit: "8942912d55bc571213836bf1ad4ae7663d60b2a4",
       manifest: {
         path: "fixtures/metaserver-directory-v1.json",
-        sha256: "6ed10efed4bc824bc240294d8321f66c640a7278b622eae77580551709217b52",
+        sha256: "0aa322621a3057dbeb0e738c7d54e7239c87be20933a2938e626c816e25c51ae",
       },
     });
+    const protocolManifest = JSON.parse(protocolManifestFixture) as {
+      fixture_version: number;
+      schema: string;
+      positive: { body_sha256: string; http_strong_etag: string };
+      maximum_bounds: { http_etag_bytes: number };
+    };
+    expect(await sha256Hex(new TextEncoder().encode(protocolManifestFixture)))
+      .toBe(protocolSource.manifest.sha256);
+    expect(protocolManifest).toMatchObject({
+      fixture_version: 2,
+      schema: "atrinik-directory-v1",
+      positive: {
+        body_sha256: protocolSource.fixtures["canonical.json"],
+        http_strong_etag: "\"0123456789abcdef0123456789abcdef\"",
+      },
+      maximum_bounds: { http_etag_bytes: 128 },
+    });
+    expect(isDirectoryOriginStrongEtag(
+      protocolManifest.positive.http_strong_etag,
+    )).toBe(true);
     const selectedFixtures: Record<keyof typeof protocolSource.fixtures, string> = {
       "canonical.json": gameJsonFixture,
       "projection.xml": gameXmlFixture,

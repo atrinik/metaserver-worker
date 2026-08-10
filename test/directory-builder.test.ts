@@ -91,12 +91,16 @@ describe("static directory builder", () => {
         .toEqual(["index.html", "index.json", "index.xml", "manifest.json"]);
       for (const key of ["index.html", "index.json", "index.xml", "manifest.json"]) {
         const object = await bucket.get(key);
+        expect(object).not.toBeNull();
+        expect(object?.httpEtag).toMatch(/^"[^"\\]{1,126}"$/);
         expect(object?.customMetadata).toMatchObject({
+          schema: "atrinik-directory-manifest-v2",
           profile,
           generation: "1",
           "generated-at": String(NOW),
           "expires-at": String(EMPTY_EXPIRES_AT),
         });
+        expect(object?.customMetadata).not.toHaveProperty("strong-etag");
         expect(object?.httpMetadata?.cacheControl).toBe(
           "public, must-revalidate, stale-if-error=0, no-transform",
         );
@@ -106,6 +110,11 @@ describe("static directory builder", () => {
       }
       expect((await bucket.get("index.json"))?.text()).resolves.toContain(
         '"generation":"1"',
+      );
+      expect((await bucket.get("manifest.json"))?.text()).resolves
+        .not.toContain("strongEtag");
+      expect((await bucket.get("manifest.json"))?.text()).resolves.toContain(
+        '"schema":"atrinik-directory-manifest-v2"',
       );
     }
   });
@@ -226,6 +235,43 @@ describe("static directory builder", () => {
       ?.customMetadata).toMatchObject({ generation: "1" });
   });
 
+  it("rolls legacy application-ETag metadata to a new manifest generation", async () => {
+    const stub = env.DIRECTORY_BUILDER.getByName("classic-v1");
+    await stub.reconcile();
+    const bucket = env.CLASSIC_DIRECTORY_PUBLIC;
+    const existing = await bucket.get("index.html");
+    expect(existing).not.toBeNull();
+    const checksum = existing?.checksums.sha256;
+    expect(checksum).toBeDefined();
+    if (existing === null || checksum === undefined) {
+      throw new Error("Expected a checksummed public alias");
+    }
+    const body = await existing.arrayBuffer();
+    await bucket.put("index.html", body, {
+      httpMetadata: existing.httpMetadata,
+      customMetadata: {
+        ...existing.customMetadata,
+        schema: "atrinik-directory-manifest-v1",
+        "strong-etag": `"atrinik-classic-directory-v4-html-sha256-${
+          existing.customMetadata!["body-sha256"]
+        }"`,
+      },
+      sha256: checksum,
+    });
+
+    await expect(stub.reconcile()).resolves.toMatchObject({
+      outcome: "published",
+      generation: 2,
+      revision: 0,
+    });
+    expect((await bucket.head("index.html"))?.customMetadata).toMatchObject({
+      schema: "atrinik-directory-manifest-v2",
+      generation: "2",
+    });
+    expect((await bucket.head("index.html"))?.customMetadata)
+      .not.toHaveProperty("strong-etag");
+  });
+
   it("repairs a body/checksum mismatch only under a newer generation", async () => {
     const stub = env.DIRECTORY_BUILDER.getByName("classic-v1");
     await stub.reconcile();
@@ -311,6 +357,37 @@ describe("static directory builder", () => {
     });
     expect((await bucket.head("manifest.json"))?.customMetadata)
       .toMatchObject({ generation: "1" });
+  });
+
+  it("abandons an alias cohort when its publication clock regresses", async () => {
+    const stub = env.DIRECTORY_BUILDER.getByName("classic-v1");
+    await stub.reconcile();
+    const first = publication("d".repeat(64), NOW, "e".repeat(64));
+    await persistRendezvousPublication(env.DB, first);
+    const bucket = env.CLASSIC_DIRECTORY_PUBLIC;
+    const originalPut = bucket.put.bind(bucket);
+    let regressed = false;
+    vi.spyOn(bucket, "put").mockImplementation(async (key, value, options) => {
+      const result = await originalPut(key, value, options);
+      if (key === "index.html" && !regressed) {
+        regressed = true;
+        vi.spyOn(Date, "now").mockReturnValue((NOW - 1) * 1_000);
+      }
+      return result;
+    });
+
+    await expect(reconcileWithoutPlatformAlarm(stub)).rejects.toThrow(
+      "Directory build left its alias publication interval",
+    );
+    expect((await readDirectoryArtifactPublication(env.DB, "classic-v1")))
+      .toMatchObject({ generation: 1, publishedRevision: 0 });
+
+    vi.spyOn(Date, "now").mockReturnValue(NOW * 1_000);
+    await expect(stub.reconcile()).resolves.toMatchObject({
+      outcome: "published",
+      generation: 3,
+      revision: 1,
+    });
   });
 
   it("abandons a corrupt same-generation partial alias", async () => {
@@ -541,7 +618,7 @@ describe("static directory builder", () => {
       .not.toContain("<Server>");
   });
 
-  it("coalesces a visible revision that advances during alias publication", async () => {
+  it("coalesces an advancing revision without publishing before generatedAt", async () => {
     const stub = env.DIRECTORY_BUILDER.getByName("classic-v1");
     await stub.reconcile();
     const serverId = "7".repeat(64);
@@ -571,16 +648,23 @@ describe("static directory builder", () => {
       return result;
     });
 
+    await expect(stub.reconcile()).resolves.toEqual({
+      profile: "classic-v1",
+      outcome: "current",
+      generation: 1,
+      revision: 0,
+    });
+    vi.spyOn(Date, "now").mockReturnValue((NOW + 60) * 1_000);
     await expect(stub.reconcile()).resolves.toMatchObject({
       outcome: "published",
-      generation: 3,
+      generation: 4,
       revision: 2,
     });
     expect(advanced).toBe(true);
     expect(await (await bucket.get("index.xml"))?.text())
       .not.toContain("<Server>");
     expect((await readDirectoryArtifactPublication(env.DB, "classic-v1")))
-      .toMatchObject({ generation: 3, publishedRevision: 2 });
+      .toMatchObject({ generation: 4, publishedRevision: 2 });
     expect(await env.DB.prepare(
       "SELECT revision FROM directory_outbox WHERE profile = 'classic-v1'",
     ).first<number>("revision")).toBeNull();

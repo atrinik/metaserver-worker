@@ -191,7 +191,9 @@ publishes all immutable generation objects before compare-and-swap replacement
 of the four public aliases (`index.html`, `index.xml`, `index.json`, and
 `manifest.json`). D1 acknowledges an outbox revision only after all aliases are
 read back with the exact generation, checksum, size, content type, cache
-metadata, and privacy-safe custom metadata.
+metadata, opaque native R2 strong ETag, and privacy-safe custom metadata. The
+application SHA-256 remains independent body-integrity metadata; it is not the
+public HTTP validator.
 
 `manifest.json` is private coordination metadata even though it lives in the
 alias bucket; the later static-host allowlist must deny public access to it.
@@ -223,12 +225,15 @@ minimal presence and delete that row. D1 also accounts for the exact canonical
 JSON bytes of every public Game row and rejects an aggregate that cannot fit
 the 262,144-byte protocol artifact. The independent
 `GAME_PUBLISH_ENABLED` breaker still ships disabled, and the publisher remains
-domainless until the Go producer, Rust consumer, static-edge contract, and live
-canary gates land. Classic protocol 4 is specified in
+domainless until the static-edge contract and live canary gates land. The Go
+producer and Rust consumer foundations are released, including opaque origin
+validator handling. Classic protocol 4 is specified in
 [docs/classic-directory-v4.md](docs/classic-directory-v4.md). Neither static
-authority is attached by this foundation change: direct-R2 cache, headers,
-CORS, CSP, purge/removal behavior, custom-domain isolation, and consumer
-cutover remain explicit service-split canary gates.
+authority is attached by this code: direct-R2 cache, headers, CORS, CSP,
+purge/removal behavior, custom-domain isolation, and consumer cutover remain
+explicit service-split canary gates. R2's opaque strong ETag and alias upload
+time satisfy the released validator/`Last-Modified` model only after the live
+custom-domain canary confirms the public response.
 
 ## Observability
 
