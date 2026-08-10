@@ -118,6 +118,7 @@ function rateLimitReason(error: RequestBudgetExceeded): HttpRateLimitReason {
         ? "compat_update_server_burst"
         : "compat_update_server_daily";
     case "publish-server":
+    case "publish-game-server":
       return burst ? "publish_burst" : "publish_daily";
     case "rendezvous-client-source":
       return burst

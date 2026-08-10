@@ -3,7 +3,7 @@ import {
   SERVER_SIGNAL_CANDIDATE_KINDS,
 } from "./protocol";
 import { isCanonicalHostname } from "./hostname";
-import { isDirectoryText } from "./directory-state";
+import { isDirectoryText, isGameDirectoryText } from "./directory-state";
 import type { DirectoryProfile } from "./directory-state";
 import type { DirectCandidateKind } from "./protocol";
 import type { RendezvousRole } from "./routes";
@@ -232,12 +232,8 @@ export interface InternalRendezvousUpgrade {
   readonly generation: string;
 }
 
-export interface InternalRendezvousPublication {
+interface InternalPublicationBase {
   readonly serverId: string;
-  readonly directoryProfile: DirectoryProfile;
-  readonly publisherAuthentication:
-    | "compat-key-v1"
-    | "signed-certificate-v1";
   readonly publisherSequence: string | null;
   readonly publisherNonce: string | null;
   readonly publisherNonceExpiresAt: number | null;
@@ -248,9 +244,6 @@ export interface InternalRendezvousPublication {
   readonly now: number;
   readonly visibilityCutoff: number;
   readonly name: string;
-  readonly playersCount: number;
-  readonly version: string;
-  readonly textComment: string;
   readonly isPublic: boolean;
   readonly quicHost: string;
   readonly quicPort: number;
@@ -259,7 +252,35 @@ export interface InternalRendezvousPublication {
   readonly directoryFingerprint: string;
 }
 
-const INTERNAL_PUBLICATION_KEYS = [
+export interface InternalClassicPublication extends InternalPublicationBase {
+  readonly directoryProfile: "classic-v1";
+  readonly publisherAuthentication:
+    | "compat-key-v1"
+    | "signed-certificate-v1";
+  readonly playersCount: number;
+  readonly version: string;
+  readonly textComment: string;
+}
+
+export interface InternalGamePublication extends InternalPublicationBase {
+  readonly directoryProfile: "game-v1";
+  readonly publisherAuthentication: "signed-certificate-v1";
+  readonly description: string;
+  readonly region: string | null;
+  readonly protocolMajor: 1;
+  readonly protocolMinor: number;
+  readonly contentId: string;
+  readonly contentRevisionSha256: string;
+  readonly playersOnline: number;
+  readonly playersCapacity: number;
+  readonly status: "online" | "full" | "maintenance";
+}
+
+export type InternalRendezvousPublication =
+  | InternalClassicPublication
+  | InternalGamePublication;
+
+const INTERNAL_PUBLICATION_BASE_KEYS = [
   "serverId",
   "directoryProfile",
   "publisherAuthentication",
@@ -273,9 +294,6 @@ const INTERNAL_PUBLICATION_KEYS = [
   "now",
   "visibilityCutoff",
   "name",
-  "playersCount",
-  "version",
-  "textComment",
   "isPublic",
   "quicHost",
   "quicPort",
@@ -283,6 +301,29 @@ const INTERNAL_PUBLICATION_KEYS = [
   "passwordRequired",
   "directoryFingerprint",
 ] as const;
+
+const INTERNAL_CLASSIC_PUBLICATION_KEYS = [
+  ...INTERNAL_PUBLICATION_BASE_KEYS,
+  "playersCount",
+  "version",
+  "textComment",
+] as const;
+
+const INTERNAL_GAME_PUBLICATION_KEYS = [
+  ...INTERNAL_PUBLICATION_BASE_KEYS,
+  "description",
+  "region",
+  "protocolMajor",
+  "protocolMinor",
+  "contentId",
+  "contentRevisionSha256",
+  "playersOnline",
+  "playersCapacity",
+  "status",
+] as const;
+
+const GAME_REGION = /^[a-z0-9](?:[a-z0-9-]{0,30}[a-z0-9])?$/;
+const GAME_CONTENT_ID = /^[a-z0-9](?:[a-z0-9._-]{0,62}[a-z0-9])?$/;
 
 /**
  * Validates the private Worker-to-Durable-Object WebSocket upgrade. Public
@@ -373,7 +414,6 @@ export async function validateInternalRendezvousPublication(
   }
   if (
     !isJsonObject(parsed) ||
-    !hasExactKeys(parsed, INTERNAL_PUBLICATION_KEYS) ||
     typeof parsed.serverId !== "string" ||
     !HEX_64.test(parsed.serverId) ||
     (parsed.directoryProfile !== "classic-v1" &&
@@ -393,9 +433,6 @@ export async function validateInternalRendezvousPublication(
     !isBoundedInteger(parsed.now, 0, Number.MAX_SAFE_INTEGER) ||
     !isBoundedInteger(parsed.visibilityCutoff, 0, parsed.now) ||
     !isDirectoryText(parsed.name, 80, false) ||
-    !isBoundedInteger(parsed.playersCount, 0, 4_294_967_295) ||
-    !isDirectoryText(parsed.version, 32, false) ||
-    !isDirectoryText(parsed.textComment, 256, true) ||
     typeof parsed.isPublic !== "boolean" ||
     !isPort(parsed.quicPort) ||
     !isCanonicalPublicationEndpoint(parsed.quicHost, parsed.quicPort) ||
@@ -408,10 +445,8 @@ export async function validateInternalRendezvousPublication(
     return null;
   }
 
-  return {
+  const common = {
     serverId: parsed.serverId,
-    directoryProfile: parsed.directoryProfile,
-    publisherAuthentication: parsed.publisherAuthentication,
     publisherSequence: parsed.publisherSequence,
     publisherNonce: parsed.publisherNonce,
     publisherNonceExpiresAt: parsed.publisherNonceExpiresAt,
@@ -422,15 +457,73 @@ export async function validateInternalRendezvousPublication(
     now: parsed.now,
     visibilityCutoff: parsed.visibilityCutoff,
     name: parsed.name,
-    playersCount: parsed.playersCount,
-    version: parsed.version,
-    textComment: parsed.textComment,
     isPublic: parsed.isPublic,
     quicHost: parsed.quicHost,
     quicPort: parsed.quicPort,
     quicCertSha256: parsed.quicCertSha256,
     passwordRequired: parsed.passwordRequired,
     directoryFingerprint: parsed.directoryFingerprint,
+  } as const;
+
+  if (parsed.directoryProfile === "classic-v1") {
+    if (
+      !hasExactKeys(parsed, INTERNAL_CLASSIC_PUBLICATION_KEYS) ||
+      !isBoundedInteger(parsed.playersCount, 0, 4_294_967_295) ||
+      !isDirectoryText(parsed.version, 32, false) ||
+      !isDirectoryText(parsed.textComment, 256, true)
+    ) {
+      return null;
+    }
+    return {
+      ...common,
+      directoryProfile: "classic-v1",
+      publisherAuthentication: parsed.publisherAuthentication,
+      playersCount: parsed.playersCount,
+      version: parsed.version,
+      textComment: parsed.textComment,
+    };
+  }
+
+  if (
+    parsed.publisherAuthentication !== "signed-certificate-v1" ||
+    !hasExactKeys(parsed, INTERNAL_GAME_PUBLICATION_KEYS) ||
+    !isGameDirectoryText(parsed.name, 80, false) ||
+    !isGameDirectoryText(parsed.description, 512, true) ||
+    (parsed.region !== null &&
+      (typeof parsed.region !== "string" || !GAME_REGION.test(parsed.region))) ||
+    parsed.protocolMajor !== 1 ||
+    !isBoundedInteger(parsed.protocolMinor, 0, 65_535) ||
+    typeof parsed.contentId !== "string" ||
+    !GAME_CONTENT_ID.test(parsed.contentId) ||
+    typeof parsed.contentRevisionSha256 !== "string" ||
+    !HEX_64.test(parsed.contentRevisionSha256) ||
+    !isBoundedInteger(parsed.playersOnline, 0, 100_000) ||
+    !isBoundedInteger(parsed.playersCapacity, 1, 100_000) ||
+    parsed.playersOnline > parsed.playersCapacity ||
+    (parsed.status !== "online" && parsed.status !== "full" &&
+      parsed.status !== "maintenance") ||
+    (parsed.status === "online" &&
+      parsed.playersOnline >= parsed.playersCapacity) ||
+    (parsed.status === "full" &&
+      parsed.playersOnline !== parsed.playersCapacity) ||
+    (parsed.status === "maintenance" && parsed.playersOnline !== 0)
+  ) {
+    return null;
+  }
+
+  return {
+    ...common,
+    directoryProfile: "game-v1",
+    publisherAuthentication: "signed-certificate-v1",
+    description: parsed.description,
+    region: parsed.region,
+    protocolMajor: 1,
+    protocolMinor: parsed.protocolMinor,
+    contentId: parsed.contentId,
+    contentRevisionSha256: parsed.contentRevisionSha256,
+    playersOnline: parsed.playersOnline,
+    playersCapacity: parsed.playersCapacity,
+    status: parsed.status,
   };
 }
 

@@ -24,12 +24,14 @@ import type { DirectoryBuildOutcome } from "./directory-metrics";
 import {
   CLASSIC_DIRECTORY_SCHEMA,
   GAME_DIRECTORY_SCHEMA,
+  gameDirectoryServerJsonByteLength,
   renderDirectoryArtifacts,
 } from "./directory-artifacts";
 import type {
   ClassicDirectoryServer,
   DirectoryArtifactDescriptor,
   DirectorySnapshot,
+  GameDirectoryServer,
   RenderedDirectoryGeneration,
 } from "./directory-artifacts";
 import { sha256Hex } from "./protocol";
@@ -58,9 +60,19 @@ const GENERATION = /^[1-9][0-9]{0,19}$/;
 interface DirectoryEntryRecord {
   readonly server_id: string;
   readonly name: string;
-  readonly players_count: number;
-  readonly version: string;
-  readonly text_comment: string;
+  readonly players_count: number | null;
+  readonly version: string | null;
+  readonly text_comment: string | null;
+  readonly description: string | null;
+  readonly region: string | null;
+  readonly protocol_major: number | null;
+  readonly protocol_minor: number | null;
+  readonly content_id: string | null;
+  readonly content_revision_sha256: string | null;
+  readonly players_online: number | null;
+  readonly players_capacity: number | null;
+  readonly status: string | null;
+  readonly game_json_bytes: number | null;
   readonly hostname: string | null;
   readonly port: number | null;
   readonly quic_cert_sha256: string;
@@ -84,14 +96,24 @@ interface BuilderState {
   readonly cleanupCursor: string | null;
 }
 
-interface DirectoryModel {
+interface DirectoryModelBase {
   readonly revision: number;
-  readonly servers: readonly ClassicDirectoryServer[];
   readonly generatedAt: number;
   readonly expiresAt: number;
   readonly modelSha256: string;
   readonly hasPendingOutbox: boolean;
 }
+
+type DirectoryModel = DirectoryModelBase & (
+  | {
+      readonly profile: "classic-v1";
+      readonly servers: readonly ClassicDirectoryServer[];
+    }
+  | {
+      readonly profile: "game-v1";
+      readonly servers: readonly GameDirectoryServer[];
+    }
+);
 
 interface ManifestArtifact {
   readonly path: string;
@@ -459,7 +481,11 @@ export class DirectoryBuilder extends DurableObject<CoreEnv> {
       ).bind(profile),
       this.env.DB.prepare(
         `SELECT entries.server_id, entries.name, entries.players_count,
-                entries.version, entries.text_comment, entries.hostname,
+                entries.version, entries.text_comment, entries.description,
+                entries.region, entries.protocol_major, entries.protocol_minor,
+                entries.content_id, entries.content_revision_sha256,
+                entries.players_online, entries.players_capacity, entries.status,
+                entries.game_json_bytes, entries.hostname,
                 entries.port, entries.quic_cert_sha256,
                 entries.password_required, presence.last_seen
            FROM directory_entries AS entries
@@ -499,10 +525,6 @@ export class DirectoryBuilder extends DurableObject<CoreEnv> {
     if (!Number.isSafeInteger(pendingOutbox) || (pendingOutbox as number) < 0) {
       throw new Error("Directory outbox state is invalid");
     }
-    if (profile === "game-v1" && rows.length !== 0) {
-      throw new Error("Game directory publication is not enabled");
-    }
-
     const modelGeneratedAt = Math.max(
       generatedAt,
       revisionRecord.updated_at as number,
@@ -528,21 +550,68 @@ export class DirectoryBuilder extends DurableObject<CoreEnv> {
           ...endpoint,
         } as ClassicDirectoryServer;
       })
-      : [];
+      : rows.map((row) => {
+        if (!Number.isSafeInteger(row.last_seen) || row.last_seen < 0) {
+          throw new Error("Directory presence timestamp is invalid");
+        }
+        expiresAt = Math.min(expiresAt, row.last_seen + listingTtlSeconds);
+        const endpoint = row.hostname === null && row.port === null
+          ? {}
+          : { endpoint: { hostname: row.hostname, port: row.port } };
+        const server = {
+          serverId: row.server_id,
+          certificateSha256: row.quic_cert_sha256,
+          name: row.name,
+          description: row.description,
+          ...(row.region === null ? {} : { region: row.region }),
+          protocol: {
+            major: row.protocol_major,
+            minor: row.protocol_minor,
+          },
+          content: {
+            id: row.content_id,
+            revisionSha256: row.content_revision_sha256,
+          },
+          players: {
+            online: row.players_online,
+            capacity: row.players_capacity,
+          },
+          status: row.status,
+          passwordRequired: row.password_required === 1,
+          ...endpoint,
+        } as GameDirectoryServer;
+        if (
+          !Number.isSafeInteger(row.game_json_bytes) ||
+          row.game_json_bytes !== gameDirectoryServerJsonByteLength(server)
+        ) {
+          throw new Error("Game directory JSON accounting is invalid");
+        }
+        return server;
+      });
     expiresAt = Math.floor(expiresAt / PUBLIC_EXPIRY_QUANTUM_SECONDS) *
       PUBLIC_EXPIRY_QUANTUM_SECONDS;
     if (expiresAt <= modelGeneratedAt) {
       throw new Error("Directory snapshot contains expired presence");
     }
     const modelSha256 = await sha256Hex(JSON.stringify({ profile, servers }));
-    return Object.freeze({
+    const model = {
       revision: revisionRecord.revision as number,
-      servers: Object.freeze(servers),
       generatedAt: modelGeneratedAt,
       expiresAt,
       modelSha256,
       hasPendingOutbox: (pendingOutbox as number) > 0,
-    });
+    } as const;
+    return profile === "classic-v1"
+      ? Object.freeze({
+          ...model,
+          profile,
+          servers: Object.freeze(servers as ClassicDirectoryServer[]),
+        })
+      : Object.freeze({
+          ...model,
+          profile,
+          servers: Object.freeze(servers as GameDirectoryServer[]),
+        });
   }
 
   private async reserveBuild(
@@ -836,6 +905,9 @@ function directorySnapshot(
   pending: PendingBuild,
 ): DirectorySnapshot {
   if (profile === "classic-v1") {
+    if (model.profile !== profile) {
+      throw new Error("Directory model profile is invalid");
+    }
     return {
       profile,
       revision: model.revision,
@@ -845,13 +917,16 @@ function directorySnapshot(
       servers: model.servers,
     };
   }
+  if (model.profile !== profile) {
+    throw new Error("Directory model profile is invalid");
+  }
   return {
     profile,
     revision: model.revision,
     generation: String(pending.generation),
     generatedAt: pending.generatedAt,
     expiresAt: pending.expiresAt,
-    servers: [],
+    servers: model.servers,
   };
 }
 

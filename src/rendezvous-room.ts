@@ -205,8 +205,7 @@ export class RendezvousRoom extends DurableObject<CoreEnv> {
       }
       if (
         publication === null ||
-        publication.directoryProfile !== "classic-v1" ||
-        this.ctx.id.name !== publication.serverId
+        this.ctx.id.name !== publicationRoomName(publication)
       ) {
         return roomError("forbidden");
       }
@@ -280,6 +279,7 @@ export class RendezvousRoom extends DurableObject<CoreEnv> {
       }
     }
     const publishedGeneration = await this.reconcilePublishedGeneration(
+      publication.directoryProfile,
       publication.serverId,
     );
     if (publishedGeneration !== publication.expectedGeneration) {
@@ -294,7 +294,10 @@ export class RendezvousRoom extends DurableObject<CoreEnv> {
         publication,
       );
       if (!persisted.accepted) {
-        await this.reconcilePublishedGeneration(publication.serverId);
+        await this.reconcilePublishedGeneration(
+          publication.directoryProfile,
+          publication.serverId,
+        );
         const conflict = await this.signedPublicationConflict(publication);
         if (conflict === null) {
           throw new Error("Publisher replay state did not explain rejection");
@@ -313,7 +316,10 @@ export class RendezvousRoom extends DurableObject<CoreEnv> {
       // D1 is authoritative after an ambiguous batch result. Re-read it rather
       // than assuming whether the transaction committed, then make the room
       // fail closed on exactly that generation before returning an error.
-      await this.reconcilePublishedGeneration(publication.serverId);
+      await this.reconcilePublishedGeneration(
+        publication.directoryProfile,
+        publication.serverId,
+      );
       throw error;
     }
     return publicationCommittedResponse(visibleChanged);
@@ -353,15 +359,16 @@ export class RendezvousRoom extends DurableObject<CoreEnv> {
     if (serverId === undefined || !TOKEN_GENERATION.test(serverId)) {
       return;
     }
-    await this.reconcilePublishedGeneration(serverId);
+    await this.reconcilePublishedGeneration("classic-v1", serverId);
   }
 
   private async reconcilePublishedGeneration(
+    profile: "classic-v1" | "game-v1",
     serverId: string,
   ): Promise<string | null> {
     const generation = await readPublishedGeneration(
       this.env.DB,
-      "classic-v1",
+      profile,
       serverId,
     );
     await this.rotateTokenGeneration(generation);
@@ -2548,6 +2555,12 @@ export class RendezvousRoom extends DurableObject<CoreEnv> {
       // unavailable. The session expiry remains a hard 15-second fallback.
     }
   }
+}
+
+function publicationRoomName(publication: InternalRendezvousPublication): string {
+  return publication.directoryProfile === "classic-v1"
+    ? publication.serverId
+    : `game-v1:${publication.serverId}`;
 }
 
 class RendezvousTeardownIntegrityError extends Error {

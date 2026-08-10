@@ -12,6 +12,7 @@ export const REQUEST_BUDGET_SCOPES = [
   "compat-update-source",
   "compat-update-server",
   "publish-server",
+  "publish-game-server",
   "rendezvous-client-source",
   "rendezvous-client-source-server",
   "rendezvous-server-source",

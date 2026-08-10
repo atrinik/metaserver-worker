@@ -113,14 +113,16 @@ Migration `0004_signed_publisher.sql` must be applied before enabling
 directory fingerprint, unsigned-64 sequence/nonce replay ledger, and
 profile-separated directory revision outbox. Apply the migration with
 publishing paused, deploy with the canonical publisher disabled (the checked-in
-configuration deliberately ships `PUBLISH_ENABLED=disabled`), verify the
+configuration deliberately ships `PUBLISH_ENABLED=disabled` and
+`GAME_PUBLISH_ENABLED=disabled`), verify the
 new constraints and initial revision rows, then enable the classic publisher
 only after the canonical route is attached to
 `publish.meta.atrinik.org`. Keep compatibility updates available for the
 rollback window, but never run an older Worker after an owner has upgraded to
 certificate authentication: compatibility authentication intentionally fails
-closed for that identity. Do not enable the reserved Game Protocol 1
-publisher until its producer implements the same frozen contract.
+closed for that identity. Do not enable the Game Protocol 1 publisher until
+its producer implements the same frozen contract and the Game-specific breaker
+has passed its own canary.
 
 Migration `0005_directory_state.sql` is the profile-aware directory-state
 cutover. It creates minimal presence and public-only directory tables, imports
@@ -153,6 +155,19 @@ profile because the authoritative model is current-state, not an historical
 event stream. Confirm both checkpoints begin at unpublished generation zero,
 both outboxes contain at most one row, and no public artifact or metadata
 contains the private D1 revision.
+
+Migration `0007_game_publisher.sql` must be applied before deploying the Game
+Protocol 1 publisher adapter. Keep both `PUBLISH_ENABLED` and
+`GAME_PUBLISH_ENABLED` disabled and drain accepted publisher traffic before
+the migration. Verify that existing classic rows are unchanged, mixed
+classic/Game shapes fail their constraints, the `publish-game-server`
+request-budget scope begins empty, and the aggregate Game canonical-JSON byte
+trigger rejects a transaction that would exceed 262,144 bytes. Deploy the
+state-owning provider at 100% before the stateless publisher caller. Leave
+`GAME_PUBLISH_ENABLED=disabled` and the Game static authority domainless until
+the Go producer, Rust consumer, static-edge policy, and live
+publish-to-artifact canary are all reviewed. A rollback to code predating
+`0007` must keep Game publication disabled; it cannot interpret Game rows.
 
 Before the first builder deployment, provision three environment-isolated R2
 buckets: one private immutable-generation bucket and one public alias-only

@@ -1,0 +1,75 @@
+{
+  "version": 1,
+  "profile": "game",
+  "authority": "publish.meta.atrinik.org",
+  "method": "POST",
+  "content_type": "application/json",
+  "server_id": "0145f46149b8483d33b8e02c9495b3e4ff2dd5ce342a22bb40913bba7a457d39",
+  "certificate_der_base64": "MIIBlDCCATqgAwIBAgIBAjAKBggqhkjOPQQDAjApMScwJQYDVQQDDB5BdHJpbmlrIGdhbWUgcHVibGlzaGVyIGZpeHR1cmUwHhcNMjYwODEwMDI0MjMwWhcNMzYwODA3MDI0MjMwWjApMScwJQYDVQQDDB5BdHJpbmlrIGdhbWUgcHVibGlzaGVyIGZpeHR1cmUwWTATBgcqhkjOPQIBBggqhkjOPQMBBwNCAARp3V9S6hwQtev297vKo09IIjxFJ03bkJGWhINrtl02+qX74Y1fqMEglkyDsDS5uaw9wkEqAZFjvqGds9Nlh8mLo1MwUTAdBgNVHQ4EFgQUM2ynnFKEB/m1Ih384LbZpnCE6KcwHwYDVR0jBBgwFoAUM2ynnFKEB/m1Ih384LbZpnCE6KcwDwYDVR0TAQH/BAUwAwEB/zAKBggqhkjOPQQDAgNIADBFAiA+GS9rOiluma03pBE7eOsp8qQWF2x5LLzwIvHtOr9cQQIhALFjaapew4tGe7YyjGNwCqd7ga08+HeUd0L2+KBkaORJ",
+  "path": "/v1/servers/0145f46149b8483d33b8e02c9495b3e4ff2dd5ce342a22bb40913bba7a457d39/publish",
+  "sequence": "42",
+  "nonce": "000102030405060708090a0b0c0d0e0f",
+  "created": 1800000000,
+  "expires": 1800000300,
+  "body": "{\"schema\":\"atrinik-game-publish-v1\",\"serverId\":\"0145f46149b8483d33b8e02c9495b3e4ff2dd5ce342a22bb40913bba7a457d39\",\"certificate\":\"MIIBlDCCATqgAwIBAgIBAjAKBggqhkjOPQQDAjApMScwJQYDVQQDDB5BdHJpbmlrIGdhbWUgcHVibGlzaGVyIGZpeHR1cmUwHhcNMjYwODEwMDI0MjMwWhcNMzYwODA3MDI0MjMwWjApMScwJQYDVQQDDB5BdHJpbmlrIGdhbWUgcHVibGlzaGVyIGZpeHR1cmUwWTATBgcqhkjOPQIBBggqhkjOPQMBBwNCAARp3V9S6hwQtev297vKo09IIjxFJ03bkJGWhINrtl02+qX74Y1fqMEglkyDsDS5uaw9wkEqAZFjvqGds9Nlh8mLo1MwUTAdBgNVHQ4EFgQUM2ynnFKEB/m1Ih384LbZpnCE6KcwHwYDVR0jBBgwFoAUM2ynnFKEB/m1Ih384LbZpnCE6KcwDwYDVR0TAQH/BAUwAwEB/zAKBggqhkjOPQQDAgNIADBFAiA+GS9rOiluma03pBE7eOsp8qQWF2x5LLzwIvHtOr9cQQIhALFjaapew4tGe7YyjGNwCqd7ga08+HeUd0L2+KBkaORJ\",\"name\":\"Atrinik Game Alpha\",\"description\":\"Cooperative Ω\",\"region\":\"eu-west\",\"protocol\":{\"major\":1,\"minor\":0},\"content\":{\"id\":\"atrinik-main\",\"revisionSha256\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\"},\"players\":{\"online\":3,\"capacity\":64},\"status\":\"online\",\"public\":true,\"passwordRequired\":false,\"endpoint\":{\"hostname\":\"xn--bcher-kva.example.org\",\"port\":13327}}",
+  "content_digest": "sha-256=:Fzvnb28jWhv3lSDxHJKDzlJjNLnrc+1I+VLVdrqERGE=:",
+  "signature_input": "atrinik=(\"@method\" \"@authority\" \"@path\" \"content-digest\" \"content-type\" \"atrinik-server-id\" \"atrinik-publish-sequence\");created=1800000000;expires=1800000300;nonce=\"000102030405060708090a0b0c0d0e0f\";alg=\"ecdsa-p256-sha256\";keyid=\"0145f46149b8483d33b8e02c9495b3e4ff2dd5ce342a22bb40913bba7a457d39\";tag=\"atrinik-game-publish-v1\"",
+  "signature_base": "\"@method\": POST\n\"@authority\": publish.meta.atrinik.org\n\"@path\": /v1/servers/0145f46149b8483d33b8e02c9495b3e4ff2dd5ce342a22bb40913bba7a457d39/publish\n\"content-digest\": sha-256=:Fzvnb28jWhv3lSDxHJKDzlJjNLnrc+1I+VLVdrqERGE=:\n\"content-type\": application/json\n\"atrinik-server-id\": 0145f46149b8483d33b8e02c9495b3e4ff2dd5ce342a22bb40913bba7a457d39\n\"atrinik-publish-sequence\": 42\n\"@signature-params\": (\"@method\" \"@authority\" \"@path\" \"content-digest\" \"content-type\" \"atrinik-server-id\" \"atrinik-publish-sequence\");created=1800000000;expires=1800000300;nonce=\"000102030405060708090a0b0c0d0e0f\";alg=\"ecdsa-p256-sha256\";keyid=\"0145f46149b8483d33b8e02c9495b3e4ff2dd5ce342a22bb40913bba7a457d39\";tag=\"atrinik-game-publish-v1\"",
+  "signature_base64": "PcGj3kxhPCqdxaEAUNkpVaj2Xu+b+3LkfIgu/pD8M+94GlUu/0EbjDVGgn41yqkzyLQZBtI6c3DzL/JzTG/QaQ==",
+  "signature_header": "atrinik=:PcGj3kxhPCqdxaEAUNkpVaj2Xu+b+3LkfIgu/pD8M+94GlUu/0EbjDVGgn41yqkzyLQZBtI6c3DzL/JzTG/QaQ==:",
+  "success_body": "{\"status\":\"ok\",\"rendezvousToken\":\"{64-lower-hex}\"}",
+  "private_body": "{\"schema\":\"atrinik-game-publish-v1\",\"serverId\":\"0145f46149b8483d33b8e02c9495b3e4ff2dd5ce342a22bb40913bba7a457d39\",\"certificate\":\"MIIBlDCCATqgAwIBAgIBAjAKBggqhkjOPQQDAjApMScwJQYDVQQDDB5BdHJpbmlrIGdhbWUgcHVibGlzaGVyIGZpeHR1cmUwHhcNMjYwODEwMDI0MjMwWhcNMzYwODA3MDI0MjMwWjApMScwJQYDVQQDDB5BdHJpbmlrIGdhbWUgcHVibGlzaGVyIGZpeHR1cmUwWTATBgcqhkjOPQIBBggqhkjOPQMBBwNCAARp3V9S6hwQtev297vKo09IIjxFJ03bkJGWhINrtl02+qX74Y1fqMEglkyDsDS5uaw9wkEqAZFjvqGds9Nlh8mLo1MwUTAdBgNVHQ4EFgQUM2ynnFKEB/m1Ih384LbZpnCE6KcwHwYDVR0jBBgwFoAUM2ynnFKEB/m1Ih384LbZpnCE6KcwDwYDVR0TAQH/BAUwAwEB/zAKBggqhkjOPQQDAgNIADBFAiA+GS9rOiluma03pBE7eOsp8qQWF2x5LLzwIvHtOr9cQQIhALFjaapew4tGe7YyjGNwCqd7ga08+HeUd0L2+KBkaORJ\",\"name\":\"Private\",\"description\":\"\",\"protocol\":{\"major\":1,\"minor\":0},\"content\":{\"id\":\"atrinik-main\",\"revisionSha256\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\"},\"players\":{\"online\":0,\"capacity\":64},\"status\":\"maintenance\",\"public\":false,\"passwordRequired\":true}",
+  "maximum_bounds": {
+    "body_bytes": 4096,
+    "certificate_der_bytes": 2048,
+    "name_utf8_bytes": 80,
+    "description_utf8_bytes": 512,
+    "region_bytes": 32,
+    "content_id_bytes": 64,
+    "players": 100000,
+    "hostname_bytes": 253,
+    "port": 65535
+  },
+  "negative": [
+    {
+      "name": "leading whitespace",
+      "body": " {\"schema\":\"atrinik-game-publish-v1\",\"serverId\":\"0145f46149b8483d33b8e02c9495b3e4ff2dd5ce342a22bb40913bba7a457d39\",\"certificate\":\"MIIBlDCCATqgAwIBAgIBAjAKBggqhkjOPQQDAjApMScwJQYDVQQDDB5BdHJpbmlrIGdhbWUgcHVibGlzaGVyIGZpeHR1cmUwHhcNMjYwODEwMDI0MjMwWhcNMzYwODA3MDI0MjMwWjApMScwJQYDVQQDDB5BdHJpbmlrIGdhbWUgcHVibGlzaGVyIGZpeHR1cmUwWTATBgcqhkjOPQIBBggqhkjOPQMBBwNCAARp3V9S6hwQtev297vKo09IIjxFJ03bkJGWhINrtl02+qX74Y1fqMEglkyDsDS5uaw9wkEqAZFjvqGds9Nlh8mLo1MwUTAdBgNVHQ4EFgQUM2ynnFKEB/m1Ih384LbZpnCE6KcwHwYDVR0jBBgwFoAUM2ynnFKEB/m1Ih384LbZpnCE6KcwDwYDVR0TAQH/BAUwAwEB/zAKBggqhkjOPQQDAgNIADBFAiA+GS9rOiluma03pBE7eOsp8qQWF2x5LLzwIvHtOr9cQQIhALFjaapew4tGe7YyjGNwCqd7ga08+HeUd0L2+KBkaORJ\",\"name\":\"Atrinik Game Alpha\",\"description\":\"Cooperative Ω\",\"region\":\"eu-west\",\"protocol\":{\"major\":1,\"minor\":0},\"content\":{\"id\":\"atrinik-main\",\"revisionSha256\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\"},\"players\":{\"online\":3,\"capacity\":64},\"status\":\"online\",\"public\":true,\"passwordRequired\":false,\"endpoint\":{\"hostname\":\"xn--bcher-kva.example.org\",\"port\":13327}}",
+      "error": "noncanonical_json"
+    },
+    {
+      "name": "duplicate public",
+      "body": "{\"schema\":\"atrinik-game-publish-v1\",\"serverId\":\"0145f46149b8483d33b8e02c9495b3e4ff2dd5ce342a22bb40913bba7a457d39\",\"certificate\":\"MIIBlDCCATqgAwIBAgIBAjAKBggqhkjOPQQDAjApMScwJQYDVQQDDB5BdHJpbmlrIGdhbWUgcHVibGlzaGVyIGZpeHR1cmUwHhcNMjYwODEwMDI0MjMwWhcNMzYwODA3MDI0MjMwWjApMScwJQYDVQQDDB5BdHJpbmlrIGdhbWUgcHVibGlzaGVyIGZpeHR1cmUwWTATBgcqhkjOPQIBBggqhkjOPQMBBwNCAARp3V9S6hwQtev297vKo09IIjxFJ03bkJGWhINrtl02+qX74Y1fqMEglkyDsDS5uaw9wkEqAZFjvqGds9Nlh8mLo1MwUTAdBgNVHQ4EFgQUM2ynnFKEB/m1Ih384LbZpnCE6KcwHwYDVR0jBBgwFoAUM2ynnFKEB/m1Ih384LbZpnCE6KcwDwYDVR0TAQH/BAUwAwEB/zAKBggqhkjOPQQDAgNIADBFAiA+GS9rOiluma03pBE7eOsp8qQWF2x5LLzwIvHtOr9cQQIhALFjaapew4tGe7YyjGNwCqd7ga08+HeUd0L2+KBkaORJ\",\"name\":\"Atrinik Game Alpha\",\"description\":\"Cooperative Ω\",\"region\":\"eu-west\",\"protocol\":{\"major\":1,\"minor\":0},\"content\":{\"id\":\"atrinik-main\",\"revisionSha256\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\"},\"players\":{\"online\":3,\"capacity\":64},\"status\":\"online\",\"public\":false,\"public\":true,\"passwordRequired\":false,\"endpoint\":{\"hostname\":\"xn--bcher-kva.example.org\",\"port\":13327}}",
+      "error": "noncanonical_json"
+    },
+    {
+      "name": "unexpected property",
+      "body": "{\"schema\":\"atrinik-game-publish-v1\",\"serverId\":\"0145f46149b8483d33b8e02c9495b3e4ff2dd5ce342a22bb40913bba7a457d39\",\"certificate\":\"MIIBlDCCATqgAwIBAgIBAjAKBggqhkjOPQQDAjApMScwJQYDVQQDDB5BdHJpbmlrIGdhbWUgcHVibGlzaGVyIGZpeHR1cmUwHhcNMjYwODEwMDI0MjMwWhcNMzYwODA3MDI0MjMwWjApMScwJQYDVQQDDB5BdHJpbmlrIGdhbWUgcHVibGlzaGVyIGZpeHR1cmUwWTATBgcqhkjOPQIBBggqhkjOPQMBBwNCAARp3V9S6hwQtev297vKo09IIjxFJ03bkJGWhINrtl02+qX74Y1fqMEglkyDsDS5uaw9wkEqAZFjvqGds9Nlh8mLo1MwUTAdBgNVHQ4EFgQUM2ynnFKEB/m1Ih384LbZpnCE6KcwHwYDVR0jBBgwFoAUM2ynnFKEB/m1Ih384LbZpnCE6KcwDwYDVR0TAQH/BAUwAwEB/zAKBggqhkjOPQQDAgNIADBFAiA+GS9rOiluma03pBE7eOsp8qQWF2x5LLzwIvHtOr9cQQIhALFjaapew4tGe7YyjGNwCqd7ga08+HeUd0L2+KBkaORJ\",\"name\":\"Atrinik Game Alpha\",\"description\":\"Cooperative Ω\",\"region\":\"eu-west\",\"protocol\":{\"major\":1,\"minor\":0},\"content\":{\"id\":\"atrinik-main\",\"revisionSha256\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\"},\"players\":{\"online\":3,\"capacity\":64},\"status\":\"online\",\"public\":true,\"passwordRequired\":false,\"endpoint\":{\"hostname\":\"xn--bcher-kva.example.org\",\"port\":13327},\"extra\":true}",
+      "error": "noncanonical_json"
+    },
+    {
+      "name": "reordered name description",
+      "body": "{\"schema\":\"atrinik-game-publish-v1\",\"serverId\":\"0145f46149b8483d33b8e02c9495b3e4ff2dd5ce342a22bb40913bba7a457d39\",\"certificate\":\"MIIBlDCCATqgAwIBAgIBAjAKBggqhkjOPQQDAjApMScwJQYDVQQDDB5BdHJpbmlrIGdhbWUgcHVibGlzaGVyIGZpeHR1cmUwHhcNMjYwODEwMDI0MjMwWhcNMzYwODA3MDI0MjMwWjApMScwJQYDVQQDDB5BdHJpbmlrIGdhbWUgcHVibGlzaGVyIGZpeHR1cmUwWTATBgcqhkjOPQIBBggqhkjOPQMBBwNCAARp3V9S6hwQtev297vKo09IIjxFJ03bkJGWhINrtl02+qX74Y1fqMEglkyDsDS5uaw9wkEqAZFjvqGds9Nlh8mLo1MwUTAdBgNVHQ4EFgQUM2ynnFKEB/m1Ih384LbZpnCE6KcwHwYDVR0jBBgwFoAUM2ynnFKEB/m1Ih384LbZpnCE6KcwDwYDVR0TAQH/BAUwAwEB/zAKBggqhkjOPQQDAgNIADBFAiA+GS9rOiluma03pBE7eOsp8qQWF2x5LLzwIvHtOr9cQQIhALFjaapew4tGe7YyjGNwCqd7ga08+HeUd0L2+KBkaORJ\",\"description\":\"Cooperative Ω\",\"name\":\"Atrinik Game Alpha\",\"region\":\"eu-west\",\"protocol\":{\"major\":1,\"minor\":0},\"content\":{\"id\":\"atrinik-main\",\"revisionSha256\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\"},\"players\":{\"online\":3,\"capacity\":64},\"status\":\"online\",\"public\":true,\"passwordRequired\":false,\"endpoint\":{\"hostname\":\"xn--bcher-kva.example.org\",\"port\":13327}}",
+      "error": "noncanonical_json"
+    },
+    {
+      "name": "unsupported schema",
+      "body": "{\"schema\":\"atrinik-game-publish-v2\",\"serverId\":\"0145f46149b8483d33b8e02c9495b3e4ff2dd5ce342a22bb40913bba7a457d39\",\"certificate\":\"MIIBlDCCATqgAwIBAgIBAjAKBggqhkjOPQQDAjApMScwJQYDVQQDDB5BdHJpbmlrIGdhbWUgcHVibGlzaGVyIGZpeHR1cmUwHhcNMjYwODEwMDI0MjMwWhcNMzYwODA3MDI0MjMwWjApMScwJQYDVQQDDB5BdHJpbmlrIGdhbWUgcHVibGlzaGVyIGZpeHR1cmUwWTATBgcqhkjOPQIBBggqhkjOPQMBBwNCAARp3V9S6hwQtev297vKo09IIjxFJ03bkJGWhINrtl02+qX74Y1fqMEglkyDsDS5uaw9wkEqAZFjvqGds9Nlh8mLo1MwUTAdBgNVHQ4EFgQUM2ynnFKEB/m1Ih384LbZpnCE6KcwHwYDVR0jBBgwFoAUM2ynnFKEB/m1Ih384LbZpnCE6KcwDwYDVR0TAQH/BAUwAwEB/zAKBggqhkjOPQQDAgNIADBFAiA+GS9rOiluma03pBE7eOsp8qQWF2x5LLzwIvHtOr9cQQIhALFjaapew4tGe7YyjGNwCqd7ga08+HeUd0L2+KBkaORJ\",\"name\":\"Atrinik Game Alpha\",\"description\":\"Cooperative Ω\",\"region\":\"eu-west\",\"protocol\":{\"major\":1,\"minor\":0},\"content\":{\"id\":\"atrinik-main\",\"revisionSha256\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\"},\"players\":{\"online\":3,\"capacity\":64},\"status\":\"online\",\"public\":true,\"passwordRequired\":false,\"endpoint\":{\"hostname\":\"xn--bcher-kva.example.org\",\"port\":13327}}",
+      "error": "unsupported_schema"
+    },
+    {
+      "name": "wrong identity",
+      "body": "{\"schema\":\"atrinik-game-publish-v1\",\"serverId\":\"1145f46149b8483d33b8e02c9495b3e4ff2dd5ce342a22bb40913bba7a457d39\",\"certificate\":\"MIIBlDCCATqgAwIBAgIBAjAKBggqhkjOPQQDAjApMScwJQYDVQQDDB5BdHJpbmlrIGdhbWUgcHVibGlzaGVyIGZpeHR1cmUwHhcNMjYwODEwMDI0MjMwWhcNMzYwODA3MDI0MjMwWjApMScwJQYDVQQDDB5BdHJpbmlrIGdhbWUgcHVibGlzaGVyIGZpeHR1cmUwWTATBgcqhkjOPQIBBggqhkjOPQMBBwNCAARp3V9S6hwQtev297vKo09IIjxFJ03bkJGWhINrtl02+qX74Y1fqMEglkyDsDS5uaw9wkEqAZFjvqGds9Nlh8mLo1MwUTAdBgNVHQ4EFgQUM2ynnFKEB/m1Ih384LbZpnCE6KcwHwYDVR0jBBgwFoAUM2ynnFKEB/m1Ih384LbZpnCE6KcwDwYDVR0TAQH/BAUwAwEB/zAKBggqhkjOPQQDAgNIADBFAiA+GS9rOiluma03pBE7eOsp8qQWF2x5LLzwIvHtOr9cQQIhALFjaapew4tGe7YyjGNwCqd7ga08+HeUd0L2+KBkaORJ\",\"name\":\"Atrinik Game Alpha\",\"description\":\"Cooperative Ω\",\"region\":\"eu-west\",\"protocol\":{\"major\":1,\"minor\":0},\"content\":{\"id\":\"atrinik-main\",\"revisionSha256\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\"},\"players\":{\"online\":3,\"capacity\":64},\"status\":\"online\",\"public\":true,\"passwordRequired\":false,\"endpoint\":{\"hostname\":\"xn--bcher-kva.example.org\",\"port\":13327}}",
+      "error": "invalid_identity"
+    },
+    {
+      "name": "invalid players",
+      "body": "{\"schema\":\"atrinik-game-publish-v1\",\"serverId\":\"0145f46149b8483d33b8e02c9495b3e4ff2dd5ce342a22bb40913bba7a457d39\",\"certificate\":\"MIIBlDCCATqgAwIBAgIBAjAKBggqhkjOPQQDAjApMScwJQYDVQQDDB5BdHJpbmlrIGdhbWUgcHVibGlzaGVyIGZpeHR1cmUwHhcNMjYwODEwMDI0MjMwWhcNMzYwODA3MDI0MjMwWjApMScwJQYDVQQDDB5BdHJpbmlrIGdhbWUgcHVibGlzaGVyIGZpeHR1cmUwWTATBgcqhkjOPQIBBggqhkjOPQMBBwNCAARp3V9S6hwQtev297vKo09IIjxFJ03bkJGWhINrtl02+qX74Y1fqMEglkyDsDS5uaw9wkEqAZFjvqGds9Nlh8mLo1MwUTAdBgNVHQ4EFgQUM2ynnFKEB/m1Ih384LbZpnCE6KcwHwYDVR0jBBgwFoAUM2ynnFKEB/m1Ih384LbZpnCE6KcwDwYDVR0TAQH/BAUwAwEB/zAKBggqhkjOPQQDAgNIADBFAiA+GS9rOiluma03pBE7eOsp8qQWF2x5LLzwIvHtOr9cQQIhALFjaapew4tGe7YyjGNwCqd7ga08+HeUd0L2+KBkaORJ\",\"name\":\"Atrinik Game Alpha\",\"description\":\"Cooperative Ω\",\"region\":\"eu-west\",\"protocol\":{\"major\":1,\"minor\":0},\"content\":{\"id\":\"atrinik-main\",\"revisionSha256\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\"},\"players\":{\"online\":65,\"capacity\":64},\"status\":\"online\",\"public\":true,\"passwordRequired\":false,\"endpoint\":{\"hostname\":\"xn--bcher-kva.example.org\",\"port\":13327}}",
+      "error": "invalid_players"
+    },
+    {
+      "name": "numeric endpoint",
+      "body": "{\"schema\":\"atrinik-game-publish-v1\",\"serverId\":\"0145f46149b8483d33b8e02c9495b3e4ff2dd5ce342a22bb40913bba7a457d39\",\"certificate\":\"MIIBlDCCATqgAwIBAgIBAjAKBggqhkjOPQQDAjApMScwJQYDVQQDDB5BdHJpbmlrIGdhbWUgcHVibGlzaGVyIGZpeHR1cmUwHhcNMjYwODEwMDI0MjMwWhcNMzYwODA3MDI0MjMwWjApMScwJQYDVQQDDB5BdHJpbmlrIGdhbWUgcHVibGlzaGVyIGZpeHR1cmUwWTATBgcqhkjOPQIBBggqhkjOPQMBBwNCAARp3V9S6hwQtev297vKo09IIjxFJ03bkJGWhINrtl02+qX74Y1fqMEglkyDsDS5uaw9wkEqAZFjvqGds9Nlh8mLo1MwUTAdBgNVHQ4EFgQUM2ynnFKEB/m1Ih384LbZpnCE6KcwHwYDVR0jBBgwFoAUM2ynnFKEB/m1Ih384LbZpnCE6KcwDwYDVR0TAQH/BAUwAwEB/zAKBggqhkjOPQQDAgNIADBFAiA+GS9rOiluma03pBE7eOsp8qQWF2x5LLzwIvHtOr9cQQIhALFjaapew4tGe7YyjGNwCqd7ga08+HeUd0L2+KBkaORJ\",\"name\":\"Atrinik Game Alpha\",\"description\":\"Cooperative Ω\",\"region\":\"eu-west\",\"protocol\":{\"major\":1,\"minor\":0},\"content\":{\"id\":\"atrinik-main\",\"revisionSha256\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\"},\"players\":{\"online\":3,\"capacity\":64},\"status\":\"online\",\"public\":true,\"passwordRequired\":false,\"endpoint\":{\"hostname\":\"192.0.2.1\",\"port\":13327}}",
+      "error": "invalid_endpoint"
+    }
+  ]
+}

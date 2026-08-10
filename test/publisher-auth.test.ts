@@ -1,9 +1,11 @@
 import publisherFixture from "./fixtures/metaserver-publisher-v1.json";
+import gamePublisherFixture from "./fixtures/metaserver-game-publisher-v1.json";
 import { describe, expect, it } from "vitest";
 
 import { HttpError } from "../src/http";
 import {
   authenticateClassicPublish,
+  authenticateGamePublish,
   PUBLISH_MAXIMUM_BODY_BYTES,
   readBoundedPublishBody,
 } from "../src/publisher-auth";
@@ -205,6 +207,74 @@ describe("signed publisher authentication", () => {
       "https://publish.meta.atrinik.org/",
       { method: "POST", body: "" },
     ))).rejects.toMatchObject({ code: "body_required" });
+  });
+});
+
+describe("Game Protocol 1 signed publisher authentication", () => {
+  function gameRequest(body = gamePublisherFixture.body): Request {
+    return new Request(
+      `https://${gamePublisherFixture.authority}${gamePublisherFixture.path}`,
+      {
+        method: "POST",
+        headers: {
+          "Atrinik-Publish-Sequence": gamePublisherFixture.sequence,
+          "Atrinik-Server-ID": gamePublisherFixture.server_id,
+          "Content-Digest": gamePublisherFixture.content_digest,
+          "Content-Type": gamePublisherFixture.content_type,
+          "Signature": gamePublisherFixture.signature_header,
+          "Signature-Input": gamePublisherFixture.signature_input,
+        },
+        body,
+      },
+    );
+  }
+
+  async function authenticateGame(request: Request) {
+    return authenticateGamePublish(
+      request,
+      await readBoundedPublishBody(request.clone()),
+      gamePublisherFixture.server_id,
+      gamePublisherFixture.authority,
+      gamePublisherFixture.created,
+    );
+  }
+
+  it("verifies the protocol-owned Game body, certificate, and signature", async () => {
+    const authenticated = await authenticateGame(gameRequest());
+    expect(authenticated.sequence).toBe(gamePublisherFixture.sequence);
+    expect(authenticated.nonce).toBe(gamePublisherFixture.nonce);
+    expect(authenticated.payload).toEqual(JSON.parse(gamePublisherFixture.body));
+    expect(authenticated.certificateDer.byteLength).toBeGreaterThan(0);
+  });
+
+  it("rejects every language-neutral negative body before state admission", async () => {
+    for (const vector of gamePublisherFixture.negative) {
+      await expect(authenticateGame(gameRequest(vector.body))).rejects
+        .toMatchObject({
+          code: vector.error === "invalid_identity"
+            ? "unauthorized"
+            : "bad_request",
+        });
+    }
+  });
+
+  it("keeps classic and Game schema, path, and signature domains disjoint", async () => {
+    const classic = fixtureRequest();
+    await expect(authenticateGamePublish(
+      classic,
+      await readBoundedPublishBody(classic.clone()),
+      publisherFixture.server_id,
+      publisherFixture.authority,
+      NOW,
+    )).rejects.toMatchObject({ code: "bad_request" });
+    const game = gameRequest();
+    await expect(authenticateClassicPublish(
+      game,
+      await readBoundedPublishBody(game.clone()),
+      gamePublisherFixture.server_id,
+      gamePublisherFixture.authority,
+      gamePublisherFixture.created,
+    )).rejects.toMatchObject({ code: "bad_request" });
   });
 });
 

@@ -45,6 +45,7 @@ export type CoreEnv =
     readonly COMPAT_OTP_ENABLED?: string;
     readonly COMPAT_UPDATE_ENABLED?: string;
     readonly PUBLISH_ENABLED?: string;
+    readonly GAME_PUBLISH_ENABLED?: string;
     readonly RENDEZVOUS_ENABLED?: string;
     readonly COMPAT_RENDEZVOUS_ENABLED?: string;
   };

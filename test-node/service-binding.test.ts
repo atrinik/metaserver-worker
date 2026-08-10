@@ -83,6 +83,7 @@ beforeAll(async () => {
         bindings: {
           ...publisherConfiguration.vars,
           PUBLISH_ENABLED: "enabled",
+          GAME_PUBLISH_ENABLED: "enabled",
           SOURCE_TAG_KEY_CURRENT: CURRENT_SECRET,
           SOURCE_TAG_KEY_PREVIOUS: PREVIOUS_SECRET,
         },
@@ -123,6 +124,7 @@ beforeAll(async () => {
         bindings: {
           ...core.vars,
           PUBLISH_ENABLED: "enabled",
+          GAME_PUBLISH_ENABLED: "enabled",
           RENDEZVOUS_ENABLED: "enabled",
           SOURCE_TAG_KEY_CURRENT: CURRENT_SECRET,
           SOURCE_TAG_KEY_PREVIOUS: PREVIOUS_SECRET,

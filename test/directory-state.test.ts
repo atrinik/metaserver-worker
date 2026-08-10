@@ -13,6 +13,7 @@ import {
   readDirectoryArtifactPublication,
 } from "../src/directory-state";
 import worker from "../src/index";
+import { MAX_GAME_DIRECTORY_JSON_SERVER_SET_BYTES } from "../src/directory-artifacts";
 import { persistRendezvousPublication } from "../src/rendezvous-publication";
 import type { InternalRendezvousPublication } from "../src/rendezvous-contract";
 
@@ -285,6 +286,23 @@ describe("profile-scoped directory expiry", () => {
         { profile: "game-v1", revision: 1 },
       ],
     });
+  });
+
+  it("rolls back every Game publication mutation at the JSON aggregate ceiling", async () => {
+    const existingId = "6".repeat(64);
+    await seedPublic(existingId, "game-v1", NOW);
+    await env.DB.prepare(
+      `UPDATE directory_entries SET game_json_bytes = ?
+        WHERE profile = 'game-v1' AND server_id = ?`,
+    ).bind(MAX_GAME_DIRECTORY_JSON_SERVER_SET_BYTES, existingId).run();
+    const before = await snapshotDirectoryState();
+
+    await expect(persistRendezvousPublication(
+      env.DB,
+      publication("7".repeat(64), "game-v1", "Blocked Game", "8"),
+    )).rejects.toThrow();
+
+    expect(await snapshotDirectoryState()).toEqual(before);
   });
 
   it("persists and renders only an explicitly signed DNS fallback", async () => {
@@ -742,10 +760,10 @@ describe("static artifact publication checkpoints", () => {
   });
 });
 
-function nextPublication(
-  original: InternalRendezvousPublication,
-  overrides: Partial<InternalRendezvousPublication>,
-): InternalRendezvousPublication {
+function nextPublication<T extends InternalRendezvousPublication>(
+  original: T,
+  overrides: Partial<T>,
+): T {
   return {
     ...original,
     publisherSequence: "2",
@@ -756,7 +774,7 @@ function nextPublication(
     tokenHash: "e".repeat(64),
     now: NOW + 1,
     ...overrides,
-  };
+  } as T;
 }
 
 async function snapshotDirectoryState(): Promise<unknown> {
@@ -785,9 +803,8 @@ function publication(
   name: string,
   discriminator: string,
 ): InternalRendezvousPublication {
-  return {
+  const common = {
     serverId,
-    directoryProfile: profile,
     publisherAuthentication: "signed-certificate-v1",
     publisherSequence: "1",
     publisherNonce: discriminator.repeat(32),
@@ -799,16 +816,34 @@ function publication(
     now: NOW,
     visibilityCutoff: CUTOFF,
     name,
-    playersCount: 0,
-    version: "4.0.0",
-    textComment: "",
     isPublic: true,
     quicHost: "",
     quicPort: 1,
     quicCertSha256: serverId,
     passwordRequired: false,
     directoryFingerprint: discriminator.repeat(64),
-  };
+  } as const;
+  return profile === "classic-v1"
+    ? {
+        ...common,
+        directoryProfile: profile,
+        playersCount: 0,
+        version: "4.0.0",
+        textComment: "",
+      }
+    : {
+        ...common,
+        directoryProfile: profile,
+        description: "Game directory state",
+        region: null,
+        protocolMajor: 1,
+        protocolMinor: 0,
+        contentId: "atrinik-main",
+        contentRevisionSha256: discriminator.repeat(64),
+        playersOnline: 0,
+        playersCapacity: 64,
+        status: "online",
+      };
 }
 
 async function seedPublic(
@@ -828,13 +863,23 @@ async function seedPublic(
           rendezvous_generation)
        VALUES (?, ?, ?, ?, ?)`,
     ).bind(profile, serverId, lastSeen, "b".repeat(64), "c".repeat(64)),
-    env.DB.prepare(
-      `INSERT INTO directory_entries
-         (profile, server_id, name, players_count, version, text_comment,
-          hostname, port, quic_cert_sha256, password_required,
-          directory_fingerprint)
-       VALUES (?, ?, 'Directory test', 0, '4.0.0', '', NULL, NULL, ?, 0, ?)`,
-    ).bind(profile, serverId, serverId, "d".repeat(64)),
+    profile === "classic-v1"
+      ? env.DB.prepare(
+        `INSERT INTO directory_entries
+           (profile, server_id, name, players_count, version, text_comment,
+            hostname, port, quic_cert_sha256, password_required,
+            directory_fingerprint)
+         VALUES (?, ?, 'Directory test', 0, '4.0.0', '', NULL, NULL, ?, 0, ?)`,
+      ).bind(profile, serverId, serverId, "d".repeat(64))
+      : env.DB.prepare(
+        `INSERT INTO directory_entries
+           (profile, server_id, name, description, protocol_major,
+            protocol_minor, content_id, content_revision_sha256,
+            players_online, players_capacity, status, game_json_bytes, hostname, port,
+            quic_cert_sha256, password_required, directory_fingerprint)
+         VALUES (?, ?, 'Directory test', '', 1, 0, 'atrinik-main', ?,
+                 0, 64, 'online', 1, NULL, NULL, ?, 0, ?)`,
+      ).bind(profile, serverId, "e".repeat(64), serverId, "d".repeat(64)),
   ]);
 }
 

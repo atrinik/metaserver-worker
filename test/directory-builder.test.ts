@@ -688,18 +688,33 @@ describe("static directory builder", () => {
     }
   });
 
-  it("fails closed instead of projecting the not-yet-supported game model", async () => {
-    await persistRendezvousPublication(env.DB, {
-      ...publication("3".repeat(64), NOW, "e".repeat(64)),
-      directoryProfile: "game-v1",
-    });
+  it("projects the exact bounded game model from authoritative state", async () => {
+    const serverId = "3".repeat(64);
+    await persistRendezvousPublication(
+      env.DB,
+      gamePublication(serverId, NOW, "e".repeat(64)),
+    );
     await expect(reconcileWithoutPlatformAlarm(
       env.DIRECTORY_BUILDER.getByName("game-v1"),
-    ))
-      .rejects.toThrow("Game directory publication is not enabled");
-    expect((await env.GAME_DIRECTORY_PUBLIC.list()).objects).toEqual([]);
+    )).resolves.toMatchObject({ outcome: "published", revision: 1 });
+    const parsed = JSON.parse(
+      await (await env.GAME_DIRECTORY_PUBLIC.get("index.json"))!.text(),
+    ) as { readonly servers: readonly unknown[] };
+    expect(parsed.servers).toEqual([{
+      serverId,
+      certificateSha256: serverId,
+      name: "Game directory builder test",
+      description: "Static Game Protocol 1 listing",
+      region: "eu-west",
+      protocol: { major: 1, minor: 0 },
+      content: { id: "atrinik-main", revisionSha256: "7".repeat(64) },
+      players: { online: 3, capacity: 64 },
+      status: "online",
+      passwordRequired: false,
+      endpoint: { hostname: "play.example.org", port: 13_327 },
+    }]);
     expect((await readDirectoryArtifactPublication(env.DB, "game-v1"))
-      .generation).toBe(0);
+      .generation).toBe(1);
   });
 });
 
@@ -779,5 +794,42 @@ function publication(
     quicCertSha256: serverId,
     passwordRequired: false,
     directoryFingerprint: "9".repeat(64),
+  };
+}
+
+function gamePublication(
+  serverId: string,
+  now: number,
+  commitToken: string,
+): InternalRendezvousPublication {
+  return {
+    serverId,
+    directoryProfile: "game-v1",
+    publisherAuthentication: "signed-certificate-v1",
+    publisherSequence: "1",
+    publisherNonce: "2".repeat(32),
+    publisherNonceExpiresAt: now + 300,
+    commitToken,
+    expectedGeneration: null,
+    generation: "e".repeat(64),
+    tokenHash: "b".repeat(64),
+    now,
+    visibilityCutoff: now - 14_400,
+    name: "Game directory builder test",
+    description: "Static Game Protocol 1 listing",
+    region: "eu-west",
+    protocolMajor: 1,
+    protocolMinor: 0,
+    contentId: "atrinik-main",
+    contentRevisionSha256: "7".repeat(64),
+    playersOnline: 3,
+    playersCapacity: 64,
+    status: "online",
+    isPublic: true,
+    quicHost: "play.example.org",
+    quicPort: 13_327,
+    quicCertSha256: serverId,
+    passwordRequired: false,
+    directoryFingerprint: "8".repeat(64),
   };
 }

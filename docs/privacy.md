@@ -145,6 +145,16 @@ representation sizes, and SHA-256 values; they store no listing field or actor
 identifier. The D1 outbox coalesces transactionally to at most its newest row
 per profile because old revisions cannot reconstruct historical models.
 
+Migration `0007_game_publisher.sql` rebuilds the public table as two exact,
+profile-discriminated row shapes. A Game row retains only protocol-owned public
+aggregates, certificate identity, the password-required flag, an optional
+operator-published DNS endpoint, the directory fingerprint, and the exact
+derived canonical-JSON byte count used for the transactional aggregate limit.
+It never stores the certificate body, signature, source address, rendezvous
+token, candidate, or server-only runtime state. Game replay, request-budget,
+presence, room-generation, revision, and outbox state remain
+profile-qualified and cannot be consumed by classic publication.
+
 The profile-named builder Durable Object stores one version number, a
 generation high-water mark, an opaque bounded cleanup cursor, and at most one
 pending build containing a random local token, revision, generation, freshness

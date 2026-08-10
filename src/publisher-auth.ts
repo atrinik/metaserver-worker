@@ -1,8 +1,9 @@
-import { isDirectoryText } from "./directory-state";
+import { isDirectoryText, isGameDirectoryText } from "./directory-state";
 import { isCanonicalHostname } from "./hostname";
 import { HttpError } from "./http";
 
 export const CLASSIC_PUBLISH_SCHEMA = "atrinik-classic-publish-v1";
+export const GAME_PUBLISH_SCHEMA = "atrinik-game-publish-v1";
 export const CLASSIC_PUBLISH_SIGNATURE_TAG =
   "atrinik-classic-publish-v1";
 export const GAME_PUBLISH_SIGNATURE_TAG = "atrinik-game-publish-v1";
@@ -29,6 +30,9 @@ const TEXT_DECODER = new TextDecoder("utf-8", {
   ignoreBOM: true,
 });
 const UINT64_MAXIMUM = 18_446_744_073_709_551_615n;
+const REGION = /^[a-z0-9](?:[a-z0-9-]{0,30}[a-z0-9])?$/;
+const CONTENT_ID = /^[a-z0-9](?:[a-z0-9._-]{0,62}[a-z0-9])?$/;
+const DIGEST = /^[0-9a-f]{64}$/;
 
 export interface ClassicPublishPayload {
   readonly schema: typeof CLASSIC_PUBLISH_SCHEMA;
@@ -52,6 +56,42 @@ export interface AuthenticatedClassicPublish {
   readonly certificateDer: Uint8Array;
 }
 
+export interface GamePublishPayload {
+  readonly schema: typeof GAME_PUBLISH_SCHEMA;
+  readonly serverId: string;
+  readonly certificate: string;
+  readonly name: string;
+  readonly description: string;
+  readonly region?: string;
+  readonly protocol: {
+    readonly major: 1;
+    readonly minor: number;
+  };
+  readonly content: {
+    readonly id: string;
+    readonly revisionSha256: string;
+  };
+  readonly players: {
+    readonly online: number;
+    readonly capacity: number;
+  };
+  readonly status: "online" | "full" | "maintenance";
+  readonly public: boolean;
+  readonly passwordRequired: boolean;
+  readonly endpoint?: {
+    readonly hostname: string;
+    readonly port: number;
+  };
+}
+
+export interface AuthenticatedGamePublish {
+  readonly payload: GamePublishPayload;
+  readonly sequence: string;
+  readonly nonce: string;
+  readonly nonceExpiresAt: number;
+  readonly certificateDer: Uint8Array;
+}
+
 export async function authenticateClassicPublish(
   request: Request,
   body: Uint8Array,
@@ -60,6 +100,57 @@ export async function authenticateClassicPublish(
   now: number,
 ): Promise<AuthenticatedClassicPublish> {
   const payload = parseClassicPublishPayload(body);
+  return authenticateSignedPublish(
+    request,
+    body,
+    serverId,
+    authority,
+    now,
+    CLASSIC_PUBLISH_SIGNATURE_TAG,
+    `/v1/classic/servers/${serverId}/publish`,
+    payload,
+  );
+}
+
+export async function authenticateGamePublish(
+  request: Request,
+  body: Uint8Array,
+  serverId: string,
+  authority: string,
+  now: number,
+): Promise<AuthenticatedGamePublish> {
+  const payload = parseGamePublishPayload(body);
+  return authenticateSignedPublish(
+    request,
+    body,
+    serverId,
+    authority,
+    now,
+    GAME_PUBLISH_SIGNATURE_TAG,
+    `/v1/servers/${serverId}/publish`,
+    payload,
+  );
+}
+
+async function authenticateSignedPublish<Payload extends {
+  readonly serverId: string;
+  readonly certificate: string;
+}>(
+  request: Request,
+  body: Uint8Array,
+  serverId: string,
+  authority: string,
+  now: number,
+  signatureTag: string,
+  path: string,
+  payload: Payload,
+): Promise<{
+  readonly payload: Payload;
+  readonly sequence: string;
+  readonly nonce: string;
+  readonly nonceExpiresAt: number;
+  readonly certificateDer: Uint8Array;
+}> {
   if (payload.serverId !== serverId) {
     throw new HttpError("unauthorized");
   }
@@ -85,13 +176,12 @@ export async function authenticateClassicPublish(
   const signatureParameters = parseSignatureInput(
     requireHeader(request.headers, "Signature-Input"),
     serverId,
-    CLASSIC_PUBLISH_SIGNATURE_TAG,
+    signatureTag,
     now,
   );
   const signature = parseSignature(
     requireHeader(request.headers, "Signature"),
   );
-  const path = `/v1/classic/servers/${serverId}/publish`;
   if (new URL(request.url).pathname !== path) {
     throw new HttpError("unauthorized");
   }
@@ -297,7 +387,7 @@ function parseClassicPublishPayload(body: Uint8Array): ClassicPublishPayload {
     typeof parsed.serverId !== "string" ||
     !SERVER_ID.test(parsed.serverId) ||
     typeof parsed.certificate !== "string" ||
-    parsed.certificate.length > 2_736 ||
+    parsed.certificate.length > 2_732 ||
     !isDirectoryText(parsed.name, 80, false) ||
     !validUnsignedInteger(parsed.playersCount, 4_294_967_295) ||
     !isDirectoryText(parsed.version, 32, false) ||
@@ -322,6 +412,117 @@ function parseClassicPublishPayload(body: Uint8Array): ClassicPublishPayload {
     passwordRequired: parsed.passwordRequired,
     ...(hasHostname
       ? { hostname: parsed.hostname as string, port: parsed.port as number }
+      : {}),
+  };
+  if (JSON.stringify(payload) !== raw) {
+    throw new HttpError("bad_request");
+  }
+  return Object.freeze(payload);
+}
+
+function parseGamePublishPayload(body: Uint8Array): GamePublishPayload {
+  let raw: string;
+  let parsed: unknown;
+  try {
+    raw = TEXT_DECODER.decode(body);
+    parsed = JSON.parse(raw);
+  } catch {
+    throw new HttpError("bad_request");
+  }
+  if (!isRecord(parsed)) {
+    throw new HttpError("bad_request");
+  }
+  const hasRegion = Object.hasOwn(parsed, "region");
+  const hasEndpoint = Object.hasOwn(parsed, "endpoint");
+  const expectedKeys = [
+    "schema",
+    "serverId",
+    "certificate",
+    "name",
+    "description",
+    ...(hasRegion ? ["region"] : []),
+    "protocol",
+    "content",
+    "players",
+    "status",
+    "public",
+    "passwordRequired",
+    ...(hasEndpoint ? ["endpoint"] : []),
+  ];
+  if (
+    Object.keys(parsed).length !== expectedKeys.length ||
+    !expectedKeys.every((key) => Object.hasOwn(parsed, key)) ||
+    parsed.schema !== GAME_PUBLISH_SCHEMA ||
+    typeof parsed.serverId !== "string" ||
+    !SERVER_ID.test(parsed.serverId) ||
+    typeof parsed.certificate !== "string" ||
+    parsed.certificate.length > 2_732 ||
+    !isGameDirectoryText(parsed.name, 80, false) ||
+    !isGameDirectoryText(parsed.description, 512, true) ||
+    (hasRegion &&
+      (typeof parsed.region !== "string" || !REGION.test(parsed.region))) ||
+    !isRecord(parsed.protocol) ||
+    Object.keys(parsed.protocol).join(",") !== "major,minor" ||
+    parsed.protocol.major !== 1 ||
+    !validUnsignedInteger(parsed.protocol.minor, 65_535) ||
+    !isRecord(parsed.content) ||
+    Object.keys(parsed.content).join(",") !== "id,revisionSha256" ||
+    typeof parsed.content.id !== "string" ||
+    !CONTENT_ID.test(parsed.content.id) ||
+    typeof parsed.content.revisionSha256 !== "string" ||
+    !DIGEST.test(parsed.content.revisionSha256) ||
+    !isRecord(parsed.players) ||
+    Object.keys(parsed.players).join(",") !== "online,capacity" ||
+    !validUnsignedInteger(parsed.players.online, 100_000) ||
+    !validUnsignedInteger(parsed.players.capacity, 100_000, 1) ||
+    parsed.players.online > parsed.players.capacity ||
+    (parsed.status !== "online" &&
+      parsed.status !== "full" && parsed.status !== "maintenance") ||
+    (parsed.status === "online" &&
+      parsed.players.online >= parsed.players.capacity) ||
+    (parsed.status === "full" &&
+      parsed.players.online !== parsed.players.capacity) ||
+    (parsed.status === "maintenance" && parsed.players.online !== 0) ||
+    typeof parsed.public !== "boolean" ||
+    typeof parsed.passwordRequired !== "boolean" ||
+    (hasEndpoint &&
+      (!isRecord(parsed.endpoint) ||
+        Object.keys(parsed.endpoint).join(",") !== "hostname,port" ||
+        !isCanonicalHostname(parsed.endpoint.hostname) ||
+        !validUnsignedInteger(parsed.endpoint.port, 65_535, 1)))
+  ) {
+    throw new HttpError("bad_request");
+  }
+
+  const payload: GamePublishPayload = {
+    schema: GAME_PUBLISH_SCHEMA,
+    serverId: parsed.serverId,
+    certificate: parsed.certificate,
+    name: parsed.name,
+    description: parsed.description,
+    ...(hasRegion ? { region: parsed.region as string } : {}),
+    protocol: {
+      major: 1,
+      minor: parsed.protocol.minor,
+    },
+    content: {
+      id: parsed.content.id,
+      revisionSha256: parsed.content.revisionSha256,
+    },
+    players: {
+      online: parsed.players.online,
+      capacity: parsed.players.capacity,
+    },
+    status: parsed.status,
+    public: parsed.public,
+    passwordRequired: parsed.passwordRequired,
+    ...(hasEndpoint
+      ? {
+          endpoint: {
+            hostname: (parsed.endpoint as Record<string, unknown>).hostname as string,
+            port: (parsed.endpoint as Record<string, unknown>).port as number,
+          },
+        }
       : {}),
   };
   if (JSON.stringify(payload) !== raw) {

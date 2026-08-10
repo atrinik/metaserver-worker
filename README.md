@@ -215,9 +215,16 @@ backing presence expires on the same boundary. An artifact therefore never
 reveals the exact server heartbeat timestamp and never outlives its backing
 row.
 
-The Game Protocol 1 renderer consumes the frozen protocol schema and fixtures,
-but non-empty Game publication remains fail-closed until the authoritative Game
-publisher model lands. Classic protocol 4 is specified in
+The Game Protocol 1 publisher and renderer consume the frozen protocol schema
+and fixtures. Signed Game requests use a profile-specific replay/budget ledger,
+a profile-qualified publication room, and a public row whose constrained shape
+cannot be confused with classic metadata. Private Game requests retain only
+minimal presence and delete that row. D1 also accounts for the exact canonical
+JSON bytes of every public Game row and rejects an aggregate that cannot fit
+the 262,144-byte protocol artifact. The independent
+`GAME_PUBLISH_ENABLED` breaker still ships disabled, and the publisher remains
+domainless until the Go producer, Rust consumer, static-edge contract, and live
+canary gates land. Classic protocol 4 is specified in
 [docs/classic-directory-v4.md](docs/classic-directory-v4.md). Neither static
 authority is attached by this foundation change: direct-R2 cache, headers,
 CORS, CSP, purge/removal behavior, custom-domain isolation, and consumer

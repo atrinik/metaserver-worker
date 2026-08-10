@@ -45,13 +45,20 @@ function publisherEnvironment(
     GLOBAL_RATE_LIMITER: { limit } as RateLimit,
     PUBLISH_HOSTNAME: "publish.meta.atrinik.org",
     PUBLISH_ENABLED: "disabled",
+    GAME_PUBLISH_ENABLED: "disabled",
     ROUTE_DISABLED_RETRY_SECONDS: "300",
     SOURCE_TAG_KEY_CURRENT_ID: "2026-08-a",
     SOURCE_TAG_KEY_PREVIOUS_ID: "2026-07-a",
     SOURCE_TAG_KEY_CURRENT: CURRENT_SECRET,
     SOURCE_TAG_KEY_PREVIOUS: PREVIOUS_SECRET,
   } satisfies PublisherEnv;
-  return { env: override(base, { PUBLISH_ENABLED: "enabled" }), limit };
+  return {
+    env: override(base, {
+      PUBLISH_ENABLED: "enabled",
+      GAME_PUBLISH_ENABLED: "enabled",
+    }),
+    limit,
+  };
 }
 
 function rendezvousEnvironment(
@@ -107,6 +114,17 @@ function publisherRequest(
   return new Request(
     `https://${authority}/v1/classic/servers/${SERVER_ID}/publish`,
     { method: "POST", headers: requestHeaders, body: "{}" },
+  );
+}
+
+function gamePublisherRequest(): Request {
+  const headers = new Headers({
+    "CF-Connecting-IP": "192.0.2.42",
+    "Content-Type": "application/json",
+  });
+  return new Request(
+    `https://publish.meta.atrinik.org/v1/servers/${SERVER_ID}/publish`,
+    { method: "POST", headers, body: "{}" },
   );
 }
 
@@ -190,25 +208,23 @@ describe("publisher edge Worker", () => {
     expect(configured.limit).not.toHaveBeenCalled();
   });
 
-  it("keeps the reserved game publisher disabled before any admission work", async () => {
-    const fetch = vi.fn(async () => Response.json({}, {
-      headers: SAFE_DYNAMIC_HEADERS,
-    }));
+  it("gates Game publication with an independent circuit breaker", async () => {
+    const fetch = vi.fn(async () => publisherSuccess());
     const configured = publisherEnvironment(fetch);
-    const response = await publisherWorker.fetch(new Request(
-      `https://publish.meta.atrinik.org/v1/servers/${SERVER_ID}/publish`,
-      {
-        method: "POST",
-        headers: {
-          "CF-Connecting-IP": "192.0.2.42",
-          "Content-Type": "application/json",
-        },
-        body: "{}",
-      },
-    ), configured.env);
+    const disabled = override(configured.env, {
+      GAME_PUBLISH_ENABLED: "disabled",
+    });
+    const response = await publisherWorker.fetch(gamePublisherRequest(), disabled);
     expect(response.status).toBe(503);
     expect(fetch).not.toHaveBeenCalled();
     expect(configured.limit).not.toHaveBeenCalled();
+
+    expect((await publisherWorker.fetch(
+      gamePublisherRequest(),
+      configured.env,
+    )).status).toBe(200);
+    expect(fetch).toHaveBeenCalledTimes(1);
+    expect(configured.limit).toHaveBeenCalledTimes(2);
   });
 
   it("turns an unsafe coordinator response into a fixed error", async () => {
