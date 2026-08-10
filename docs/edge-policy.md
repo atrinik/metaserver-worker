@@ -91,7 +91,24 @@ integrity value, not an HTTP validator.
 Apply and fetch these rules through their owning Cloudflare ruleset phases,
 preserve unrelated rule ordering, and record only the rule IDs and reviewed
 expressions in the private deployment record. The isolated custom-domain
-canary in `DEPLOYMENT.md` is required before production attachment.
+canary in `DEPLOYMENT.md` is required before production attachment. Once an
+operator has applied the rules, run the repository's read-only verifier against
+each canary hostname:
+
+```sh
+python3 scripts/static_origin_canary.py \
+  --profile classic-v1 \
+  --base-url https://classic-directory-canary.example.org \
+  --json
+python3 scripts/static_origin_canary.py \
+  --profile game-v1 \
+  --base-url https://game-directory-canary.example.org \
+  --json
+```
+
+Substitute only the exact isolated hostnames from the reviewed deployment
+record. The script has no mutation path or Cloudflare credential input;
+resource creation, ruleset changes, and teardown remain separately authorized.
 
 Before attaching `meta.atrinik.org` to the temporary compatibility Worker,
 install a zone custom rule named

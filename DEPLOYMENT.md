@@ -528,17 +528,34 @@ evidence, not public-read atomicity.
     bucket to a canary-only custom domain and keep `r2.dev` disabled. Install
     the exact static-host allowlist, root redirect, Cache Everything, response
     header, and CORS rules from [docs/edge-policy.md](docs/edge-policy.md).
-    Verify `GET` and `HEAD` on every public alias, root's reviewed redirect,
-    and rejection of every query, write method, unknown path, immutable key,
-    and `/manifest.json`. For each `index.*` response, require the exact media
-    type, an opaque quoted strong `ETag` of 3 through 128 bytes, and
-    `Last-Modified` at or after that body's `generatedAt` and before its
-    `expiresAt`. The ETag must not be derived from the application SHA fixture.
-    A conditional request with that exact validator must return either the
-    byte-identical body or a bodyless `304`; a weak, cross-format, or stale
-    validator must not stand in for another representation. Fill the cache
-    shortly before expiry and prove its freshness does not extend past the
-    body's absolute expiry and no stale-if-error policy revives it.
+    Run the bounded credential-free verifier against both exact canary hosts:
+
+    ```sh
+    python3 scripts/static_origin_canary.py \
+      --profile classic-v1 \
+      --base-url https://classic-directory-canary.example.org \
+      --json
+    python3 scripts/static_origin_canary.py \
+      --profile game-v1 \
+      --base-url https://game-directory-canary.example.org \
+      --json
+    ```
+
+    Substitute the reviewed isolated hostnames; never copy these examples into
+    a production or unrelated zone. The verifier requires `GET` and `HEAD` on
+    every public alias, root's same-origin 308, rejection of queries, write
+    methods, unknown/encoded paths and `/manifest.json`, byte-bounded valid
+    bodies with the same generation and complete normalized server model, exact media/security/
+    cache/CORS headers, an opaque quoted strong `ETag` of 3 through 128 bytes,
+    and `Last-Modified` at or after that body's `generatedAt` and before its
+    `expiresAt`. It also requires bodyless validator-matched `304` responses,
+    prevents one validator from naming different representation bytes, and
+    permits only bounded monotonic adjacent-generation convergence. It accepts
+    no Cloudflare token and has no mutation path. Preserve its JSON summary in
+    the private release record, not the response bodies or validators. Then
+    fill the cache shortly before expiry and independently prove its freshness
+    does not extend past the body's absolute expiry and no stale-if-error policy
+    revives it; a single verifier run cannot simulate that passage of time.
 22. Publish one visible update and measure the interval from the D1 revision to
     all three aliases naming the new generation. Interrupt one alias write and
     prove reconciliation converges monotonically without any older alias
