@@ -3,7 +3,10 @@ import { describe, expect, it } from "vitest";
 import classicJsonFixture from "./fixtures/classic-directory-v4/index.json?raw";
 import classicXmlFixture from "./fixtures/classic-directory-v4/index.xml?raw";
 import gameJsonFixture from "./fixtures/game-directory-v1/canonical.json?raw";
+import invalidAlabelFixture from "./fixtures/game-directory-v1/negative-invalid-alabel.json?raw";
+import invalidXmlNoncharacterFixture from "./fixtures/game-directory-v1/negative-xml-noncharacter.json?raw";
 import gameXmlFixture from "./fixtures/game-directory-v1/projection.xml?raw";
+import protocolSource from "./fixtures/game-directory-v1/protocol-source.json";
 
 import {
   type ClassicDirectoryServer,
@@ -196,6 +199,44 @@ describe("static directory artifact rendering", () => {
       '"atrinik-directory-v1-sha256-' +
         '059f559d0fe439576cae10bd623eb79ab6dfd6d0a78420563730c07cf9727d78"',
     );
+  });
+
+  it("pins the selected producer fixtures to one reviewed protocol revision", async () => {
+    expect(protocolSource).toMatchObject({
+      repository: "atrinik/protocol",
+      commit: "80a808a77cf6256c1dad5579b682c4481d2fb3e3",
+      manifest: {
+        path: "fixtures/metaserver-directory-v1.json",
+        sha256: "6ed10efed4bc824bc240294d8321f66c640a7278b622eae77580551709217b52",
+      },
+    });
+    const selectedFixtures: Record<keyof typeof protocolSource.fixtures, string> = {
+      "canonical.json": gameJsonFixture,
+      "projection.xml": gameXmlFixture,
+      "negative-invalid-alabel.json": invalidAlabelFixture,
+      "negative-xml-noncharacter.json": invalidXmlNoncharacterFixture,
+    };
+    for (const [name, body] of Object.entries(selectedFixtures)) {
+      expect(await sha256Hex(new TextEncoder().encode(body)), name).toBe(
+        protocolSource.fixtures[name as keyof typeof protocolSource.fixtures],
+      );
+    }
+  });
+
+  it("rejects the pinned protocol scalar-negative conformance vectors", async () => {
+    const invalidAlabel = JSON.parse(invalidAlabelFixture) as {
+      servers: [{ endpoint: { hostname: string; port: number } }];
+    };
+    const invalidText = JSON.parse(invalidXmlNoncharacterFixture) as {
+      servers: [{ description: string }];
+    };
+
+    await expect(renderDirectoryArtifacts(gameSnapshot([
+      gameServer(ID_A, { endpoint: invalidAlabel.servers[0].endpoint }),
+    ]))).rejects.toThrow("Invalid directory artifact model");
+    await expect(renderDirectoryArtifacts(gameSnapshot([
+      gameServer(ID_A, { description: invalidText.servers[0].description }),
+    ]))).rejects.toThrow("Invalid directory artifact model");
   });
 
   it.each([

@@ -1,6 +1,9 @@
 import { describe, expect, it } from "vitest";
 
-import { isDirectoryText } from "../src/directory-state";
+import {
+  isDirectoryText,
+  isGameDirectoryText,
+} from "../src/directory-state";
 import {
   constantTimeEqual,
   deriveStoredKey,
@@ -139,6 +142,20 @@ describe("protocol helpers", () => {
       textComment: "Bienvenue — 游んでいって",
     });
     expect(isDirectoryText("unpaired\ud800surrogate", 80, false)).toBe(false);
+  });
+
+  it("applies the stricter Game Protocol 1 display-text scalar contract", () => {
+    for (const scalar of ["\u0085", "\u2028", "\u2029"]) {
+      expect(isDirectoryText(`before${scalar}after`, 80, false)).toBe(true);
+      expect(isGameDirectoryText(`before${scalar}after`, 80, false)).toBe(false);
+    }
+    for (const scalar of ["\ufffe", "\uffff"]) {
+      expect(isDirectoryText(`before${scalar}after`, 80, false)).toBe(false);
+      expect(isGameDirectoryText(`before${scalar}after`, 80, false)).toBe(false);
+    }
+    expect(isGameDirectoryText("Café 🐉", 80, false)).toBe(true);
+    expect(isGameDirectoryText("😀".repeat(21), 80, false)).toBe(false);
+    expect(isGameDirectoryText("unpaired\udfff", 80, false)).toBe(false);
   });
 
   it("rejects duplicate required and optional update fields", () => {
