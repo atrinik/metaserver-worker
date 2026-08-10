@@ -20,6 +20,9 @@ DIRECTORY_STATE_MIGRATION = (
 DIRECTORY_ARTIFACTS_MIGRATION = (
     REPOSITORY_ROOT / "migrations" / "0006_directory_artifacts.sql"
 )
+GAME_PUBLISHER_MIGRATION = (
+    REPOSITORY_ROOT / "migrations" / "0007_game_publisher.sql"
+)
 
 
 class RequestControlMigrationTests(unittest.TestCase):
@@ -638,7 +641,10 @@ class DirectoryStateMigrationTests(unittest.TestCase):
             ).fetchall(),
             nonces_before,
         )
-        self.assertEqual(self.database.execute("PRAGMA foreign_key_check").fetchall(), [])
+        self.assertEqual(
+            self.database.execute("PRAGMA foreign_key_check").fetchall(),
+            [],
+        )
 
     def test_private_only_upgrade_retains_minimal_revision_neutral_presence(self) -> None:
         private_id = "2" * 64
@@ -1194,6 +1200,193 @@ class DirectoryArtifactsMigrationTests(unittest.TestCase):
             ).fetchall(),
             [(generation,) for generation in range(1, 9)],
         )
+
+
+class GamePublisherMigrationTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.database = sqlite3.connect(":memory:")
+        self.addCleanup(self.database.close)
+        for migration in (
+            INITIAL_MIGRATION,
+            REQUEST_CONTROL_MIGRATION,
+            RENDEZVOUS_GENERATION_MIGRATION,
+            SIGNED_PUBLISHER_MIGRATION,
+            DIRECTORY_STATE_MIGRATION,
+            DIRECTORY_ARTIFACTS_MIGRATION,
+        ):
+            self.database.executescript(migration.read_text(encoding="utf-8"))
+
+    def test_preserves_classic_rows_and_adds_disjoint_game_shape(self) -> None:
+        classic_id = "1" * 64
+        game_id = "2" * 64
+        for server_id in (classic_id, game_id):
+            self.database.execute(
+                "INSERT INTO server_owners "
+                "(server_id, auth_key, current_ip, ip_changed_at, created_at, "
+                "updated_at, rendezvous_generation, authentication_kind) "
+                "VALUES (?, ?, '', 0, 1, 1, ?, 'signed-certificate-v1')",
+                (server_id, "0" * 128, "0" * 64),
+            )
+        self.database.execute(
+            "INSERT INTO server_presence "
+            "(profile, server_id, last_seen, rendezvous_token_hash, "
+            "rendezvous_generation) VALUES "
+            "('classic-v1', ?, 1, ?, ?), ('game-v1', ?, 1, ?, ?)",
+            (classic_id, "a" * 64, "b" * 64, game_id, "c" * 64, "d" * 64),
+        )
+        self.database.execute(
+            "INSERT INTO directory_entries "
+            "(profile, server_id, name, players_count, version, text_comment, "
+            "hostname, port, quic_cert_sha256, password_required, "
+            "directory_fingerprint) VALUES "
+            "('classic-v1', ?, 'Classic', 7, '4.0', '', NULL, NULL, ?, 0, ?)",
+            (classic_id, classic_id, "e" * 64),
+        )
+        self.database.execute(
+            "INSERT INTO request_budgets "
+            "(actor_key, scope, window_start, request_count, expires_at) "
+            "VALUES (?, 'publish-server', 0, 1, 60)",
+            (classic_id,),
+        )
+
+        self.database.executescript(
+            GAME_PUBLISHER_MIGRATION.read_text(encoding="utf-8")
+        )
+        self.assertEqual(self.database.execute("PRAGMA foreign_key_check").fetchall(), [])
+
+        self.assertEqual(
+            self.database.execute(
+                "SELECT profile, server_id, name, players_count, version, "
+                "text_comment, description, region, protocol_major, "
+                "protocol_minor, content_id, content_revision_sha256, "
+                "players_online, players_capacity, status, game_json_bytes, "
+                "hostname, port, quic_cert_sha256, password_required, "
+                "directory_fingerprint FROM directory_entries"
+            ).fetchall(),
+            [(
+                "classic-v1",
+                classic_id,
+                "Classic",
+                7,
+                "4.0",
+                "",
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
+                classic_id,
+                0,
+                "e" * 64,
+            )],
+        )
+        self.database.execute(
+            "INSERT INTO directory_entries "
+            "(profile, server_id, name, description, region, protocol_major, "
+            "protocol_minor, content_id, content_revision_sha256, "
+            "players_online, players_capacity, status, game_json_bytes, hostname, port, "
+            "quic_cert_sha256, password_required, directory_fingerprint) "
+            "VALUES ('game-v1', ?, 'Game', 'Description', 'eu-west', 1, 0, "
+            "'atrinik-main', ?, 3, 64, 'online', 512, 'play.example.org', 13327, "
+            "?, 0, ?)",
+            (game_id, "f" * 64, game_id, "1" * 64),
+        )
+        self.database.execute(
+            "INSERT INTO request_budgets "
+            "(actor_key, scope, window_start, request_count, expires_at) "
+            "VALUES (?, 'publish-game-server', 0, 1, 60)",
+            (game_id,),
+        )
+        self.assertEqual(
+            self.database.execute(
+                "SELECT players_online, players_capacity, status, game_json_bytes "
+                "FROM directory_entries WHERE profile = 'game-v1'"
+            ).fetchone(),
+            (3, 64, "online", 512),
+        )
+        self.assertEqual(
+            self.database.execute(
+                "SELECT scope FROM request_budgets ORDER BY scope"
+            ).fetchall(),
+            [("publish-game-server",), ("publish-server",)],
+        )
+
+        self.database.execute(
+            "UPDATE directory_entries SET game_json_bytes = 262005 "
+            "WHERE profile = 'game-v1' AND server_id = ?",
+            (game_id,),
+        )
+        overflow_id = "4" * 64
+        self.database.execute(
+            "INSERT INTO server_owners "
+            "(server_id, auth_key, current_ip, ip_changed_at, created_at, "
+            "updated_at, rendezvous_generation, authentication_kind) "
+            "VALUES (?, ?, '', 0, 1, 1, ?, 'signed-certificate-v1')",
+            (overflow_id, "0" * 128, "0" * 64),
+        )
+        self.database.execute(
+            "INSERT INTO server_presence "
+            "(profile, server_id, last_seen, rendezvous_token_hash, "
+            "rendezvous_generation) VALUES ('game-v1', ?, 1, ?, ?)",
+            (overflow_id, "2" * 64, "3" * 64),
+        )
+        with self.assertRaisesRegex(
+            sqlite3.IntegrityError,
+            "game directory JSON budget exceeded",
+        ):
+            self.database.execute(
+                "INSERT INTO directory_entries "
+                "(profile, server_id, name, description, protocol_major, "
+                "protocol_minor, content_id, content_revision_sha256, "
+                "players_online, players_capacity, status, game_json_bytes, "
+                "quic_cert_sha256, password_required, directory_fingerprint) "
+                "VALUES ('game-v1', ?, 'Overflow', '', 1, 0, 'atrinik-main', "
+                "?, 0, 64, 'online', 1, ?, 0, ?)",
+                (overflow_id, "4" * 64, overflow_id, "5" * 64),
+            )
+
+    def test_profile_shapes_and_game_relationships_fail_closed(self) -> None:
+        server_id = "3" * 64
+        self.database.execute(
+            "INSERT INTO server_owners "
+            "(server_id, auth_key, current_ip, ip_changed_at, created_at, "
+            "updated_at, rendezvous_generation, authentication_kind) "
+            "VALUES (?, ?, '', 0, 1, 1, ?, 'signed-certificate-v1')",
+            (server_id, "0" * 128, "0" * 64),
+        )
+        self.database.execute(
+            "INSERT INTO server_presence "
+            "(profile, server_id, last_seen, rendezvous_token_hash, "
+            "rendezvous_generation) VALUES ('game-v1', ?, 1, ?, ?)",
+            (server_id, "a" * 64, "b" * 64),
+        )
+        self.database.executescript(
+            GAME_PUBLISHER_MIGRATION.read_text(encoding="utf-8")
+        )
+        statement = (
+            "INSERT INTO directory_entries "
+            "(profile, server_id, name, description, protocol_major, "
+            "protocol_minor, content_id, content_revision_sha256, "
+            "players_online, players_capacity, status, game_json_bytes, quic_cert_sha256, "
+            "password_required, directory_fingerprint) VALUES "
+            "('game-v1', ?, 'Game', '', 1, 0, 'atrinik-main', ?, ?, 64, ?, 512, "
+            "?, 0, ?)"
+        )
+        for online, status in ((64, "online"), (63, "full"), (1, "maintenance")):
+            with self.subTest(online=online, status=status), self.assertRaises(
+                sqlite3.IntegrityError
+            ):
+                self.database.execute(
+                    statement,
+                    (server_id, "c" * 64, online, status, server_id, "d" * 64),
+                )
 
 
 if __name__ == "__main__":

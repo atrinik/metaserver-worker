@@ -59,6 +59,7 @@ import {
 } from "./protocol";
 import {
   authenticateClassicPublish,
+  authenticateGamePublish,
   isValidPublisherSequence,
   readBoundedPublishBody,
 } from "./publisher-auth";
@@ -296,21 +297,16 @@ export async function handlePublisherCoordinatorRequest(
       control.authority,
     );
     diagnosticRoute = canonicalRouteDiagnosticName(route);
-    if (route.generation !== "classic") {
-      throw new HttpError("service_disabled", { retryAfterSeconds: 300 });
-    }
     enforceCircuitBreaker(
-      env.PUBLISH_ENABLED,
+      route.generation === "classic"
+        ? env.PUBLISH_ENABLED
+        : env.GAME_PUBLISH_ENABLED,
       control.routeDisabledRetrySeconds,
     );
-    return await publishClassicServer(
-      internal,
-      env,
-      route,
-      control,
-      Math.floor(Date.now() / 1_000),
-      ctx,
-    );
+    const now = Math.floor(Date.now() / 1_000);
+    return route.generation === "classic"
+      ? await publishClassicServer(internal, env, route, control, now, ctx)
+      : await publishGameServer(internal, env, route, control, now, ctx);
   } catch (error) {
     return handleRequestError(error, diagnosticRoute, "coordinator");
   }
@@ -922,6 +918,7 @@ async function publishClassicServer(
     route.serverId,
     control.publishServerDaily,
     now,
+    "classic-v1",
   );
   await enforceServerIdentityBlacklist(env, route.serverId);
 
@@ -998,11 +995,122 @@ async function publishClassicServer(
   );
 }
 
+async function publishGameServer(
+  request: Request,
+  env: CoreEnv,
+  route: Extract<CanonicalDynamicRoute, { kind: "publish" }>,
+  control: PublisherCoordinatorConfiguration,
+  now: number,
+  ctx: ExecutionContext,
+): Promise<Response> {
+  const body = await readBoundedPublishBody(request, route.maximumBodyBytes);
+  const authenticated = await authenticateGamePublish(
+    request,
+    body,
+    route.serverId,
+    route.authority,
+    now,
+  );
+  await enforceAuthenticatedPublishBudget(
+    env,
+    route.serverId,
+    control.publishServerDaily,
+    now,
+    "game-v1",
+  );
+  await enforceServerIdentityBlacklist(env, route.serverId);
+
+  const payload = authenticated.payload;
+  const rendezvousToken = randomToken();
+  const publication = {
+    serverId: route.serverId,
+    directoryProfile: "game-v1",
+    publisherAuthentication: "signed-certificate-v1",
+    publisherSequence: authenticated.sequence,
+    publisherNonce: authenticated.nonce,
+    publisherNonceExpiresAt: authenticated.nonceExpiresAt,
+    commitToken: randomToken(),
+    expectedGeneration: await readPublishedGeneration(
+      env.DB,
+      "game-v1",
+      route.serverId,
+    ),
+    generation: randomToken(),
+    tokenHash: await sha256Hex(rendezvousToken),
+    now,
+    visibilityCutoff: now - control.listingTtlSeconds,
+    name: payload.name,
+    description: payload.description,
+    region: payload.region ?? null,
+    protocolMajor: 1,
+    protocolMinor: payload.protocol.minor,
+    contentId: payload.content.id,
+    contentRevisionSha256: payload.content.revisionSha256,
+    playersOnline: payload.players.online,
+    playersCapacity: payload.players.capacity,
+    status: payload.status,
+    isPublic: payload.public,
+    quicHost: payload.endpoint?.hostname ?? "",
+    quicPort: payload.endpoint?.port ?? 1,
+    quicCertSha256: route.serverId,
+    passwordRequired: payload.passwordRequired,
+    directoryFingerprint: await gameDirectoryFingerprint({
+      serverId: route.serverId,
+      name: payload.name,
+      description: payload.description,
+      region: payload.region ?? null,
+      protocolMinor: payload.protocol.minor,
+      contentId: payload.content.id,
+      contentRevisionSha256: payload.content.revisionSha256,
+      playersOnline: payload.players.online,
+      playersCapacity: payload.players.capacity,
+      status: payload.status,
+      quicHost: payload.endpoint?.hostname ?? "",
+      quicPort: payload.endpoint?.port ?? 1,
+      passwordRequired: payload.passwordRequired,
+    }),
+  } satisfies InternalRendezvousPublication;
+  const committed = await commitRendezvousPublication(env, publication);
+  if (committed.status === 409) {
+    const conflict = await readPublishReplayConflict(committed);
+    if (conflict !== null) {
+      return Response.json(
+        { error: conflict },
+        {
+          status: 409,
+          headers: {
+            "Cache-Control": "no-store",
+            "X-Content-Type-Options": "nosniff",
+          },
+        },
+      );
+    }
+    throw new HttpError("service_disabled", { retryAfterSeconds: 5 });
+  }
+  if (committed.status !== 204) {
+    await committed.body?.cancel();
+    throw new Error("Game publication did not commit");
+  }
+  scheduleDirectoryReconciliation(env, ctx, committed, "game-v1");
+  return Response.json(
+    { status: "ok", rendezvousToken },
+    {
+      headers: {
+        "Cache-Control": "no-store",
+        "X-Content-Type-Options": "nosniff",
+      },
+    },
+  );
+}
+
 async function commitRendezvousPublication(
   env: CoreEnv,
   publication: InternalRendezvousPublication,
 ): Promise<Response> {
-  return env.RENDEZVOUS.getByName(publication.serverId).fetch(
+  const roomName = publication.directoryProfile === "classic-v1"
+    ? publication.serverId
+    : `game-v1:${publication.serverId}`;
+  return env.RENDEZVOUS.getByName(roomName).fetch(
     new Request(INTERNAL_RENDEZVOUS_PUBLISH_URL, {
       method: "POST",
       headers: {
@@ -1081,6 +1189,22 @@ interface ClassicDirectoryFingerprintInput {
   readonly passwordRequired: boolean;
 }
 
+interface GameDirectoryFingerprintInput {
+  readonly serverId: string;
+  readonly name: string;
+  readonly description: string;
+  readonly region: string | null;
+  readonly protocolMinor: number;
+  readonly contentId: string;
+  readonly contentRevisionSha256: string;
+  readonly playersOnline: number;
+  readonly playersCapacity: number;
+  readonly status: "online" | "full" | "maintenance";
+  readonly quicHost: string;
+  readonly quicPort: number;
+  readonly passwordRequired: boolean;
+}
+
 async function classicDirectoryFingerprint(
   input: ClassicDirectoryFingerprintInput,
 ): Promise<string> {
@@ -1096,6 +1220,33 @@ async function classicDirectoryFingerprint(
     ...(input.quicHost === ""
       ? {}
       : { hostname: input.quicHost, port: input.quicPort }),
+  }));
+}
+
+async function gameDirectoryFingerprint(
+  input: GameDirectoryFingerprintInput,
+): Promise<string> {
+  return sha256Hex(JSON.stringify({
+    schema: "atrinik-game-directory-entry-v1",
+    serverId: input.serverId,
+    certificateSha256: input.serverId,
+    name: input.name,
+    description: input.description,
+    ...(input.region === null ? {} : { region: input.region }),
+    protocol: { major: 1, minor: input.protocolMinor },
+    content: {
+      id: input.contentId,
+      revisionSha256: input.contentRevisionSha256,
+    },
+    players: {
+      online: input.playersOnline,
+      capacity: input.playersCapacity,
+    },
+    status: input.status,
+    passwordRequired: input.passwordRequired,
+    ...(input.quicHost === ""
+      ? {}
+      : { endpoint: { hostname: input.quicHost, port: input.quicPort } }),
   }));
 }
 
@@ -1124,15 +1275,19 @@ async function enforceAuthenticatedPublishBudget(
   serverId: string,
   dailyLimit: number,
   now: number,
+  profile: "classic-v1" | "game-v1",
 ): Promise<void> {
+  const scope = profile === "classic-v1"
+    ? "publish-server"
+    : "publish-game-server";
   await enforceNativeBurst(
     env.PUBLISH_IDENTITY_RATE_LIMITER,
     serverId,
-    "publish-server",
+    scope,
   );
   await consumeFixedWindowBudget(env.DB, {
     actorKey: serverId,
-    scope: "publish-server",
+    scope,
     limit: dailyLimit,
     now,
     window: utcDayWindow(now),

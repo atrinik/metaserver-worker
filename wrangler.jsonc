@@ -145,6 +145,7 @@
     "COMPAT_OTP_ENABLED": "enabled",
     "COMPAT_UPDATE_ENABLED": "enabled",
     "PUBLISH_ENABLED": "disabled",
+    "GAME_PUBLISH_ENABLED": "disabled",
     "RENDEZVOUS_ENABLED": "disabled",
     "COMPAT_RENDEZVOUS_ENABLED": "enabled",
     "SOURCE_TAG_KEY_CURRENT_ID": "2026-08-a",

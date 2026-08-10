@@ -1,4 +1,5 @@
 import type { DirectoryProfile } from "./directory-state";
+import { gameDirectoryServerJsonByteLength } from "./directory-artifacts";
 import type { InternalRendezvousPublication } from "./rendezvous-contract";
 
 interface PublishedGenerationRecord {
@@ -361,6 +362,59 @@ function directoryEntryMutation(
       ...publicationPresenceBindings(publication),
     );
   }
+  if (publication.directoryProfile === "game-v1") {
+    const gameJsonBytes = gamePublicationJsonByteLength(publication);
+    return db.prepare(
+      `INSERT INTO directory_entries
+         (profile, server_id, name, players_count, version, text_comment,
+          description, region, protocol_major, protocol_minor, content_id,
+          content_revision_sha256, players_online, players_capacity, status,
+          game_json_bytes, hostname, port, quic_cert_sha256, password_required,
+          directory_fingerprint)
+       SELECT ?, ?, ?, NULL, NULL, NULL, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
+        WHERE ${publicationPresenceGuard()}
+       ON CONFLICT(profile, server_id) DO UPDATE SET
+         name = excluded.name,
+         players_count = NULL,
+         version = NULL,
+         text_comment = NULL,
+         description = excluded.description,
+         region = excluded.region,
+         protocol_major = excluded.protocol_major,
+         protocol_minor = excluded.protocol_minor,
+         content_id = excluded.content_id,
+         content_revision_sha256 = excluded.content_revision_sha256,
+         players_online = excluded.players_online,
+         players_capacity = excluded.players_capacity,
+         status = excluded.status,
+         game_json_bytes = excluded.game_json_bytes,
+         hostname = excluded.hostname,
+         port = excluded.port,
+         quic_cert_sha256 = excluded.quic_cert_sha256,
+         password_required = excluded.password_required,
+         directory_fingerprint = excluded.directory_fingerprint`,
+    ).bind(
+      publication.directoryProfile,
+      publication.serverId,
+      publication.name,
+      publication.description,
+      publication.region,
+      publication.protocolMajor,
+      publication.protocolMinor,
+      publication.contentId,
+      publication.contentRevisionSha256,
+      publication.playersOnline,
+      publication.playersCapacity,
+      publication.status,
+      gameJsonBytes,
+      publication.quicHost === "" ? null : publication.quicHost,
+      publication.quicHost === "" ? null : publication.quicPort,
+      publication.quicCertSha256,
+      publication.passwordRequired ? 1 : 0,
+      publication.directoryFingerprint,
+      ...publicationPresenceBindings(publication),
+    );
+  }
   return db.prepare(
     `INSERT INTO directory_entries
        (profile, server_id, name, players_count, version, text_comment,
@@ -716,6 +770,49 @@ function publicationEntryPredicate(
       bindings: [publication.directoryProfile, publication.serverId],
     };
   }
+  if (publication.directoryProfile === "game-v1") {
+    const gameJsonBytes = gamePublicationJsonByteLength(publication);
+    return {
+      sql: `EXISTS (
+        SELECT 1 FROM directory_entries AS entries
+         WHERE entries.profile = ? AND entries.server_id = ?
+           AND entries.name = ?
+           AND entries.players_count IS NULL AND entries.version IS NULL
+           AND entries.text_comment IS NULL
+           AND entries.description = ? AND entries.region IS ?
+           AND entries.protocol_major = ? AND entries.protocol_minor = ?
+           AND entries.content_id = ?
+           AND entries.content_revision_sha256 = ?
+           AND entries.players_online = ? AND entries.players_capacity = ?
+           AND entries.status = ?
+           AND entries.game_json_bytes = ?
+           AND entries.hostname IS ? AND entries.port IS ?
+           AND entries.quic_cert_sha256 = ?
+           AND entries.password_required = ?
+           AND entries.directory_fingerprint = ?
+      )`,
+      bindings: [
+        publication.directoryProfile,
+        publication.serverId,
+        publication.name,
+        publication.description,
+        publication.region,
+        publication.protocolMajor,
+        publication.protocolMinor,
+        publication.contentId,
+        publication.contentRevisionSha256,
+        publication.playersOnline,
+        publication.playersCapacity,
+        publication.status,
+        gameJsonBytes,
+        publication.quicHost === "" ? null : publication.quicHost,
+        publication.quicHost === "" ? null : publication.quicPort,
+        publication.quicCertSha256,
+        publication.passwordRequired ? 1 : 0,
+        publication.directoryFingerprint,
+      ],
+    };
+  }
   return {
     sql: `EXISTS (
       SELECT 1 FROM directory_entries AS entries
@@ -741,6 +838,40 @@ function publicationEntryPredicate(
       publication.directoryFingerprint,
     ],
   };
+}
+
+function gamePublicationJsonByteLength(
+  publication: Extract<
+    InternalRendezvousPublication,
+    { directoryProfile: "game-v1" }
+  >,
+): number {
+  return gameDirectoryServerJsonByteLength({
+    serverId: publication.serverId,
+    certificateSha256: publication.quicCertSha256,
+    name: publication.name,
+    description: publication.description,
+    ...(publication.region === null ? {} : { region: publication.region }),
+    protocol: { major: 1, minor: publication.protocolMinor },
+    content: {
+      id: publication.contentId,
+      revisionSha256: publication.contentRevisionSha256,
+    },
+    players: {
+      online: publication.playersOnline,
+      capacity: publication.playersCapacity,
+    },
+    status: publication.status,
+    passwordRequired: publication.passwordRequired,
+    ...(publication.quicHost === ""
+      ? {}
+      : {
+        endpoint: {
+          hostname: publication.quicHost,
+          port: publication.quicPort,
+        },
+      }),
+  });
 }
 
 function publicationLegacyPredicate(

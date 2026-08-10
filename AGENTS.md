@@ -27,10 +27,14 @@
 - Production state exists. `migrations/0001_initial.sql` is applied history:
   never rewrite, reorder, or reuse it. Add every schema transition as a new,
   ordered migration and test the complete populated-schema upgrade path.
-- Treat `server_presence` plus `directory_entries` as authoritative,
-  profile-scoped publication state. Presence retains only the accepted
-  rendezvous verifier, generation, and last-seen time for both public and
-  private publishers; `directory_entries` alone is public. Visible expiry must
+- Treat `server_presence` plus the profile-discriminated `directory_entries`
+  as authoritative, profile-scoped publication state. Presence retains only
+  the accepted rendezvous verifier, generation, and last-seen time for both public and
+  private publishers; `directory_entries` alone is public. Classic and Game
+  rows have disjoint constrained shapes and must never use sentinel fields to
+  imitate the other profile. Game rows additionally retain the exact derived
+  canonical-JSON byte count so D1 can reject an over-limit aggregate before it
+  becomes authoritative. Visible expiry must
   advance `directory_revisions` and `directory_outbox` atomically before
   removing expired entries; stale private presence is revision-neutral.
 - Treat D1 revision/outbox as the static-directory authority and the

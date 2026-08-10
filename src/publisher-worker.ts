@@ -1,6 +1,6 @@
 import { publisherEdgeConfiguration } from "./config";
 import type { DiagnosticRoute } from "./diagnostics";
-import { enforceCircuitBreaker, HttpError } from "./http";
+import { enforceCircuitBreaker } from "./http";
 import {
   actorAliases,
   assertNoInternalServiceHeaders,
@@ -31,13 +31,12 @@ export default {
       diagnosticRoute = route.generation === "classic"
         ? "publish-classic"
         : "publish-game";
-      if (route.generation !== "classic") {
-        throw new HttpError("service_disabled", { retryAfterSeconds: 300 });
-      }
       assertNoInternalServiceHeaders(request.headers);
 
       enforceCircuitBreaker(
-        env.PUBLISH_ENABLED,
+        route.generation === "classic"
+          ? env.PUBLISH_ENABLED
+          : env.GAME_PUBLISH_ENABLED,
         control.routeDisabledRetrySeconds,
       );
       const privacy = createRequestPrivacyContext(request, {

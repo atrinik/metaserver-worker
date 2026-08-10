@@ -12,6 +12,12 @@ export const MAX_CLASSIC_DIRECTORY_ARTIFACT_BYTES = 4 * 1024 * 1024;
 export const MAX_GAME_DIRECTORY_JSON_BYTES = 262_144;
 export const MAX_GAME_DIRECTORY_PROJECTION_BYTES = 4 * 1024 * 1024;
 export const MAX_DIRECTORY_LIFETIME_SECONDS = 14_400;
+// The maximum-size canonical envelope with an empty server array is 139 bytes.
+// Reserving that full amount (rather than subtracting the two array brackets)
+// leaves a small fail-closed margin while D1 accounts for server objects and
+// their separating commas.
+export const MAX_GAME_DIRECTORY_JSON_SERVER_SET_BYTES =
+  MAX_GAME_DIRECTORY_JSON_BYTES - 139;
 
 const MAX_DIRECTORY_TIMESTAMP = 253_402_300_799;
 const MAX_CLASSIC_PLAYERS = 4_294_967_295;
@@ -147,6 +153,19 @@ export async function renderDirectoryArtifacts(
     serverCount: canonical.servers.length,
     artifacts: { html, xml, json },
   };
+}
+
+/**
+ * Return the exact UTF-8 byte length contributed by one canonical Game v1
+ * server object. Publication persists this derived value so D1 can enforce the
+ * complete-snapshot limit atomically across independently publishing servers.
+ */
+export function gameDirectoryServerJsonByteLength(
+  server: GameDirectoryServer,
+): number {
+  const canonical = canonicalizeGameServer(server, 0);
+  return TEXT_ENCODER.encode(JSON.stringify(gameJsonServer(canonical)))
+    .byteLength;
 }
 
 function canonicalizeSnapshot(snapshot: DirectorySnapshot): DirectorySnapshot {
@@ -443,22 +462,26 @@ function renderGameJson(snapshot: GameDirectorySnapshot): string {
     generation: snapshot.generation,
     generatedAt: String(snapshot.generatedAt),
     expiresAt: String(snapshot.expiresAt),
-    servers: snapshot.servers.map((server) => ({
-      serverId: server.serverId,
-      certificateSha256: server.certificateSha256,
-      name: server.name,
-      description: server.description,
-      ...(server.region === undefined ? {} : { region: server.region }),
-      protocol: { ...server.protocol },
-      content: { ...server.content },
-      players: { ...server.players },
-      status: server.status,
-      passwordRequired: server.passwordRequired,
-      ...(server.endpoint === undefined
-        ? {}
-        : { endpoint: { ...server.endpoint } }),
-    })),
+    servers: snapshot.servers.map(gameJsonServer),
   }) + "\n";
+}
+
+function gameJsonServer(server: GameDirectoryServer): object {
+  return {
+    serverId: server.serverId,
+    certificateSha256: server.certificateSha256,
+    name: server.name,
+    description: server.description,
+    ...(server.region === undefined ? {} : { region: server.region }),
+    protocol: { ...server.protocol },
+    content: { ...server.content },
+    players: { ...server.players },
+    status: server.status,
+    passwordRequired: server.passwordRequired,
+    ...(server.endpoint === undefined
+      ? {}
+      : { endpoint: { ...server.endpoint } }),
+  };
 }
 
 function renderClassicXml(snapshot: ClassicDirectorySnapshot): string {

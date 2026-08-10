@@ -8,9 +8,11 @@ import {
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import worker, { handlePublisherCoordinatorRequest } from "../src/index";
+import { gameDirectoryServerJsonByteLength } from "../src/directory-artifacts";
 import { publisherServiceRequest } from "../src/internal-service";
 import { sha256Hex } from "../src/protocol";
 import publisherFixture from "./fixtures/metaserver-publisher-v1.json";
+import gamePublisherFixture from "./fixtures/metaserver-game-publisher-v1.json";
 
 interface SignedVector {
   readonly body: string;
@@ -58,6 +60,25 @@ function publishRequest(vector: SignedVector): Request {
   });
 }
 
+function gamePublishRequest(): Request {
+  return new Request(
+    `https://${gamePublisherFixture.authority}${gamePublisherFixture.path}`,
+    {
+      method: "POST",
+      headers: {
+        "Atrinik-Publish-Sequence": gamePublisherFixture.sequence,
+        "Atrinik-Server-ID": gamePublisherFixture.server_id,
+        "CF-Connecting-IP": "198.51.100.81",
+        "Content-Digest": gamePublisherFixture.content_digest,
+        "Content-Type": gamePublisherFixture.content_type,
+        "Signature": gamePublisherFixture.signature_header,
+        "Signature-Input": gamePublisherFixture.signature_input,
+      },
+      body: gamePublisherFixture.body,
+    },
+  );
+}
+
 async function callWorker(
   request: Request,
   workerEnv: Env = env,
@@ -92,7 +113,10 @@ function testEnvironment(options: {
       if (property === "PUBLISH_IDENTITY_RATE_LIMITER") {
         return options.publishLimiter ?? publish;
       }
-      if (property === "PUBLISH_ENABLED") {
+      if (
+        property === "PUBLISH_ENABLED" ||
+        property === "GAME_PUBLISH_ENABLED"
+      ) {
         return "enabled";
       }
       return Reflect.get(target, property, receiver);
@@ -126,6 +150,13 @@ beforeEach(async () => {
     await state.storage.deleteAll();
   });
   await evictDurableObject(stub);
+  const gameStub = env.RENDEZVOUS.getByName(
+    `game-v1:${gamePublisherFixture.server_id}`,
+  );
+  await runInDurableObject(gameStub, async (_instance, state) => {
+    await state.storage.deleteAll();
+  });
+  await evictDurableObject(gameStub);
   await env.DB.batch([
     env.DB.prepare("DELETE FROM directory_artifact_history"),
     env.DB.prepare("DELETE FROM directory_artifact_commits"),
@@ -485,6 +516,127 @@ describe("classic signed publisher", () => {
   });
 });
 
+describe("Game Protocol 1 signed publisher", () => {
+  it("fails closed at the coordinator while only the Game breaker is disabled", async () => {
+    const enabled = testEnvironment();
+    const gameDisabled = new Proxy(enabled, {
+      get(target, property, receiver) {
+        if (property === "GAME_PUBLISH_ENABLED") {
+          return "disabled";
+        }
+        return Reflect.get(target, property, receiver);
+      },
+    });
+    const response = await callWorker(gamePublishRequest(), gameDisabled);
+    expect(response.status).toBe(503);
+    expect(response.headers.get("Retry-After")).toBe("300");
+    expect(await env.DB.prepare(
+      "SELECT COUNT(*) AS count FROM request_budgets",
+    ).first<number>("count")).toBe(0);
+    expect(await env.DB.prepare(
+      "SELECT COUNT(*) AS count FROM server_presence",
+    ).first<number>("count")).toBe(0);
+  });
+
+  it("commits the protocol fixture into isolated Game state and rejects replay", async () => {
+    const response = await callWorker(gamePublishRequest(), testEnvironment());
+    expect(response.status).toBe(200);
+    const body = await response.json<{
+      readonly status: string;
+      readonly rendezvousToken: string;
+    }>();
+    expect(body).toMatchObject({
+      status: "ok",
+      rendezvousToken: expect.stringMatching(/^[0-9a-f]{64}$/),
+    });
+    const stored = await env.DB.prepare(
+      `SELECT entries.name, entries.description, entries.region,
+              entries.protocol_major, entries.protocol_minor,
+              entries.content_id, entries.content_revision_sha256,
+              entries.players_online, entries.players_capacity, entries.status,
+              entries.game_json_bytes,
+              entries.hostname, entries.port, entries.quic_cert_sha256,
+              entries.password_required, presence.rendezvous_token_hash,
+              replay.last_sequence, replay.last_nonce
+         FROM directory_entries AS entries
+         JOIN server_presence AS presence
+           ON presence.profile = entries.profile
+          AND presence.server_id = entries.server_id
+         JOIN publisher_replay AS replay
+           ON replay.profile = entries.profile
+          AND replay.server_id = entries.server_id
+        WHERE entries.profile = 'game-v1' AND entries.server_id = ?`,
+    ).bind(gamePublisherFixture.server_id).first();
+    expect(stored).toEqual({
+      name: "Atrinik Game Alpha",
+      description: "Cooperative Ω",
+      region: "eu-west",
+      protocol_major: 1,
+      protocol_minor: 0,
+      content_id: "atrinik-main",
+      content_revision_sha256: "a".repeat(64),
+      players_online: 3,
+      players_capacity: 64,
+      status: "online",
+      game_json_bytes: gameDirectoryServerJsonByteLength({
+        serverId: gamePublisherFixture.server_id,
+        certificateSha256: gamePublisherFixture.server_id,
+        name: "Atrinik Game Alpha",
+        description: "Cooperative Ω",
+        region: "eu-west",
+        protocol: { major: 1, minor: 0 },
+        content: {
+          id: "atrinik-main",
+          revisionSha256: "a".repeat(64),
+        },
+        players: { online: 3, capacity: 64 },
+        status: "online",
+        passwordRequired: false,
+        endpoint: { hostname: "xn--bcher-kva.example.org", port: 13_327 },
+      }),
+      hostname: "xn--bcher-kva.example.org",
+      port: 13_327,
+      quic_cert_sha256: gamePublisherFixture.server_id,
+      password_required: 0,
+      rendezvous_token_hash: await sha256Hex(body.rendezvousToken),
+      last_sequence: gamePublisherFixture.sequence,
+      last_nonce: gamePublisherFixture.nonce,
+    });
+    expect(await env.DB.prepare(
+      `SELECT COUNT(*) AS count FROM directory_entries
+        WHERE profile = 'classic-v1' AND server_id = ?`,
+    ).bind(gamePublisherFixture.server_id).first<number>("count")).toBe(0);
+    expect(await env.DB.prepare(
+      "SELECT COUNT(*) AS count FROM servers WHERE server_id = ?",
+    ).bind(gamePublisherFixture.server_id).first<number>("count")).toBe(0);
+    expect(await env.DB.prepare(
+      `SELECT request_count FROM request_budgets
+        WHERE actor_key = ? AND scope = 'publish-game-server'`,
+    ).bind(gamePublisherFixture.server_id).first<number>("request_count")).toBe(1);
+    expect(await gameDirectoryState()).toEqual({ revision: 1, outbox: [1] });
+
+    const gameStub = env.RENDEZVOUS.getByName(
+      `game-v1:${gamePublisherFixture.server_id}`,
+    );
+    await runInDurableObject(gameStub, async (_instance, state) => {
+      expect(await state.storage.get("rendezvous:token-generation"))
+        .toMatch(/^[0-9a-f]{64}$/);
+    });
+    const classicStub = env.RENDEZVOUS.getByName(gamePublisherFixture.server_id);
+    await runInDurableObject(classicStub, async (_instance, state) => {
+      expect(await state.storage.get("rendezvous:token-generation"))
+        .toBeUndefined();
+    });
+
+    const replay = await callWorker(gamePublishRequest(), testEnvironment());
+    expect(replay.status).toBe(409);
+    expect(await replay.json()).toEqual({
+      error: { code: "publish_replay", minimumNextSequence: "43" },
+    });
+    expect(await gameDirectoryState()).toEqual({ revision: 1, outbox: [1] });
+  });
+});
+
 async function directoryState(): Promise<{
   readonly revision: number;
   readonly outbox: readonly number[];
@@ -503,6 +655,23 @@ async function directoryState(): Promise<{
     revision,
     outbox: outbox.results.map((row) => row.revision),
   };
+}
+
+async function gameDirectoryState(): Promise<{
+  readonly revision: number;
+  readonly outbox: readonly number[];
+}> {
+  const revision = await env.DB.prepare(
+    "SELECT revision FROM directory_revisions WHERE profile = 'game-v1'",
+  ).first<number>("revision");
+  const outbox = await env.DB.prepare(
+    `SELECT revision FROM directory_outbox
+      WHERE profile = 'game-v1' ORDER BY revision`,
+  ).all<{ revision: number }>();
+  if (revision === null) {
+    throw new Error("Game directory revision is missing");
+  }
+  return { revision, outbox: outbox.results.map((row) => row.revision) };
 }
 
 async function publishedRevision(): Promise<number | null> {

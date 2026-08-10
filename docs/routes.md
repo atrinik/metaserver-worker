@@ -31,7 +31,7 @@ publisher and rendezvous handlers are exposed:
 
 | Authority | Method | Path | Request contract |
 | --- | --- | --- | --- |
-| `publish.meta.atrinik.org` | `POST` | `/v1/servers/{server-id}/publish` | reserved Game Protocol 1 envelope; fixed retryable `503` until its publisher is enabled |
+| `publish.meta.atrinik.org` | `POST` | `/v1/servers/{server-id}/publish` | exact Game Protocol 1 signed publisher envelope, body required and at most 4,096 bytes; independently circuit-disabled by `GAME_PUBLISH_ENABLED` until rollout |
 | `publish.meta.atrinik.org` | `POST` | `/v1/classic/servers/{server-id}/publish` | exact `application/json`, no query or content encoding, body required and at most 4,096 bytes |
 | `rendezvous.meta.atrinik.org` | `GET` WebSocket | `/v1/servers/{server-id}?role=client\|server` | no body or content headers; exactly one `role` query |
 | `rendezvous.meta.atrinik.org` | `GET` WebSocket | `/v1/classic/servers/{server-id}?role=client\|server` | no body or content headers; exactly one `role` query |
@@ -51,11 +51,14 @@ any Worker.
 payload and signature fields are owned by the signed-publishing contract; the
 route classifier does not parse or authenticate them.
 
-### Signed classic publisher
+### Signed publishers
 
-The classic endpoint implements
-`atrinik-classic-publish-v1` from the protocol repository. It requires an
-RFC 9530 `Content-Digest` and an `ecdsa-p256-sha256` HTTP message signature
+The classic and Game endpoints implement `atrinik-classic-publish-v1` and
+`atrinik-game-publish-v1` from the protocol repository. Each profile has an
+exact canonical JSON schema, signature tag, path, replay ledger, daily budget,
+presence row, public row shape, and serialized publication-room identity. A
+valid signature or sequence from one profile is unusable in the other. Both
+require an RFC 9530 `Content-Digest` and an `ecdsa-p256-sha256` HTTP message signature
 made by the private P-256 key paired with the exact DER certificate whose
 SHA-256 fingerprint is `server-id`. The covered components, their order,
 signature parameters, canonical JSON property order, timestamp window, and
@@ -63,8 +66,8 @@ raw P1363 signature encoding are exact protocol bytes rather than values the
 Worker normalizes.
 
 Every attempt carries a nonzero random 128-bit nonce and a canonical unsigned
-64-bit sequence. The per-server Durable Object serializes replay admission,
-generation rotation, and the D1 publication. It commits only a sequence
+64-bit sequence. The profile-qualified Durable Object serializes replay
+admission, generation rotation, and the D1 publication. It commits only a sequence
 strictly greater than the prior one and a nonce unused in the retention
 window. A stale/equal sequence or reused nonce returns `409` with
 `publish_replay` and a non-secret `minimumNextSequence`; the rejected
@@ -90,8 +93,8 @@ dynamic Worker:
 
 The current implementation builds those fixed aliases in isolated R2 buckets,
 but this foundation release does not attach either authority. Game JSON/XML
-follow the protocol-owned `atrinik-directory-v1` fixtures; non-empty Game
-publication remains disabled. Classic JSON/XML follow
+follow the protocol-owned `atrinik-directory-v1` fixtures and accept non-empty
+state only through the signed Game publisher. Classic JSON/XML follow
 [classic directory protocol 4](classic-directory-v4.md). The later service
 split must prove exact GET/HEAD/path/query handling, validator and
 `Last-Modified` semantics, CSP/nosniff/CORS/root redirect rules, cache expiry,

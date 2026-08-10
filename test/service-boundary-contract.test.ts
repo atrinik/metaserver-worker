@@ -27,6 +27,7 @@ function coreEnvironment(): Env {
   return override(env, {
     DIRECTORY_BUILDER: directoryBuilder,
     PUBLISH_ENABLED: "enabled",
+    GAME_PUBLISH_ENABLED: "enabled",
     RENDEZVOUS_ENABLED: "enabled",
     PUBLISH_IDENTITY_RATE_LIMITER: allowed,
     RENDEZVOUS_SERVER_RATE_LIMITER: allowed,
@@ -47,13 +48,17 @@ function publisherEnvironment(
     } as RateLimit,
     PUBLISH_HOSTNAME: "publish.meta.atrinik.org",
     PUBLISH_ENABLED: "disabled",
+    GAME_PUBLISH_ENABLED: "disabled",
     ROUTE_DISABLED_RETRY_SECONDS: "300",
     SOURCE_TAG_KEY_CURRENT_ID: "2026-08-a",
     SOURCE_TAG_KEY_PREVIOUS_ID: "2026-07-a",
     SOURCE_TAG_KEY_CURRENT: CURRENT_SECRET,
     SOURCE_TAG_KEY_PREVIOUS: PREVIOUS_SECRET,
   } satisfies PublisherEnv;
-  return override(base, { PUBLISH_ENABLED: "enabled" });
+  return override(base, {
+    PUBLISH_ENABLED: "enabled",
+    GAME_PUBLISH_ENABLED: "enabled",
+  });
 }
 
 function rendezvousEnvironment(core: Env): RendezvousEnv {

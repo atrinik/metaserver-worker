@@ -15,6 +15,7 @@ import {
   type DirectorySnapshot,
   type GameDirectoryServer,
   type GameDirectorySnapshot,
+  gameDirectoryServerJsonByteLength,
   MAX_CLASSIC_DIRECTORY_ARTIFACT_BYTES,
   MAX_DIRECTORY_LIFETIME_SECONDS,
   MAX_GAME_DIRECTORY_JSON_BYTES,
@@ -412,6 +413,22 @@ describe("static directory artifact rendering", () => {
       generation: "18446744073709551615",
       serverCount: 1,
     });
+  });
+
+  it("accounts for one canonical game server object byte-for-byte", async () => {
+    const server = gameServer(ID_A, {
+      name: "Cooperative Ω",
+      description: "Escaped \"directory\" row",
+      region: "eu-west",
+      endpoint: { hostname: "play.example.net", port: 13_327 },
+    });
+    const rendered = await renderDirectoryArtifacts(gameSnapshot([server]));
+    const parsed = JSON.parse(rendered.artifacts.json.body) as {
+      readonly servers: readonly unknown[];
+    };
+    expect(gameDirectoryServerJsonByteLength(server)).toBe(
+      new TextEncoder().encode(JSON.stringify(parsed.servers[0])).byteLength,
+    );
   });
 
   it("accepts the classic publisher uint32 player maximum", async () => {

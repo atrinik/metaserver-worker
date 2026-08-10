@@ -136,6 +136,23 @@ function generationPublicationRequest(
   generation: string,
   directoryProfile: "classic-v1" | "game-v1" = "classic-v1",
 ): Request {
+  const profileFields = directoryProfile === "classic-v1"
+    ? {
+        playersCount: 0,
+        version: "4.0.0",
+        textComment: "Generation rotation",
+      }
+    : {
+        description: "Generation rotation",
+        region: null,
+        protocolMajor: 1,
+        protocolMinor: 0,
+        contentId: "atrinik-main",
+        contentRevisionSha256: "b".repeat(64),
+        playersOnline: 0,
+        playersCapacity: 64,
+        status: "online",
+      };
   return new Request(INTERNAL_RENDEZVOUS_PUBLISH_URL, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
@@ -157,9 +174,7 @@ function generationPublicationRequest(
       now: 2_000_000_000,
       visibilityCutoff: 1_999_985_600,
       name: "Generation test",
-      playersCount: 0,
-      version: "4.0.0",
-      textComment: "Generation rotation",
+      ...profileFields,
       isPublic: true,
       quicHost: "",
       quicPort: 1,

@@ -80,12 +80,14 @@ class AdminSqlTest(unittest.TestCase):
         )
         connection.execute(
             """INSERT INTO directory_entries
-                   (profile, server_id, name, players_count, version,
-                    text_comment, hostname, port, quic_cert_sha256,
+                   (profile, server_id, name, description, protocol_major,
+                    protocol_minor, content_id, content_revision_sha256,
+                    players_online, players_capacity, status, game_json_bytes,
+                    hostname, port, quic_cert_sha256,
                     password_required, directory_fingerprint)
-               VALUES ('game-v1', ?, 'Game', 0, '1.0.0', '', NULL, NULL,
-                       ?, 0, ?)""",
-            (SERVER_ID, SERVER_ID, "c" * 64),
+               VALUES ('game-v1', ?, 'Game', '', 1, 0, 'atrinik-main', ?,
+                       0, 64, 'online', 1, NULL, NULL, ?, 0, ?)""",
+            (SERVER_ID, "b" * 64, SERVER_ID, "c" * 64),
         )
 
         sql = admin_sql.command_reset_owner(
