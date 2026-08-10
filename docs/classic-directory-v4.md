@@ -53,16 +53,17 @@ top-level key order:
 Each server uses the field order listed above, with `endpoint` last when
 present. The complete body is limited to 4 MiB.
 
-For each format, the canonical application strong validator is
-`"atrinik-classic-directory-v4-FORMAT-sha256-DIGEST"`, where `FORMAT` is
-`html`, `json`, or `xml`, and `DIGEST` is the 64-character lowercase SHA-256
-of the complete UTF-8 body, including its trailing LF. A conditional response
-may stand in for a previously accepted body only while that body's embedded
-`expiresAt` remains in the future; it must never extend the body lifetime or
-permit generation rollback. The generated timestamp is the semantic
-`Last-Modified` time. Mapping these application values to the actual static
-origin HTTP validators and modification time remains a deployment gate because
-direct R2 supplies its own object ETag and upload time.
+Each format has an independent lowercase SHA-256 of the complete UTF-8 body,
+including its trailing LF. That digest is private integrity metadata, not the
+public HTTP validator. The static origin selects one opaque strong ETag per
+alias representation; consumers compare it byte-for-byte and do not infer a
+hash algorithm or generation from it. A conditional response may stand in for
+a previously accepted body only while that body's embedded `expiresAt` remains
+in the future; it must never extend the body lifetime or permit generation
+rollback. `Last-Modified` is the alias upload/publication time, which must be
+at or after `generatedAt` and before `expiresAt`. Direct R2 supplies both the
+origin ETag and upload time; their exact public custom-domain behavior remains
+a live canary gate.
 
 ## XML
 

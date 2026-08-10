@@ -8,6 +8,7 @@ WRANGLER_CONFIG = REPOSITORY_ROOT / "wrangler.jsonc"
 PUBLISHER_CONFIG = REPOSITORY_ROOT / "wrangler.publisher.jsonc"
 RENDEZVOUS_CONFIG = REPOSITORY_ROOT / "wrangler.rendezvous.jsonc"
 DEPLOYMENT_GUIDE = REPOSITORY_ROOT / "DEPLOYMENT.md"
+EDGE_POLICY = REPOSITORY_ROOT / "docs" / "edge-policy.md"
 PACKAGE_JSON = REPOSITORY_ROOT / "package.json"
 
 
@@ -161,6 +162,37 @@ class WranglerSecurityConfigurationTests(unittest.TestCase):
         self.assertLess(
             cutover.index("Apply only pending ordered migrations"),
             cutover.index("atrinik-metaserver-publisher"),
+        )
+
+    def test_static_origin_policy_pins_zero_worker_delivery_contract(self) -> None:
+        edge_policy = EDGE_POLICY.read_text(encoding="utf-8")
+        deployment = DEPLOYMENT_GUIDE.read_text(encoding="utf-8")
+        normalized_policy = " ".join(edge_policy.split())
+        normalized_deployment = " ".join(deployment.split())
+        for value in (
+            'http.host in {"meta.atrinik.org" "classic.meta.atrinik.org"}',
+            'http.request.method in {"GET" "HEAD"}',
+            '"/" "/index.html" "/index.json" "/index.xml"',
+            "/manifest.json",
+            "Keep each bucket's `r2.dev` URL disabled",
+            "Attach no Worker route to either hostname",
+            "opaque strong ETag",
+            "alias-upload Last-Modified",
+            "Do not configure an edge TTL override",
+        ):
+            with self.subTest(value=value):
+                self.assertIn(value, normalized_policy)
+        self.assertIn(
+            "opaque quoted strong `ETag` of 3 through 128 bytes",
+            normalized_deployment,
+        )
+        self.assertIn(
+            "zero increase in dynamic Worker or D1 reads",
+            normalized_deployment,
+        )
+        self.assertIn(
+            "Do not enable a production hostname in this step",
+            normalized_deployment,
         )
 
 

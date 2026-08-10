@@ -163,11 +163,20 @@ the migration. Verify that existing classic rows are unchanged, mixed
 classic/Game shapes fail their constraints, the `publish-game-server`
 request-budget scope begins empty, and the aggregate Game canonical-JSON byte
 trigger rejects a transaction that would exceed 262,144 bytes. Deploy the
-state-owning provider at 100% before the stateless publisher caller. Leave
+state-owning provider at 100% before the stateless publisher caller. The Go
+producer and Rust consumer foundations are released. Leave
 `GAME_PUBLISH_ENABLED=disabled` and the Game static authority domainless until
-the Go producer, Rust consumer, static-edge policy, and live
-publish-to-artifact canary are all reviewed. A rollback to code predating
-`0007` must keep Game publication disabled; it cannot interpret Game rows.
+the static-edge policy and live publish-to-artifact canary are reviewed. A
+rollback to code predating `0007` must keep Game publication disabled; it
+cannot interpret Game rows.
+
+The static-origin validator release advances the private coordination manifest
+to `atrinik-directory-manifest-v2` and removes the obsolete application ETag
+from custom metadata. On its first reconciliation, each existing profile must
+publish one strictly newer generation even when its D1 revision is unchanged;
+the old alias metadata is deliberately not treated as current. Verify that the
+rollover preserves the model/body SHA values, opaque R2 ETags, freshness, and
+outbox/checkpoint invariants before any custom domain is attached.
 
 Before the first builder deployment, provision three environment-isolated R2
 buckets: one private immutable-generation bucket and one public alias-only
@@ -191,22 +200,26 @@ diverge, or retention cleanup stops converging.
 
 Static aliases use absolute expiry rather than a relative `max-age`, preventing
 a late cache fill from remaining fresh after the timestamp embedded in its
-body. R2 overwrite does not itself purge custom-domain cache entries, and
-direct R2 cannot supply the application-selected SHA ETag, generated-time
-`Last-Modified`, CSP, nosniff, or root redirect contract. Therefore this
-foundation deployment MUST remain domainless. The service-split canary must
-resolve the exact header/validator contract and the public-to-private/endpoint
-removal cache bound before either static hostname is attached. A rollback may
-rerender the current authoritative model with a reviewed renderer; it must not
-blindly restore an older generation that could re-expose removed data.
+body. R2 overwrite does not itself purge custom-domain cache entries. The
+released directory contract therefore treats R2's object ETag as an opaque
+strong validator and its alias upload time as `Last-Modified`; body SHA-256 is
+independent integrity metadata. The builder rejects a malformed native ETag
+and never begins alias publication before `generatedAt` or within the final
+reviewed lifetime margin. Direct R2 still cannot supply CSP, nosniff, CORS, or
+the root redirect by itself. This deployment MUST remain domainless until the
+service-split canary proves those zone/bucket policies, the public response
+metadata, and the public-to-private/endpoint-removal cache bound. A rollback
+may rerender the current authoritative model with a reviewed renderer; it must
+not blindly restore an older generation that could re-expose removed data.
 
 The edge path allowlist must deny the builder's `/manifest.json` coordination
 alias. R2 also has no multi-object transaction: fixed aliases are replaced
 sequentially, so readers can observe mixed generations until the cohort
-converges even though D1 never acknowledges it early. Do not attach a hostname
-until the canary proves an accepted resolution of the Game Protocol 1
-atomic-alias requirement (or a reviewed protocol amendment); final cohort
-readback is recovery evidence, not public-read atomicity.
+converges even though D1 never acknowledges it early. The released Game
+Protocol 1 contract permits adjacent generations during bounded monotonic
+convergence. Do not attach a hostname until the canary measures that bound and
+proves interrupted convergence repairs; final cohort readback is recovery
+evidence, not public-read atomicity.
 
 ## Canary
 
@@ -508,9 +521,35 @@ readback is recovery evidence, not public-read atomicity.
     bucket converges to the latest eight D1-acknowledged cohorts, removes
     abandoned complete and partial cohorts across multiple pages, and that
     no retention operation targets the public alias buckets. This is builder
-    evidence only; do not attach a custom domain or claim cache/header
-    acceptance until the later service-split canary resolves the explicit
-    direct-R2 blockers above.
+    evidence only; do not attach a production custom domain or claim
+    cache/header acceptance until the isolated static-origin canary below
+    passes.
+21. With explicit live-change authorization, attach each canary public alias
+    bucket to a canary-only custom domain and keep `r2.dev` disabled. Install
+    the exact static-host allowlist, root redirect, Cache Everything, response
+    header, and CORS rules from [docs/edge-policy.md](docs/edge-policy.md).
+    Verify `GET` and `HEAD` on every public alias, root's reviewed redirect,
+    and rejection of every query, write method, unknown path, immutable key,
+    and `/manifest.json`. For each `index.*` response, require the exact media
+    type, an opaque quoted strong `ETag` of 3 through 128 bytes, and
+    `Last-Modified` at or after that body's `generatedAt` and before its
+    `expiresAt`. The ETag must not be derived from the application SHA fixture.
+    A conditional request with that exact validator must return either the
+    byte-identical body or a bodyless `304`; a weak, cross-format, or stale
+    validator must not stand in for another representation. Fill the cache
+    shortly before expiry and prove its freshness does not extend past the
+    body's absolute expiry and no stale-if-error policy revives it.
+22. Publish one visible update and measure the interval from the D1 revision to
+    all three aliases naming the new generation. Interrupt one alias write and
+    prove reconciliation converges monotonically without any older alias
+    replacing a newer one. Then withdraw an endpoint and make the server
+    private. A cached old body may remain usable only until its embedded
+    `expiresAt`, never more than the four-hour artifact lifetime; no purge is a
+    correctness dependency. Record the measured normal convergence/removal
+    times, cache status, R2 operation counts, checkpoint/outbox status, and
+    zero increase in dynamic Worker or D1 reads from repeated static requests.
+    Detach the canary domains and rules after evidence collection. Do not
+    enable a production hostname in this step.
 
 ## Review the exports lifecycle deployment
 

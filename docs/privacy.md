@@ -164,7 +164,8 @@ candidate. The private R2 bucket uses only
 `v1/<profile>/<generation>/<fixed-name>` keys. The public buckets contain only
 the fixed `index.html`, `index.xml`, `index.json`, and `manifest.json` aliases.
 Custom metadata is an exact allowlist of schema, profile, format, generation,
-freshness, model/body digest, and desired strong ETag.
+freshness, and model/body digest. The public strong ETag is R2-selected object
+metadata rather than a copied application digest.
 
 The latest eight D1-acknowledged four-object immutable cohorts form the
 application rollback window. A durable paginated sweep removes at most 64
