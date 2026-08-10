@@ -93,6 +93,25 @@ tests, the Python administrative tests, and one distinct Wrangler dry run per
 deployable. Generated declarations and `dist/` output are untracked and must
 not be edited.
 
+After an operator has separately provisioned an isolated R2 custom domain and
+its reviewed edge rules, validate the public static contract with the
+credential-free verifier:
+
+```sh
+python3 scripts/static_origin_canary.py \
+  --profile game-v1 \
+  --base-url https://game-directory-canary.example.org \
+  --json
+```
+
+It performs only bounded public HTTPS requests. It verifies the three formats,
+shared generation and complete normalized server-model parity, freshness,
+native ETag and conditional
+retrieval, HEAD parity, security/cache/CORS headers, root redirect, path/query/
+method denial, and bounded monotonic convergence. Production hostnames require
+the additional `--allow-production` acknowledgement. The verifier cannot
+create, alter, or delete Cloudflare resources and accepts no API token.
+
 The checked-in core Wrangler file has a placeholder D1 ID. All three checked-in
 Wrangler files have no production route. Supply reviewed production bindings
 during the provider-first deployment procedure. Never run remote migrations,

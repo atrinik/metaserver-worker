@@ -194,6 +194,16 @@ class WranglerSecurityConfigurationTests(unittest.TestCase):
             "Do not enable a production hostname in this step",
             normalized_deployment,
         )
+        self.assertIn(
+            "python3 scripts/static_origin_canary.py",
+            normalized_deployment,
+        )
+        self.assertIn("--profile classic-v1", normalized_deployment)
+        self.assertIn("--profile game-v1", normalized_deployment)
+        self.assertIn(
+            "accepts no Cloudflare token and has no mutation path",
+            normalized_deployment,
+        )
 
 
 class DynamicServiceBoundaryConfigurationTests(unittest.TestCase):

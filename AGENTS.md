@@ -47,6 +47,11 @@
   conditional validator and Last-Modified. Never publish an alias before its
   generated time or at/after its expiry. Never expose the private D1 revision
   or historical removed models in a public body, key, or metadata field.
+- Use `scripts/static_origin_canary.py` for public static-origin evidence. It is
+  deliberately credential-free and read-only, defaults to non-production DNS,
+  bounds every response and convergence retry, and must never grow Cloudflare
+  API mutation or token handling. Resource/rule changes remain separately
+  authorized operator actions.
 - Route every direct-hostname write through `isCanonicalHostname()` before D1.
   SQLite independently enforces the bounded ASCII representation but has no
   Unicode/IDNA tables; direct administrative hostname writes are unsupported.
