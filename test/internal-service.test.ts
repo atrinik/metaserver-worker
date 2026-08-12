@@ -188,6 +188,58 @@ describe("internal service boundary", () => {
       rendezvousToken: token,
     });
 
+    const body = JSON.stringify({ status: "ok", rendezvousToken: token });
+    const withRuntimeLength = await validatePublisherServiceResponse(
+      new Response(body, {
+        headers: {
+          ...SAFE_DYNAMIC_HEADERS,
+          "CF-Worker-Status": "ok",
+          "Content-Length": String(new TextEncoder().encode(body).byteLength),
+          "Content-Type": "application/json",
+        },
+      }),
+    );
+    expect(await withRuntimeLength.text()).toBe(body);
+    expect(withRuntimeLength.headers.has("CF-Worker-Status")).toBe(false);
+
+    const badRequestBody = JSON.stringify({
+      error: { code: "bad_request", message: "The request is invalid." },
+    });
+    const withRuntimeErrorLength = await validatePublisherServiceResponse(
+      new Response(badRequestBody, {
+        status: 400,
+        headers: {
+          ...SAFE_DYNAMIC_HEADERS,
+          "CF-Worker-Status": "ok",
+          "Content-Length": String(
+            new TextEncoder().encode(badRequestBody).byteLength,
+          ),
+          "Content-Type": "application/json; charset=utf-8",
+        },
+      }),
+    );
+    expect(withRuntimeErrorLength.status).toBe(400);
+    expect(await withRuntimeErrorLength.text()).toBe(badRequestBody);
+    expect(withRuntimeErrorLength.headers.has("CF-Worker-Status")).toBe(false);
+
+    const replayBody = JSON.stringify({
+      error: { code: "publish_replay", minimumNextSequence: "2" },
+    });
+    const replay = await validatePublisherServiceResponse(new Response(
+      replayBody,
+      {
+        status: 409,
+        headers: {
+          ...SAFE_DYNAMIC_HEADERS,
+          "CF-Worker-Status": "ok",
+          "Content-Type": "application/json",
+        },
+      },
+    ));
+    expect(replay.status).toBe(409);
+    expect(await replay.text()).toBe(replayBody);
+    expect(replay.headers.has("CF-Worker-Status")).toBe(false);
+
     for (const response of [
       new Response(null, { status: 302, headers: {
         "Cache-Control": "no-store",
@@ -206,6 +258,31 @@ describe("internal service boundary", () => {
         ...SAFE_DYNAMIC_HEADERS,
         Allow: "DELETE",
       } }),
+      new Response(body, { headers: {
+        ...SAFE_DYNAMIC_HEADERS,
+        "Content-Length": String(
+          new TextEncoder().encode(body).byteLength + 1,
+        ),
+        "Content-Type": "application/json",
+      } }),
+      new Response(body, { headers: {
+        ...SAFE_DYNAMIC_HEADERS,
+        "Content-Length": `0${new TextEncoder().encode(body).byteLength}`,
+        "Content-Type": "application/json",
+      } }),
+      new Response(body, { headers: {
+        ...SAFE_DYNAMIC_HEADERS,
+        "Content-Length": String(new TextEncoder().encode(body).byteLength),
+        "Content-Type": "application/json",
+        "X-Unexpected": "value",
+      } }),
+      ...["exception", "healthy", "ok, ok"].map((workerStatus) =>
+        new Response(body, { headers: {
+          ...SAFE_DYNAMIC_HEADERS,
+          "CF-Worker-Status": workerStatus,
+          "Content-Type": "application/json",
+        } })
+      ),
       new Response("x".repeat(2_049), {
         status: 500,
         headers: SAFE_DYNAMIC_HEADERS,
@@ -245,12 +322,42 @@ describe("internal service boundary", () => {
     const pair = new WebSocketPair();
     const safe = new Response(null, {
       status: 101,
-      headers: SAFE_DYNAMIC_HEADERS,
+      headers: {
+        ...SAFE_DYNAMIC_HEADERS,
+        "CF-Worker-Status": "ok",
+      },
       webSocket: pair[0],
     });
-    expect(await validateRendezvousServiceResponse(safe, null)).toBe(safe);
+    const validated = await validateRendezvousServiceResponse(safe, null);
+    expect(validated).not.toBe(safe);
+    expect(validated.webSocket).toBe(pair[0]);
+    expect(validated.headers.has("CF-Worker-Status")).toBe(false);
     pair[1].accept();
     pair[1].close(1000, "Test complete");
+
+    const badStatusPair = new WebSocketPair();
+    await expect(validateRendezvousServiceResponse(new Response(null, {
+      status: 101,
+      headers: {
+        ...SAFE_DYNAMIC_HEADERS,
+        "CF-Worker-Status": "exception",
+      },
+      webSocket: badStatusPair[0],
+    }), null)).rejects.toThrow("Dynamic service returned an unsafe response");
+    badStatusPair[1].accept();
+    badStatusPair[1].close(1000, "Test complete");
+
+    const lengthPair = new WebSocketPair();
+    await expect(validateRendezvousServiceResponse(new Response(null, {
+      status: 101,
+      headers: {
+        ...SAFE_DYNAMIC_HEADERS,
+        "Content-Length": "0",
+      },
+      webSocket: lengthPair[0],
+    }), null)).rejects.toThrow("Dynamic service returned an unsafe response");
+    lengthPair[1].accept();
+    lengthPair[1].close(1000, "Test complete");
 
     const wrongProtocolPair = new WebSocketPair();
     const wrongProtocol = new Response(null, {
@@ -312,6 +419,32 @@ describe("internal service boundary", () => {
     expect(response.status).toBe(503);
     expect(response.headers.get("Retry-After")).toBe(retryAfter);
     expect(await response.text()).toBe(body);
+  });
+
+  it("accepts only the exact runtime length on fixed rendezvous errors", async () => {
+    const body = "Rendezvous room unavailable\n";
+    const headers = {
+      ...SAFE_DYNAMIC_HEADERS,
+      "CF-Worker-Status": "ok",
+      "Content-Length": String(new TextEncoder().encode(body).byteLength),
+      "Content-Type": "text/plain; charset=utf-8",
+      "Retry-After": "60",
+    };
+    const accepted = await validateRendezvousServiceResponse(
+      new Response(body, { status: 503, headers }),
+      null,
+    );
+    expect(accepted.status).toBe(503);
+    expect(await accepted.text()).toBe(body);
+    expect(accepted.headers.has("CF-Worker-Status")).toBe(false);
+
+    await expect(validateRendezvousServiceResponse(
+      new Response(body, {
+        status: 503,
+        headers: { ...headers, "Content-Length": "0" },
+      }),
+      null,
+    )).rejects.toThrow("Dynamic service returned an unsafe response");
   });
 
   it("bounds a coordinator response that never finishes", async () => {

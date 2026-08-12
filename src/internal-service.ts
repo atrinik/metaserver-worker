@@ -259,7 +259,7 @@ export async function validatePublisherServiceResponse(
     if (
       canonical === null ||
       body !== canonical ||
-      !headersEqual(response.headers, headers)
+      !serviceResponseHeadersEqual(response.headers, headers, body)
     ) {
       return rejectUnsafeDynamicResponse(response);
     }
@@ -281,7 +281,7 @@ export async function validatePublisherServiceResponse(
     if (
       canonical !== null &&
       body === canonical &&
-      headersEqual(response.headers, headers)
+      serviceResponseHeadersEqual(response.headers, headers, body)
     ) {
       return new Response(canonical, { status: 409, headers });
     }
@@ -310,11 +310,15 @@ export async function validateRendezvousServiceResponse(
     if (
       response.webSocket === null ||
       response.body !== null ||
-      !headersEqual(response.headers, headers)
+      !serviceResponseHeadersEqual(response.headers, headers, null)
     ) {
       return rejectUnsafeDynamicResponse(response);
     }
-    return response;
+    return new Response(null, {
+      status: 101,
+      headers,
+      webSocket: response.webSocket,
+    });
   }
 
   if (
@@ -350,7 +354,7 @@ export async function validateRendezvousServiceResponse(
       "X-Content-Type-Options": "nosniff",
       ...fixed.headers,
     });
-    if (headersEqual(response.headers, headers)) {
+    if (serviceResponseHeadersEqual(response.headers, headers, body)) {
       return new Response(body, { status: response.status, headers });
     }
   }
@@ -461,6 +465,41 @@ function headersEqual(actual: Headers, expected: Headers): boolean {
   );
 }
 
+/**
+ * Cloudflare's production Service Binding transport may attach its healthy
+ * status marker, and Workerd may compute a fixed body's length. Accept only
+ * those exact values; every other header remains subject to the allowlist.
+ */
+function serviceResponseHeadersEqual(
+  actual: Headers,
+  expected: Headers,
+  body: string | null,
+): boolean {
+  const actualCopy = new Headers(actual);
+  const expectedCopy = new Headers(expected);
+
+  const workerStatus = actualCopy.get("CF-Worker-Status");
+  if (workerStatus !== null && workerStatus !== "ok") {
+    return false;
+  }
+  actualCopy.delete("CF-Worker-Status");
+  if (expectedCopy.has("CF-Worker-Status")) {
+    return false;
+  }
+
+  if (body !== null) {
+    const length = String(new TextEncoder().encode(body).byteLength);
+    for (const headers of [actualCopy, expectedCopy]) {
+      const contentLength = headers.get("Content-Length");
+      if (contentLength !== null && contentLength !== length) {
+        return false;
+      }
+      headers.delete("Content-Length");
+    }
+  }
+  return headersEqual(actualCopy, expectedCopy);
+}
+
 function isAllowedMethod(value: string): value is AllowedMethod {
   return value === "GET" || value === "HEAD" || value === "POST";
 }
@@ -493,7 +532,7 @@ async function canonicalHttpErrorResponse(
   }));
   if (
     canonical.status !== response.status ||
-    !headersEqual(response.headers, canonical.headers)
+    !serviceResponseHeadersEqual(response.headers, canonical.headers, body)
   ) {
     return null;
   }
