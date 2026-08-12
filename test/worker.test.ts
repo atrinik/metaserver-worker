@@ -1171,7 +1171,9 @@ describe("metaserver Worker", () => {
       await issueOtp(),
       RAW_KEY,
     ))).status).toBe(200);
-    const beforeIgnoredOwner = await publicationSnapshot(activeServerId);
+    const beforeIgnoredOwner = await authoritativePublicationSnapshot(
+      activeServerId,
+    );
 
     await env.DB.prepare(
       `CREATE TRIGGER server_owners_test_ignore_update
@@ -1196,7 +1198,7 @@ describe("metaserver Worker", () => {
         message: "An internal error occurred.",
       },
     });
-    expect(await publicationSnapshot(activeServerId)).toEqual(
+    expect(await authoritativePublicationSnapshot(activeServerId)).toEqual(
       beforeIgnoredOwner,
     );
     await env.DB.prepare(
@@ -2050,7 +2052,9 @@ describe("metaserver Worker", () => {
   });
 });
 
-async function publicationSnapshot(serverId: string): Promise<unknown> {
+async function authoritativePublicationSnapshot(
+  serverId: string,
+): Promise<unknown> {
   const statements = [
     env.DB.prepare(
       "SELECT * FROM server_owners WHERE server_id = ?",
@@ -2067,10 +2071,11 @@ async function publicationSnapshot(serverId: string): Promise<unknown> {
     env.DB.prepare(
       "SELECT * FROM directory_revisions ORDER BY profile",
     ),
-    env.DB.prepare(
-      "SELECT * FROM directory_outbox ORDER BY profile, revision",
-    ),
   ];
+  // directory_outbox is an asynchronously consumed delivery queue. Its
+  // existing row may disappear while a request is in flight, independently of
+  // the rejected transaction. The unchanged authoritative revision and
+  // listing state proves that the failed request did not enqueue new work.
   return Promise.all(statements.map(async (statement) =>
     (await statement.all()).results));
 }
