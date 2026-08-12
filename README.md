@@ -264,6 +264,12 @@ success, expected `404`, rate-limit, and open-circuit traffic remains silent, so
 a throttled loop does not replace automatic invocation noise with one custom
 event per request.
 
+All three deployable configurations also explicitly disable tracing, Workers
+Logpush, Tail/streaming-tail consumers, and OTLP destinations. Custom logs
+remain persisted at full sampling for the bounded diagnostics above. Audit
+account and zone Logpush jobs plus notification policies independently because
+those account resources are not implied by a Worker script setting.
+
 This setting changes stored log-event volume, not Worker invocation usage.
 Cloudflare Worker Metrics and zone security analytics remain the sources for
 aggregate request/status counts, errors, CPU time, wall time, duration, and WAF

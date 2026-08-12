@@ -44,12 +44,23 @@
     "SOURCE_TAG_KEY_CURRENT_ID": "2026-08-a",
     "SOURCE_TAG_KEY_PREVIOUS_ID": "2026-07-a"
   },
+  "logpush": false,
+  "tail_consumers": [],
+  "streaming_tail_consumers": [],
   "observability": {
     "enabled": true,
     "logs": {
       "enabled": true,
       "head_sampling_rate": 1,
-      "invocation_logs": false
+      "invocation_logs": false,
+      "persist": true,
+      "destinations": []
+    },
+    "traces": {
+      "enabled": false,
+      "head_sampling_rate": 1,
+      "persist": false,
+      "destinations": []
     }
   }
 }

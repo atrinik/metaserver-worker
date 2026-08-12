@@ -172,12 +172,23 @@
   "triggers": {
     "crons": ["*/5 * * * *", "17 * * * *"]
   },
+  "logpush": false,
+  "tail_consumers": [],
+  "streaming_tail_consumers": [],
   "observability": {
     "enabled": true,
     "logs": {
       "enabled": true,
       "head_sampling_rate": 1,
-      "invocation_logs": false
+      "invocation_logs": false,
+      "persist": true,
+      "destinations": []
+    },
+    "traces": {
+      "enabled": false,
+      "head_sampling_rate": 1,
+      "persist": false,
+      "destinations": []
     }
   }
 }

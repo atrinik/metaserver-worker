@@ -329,6 +329,11 @@ evidence, not public-read atomicity.
    Logs. A forced scheduled failure may emit its bounded custom diagnostic and
    a fixed, cause-free `Scheduled maintenance failed` platform error; neither
    record may contain the underlying exception or request/state data.
+   Read back each deployed script and require tracing disabled, `logpush:false`,
+   empty Tail and streaming-tail consumers, and empty log/trace destinations.
+   Separately list both account- and zone-scoped Logpush jobs and account
+   notification policies; a script-level `logpush:false` does not prove those
+   independent resources are absent or useful.
 8. Apply and exercise the canary edge policy. Confirm raw/unknown targets are
    stopped before Worker invocation and a controlled burst is visible in WAF
    analytics without a matching post-mitigation rise in Worker invocations.

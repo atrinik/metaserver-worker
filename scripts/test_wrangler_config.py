@@ -66,6 +66,20 @@ class WranglerSecurityConfigurationTests(unittest.TestCase):
         self.assertIs(logs["enabled"], True)
         self.assertEqual(logs["head_sampling_rate"], 1)
         self.assertIs(logs["invocation_logs"], False)
+        self.assertIs(logs["persist"], True)
+        self.assertEqual(logs["destinations"], [])
+        self.assertEqual(
+            self.configuration["observability"]["traces"],
+            {
+                "enabled": False,
+                "head_sampling_rate": 1,
+                "persist": False,
+                "destinations": [],
+            },
+        )
+        self.assertIs(self.configuration["logpush"], False)
+        self.assertEqual(self.configuration["tail_consumers"], [])
+        self.assertEqual(self.configuration["streaming_tail_consumers"], [])
         self.assertEqual(
             self.configuration["triggers"]["crons"],
             ["*/5 * * * *", "17 * * * *"],
@@ -338,6 +352,9 @@ class DynamicServiceBoundaryConfigurationTests(unittest.TestCase):
             "secrets",
             "vars",
             "observability",
+            "logpush",
+            "tail_consumers",
+            "streaming_tail_consumers",
         }
         for name, configuration in (
             ("publisher", self.publisher),
@@ -353,6 +370,26 @@ class DynamicServiceBoundaryConfigurationTests(unittest.TestCase):
                     ],
                     False,
                 )
+                self.assertIs(
+                    configuration["observability"]["logs"]["persist"],
+                    True,
+                )
+                self.assertEqual(
+                    configuration["observability"]["logs"]["destinations"],
+                    [],
+                )
+                self.assertEqual(
+                    configuration["observability"]["traces"],
+                    {
+                        "enabled": False,
+                        "head_sampling_rate": 1,
+                        "persist": False,
+                        "destinations": [],
+                    },
+                )
+                self.assertIs(configuration["logpush"], False)
+                self.assertEqual(configuration["tail_consumers"], [])
+                self.assertEqual(configuration["streaming_tail_consumers"], [])
                 self.assertEqual(
                     set(configuration["secrets"]["required"]),
                     {"SOURCE_TAG_KEY_CURRENT", "SOURCE_TAG_KEY_PREVIOUS"},

@@ -473,6 +473,10 @@ Workers Free and 30 days on Workers Paid). Retained Workers Logs and manual
 exports have independent lifetimes. Record when the final live value was
 sanitized, let every applicable retention window expire, and apply the same
 deletion policy to exports before claiming historical raw values are gone.
+Only the three closed custom diagnostic schemas are configured to persist.
+Automatic invocation logs, traces, Workers Logpush, Tail/streaming-tail
+consumers, and OTLP destinations are explicitly disabled on every deployable;
+account- and zone-scoped Logpush jobs remain an independent audit surface.
 
 [SQLite-backed Durable Objects have a separate 30-day point-in-time recovery
 history](https://developers.cloudflare.com/durable-objects/api/sqlite-storage-api/#pitr-point-in-time-recovery-api).
