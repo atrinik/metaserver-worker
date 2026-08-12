@@ -33,11 +33,23 @@ namespace, so a production ID invalidates both isolation and results.
 `meta.atrinik.org` and `classic.meta.atrinik.org` are [direct R2 custom
 domains][r2-public], not Worker routes. Keep each bucket's `r2.dev` URL
 disabled. Before attaching a hostname, install one exact-host custom rule per
-environment (or one reviewed equivalent expression) whose action is `Block`
-outside this allowlist:
+hostname whose action is `Block` outside that hostname's allowlist. Keep the
+two rules separate so `classic.meta.atrinik.org` can be activated and proved
+without changing traffic for `meta.atrinik.org`:
 
 ```text
-http.host in {"meta.atrinik.org" "classic.meta.atrinik.org"} and not (
+http.host eq "classic.meta.atrinik.org" and not (
+  http.request.method in {"GET" "HEAD"} and
+  raw.http.request.uri.query eq "" and
+  raw.http.request.uri.path eq http.request.uri.path and
+  not (raw.http.request.uri.path contains "%") and
+  not (raw.http.request.uri.path contains "\\") and
+  raw.http.request.uri.path in {
+    "/" "/index.html" "/index.json" "/index.xml"
+  }
+)
+
+http.host eq "meta.atrinik.org" and not (
   http.request.method in {"GET" "HEAD"} and
   raw.http.request.uri.query eq "" and
   raw.http.request.uri.path eq http.request.uri.path and
@@ -51,10 +63,17 @@ http.host in {"meta.atrinik.org" "classic.meta.atrinik.org"} and not (
 
 This denies `/manifest.json`, immutable generation keys, uploads, alternate
 path spellings, queries, and every unreviewed object even if it exists in the
-public alias bucket. Attach no Worker route to either hostname. Add an exact
-root Redirect Rule from `/` with no query to the same host's `/index.html`
-using permanent `308`; it must not redirect a machine alias, cross hosts, or
-introduce a Worker invocation.
+public alias bucket. Attach no Worker route to either hostname. Add exact
+plaintext Redirect Rules for `GET` and `HEAD` with no query. `/`,
+`/index.html`, `/index.json`, and `/index.xml` each redirect to the identical
+host and path. Every redirect is permanent `308` and changes only the scheme.
+Never redirect an unexpected query, path, or method. Those targets remain
+blocked, and no redirect may invoke a Worker.
+
+The static Redirect Rule expressions must include `not ssl`, the exact methods,
+empty raw query, equality between raw and normalized paths, rejection of `%`
+and `\`, and the explicit path allowlist above. Use a dynamic target that
+changes only the scheme and preserves the exact authority and path.
 
 Do not enable the static rule for `meta.atrinik.org` while the temporary
 compatibility Worker owns that hostname: it would block the compatibility
@@ -189,16 +208,22 @@ rate rule on that hostname before attaching its Custom Domain. The coarse
 raw-target envelope is:
 
 ```text
-http.host eq "rendezvous.meta.atrinik.org" and
-http.request.method eq "GET" and (
-  starts_with(raw.http.request.uri.path, "/v1/servers/") or
-  starts_with(raw.http.request.uri.path, "/v1/classic/servers/")
-) and
-raw.http.request.uri.path eq http.request.uri.path and
-not (raw.http.request.uri.path contains "%") and
-not (raw.http.request.uri.path contains "\\") and
-raw.http.request.uri.query in {"role=client" "role=server"}
+http.host eq "rendezvous.meta.atrinik.org" and not (
+  starts_with(lower(raw.http.request.full_uri),
+              "https://rendezvous.meta.atrinik.org/") and
+  http.request.method eq "GET" and (
+    starts_with(raw.http.request.uri.path, "/v1/servers/") or
+    starts_with(raw.http.request.uri.path, "/v1/classic/servers/")
+  ) and
+  raw.http.request.uri.path eq http.request.uri.path and
+  not (raw.http.request.uri.path contains "%") and
+  not (raw.http.request.uri.path contains "\\") and
+  raw.http.request.uri.query in {"role=client" "role=server"}
+)
 ```
+
+The HTTPS authority prefix makes plaintext part of the block-outside rule;
+never redirect a WebSocket upgrade.
 
 The Worker remains responsible for the exact route shape, 64-hex server ID,
 WebSocket headers, role, and authentication. Do not copy the compatibility
@@ -219,6 +244,54 @@ compatibility rule in the same coordinated consumer cutover. Keep
 `workers.dev` and preview URLs disabled on both deployments so neither edge
 policy has a bypass.
 
+## Dedicated publisher hostname
+
+Before enabling `publish.meta.atrinik.org`, install a custom WAF rule whose
+action is `Block` outside this raw target envelope:
+
+```text
+http.host eq "publish.meta.atrinik.org" and not (
+  starts_with(lower(raw.http.request.full_uri),
+              "https://publish.meta.atrinik.org/") and
+  http.request.method eq "POST" and
+  raw.http.request.uri.query eq "" and
+  raw.http.request.uri.path eq http.request.uri.path and
+  not (raw.http.request.uri.path contains "%") and
+  not (raw.http.request.uri.path contains "\\") and (
+    starts_with(raw.http.request.uri.path, "/v1/servers/") or
+    starts_with(raw.http.request.uri.path, "/v1/classic/servers/")
+  )
+)
+```
+
+The HTTPS authority prefix is part of the allowlist, so plaintext is blocked
+before Worker invocation and is never redirected. The Worker remains the exact
+authority for the 64-hex server ID, path suffix, content headers, bounded body,
+certificate identity, signature, sequence, and nonce. Do not copy a directory,
+compatibility, rendezvous, or health route onto this hostname.
+
+## Per-host staged HSTS
+
+Only after the exact HTTPS host has stable TLS, a rehearsed circuit/domain
+rollback, passing HTTPS canaries, and the plaintext rules above, install a
+response-header transform for that one hostname and `ssl`. Start with exactly:
+
+```text
+Strict-Transport-Security: max-age=300
+```
+
+Do not include `includeSubDomains` or `preload`; the wider `atrinik.org`
+namespace has not passed that audit. Set rather than append the header so every
+HTTPS response has one value, including Cloudflare error responses. Never emit
+HSTS on plaintext responses. Observe at least the complete five-minute window
+before raising the host's max age in a separately reviewed change.
+
+Rollback keeps HTTPS available, sets `max-age=0` on the same exact hostname,
+waits out the preceding max-age window, and only then removes the transform or
+detaches that hostname. Closing a Worker circuit does not require removing
+HTTPS or HSTS. Never disable TLS, pause Cloudflare, or move the hostname to
+DNS-only while a positive max age may remain cached.
+
 ## Canary and release gate
 
 Use a non-production hostname in every command below. Substitute only a
@@ -236,6 +309,49 @@ for request in $(seq 1 11); do
     https://CANARY_HOST/index.wsgi/otp
 done
 ```
+
+After installing the isolated static, publisher, rendezvous, redirect, and
+staged-HSTS rules, run the bounded credential-free ingress verifier once per
+enabled static hostname. Pass the exact base URLs derived from service/account
+metadata and publisher/rendezvous active-version URLs returned by the version
+`urls` metadata. The core implements Durable Objects, for which Cloudflare does
+not generate preview URLs; require its active-version metadata to prove that
+absence rather than fabricating a URL:
+
+```sh
+python3 scripts/edge_ingress_canary.py \
+  --static-host classic-directory-canary.example.org \
+  --publisher-host publish-canary.example.org \
+  --rendezvous-host rendezvous-canary.example.org \
+  --hsts-max-age 300 \
+  --core-base-url https://atrinik-metaserver.account-name.workers.dev/ \
+  --publisher-base-url https://atrinik-metaserver-publisher.account-name.workers.dev/ \
+  --publisher-version-url https://version-prefix-atrinik-metaserver-publisher.account-name.workers.dev/ \
+  --rendezvous-base-url https://atrinik-metaserver-rendezvous.account-name.workers.dev/ \
+  --rendezvous-version-url https://version-prefix-atrinik-metaserver-rendezvous.account-name.workers.dev/ \
+  --json
+python3 scripts/edge_ingress_canary.py \
+  --static-host game-directory-canary.example.org \
+  --publisher-host publish-canary.example.org \
+  --rendezvous-host rendezvous-canary.example.org \
+  --hsts-max-age 300 \
+  --core-base-url https://atrinik-metaserver.account-name.workers.dev/ \
+  --publisher-base-url https://atrinik-metaserver-publisher.account-name.workers.dev/ \
+  --publisher-version-url https://version-prefix-atrinik-metaserver-publisher.account-name.workers.dev/ \
+  --rendezvous-base-url https://atrinik-metaserver-rendezvous.account-name.workers.dev/ \
+  --rendezvous-version-url https://version-prefix-atrinik-metaserver-rendezvous.account-name.workers.dev/ \
+  --json
+```
+
+It requires same-host/path plaintext `308` responses only for the four exact
+static aliases, requires an exact WAF `403` for every negative static target
+and both dynamic plaintext requests without redirects, proves all five
+account-derived alternate Worker URLs unavailable, requires one exact staged HSTS header on
+all three HTTPS response classes, and rejects leaked internal Worker metadata.
+It accepts no token and cannot mutate Cloudflare. A `403` alone does not prove
+pre-Worker enforcement: correlate all eight fixed block probes with WAF
+Security Events and Worker Metrics and require the expected Security Events
+with zero Worker invocation delta.
 
 The canonical request must reach the Worker, the two raw/extra-query requests
 must be blocked before it, and the controlled loop must be edge-mitigated after
