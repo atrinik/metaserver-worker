@@ -5,6 +5,7 @@ export const DIRECTORY_BUILD_METRICS_SCHEMA = "directory-build-v1";
 export const DIRECTORY_BUILD_OUTCOMES = [
   "current",
   "published",
+  "purge-pending",
   "failed",
 ] as const;
 

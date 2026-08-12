@@ -132,11 +132,15 @@
   ],
   "secrets": {
     "required": [
+      "DIRECTORY_CACHE_PURGE_TOKEN",
       "SOURCE_TAG_KEY_CURRENT",
       "SOURCE_TAG_KEY_PREVIOUS"
     ]
   },
   "vars": {
+    "DIRECTORY_CACHE_ZONE_ID": "00000000000000000000000000000000",
+    "CLASSIC_DIRECTORY_PUBLIC_ORIGIN": "https://classic.meta.atrinik.org",
+    "GAME_DIRECTORY_PUBLIC_ORIGIN": "https://meta.atrinik.org",
     "COMPAT_HOSTNAME": "meta.atrinik.org",
     "PUBLISH_HOSTNAME": "publish.meta.atrinik.org",
     "RENDEZVOUS_HOSTNAME": "rendezvous.meta.atrinik.org",

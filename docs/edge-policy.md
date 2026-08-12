@@ -93,16 +93,38 @@ then detach the compatibility Worker before enabling the static `meta` rule and
 R2 custom domain. A canary substitutes its exact non-production hostnames in
 the expression; copying either production hostname is a stop condition.
 
-Add a Cache Rule for only the three `index.*` paths and `GET`/`HEAD` that makes
-HTML, JSON, and XML cache eligible while respecting the origin's
-`Cache-Control` and absolute `Expires`. Do not configure an edge TTL override,
+Add a Cache Rule for only the three `index.*` paths whose method set is exactly
+`GET`, `HEAD`, and `PURGE`:
+
+```text
+http.host eq "classic.meta.atrinik.org" and
+http.request.method in {"GET" "HEAD" "PURGE"} and
+raw.http.request.uri.query eq "" and
+raw.http.request.uri.path in {"/index.html" "/index.json" "/index.xml"} and
+http.request.uri.path in {"/index.html" "/index.json" "/index.xml"}
+```
+
+The corresponding `meta.atrinik.org` and isolated-canary rules substitute only
+their exact reviewed hostname. `PURGE` is present because Cloudflare evaluates
+[single-file invalidation][single-file-purge] against Cache Rules with that
+method; omitting it can make an accepted purge ineffective. It belongs only in
+this cache expression.
+The public custom-WAF allowlist, Redirect Rules, and Response Header Transform
+Rules remain `GET`/`HEAD`-only, so a public `PURGE` request is never authorized.
+
+The Cache Rule makes HTML, JSON, and XML cache eligible while respecting the
+origin's `Cache-Control` and absolute `Expires`. Do not configure an edge TTL override,
 stale-if-error, cache-key query normalization, or serve-stale behavior. A cache
 fill late in an alias lifetime must expire at the same absolute instant as the
 body. The resulting hard stale-data bound is the embedded artifact expiry,
 which is at most four hours; clients also reject an expired body. R2's
 [custom-domain cache consistency][r2-consistency] is necessarily weaker than
-direct bucket reads. Purge may reduce normal removal latency but is not a
-correctness or rollback dependency.
+direct bucket reads. After a verified alias cohort is checkpointed, the core
+builder uses Cloudflare's global single-file purge API for exactly that
+profile's three HTTPS `index.*` URLs. This event-driven purge is the normal
+freshness path and preserves the long cache lifetime between updates. Absolute
+artifact expiry remains the fail-safe correctness bound if the purge service
+is unavailable; purge is never a rollback substitute.
 
 Use Response Header Transform Rules on the three `index.*` paths to set:
 
@@ -414,4 +436,5 @@ Do not attach or move the production custom domain until all of these are true:
 [raw-uri]: https://developers.cloudflare.com/ruleset-engine/rules-language/fields/reference/raw.http.request.full_uri/
 [r2-consistency]: https://developers.cloudflare.com/r2/reference/consistency/
 [r2-public]: https://developers.cloudflare.com/r2/buckets/public-buckets/
+[single-file-purge]: https://developers.cloudflare.com/cache/how-to/purge-cache/purge-by-single-file/
 [worker-rate-binding]: https://developers.cloudflare.com/workers/runtime-apis/bindings/rate-limit/
