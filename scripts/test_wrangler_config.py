@@ -58,7 +58,23 @@ class WranglerSecurityConfigurationTests(unittest.TestCase):
     def test_source_tag_secrets_and_logging_policy_are_pinned(self) -> None:
         self.assertEqual(
             set(self.configuration["secrets"]["required"]),
-            {"SOURCE_TAG_KEY_CURRENT", "SOURCE_TAG_KEY_PREVIOUS"},
+            {
+                "DIRECTORY_CACHE_PURGE_TOKEN",
+                "SOURCE_TAG_KEY_CURRENT",
+                "SOURCE_TAG_KEY_PREVIOUS",
+            },
+        )
+        self.assertEqual(
+            self.configuration["vars"]["CLASSIC_DIRECTORY_PUBLIC_ORIGIN"],
+            "https://classic.meta.atrinik.org",
+        )
+        self.assertEqual(
+            self.configuration["vars"]["GAME_DIRECTORY_PUBLIC_ORIGIN"],
+            "https://meta.atrinik.org",
+        )
+        self.assertRegex(
+            self.configuration["vars"]["DIRECTORY_CACHE_ZONE_ID"],
+            r"^[0-9a-f]{32}$",
         )
         self.assertNotIn("ALLOW_TEST_SOURCE_IP", self.configuration["vars"])
         self.assertIs(self.configuration["observability"]["enabled"], True)
@@ -186,6 +202,7 @@ class WranglerSecurityConfigurationTests(unittest.TestCase):
         normalized_deployment = " ".join(deployment.split())
         for value in (
             'http.request.method in {"GET" "HEAD"}',
+            'http.request.method in {"GET" "HEAD" "PURGE"}',
             '"/" "/index.html" "/index.json" "/index.xml"',
             "/manifest.json",
             "Keep each bucket's `r2.dev` URL disabled",
@@ -196,6 +213,22 @@ class WranglerSecurityConfigurationTests(unittest.TestCase):
         ):
             with self.subTest(value=value):
                 self.assertIn(value, normalized_policy)
+        cache_expression = (
+            'http.host eq "classic.meta.atrinik.org" and '
+            'http.request.method in {"GET" "HEAD" "PURGE"} and '
+            'raw.http.request.uri.query eq "" and '
+            'raw.http.request.uri.path in {"/index.html" "/index.json" "/index.xml"} and '
+            'http.request.uri.path in {"/index.html" "/index.json" "/index.xml"}'
+        )
+        self.assertIn(cache_expression, normalized_policy)
+        self.assertIn(
+            "It belongs only in this cache expression",
+            normalized_policy,
+        )
+        self.assertIn(
+            "A HIT of the warmed generation after API acceptance is a deployment blocker",
+            normalized_deployment,
+        )
         self.assertIn(
             "opaque quoted strong `ETag` of 3 through 128 bytes",
             normalized_deployment,
@@ -393,6 +426,17 @@ class DynamicServiceBoundaryConfigurationTests(unittest.TestCase):
                 self.assertEqual(
                     set(configuration["secrets"]["required"]),
                     {"SOURCE_TAG_KEY_CURRENT", "SOURCE_TAG_KEY_PREVIOUS"},
+                )
+                self.assertNotIn(
+                    "DIRECTORY_CACHE_PURGE_TOKEN",
+                    configuration["secrets"]["required"],
+                )
+                self.assertNotIn("DIRECTORY_CACHE_ZONE_ID", configuration["vars"])
+                self.assertNotIn(
+                    "CLASSIC_DIRECTORY_PUBLIC_ORIGIN", configuration["vars"]
+                )
+                self.assertNotIn(
+                    "GAME_DIRECTORY_PUBLIC_ORIGIN", configuration["vars"]
                 )
 
         self.assertEqual(

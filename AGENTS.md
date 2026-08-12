@@ -47,6 +47,12 @@
   conditional validator and Last-Modified. Never publish an alias before its
   generated time or at/after its expiry. Never expose the private D1 revision
   or historical removed models in a public body, key, or metadata field.
+- Keep long-lived static caching and event-driven invalidation coupled. After
+  an exact alias cohort and D1 checkpoint, globally purge only that profile's
+  three configured HTTPS `index.*` URLs. The pending build is the durable retry
+  journal; purge failure must complete the event, preserve that state, and
+  schedule retry rather than risk rolling it back. Keep the Cache Purge token
+  encrypted, core-only, zone-scoped, and absent from logs and persistence.
 - Use `scripts/static_origin_canary.py` for public static-origin evidence. It is
   deliberately credential-free and read-only, defaults to non-production DNS,
   bounds every response and convergence retry, and must never grow Cloudflare

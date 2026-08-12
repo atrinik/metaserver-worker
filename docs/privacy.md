@@ -160,7 +160,12 @@ generation high-water mark, an opaque bounded cleanup cursor, and at most one
 pending build containing a random local token, revision, generation, freshness
 times, and model digest. It never
 stores a server ID, listing field, hostname, source tag, credential, ticket, or
-candidate. The private R2 bucket uses only
+candidate. After publication, that same pending build temporarily acts as the
+cache-purge journal; it contains neither the dedicated purge credential nor an
+account or zone identifier. The token is an encrypted core-only binding and is
+used solely in an authorization header to purge the three configured public
+aliases. It is never logged or included in metrics, D1, R2, or Durable Object
+storage. The private R2 bucket uses only
 `v1/<profile>/<generation>/<fixed-name>` keys. The public buckets contain only
 the fixed `index.html`, `index.xml`, `index.json`, and `manifest.json` aliases.
 Custom metadata is an exact allowlist of schema, profile, format, generation,
@@ -252,7 +257,7 @@ attempts one best-effort `directory-build-v1` point:
 | `index1` | `directory-build-v1:<profile>:<outcome>:<cleanup>` |
 | `blob1` | schema name `directory-build-v1` |
 | `blob2` | `classic-v1` or `game-v1` |
-| `blob3` | `current`, `published`, or `failed` |
+| `blob3` | `current`, `published`, `purge-pending`, or `failed` |
 | `blob4` | retention cleanup `current` or `deferred` |
 | `double1` | invocation count, always `1` |
 | `double2` | duration in milliseconds, `0..300,000` |

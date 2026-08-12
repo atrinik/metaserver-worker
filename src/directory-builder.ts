@@ -38,6 +38,7 @@ import {
   isDirectoryOriginStrongEtag,
 } from "./directory-origin";
 import { sha256Hex } from "./protocol";
+import { purgeDirectoryAliases } from "./directory-cache-purge";
 
 const BUILDER_STATE_KEY = "directory-builder:state:v1";
 const BUILDER_NUDGE_KEY = "directory-builder:nudge:v1";
@@ -145,7 +146,7 @@ interface RetentionSweepResult extends RetentionResult {
 
 export interface DirectoryBuildResult {
   readonly profile: DirectoryProfile;
-  readonly outcome: "current" | "published";
+  readonly outcome: "current" | "published" | "purge-pending";
   readonly generation: number;
   readonly revision: number;
 }
@@ -313,15 +314,20 @@ export class DirectoryBuilder extends DurableObject<CoreEnv> {
             ...checkpoint,
           });
         }
-        await this.clearCommittedPending(checkpoint);
+        const purgeComplete = await this.purgeAndClearCommittedPending(
+          profile,
+          checkpoint,
+        );
         await this.scheduleAlarm(
-          refreshDue ? checkpoint.expiresAt :
-            checkpoint.expiresAt - configuration.refreshLeadSeconds,
+          purgeComplete
+            ? (refreshDue ? checkpoint.expiresAt :
+              checkpoint.expiresAt - configuration.refreshLeadSeconds)
+            : now + 60,
           now,
         );
         return Object.freeze({
           profile,
-          outcome: "current",
+          outcome: purgeComplete ? "current" : "purge-pending",
           generation: checkpoint.generation,
           revision: checkpoint.publishedRevision,
         });
@@ -464,17 +470,25 @@ export class DirectoryBuilder extends DurableObject<CoreEnv> {
       }
     }
 
-    await this.completePending(pending);
+    const purgeComplete = await this.purgeCommittedGeneration(
+      profile,
+      pending.generation,
+    );
+    if (purgeComplete) {
+      await this.completePending(pending);
+    }
     const latest = await readDirectoryRevision(this.env.DB, profile);
     await this.scheduleAlarm(
-      latest.revision > pending.revision
+      !purgeComplete
+        ? now + 60
+        : latest.revision > pending.revision
         ? now + 1
         : pending.expiresAt - configuration.refreshLeadSeconds,
       now,
     );
     return Object.freeze({
       profile,
-      outcome: "published",
+      outcome: purgeComplete ? "published" : "purge-pending",
       generation: pending.generation,
       revision: pending.revision,
     });
@@ -742,9 +756,10 @@ export class DirectoryBuilder extends DurableObject<CoreEnv> {
     } satisfies BuilderState);
   }
 
-  private async clearCommittedPending(
+  private async purgeAndClearCommittedPending(
+    profile: DirectoryProfile,
     checkpoint: DirectoryArtifactPublication,
-  ): Promise<void> {
+  ): Promise<boolean> {
     const state = exactBuilderState(
       await this.ctx.storage.get<unknown>(BUILDER_STATE_KEY),
     );
@@ -754,10 +769,39 @@ export class DirectoryBuilder extends DurableObject<CoreEnv> {
       state.pending.revision === checkpoint.publishedRevision &&
       state.pending.modelSha256 === checkpoint.modelSha256
     ) {
-      await this.ctx.storage.put(BUILDER_STATE_KEY, {
-        ...state,
-        pending: null,
-      } satisfies BuilderState);
+      if (await this.purgeCommittedGeneration(profile, checkpoint.generation)) {
+        await this.ctx.storage.put(BUILDER_STATE_KEY, {
+          ...state,
+          pending: null,
+        } satisfies BuilderState);
+        return true;
+      }
+      return false;
+    }
+    return true;
+  }
+
+  private async purgeCommittedGeneration(
+    profile: DirectoryProfile,
+    generation: number,
+  ): Promise<boolean> {
+    try {
+      await purgeDirectoryAliases(this.env, profile);
+      const checkpoint = await readDirectoryArtifactPublication(
+        this.env.DB,
+        profile,
+      );
+      if (checkpoint.generation !== generation) {
+        throw new Error("Directory cache purge generation changed");
+      }
+      return true;
+    } catch {
+      // R2/D1 publication is already authoritative. Preserve the pending build
+      // as the purge journal and complete this Durable Object event normally;
+      // an escaping exception could roll back its storage while external
+      // publication remains committed.
+      await this.ctx.storage.setAlarm(Date.now() + 60_000);
+      return false;
     }
   }
 

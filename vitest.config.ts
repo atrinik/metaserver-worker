@@ -18,6 +18,8 @@ const TEST_SOURCE_TAG_KEY_PREVIOUS =
 // validation quiet and are also the exact values injected into the runtime.
 process.env.SOURCE_TAG_KEY_CURRENT ??= TEST_SOURCE_TAG_KEY_CURRENT;
 process.env.SOURCE_TAG_KEY_PREVIOUS ??= TEST_SOURCE_TAG_KEY_PREVIOUS;
+process.env.DIRECTORY_CACHE_PURGE_TOKEN ??=
+  "test-directory-cache-purge-token";
 
 export default defineConfig({
   plugins: [
@@ -32,6 +34,7 @@ export default defineConfig({
           COMPAT_HOSTNAME: "meta.example.test",
           SOURCE_TAG_KEY_CURRENT: TEST_SOURCE_TAG_KEY_CURRENT,
           SOURCE_TAG_KEY_PREVIOUS: TEST_SOURCE_TAG_KEY_PREVIOUS,
+          DIRECTORY_CACHE_PURGE_TOKEN: "test-directory-cache-purge-token",
           COMPAT_STATUS_DAILY_LIMIT: "8",
           COMPAT_DIRECTORY_DAILY_LIMIT: "8",
           COMPAT_OTP_DAILY_LIMIT: "48",

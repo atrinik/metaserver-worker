@@ -6,6 +6,7 @@ import type {
   RequestControlConfigurationInput,
 } from "./config";
 import type { SourceTagKeyEnvironment } from "./privacy";
+import type { DirectoryCachePurgeEnvironment } from "./directory-cache-purge";
 import type { DirectoryBuilder } from "./directory-builder";
 import type { RendezvousRoom } from "./rendezvous-room";
 
@@ -23,6 +24,7 @@ export type CoreEnv =
   & RendezvousPolicyConfigurationInput
   & RequestControlConfigurationInput
   & SourceTagKeyEnvironment
+  & DirectoryCachePurgeEnvironment
   & {
     readonly DB: D1Database;
     readonly DIRECTORY_GENERATIONS: R2Bucket;

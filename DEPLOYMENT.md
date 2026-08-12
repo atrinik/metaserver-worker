@@ -47,6 +47,13 @@ not a Cloudflare deployment.
    overlap remains active for strictly more than 24 hours after the last writer
    using the preceding pair stops; the per-room replay ledger depends on that
    overlap.
+   Separately create a Cloudflare API token restricted to **Cache Purge** for
+   the one target Atrinik zone. Add it as the core-only
+   `DIRECTORY_CACHE_PURGE_TOKEN` encrypted secret in the same protected atomic
+   version input, set `DIRECTORY_CACHE_ZONE_ID` to that exact zone, and set the
+   Classic/Game public origins to their reviewed HTTPS origins. Do not reuse a
+   broad deployment credential, persist the token in D1/R2/DO storage, or grant
+   it to either public edge Worker.
 6. Run `npm ci` and `npm run check` from this directory.
 7. Run the following dry run and review its output for unexpected bindings,
    routes, compatibility changes, or secrets:
@@ -202,12 +209,24 @@ No lifecycle rule may target either public alias bucket. Record and verify the
 bucket, prefix, and 30-day value through the R2 lifecycle API before rollout.
 Alert when a profile outbox remains non-empty for more than ten
 minutes, a checkpoint approaches expiry without a later generation, aliases
-diverge, or retention cleanup stops converging.
+diverge, a `purge-pending` outcome persists, or retention cleanup stops
+converging.
 
 Static aliases use absolute expiry rather than a relative `max-age`, preventing
 a late cache fill from remaining fresh after the timestamp embedded in its
-body. R2 overwrite does not itself purge custom-domain cache entries. The
-released directory contract therefore treats R2's object ETag as an opaque
+body. R2 overwrite does not itself purge custom-domain cache entries. After
+the alias cohort and D1 checkpoint are exact, the builder globally purges only
+the three public HTTPS `index.*` URLs for that profile. Its already-durable
+pending build remains the purge journal until an exact successful API response;
+failure completes the event normally, preserves the journal, and schedules a
+one-minute retry so Durable Object storage cannot roll back while R2/D1 remains
+committed. A later revision remains durably queued and duplicate purges are
+safe. Before enabling this path, read back the exact Cache Rule for each
+production and canary hostname and require the method set `GET`, `HEAD`, and
+`PURGE` on only the three empty-query `index.*` aliases. Cloudflare evaluates a
+single-file purge with method `PURGE`; the public WAF/header/redirect rules stay
+GET/HEAD-only. The released directory contract treats R2's object ETag as an
+opaque
 strong validator and its alias upload time as `Last-Modified`; body SHA-256 is
 independent integrity metadata. The builder rejects a malformed native ETag
 and never begins alias publication before `generatedAt` or within the final
@@ -606,11 +625,17 @@ evidence, not public-read atomicity.
 22. Publish one visible update and measure the interval from the D1 revision to
     all three aliases naming the new generation. Interrupt one alias write and
     prove reconciliation converges monotonically without any older alias
-    replacing a newer one. Then withdraw an endpoint and make the server
-    private. A cached old body may remain usable only until its embedded
-    `expiresAt`, never more than the four-hour artifact lifetime; no purge is a
-    correctness dependency. Record the measured normal convergence/removal
-    times, cache status, R2 operation counts, checkpoint/outbox status, and
+    replacing a newer one. Warm all three aliases to a verified old generation,
+    then withdraw an endpoint and make the server private. Require the purge
+    API's exact accepted envelope, followed by a non-HIT cache response and the
+    new generation on every alias without waiting for the old expiry. A HIT of
+    the warmed generation after API acceptance is a deployment blocker because
+    it proves the Cache Rule did not participate in single-file invalidation.
+    If purge is unavailable, a cached old body
+    may remain usable only until its embedded `expiresAt`, never more than the
+    four-hour artifact lifetime. Record the purge audit event, measured normal
+    convergence/removal times, cache status, R2 operation counts,
+    checkpoint/outbox status, and
     zero increase in dynamic Worker or D1 reads from repeated static requests.
     Detach the canary domains and rules after evidence collection. Do not
     enable a production hostname in this step.

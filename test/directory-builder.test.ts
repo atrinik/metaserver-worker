@@ -23,6 +23,9 @@ const BUILDER_STATE_KEY = "directory-builder:state:v1";
 
 beforeEach(async () => {
   vi.restoreAllMocks();
+  vi.spyOn(globalThis, "fetch").mockImplementation(async () =>
+    successfulPurgeResponse()
+  );
   vi.spyOn(Date, "now").mockReturnValue(NOW * 1_000);
   await env.DB.batch([
     env.DB.prepare("DELETE FROM directory_artifact_history"),
@@ -162,6 +165,153 @@ describe("static directory builder", () => {
       revision: 1,
     });
     expect(await aliasEtags(env.CLASSIC_DIRECTORY_PUBLIC)).toEqual(before);
+  });
+
+  it("globally purges only the changed profile aliases after publication", async () => {
+    const stub = env.DIRECTORY_BUILDER.getByName("classic-v1");
+    await stub.reconcile();
+    const purge = vi.mocked(globalThis.fetch);
+    expect(purge).toHaveBeenCalledTimes(1);
+    expectPurgeRequest(purge.mock.calls[0], "classic.meta.atrinik.org");
+
+    purge.mockClear();
+    await persistRendezvousPublication(
+      env.DB,
+      publication("1".repeat(64), NOW, "a".repeat(64)),
+    );
+    await stub.reconcile();
+    expect(purge).toHaveBeenCalledTimes(1);
+    expectPurgeRequest(purge.mock.calls[0], "classic.meta.atrinik.org");
+
+    purge.mockClear();
+    await stub.reconcile();
+    expect(purge).not.toHaveBeenCalled();
+  });
+
+  it("retains a committed generation and retries an ambiguous purge", async () => {
+    const stub = env.DIRECTORY_BUILDER.getByName("classic-v1");
+    await stub.reconcile();
+    await persistRendezvousPublication(
+      env.DB,
+      publication("2".repeat(64), NOW, "b".repeat(64)),
+    );
+    const purge = vi.mocked(globalThis.fetch);
+    purge.mockReset().mockRejectedValueOnce(
+      new DOMException("timed out", "TimeoutError"),
+    );
+
+    await expect(stub.reconcile()).resolves.toMatchObject({
+      outcome: "purge-pending",
+      generation: 2,
+      revision: 1,
+    });
+    expect((await readDirectoryArtifactPublication(env.DB, "classic-v1")))
+      .toMatchObject({ generation: 2, publishedRevision: 1 });
+    await runInDurableObject(stub, async (_instance, state) => {
+      expect(await state.storage.getAlarm()).toBe(NOW * 1_000 + 60_000);
+      expect(await state.storage.get(BUILDER_STATE_KEY)).toMatchObject({
+        pending: { generation: 2, revision: 1 },
+      });
+    });
+
+    purge.mockImplementation(async () => successfulPurgeResponse());
+    await expect(stub.reconcile()).resolves.toMatchObject({
+      outcome: "current",
+      generation: 2,
+      revision: 1,
+    });
+    expect(purge).toHaveBeenCalledTimes(2);
+    await runInDurableObject(stub, async (_instance, state) => {
+      expect(await state.storage.get(BUILDER_STATE_KEY)).toMatchObject({
+        pending: null,
+      });
+    });
+  });
+
+  it("preserves a superseding revision while an earlier purge is retried", async () => {
+    const stub = env.DIRECTORY_BUILDER.getByName("classic-v1");
+    await stub.reconcile();
+    const first = publication("3".repeat(64), NOW, "c".repeat(64));
+    await persistRendezvousPublication(env.DB, first);
+    const purge = vi.mocked(globalThis.fetch);
+    purge.mockReset().mockImplementationOnce(async () => new Response(
+      JSON.stringify({ success: false, errors: [], messages: [], result: null }),
+      { status: 503, headers: { "Content-Type": "application/json" } },
+    ));
+    await expect(stub.reconcile()).resolves.toMatchObject({
+      outcome: "purge-pending",
+      generation: 2,
+      revision: 1,
+    });
+    await runInDurableObject(stub, async (_instance, state) => {
+      expect(await state.storage.get(BUILDER_STATE_KEY)).toMatchObject({
+        pending: { generation: 2, revision: 1 },
+      });
+    });
+
+    purge.mockImplementation(async () => successfulPurgeResponse());
+    const persistence = await runInDurableObject(stub, async () =>
+      persistRendezvousPublication(env.DB, {
+        ...first,
+        commitToken: "d".repeat(64),
+        expectedGeneration: first.generation,
+        generation: "e".repeat(64),
+        publisherSequence: "2",
+        publisherNonce: "4".repeat(32),
+        now: NOW + 1,
+        name: "Superseding directory builder test",
+        directoryFingerprint: "8".repeat(64),
+      })
+    );
+    expect(persistence).toEqual({
+      accepted: true,
+      visibleChanged: true,
+    });
+    expect(await env.DB.prepare(
+      "SELECT revision FROM directory_revisions WHERE profile = 'classic-v1'",
+    ).first<number>("revision")).toBe(2);
+    expect((await readDirectoryArtifactPublication(env.DB, "classic-v1")))
+      .toMatchObject({ publishedRevision: 1, generation: 2 });
+    await expect(stub.reconcile()).resolves.toMatchObject({
+      outcome: "current",
+      generation: 2,
+      revision: 1,
+    });
+    expect(await env.DB.prepare(
+      "SELECT revision FROM directory_outbox WHERE profile = 'classic-v1'",
+    ).first<number>("revision")).toBe(2);
+    await runInDurableObject(stub, async (_instance, state) => {
+      expect(await state.storage.get(BUILDER_STATE_KEY)).toMatchObject({
+        pending: null,
+      });
+    });
+  });
+
+  it("retries an accepted purge when completion was not durably cleared", async () => {
+    const stub = env.DIRECTORY_BUILDER.getByName("game-v1");
+    await stub.reconcile();
+    const checkpoint = await readDirectoryArtifactPublication(env.DB, "game-v1");
+    await runInDurableObject(stub, async (_instance, state) => {
+      await state.storage.put(BUILDER_STATE_KEY, {
+        version: 1,
+        highWaterGeneration: checkpoint.generation,
+        pending: {
+          token: "a".repeat(64),
+          revision: checkpoint.publishedRevision,
+          generation: checkpoint.generation,
+          generatedAt: checkpoint.generatedAt,
+          expiresAt: checkpoint.expiresAt,
+          modelSha256: checkpoint.modelSha256,
+        },
+        cleanupCursor: null,
+      });
+    });
+    const purge = vi.mocked(globalThis.fetch);
+    purge.mockClear();
+
+    await stub.reconcile();
+    expect(purge).toHaveBeenCalledTimes(1);
+    expectPurgeRequest(purge.mock.calls[0], "meta.atrinik.org");
   });
 
   it("removes exact-cutoff presence and publishes the resulting empty revision", async () => {
@@ -916,4 +1066,42 @@ function gamePublication(
     passwordRequired: false,
     directoryFingerprint: "8".repeat(64),
   };
+}
+
+function successfulPurgeResponse(): Response {
+  return new Response(JSON.stringify({
+    success: true,
+    errors: [],
+    messages: [],
+    result: { id: "f".repeat(32) },
+  }), {
+    status: 200,
+    headers: { "Content-Type": "application/json" },
+  });
+}
+
+function expectPurgeRequest(
+  call: Parameters<typeof fetch>,
+  hostname: string,
+): void {
+  expect(call[0]).toBe(
+    "https://api.cloudflare.com/client/v4/zones/" +
+      "00000000000000000000000000000000/purge_cache",
+  );
+  expect(call[1]).toMatchObject({
+    method: "POST",
+    headers: {
+      Accept: "application/json",
+      Authorization: "Bearer test-directory-cache-purge-token",
+      "Content-Type": "application/json",
+    },
+  });
+  expect(call[1]?.signal).toBeInstanceOf(AbortSignal);
+  expect(JSON.parse(String(call[1]?.body))).toEqual({
+    files: [
+      `https://${hostname}/index.html`,
+      `https://${hostname}/index.json`,
+      `https://${hostname}/index.xml`,
+    ],
+  });
 }
