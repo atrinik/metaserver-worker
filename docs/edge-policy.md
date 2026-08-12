@@ -41,10 +41,12 @@ without changing traffic for `meta.atrinik.org`:
 http.host eq "classic.meta.atrinik.org" and not (
   http.request.method in {"GET" "HEAD"} and
   raw.http.request.uri.query eq "" and
-  raw.http.request.uri.path eq http.request.uri.path and
   not (raw.http.request.uri.path contains "%") and
   not (raw.http.request.uri.path contains "\\") and
   raw.http.request.uri.path in {
+    "/" "/index.html" "/index.json" "/index.xml"
+  } and
+  http.request.uri.path in {
     "/" "/index.html" "/index.json" "/index.xml"
   }
 )
@@ -52,10 +54,12 @@ http.host eq "classic.meta.atrinik.org" and not (
 http.host eq "meta.atrinik.org" and not (
   http.request.method in {"GET" "HEAD"} and
   raw.http.request.uri.query eq "" and
-  raw.http.request.uri.path eq http.request.uri.path and
   not (raw.http.request.uri.path contains "%") and
   not (raw.http.request.uri.path contains "\\") and
   raw.http.request.uri.path in {
+    "/" "/index.html" "/index.json" "/index.xml"
+  } and
+  http.request.uri.path in {
     "/" "/index.html" "/index.json" "/index.xml"
   }
 )
@@ -70,10 +74,16 @@ host and path. Every redirect is permanent `308` and changes only the scheme.
 Never redirect an unexpected query, path, or method. Those targets remain
 blocked, and no redirect may invoke a Worker.
 
+After the scheme upgrade, direct R2 HTTPS requests to `/` return `404`; R2 does
+not list a bucket root and the edge must not synthesize an `/index.html`
+redirect. The static-origin verifier proves that HTTPS GET and HEAD behavior,
+while the ingress verifier separately proves the plaintext same-path `308`.
+
 The static Redirect Rule expressions must include `not ssl`, the exact methods,
-empty raw query, equality between raw and normalized paths, rejection of `%`
-and `\`, and the explicit path allowlist above. Use a dynamic target that
-changes only the scheme and preserves the exact authority and path.
+empty raw query, rejection of `%` and `\`, and identical explicit four-path
+allowlists for both the raw and normalized path fields. Cloudflare expressions
+do not support comparing those two fields directly. Use a dynamic target that
+changes only the scheme and preserves the exact authority and raw path.
 
 Do not enable the static rule for `meta.atrinik.org` while the temporary
 compatibility Worker owns that hostname: it would block the compatibility
@@ -144,9 +154,11 @@ http.host eq "meta.atrinik.org" and not (
      raw.http.request.uri eq "/index.wsgi/update") or
     (http.request.method eq "GET" and
      starts_with(raw.http.request.uri.path, "/v2/rendezvous/") and
-     raw.http.request.uri.path eq http.request.uri.path and
      not (raw.http.request.uri.path contains "%") and
      not (raw.http.request.uri.path contains "\\") and
+     not (raw.http.request.uri.path contains "//") and
+     not (raw.http.request.uri.path contains "/./") and
+     not (raw.http.request.uri.path contains "/../") and
      raw.http.request.uri.query in {"role=client" "role=server"})
   )
 )
@@ -212,12 +224,16 @@ http.host eq "rendezvous.meta.atrinik.org" and not (
   starts_with(lower(raw.http.request.full_uri),
               "https://rendezvous.meta.atrinik.org/") and
   http.request.method eq "GET" and (
-    starts_with(raw.http.request.uri.path, "/v1/servers/") or
-    starts_with(raw.http.request.uri.path, "/v1/classic/servers/")
+    (starts_with(raw.http.request.uri.path, "/v1/servers/") and
+     len(raw.http.request.uri.path) eq 76) or
+    (starts_with(raw.http.request.uri.path, "/v1/classic/servers/") and
+     len(raw.http.request.uri.path) eq 84)
   ) and
-  raw.http.request.uri.path eq http.request.uri.path and
   not (raw.http.request.uri.path contains "%") and
   not (raw.http.request.uri.path contains "\\") and
+  not (raw.http.request.uri.path contains "//") and
+  not (raw.http.request.uri.path contains "/./") and
+  not (raw.http.request.uri.path contains "/../") and
   raw.http.request.uri.query in {"role=client" "role=server"}
 )
 ```
@@ -255,12 +271,18 @@ http.host eq "publish.meta.atrinik.org" and not (
               "https://publish.meta.atrinik.org/") and
   http.request.method eq "POST" and
   raw.http.request.uri.query eq "" and
-  raw.http.request.uri.path eq http.request.uri.path and
   not (raw.http.request.uri.path contains "%") and
-  not (raw.http.request.uri.path contains "\\") and (
-    starts_with(raw.http.request.uri.path, "/v1/servers/") or
-    starts_with(raw.http.request.uri.path, "/v1/classic/servers/")
-  )
+  not (raw.http.request.uri.path contains "\\") and
+  not (raw.http.request.uri.path contains "//") and
+  not (raw.http.request.uri.path contains "/./") and
+  not (raw.http.request.uri.path contains "/../") and
+  not (raw.http.request.uri contains "?") and (
+    (starts_with(raw.http.request.uri.path, "/v1/servers/") and
+     len(raw.http.request.uri.path) eq 84) or
+    (starts_with(raw.http.request.uri.path, "/v1/classic/servers/") and
+     len(raw.http.request.uri.path) eq 92)
+  ) and
+  ends_with(raw.http.request.uri.path, "/publish")
 )
 ```
 

@@ -72,8 +72,10 @@ class FakeOrigin:
         }
         self.header_overrides: dict[tuple[str, str], str | None] = {}
         self.negative_status = 403
-        self.root_location = "https://canary.example.org/index.html"
-        self.root_body = b""
+        self.root_status = 404
+        self.root_head_status = 404
+        self.root_headers: dict[str, tuple[str, ...]] = {}
+        self.root_body = b"not found"
         self.calls: list[tuple[str, str, dict[str, str], int]] = []
 
     def selected_body(self, path: str) -> bytes:
@@ -112,8 +114,8 @@ class FakeOrigin:
         parsed = urllib.parse.urlsplit(url)
         if method in ("GET", "HEAD") and parsed.path == "/" and not parsed.query:
             return canary.HttpResponse(
-                308,
-                {"location": (self.root_location,)},
+                self.root_head_status if method == "HEAD" else self.root_status,
+                self.root_headers,
                 b"" if method == "HEAD" else self.root_body,
             )
         if (
@@ -314,10 +316,14 @@ class StaticOriginCanaryTests(unittest.TestCase):
                 with self.assertRaisesRegex(canary.CanaryError, message):
                     self.verify("game-v1", fake)
 
-    def test_rejects_public_manifest_and_wrong_root_redirect(self) -> None:
+    def test_rejects_public_manifest_and_wrong_https_root(self) -> None:
         fake = FakeOrigin("game-v1")
-        fake.root_body = b"permanent redirect"
-        self.verify("game-v1", fake)
+        fake.root_status = 308
+        fake.root_headers = {
+            "location": ("https://canary.example.org/index.html",),
+        }
+        with self.assertRaisesRegex(canary.CanaryError, "GET / must return 404"):
+            self.verify("game-v1", fake)
 
         fake = FakeOrigin("game-v1")
         fake.negative_status = 200
@@ -325,8 +331,18 @@ class StaticOriginCanaryTests(unittest.TestCase):
             self.verify("game-v1", fake)
 
         fake = FakeOrigin("game-v1")
-        fake.root_location = "https://other.example.org/index.html"
-        with self.assertRaisesRegex(canary.CanaryError, "same origin"):
+        fake.root_headers = {"location": ("/index.html",)}
+        with self.assertRaisesRegex(canary.CanaryError, "must not include Location"):
+            self.verify("game-v1", fake)
+
+        fake = FakeOrigin("game-v1")
+        fake.root_headers = {"cf-worker-status": ("ok",)}
+        with self.assertRaisesRegex(canary.CanaryError, "CF-Worker-Status"):
+            self.verify("game-v1", fake)
+
+        fake = FakeOrigin("game-v1")
+        fake.root_head_status = 200
+        with self.assertRaisesRegex(canary.CanaryError, "HEAD / must return"):
             self.verify("game-v1", fake)
 
     def test_origin_input_is_canonical_and_production_is_explicit(self) -> None:

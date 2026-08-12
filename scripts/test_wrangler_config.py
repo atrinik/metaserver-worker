@@ -1,4 +1,5 @@
 import json
+import re
 import unittest
 from pathlib import Path
 
@@ -192,6 +193,20 @@ class WranglerSecurityConfigurationTests(unittest.TestCase):
         self.assertIn(
             "Do not enable a production hostname in this step",
             normalized_deployment,
+        )
+        raw_static_paths = re.compile(
+            r"(?m)^\s+raw\.http\.request\.uri\.path in \{\s*"
+            r'"/"\s+"/index\.html"\s+"/index\.json"\s+"/index\.xml"\s*\}',
+        )
+        normalized_static_paths = re.compile(
+            r"(?m)^\s+http\.request\.uri\.path in \{\s*"
+            r'"/"\s+"/index\.html"\s+"/index\.json"\s+"/index\.xml"\s*\}',
+        )
+        self.assertEqual(len(raw_static_paths.findall(edge_policy)), 2)
+        self.assertEqual(len(normalized_static_paths.findall(edge_policy)), 2)
+        self.assertNotIn(
+            "raw.http.request.uri.path eq http.request.uri.path",
+            normalized_policy,
         )
         self.assertIn(
             "python3 scripts/static_origin_canary.py",
