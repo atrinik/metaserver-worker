@@ -126,6 +126,8 @@ function rateLimitReason(error: RequestBudgetExceeded): HttpRateLimitReason {
         : "rendezvous_client_source_daily";
     case "rendezvous-client-source-server":
       return "rendezvous_client_pair_daily";
+    case "rendezvous-client-pair-cooldown":
+      return "rendezvous_client_pair_cooldown";
     case "rendezvous-server-source":
       return "rendezvous_server_source_daily";
     case "rendezvous-server":

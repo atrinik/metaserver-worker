@@ -44,12 +44,6 @@ export default {
         keys: await requiredSourceTagKeyRing(env),
         namespace: control.authority,
       });
-      await enforceNativeBurstAliases(
-        env.GLOBAL_RATE_LIMITER,
-        actorAliases(await privacy.tags(SourceTagPurpose.GlobalIngress)),
-        "global",
-      );
-
       const source = route.role === "client"
         ? actorAliases(await privacy.tags(
           SourceTagPurpose.RendezvousClientGlobal,
@@ -60,6 +54,12 @@ export default {
           env.RENDEZVOUS_CLIENT_RATE_LIMITER,
           source,
           "rendezvous-client-source",
+        );
+      } else {
+        await enforceNativeBurstAliases(
+          env.GLOBAL_RATE_LIMITER,
+          actorAliases(await privacy.tags(SourceTagPurpose.GlobalIngress)),
+          "global",
         );
       }
       const pair = route.role === "client"
@@ -73,7 +73,9 @@ export default {
         await env.COORDINATOR.fetch(rendezvousServiceRequest(
           request,
           route.role,
-          { source, pair },
+          route.role === "client"
+            ? { source: null, pair: requirePair(pair) }
+            : { source, pair: null },
         )),
         route.subprotocol,
       );
@@ -82,3 +84,12 @@ export default {
     }
   },
 } satisfies ExportedHandler<RendezvousEnv>;
+
+function requirePair(
+  pair: readonly [string, string] | null,
+): readonly [string, string] {
+  if (pair === null) {
+    throw new Error("Client rendezvous omitted pair aliases");
+  }
+  return pair;
+}

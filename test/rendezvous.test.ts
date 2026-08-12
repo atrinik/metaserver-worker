@@ -523,28 +523,6 @@ async function expectFixedError(
   expect(await response.text()).toBe(body);
 }
 
-async function expectRollingLimit(
-  response: Response,
-  retryAfter = 86_400,
-): Promise<void> {
-  expect(response.status).toBe(429);
-  expect(response.headers.get("Cache-Control")).toBe("no-store");
-  expect(response.headers.get("Content-Type")).toBe(
-    "application/json; charset=utf-8",
-  );
-  expect(response.headers.get("X-Content-Type-Options")).toBe("nosniff");
-  expect(response.headers.get("Retry-After")).toBe(String(retryAfter));
-  expect(response.headers.has("Location")).toBe(false);
-  expect(await response.json()).toEqual({
-    error: {
-      code: "rate_limited",
-      message: "The request budget has been exhausted.",
-      reason: "rendezvous_server_sessions_rolling",
-      retry_after_seconds: retryAfter,
-    },
-  });
-}
-
 async function seedAdmissions(
   stub: DurableObjectStub,
   timestamps: readonly number[],
@@ -748,22 +726,17 @@ describe("RendezvousRoom HTTP and admission boundary", () => {
     }
   });
 
-  it("accepts exactly 50 sessions in a rolling day and rejects the 51st", async () => {
-    const stub = room("rolling-session-ceiling");
+  it("does not turn the rolling replay horizon into a 50-session quota", async () => {
+    const stub = room("replay-horizon-not-quota");
     const server = await connect(stub, "server");
     const futureTimestamp = Date.now() + 5_000;
-    await seedAdmissions(stub, Array(49).fill(futureTimestamp));
+    await seedAdmissions(stub, Array(100).fill(futureTimestamp));
 
-    const fiftieth = await connect(stub, "client");
+    const client = await connect(stub, "client");
     try {
-      expect(await admissionCount(stub)).toBe(50);
-      await expectRollingLimit(
-        await stub.fetch(roomRequest("client")),
-        86_400,
-      );
-      expect(await admissionCount(stub)).toBe(50);
+      expect(await admissionCount(stub)).toBe(101);
     } finally {
-      closeForCleanup(fiftieth, server);
+      closeForCleanup(client, server);
     }
   });
 
@@ -777,12 +750,11 @@ describe("RendezvousRoom HTTP and admission boundary", () => {
       server = await connect(stub, "server");
       await seedAdmissions(stub, [
         now - RENDEZVOUS_ROLLING_WINDOW_MS,
-        ...Array(49).fill(now - RENDEZVOUS_ROLLING_WINDOW_MS + 1),
+        now - RENDEZVOUS_ROLLING_WINDOW_MS + 1,
       ]);
 
       client = await connect(stub, "client");
-      expect(await admissionCount(stub)).toBe(50);
-      await expectRollingLimit(await stub.fetch(roomRequest("client")), 1);
+      expect(await admissionCount(stub)).toBe(2);
     } finally {
       closeForCleanup(...[client, server].filter(
         (socket): socket is WebSocket => socket !== undefined,
@@ -791,8 +763,8 @@ describe("RendezvousRoom HTTP and admission boundary", () => {
     }
   });
 
-  it("serializes concurrent admissions at the exact rolling ceiling", async () => {
-    const stub = room("concurrent-session-ceiling");
+  it("serializes concurrent replay-ledger reservations without a daily rejection", async () => {
+    const stub = room("concurrent-replay-reservations");
     const server = await connect(stub, "server");
     await seedAdmissions(stub, Array(49).fill(Date.now() + 5_000));
 
@@ -800,21 +772,18 @@ describe("RendezvousRoom HTTP and admission boundary", () => {
       stub.fetch(roomRequest("client")),
       stub.fetch(roomRequest("client")),
     ]);
-    expect(responses.map(({ status }) => status).sort()).toEqual([101, 429]);
-    const accepted = responses.find(({ status }) => status === 101);
-    const rejected = responses.find(({ status }) => status === 429);
-    if (accepted?.webSocket === null || accepted?.webSocket === undefined) {
-      throw new Error("Concurrent accepted response returned no WebSocket");
-    }
-    if (rejected === undefined) {
-      throw new Error("Concurrent admission returned no rejection");
-    }
-    accepted.webSocket.accept();
+    expect(responses.map(({ status }) => status)).toEqual([101, 101]);
+    const sockets = responses.map(({ webSocket }) => {
+      if (webSocket === null) {
+        throw new Error("Concurrent accepted response returned no WebSocket");
+      }
+      webSocket.accept();
+      return webSocket;
+    });
     try {
-      await expectRollingLimit(rejected, 86_400);
-      expect(await admissionCount(stub)).toBe(50);
+      expect(await admissionCount(stub)).toBe(51);
     } finally {
-      closeForCleanup(accepted.webSocket, server);
+      closeForCleanup(...sockets, server);
     }
   });
 
@@ -919,7 +888,6 @@ describe("RendezvousRoom HTTP and admission boundary", () => {
       const acceptClient = Reflect.get(instance, "acceptClient") as (
         now: number,
         policy: {
-          readonly rendezvousClientRollingLimit: number;
           readonly rendezvousActiveClientLimit: number;
           readonly rendezvousClientSessionSeconds: number;
         },
@@ -929,7 +897,6 @@ describe("RendezvousRoom HTTP and admission boundary", () => {
       ) => Promise<Response>;
       try {
         await expect(acceptClient.call(instance, Date.now(), {
-          rendezvousClientRollingLimit: 50,
           rendezvousActiveClientLimit: 16,
           rendezvousClientSessionSeconds: 15,
         }, false, false, "0".repeat(64))).rejects.toMatchObject({

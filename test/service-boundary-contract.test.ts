@@ -138,6 +138,8 @@ beforeEach(async () => {
     env.DB.prepare("DELETE FROM servers"),
     env.DB.prepare("DELETE FROM server_owners"),
     env.DB.prepare("DELETE FROM request_budgets"),
+    env.DB.prepare("DELETE FROM rendezvous_pair_attempts"),
+    env.DB.prepare("DELETE FROM rendezvous_pair_cooldowns"),
     env.DB.prepare(
       "UPDATE directory_revisions SET revision = 0, updated_at = 0",
     ),
@@ -165,16 +167,21 @@ describe("in-process service-boundary contract", () => {
     const rendezvousEdge = override(rendezvousEnvironment(core), {
       RENDEZVOUS_HOSTNAME: "rendezvous-canary.example.test",
     });
-    const offline = await rendezvousWorker.fetch(new Request(
-      `https://rendezvous-canary.example.test/v1/classic/servers/${publisherFixture.server_id}?role=client`,
-      {
-        headers: {
-          "CF-Connecting-IP": "192.0.2.149",
-          Upgrade: "websocket",
+    for (let attempt = 0; attempt < 25; attempt += 1) {
+      const offline = await rendezvousWorker.fetch(new Request(
+        `https://rendezvous-canary.example.test/v1/classic/servers/${publisherFixture.server_id}?role=client`,
+        {
+          headers: {
+            "CF-Connecting-IP": "192.0.2.149",
+            Upgrade: "websocket",
+          },
         },
-      },
-    ), rendezvousEdge);
-    expect(offline.status).toBe(404);
+      ), rendezvousEdge);
+      expect(offline.status).toBe(404);
+    }
+    expect(await env.DB.prepare(
+      "SELECT COUNT(*) AS count FROM rendezvous_pair_attempts",
+    ).first<number>("count")).toBe(0);
   });
 
   it("preserves a fixed no-server admission response through both boundaries", async () => {
@@ -257,5 +264,96 @@ describe("in-process service-boundary contract", () => {
     expect(socket).not.toBeNull();
     socket?.accept();
     socket?.close(1000, "Test complete");
+  });
+
+  it("applies the canonical pair cooldown only after live-target eligibility", async () => {
+    const core = coreEnvironment();
+    const context = createExecutionContext();
+    const published = await publisherWorker.fetch(
+      signedPublishRequest(),
+      publisherEnvironment(core, context),
+    );
+    await waitOnExecutionContext(context);
+    const { rendezvousToken } = await published.json<{
+      readonly rendezvousToken: string;
+    }>();
+    expect(rendezvousToken).toMatch(/^[0-9a-f]{64}$/);
+    const roomSockets: WebSocket[] = [];
+    const admissionCore = override(core, {
+      RENDEZVOUS: {
+        getByName: () => ({
+          fetch: async () => {
+            const pair = new WebSocketPair();
+            pair[1].accept();
+            roomSockets.push(pair[1]);
+            return new Response(null, {
+              status: 101,
+              headers: {
+                "Cache-Control": "no-store",
+                "Sec-WebSocket-Protocol":
+                  CLASSIC_RENDEZVOUS_INVITE_SUBPROTOCOL,
+                "X-Content-Type-Options": "nosniff",
+              },
+              webSocket: pair[0],
+            });
+          },
+        }),
+      } as unknown as Env["RENDEZVOUS"],
+    });
+    const edge = rendezvousEnvironment(admissionCore);
+
+    const clientRequest = () => new Request(
+      `https://rendezvous.meta.atrinik.org/v1/classic/servers/${publisherFixture.server_id}?role=client`,
+      {
+        headers: {
+          "CF-Connecting-IP": "192.0.2.171",
+          "Sec-WebSocket-Protocol":
+            CLASSIC_RENDEZVOUS_INVITE_SUBPROTOCOL,
+          Upgrade: "websocket",
+        },
+      },
+    );
+    const clients: WebSocket[] = [];
+    try {
+      for (let attempt = 0; attempt < 20; attempt += 1) {
+        const admitted = await rendezvousWorker.fetch(clientRequest(), edge);
+        expect(admitted.status).toBe(101);
+        const socket = admitted.webSocket;
+        if (socket === null) {
+          throw new Error("Accepted canonical client returned no WebSocket");
+        }
+        socket.accept();
+        clients.push(socket);
+        socket.close(1000, "Test attempt complete");
+      }
+      const blocked = await rendezvousWorker.fetch(clientRequest(), edge);
+      expect(blocked.status).toBe(429);
+      expect(blocked.headers.get("Retry-After")).toBe("30");
+      expect(await blocked.json()).toEqual({
+        error: {
+          code: "rate_limited",
+          message: "The request budget has been exhausted.",
+          reason: "rendezvous_client_pair_cooldown",
+          retry_after_seconds: 30,
+        },
+      });
+      expect(await env.DB.prepare(
+        `SELECT COUNT(*) AS count FROM request_budgets
+          WHERE scope IN (
+            'rendezvous-client-source',
+            'rendezvous-client-source-server'
+          )`,
+      ).first<number>("count")).toBe(0);
+      expect(await env.DB.prepare(
+        "SELECT COUNT(*) AS count FROM rendezvous_pair_cooldowns",
+      ).first<number>("count")).toBe(2);
+    } finally {
+      for (const client of clients) {
+        client.close(1000, "Test cleanup");
+      }
+      for (const roomSocket of roomSockets) {
+        roomSocket.close(1000, "Test cleanup");
+      }
+    }
   });
 });

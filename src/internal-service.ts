@@ -100,10 +100,9 @@ const FIXED_RENDEZVOUS_ERRORS = Object.freeze([
 
 export type ActorAliases = readonly [current: string, previous: string];
 
-export interface RendezvousAdmissionAliases {
-  readonly source: ActorAliases;
-  readonly pair: ActorAliases | null;
-}
+export type RendezvousAdmissionAliases =
+  | { readonly source: null; readonly pair: ActorAliases }
+  | { readonly source: ActorAliases; readonly pair: null };
 
 /** Convert the required two-key source-tag result into a strict RPC tuple. */
 export function actorAliases(values: readonly string[]): ActorAliases {
@@ -164,13 +163,19 @@ export function rendezvousServiceRequest(
   if (role === "client" && request.headers.has("Authorization")) {
     throw new HttpError("bad_request");
   }
-  const additions = new Headers({
-    [INTERNAL_SOURCE_TAG_HEADER]: aliases.source[0],
-    [INTERNAL_SOURCE_TAG_PREVIOUS_HEADER]: aliases.source[1],
-  });
-  if (aliases.pair !== null) {
+  const additions = new Headers();
+  if (role === "client") {
+    if (aliases.source !== null || aliases.pair === null) {
+      throw new HttpError("bad_request");
+    }
     additions.set(INTERNAL_PAIR_TAG_HEADER, aliases.pair[0]);
     additions.set(INTERNAL_PAIR_TAG_PREVIOUS_HEADER, aliases.pair[1]);
+  } else {
+    if (aliases.source === null || aliases.pair !== null) {
+      throw new HttpError("bad_request");
+    }
+    additions.set(INTERNAL_SOURCE_TAG_HEADER, aliases.source[0]);
+    additions.set(INTERNAL_SOURCE_TAG_PREVIOUS_HEADER, aliases.source[1]);
   }
   const allowlist = role === "server"
     ? [...RENDEZVOUS_FORWARD_HEADERS, "Authorization"]
@@ -193,13 +198,19 @@ export function consumeRendezvousAdmissionAliases(
       INTERNAL_SOURCE_TAG_HEADER,
       INTERNAL_SOURCE_TAG_PREVIOUS_HEADER,
     ]
-    : [...RENDEZVOUS_FORWARD_HEADERS, ...INTERNAL_HEADERS];
+    : [
+      ...RENDEZVOUS_FORWARD_HEADERS,
+      INTERNAL_PAIR_TAG_HEADER,
+      INTERNAL_PAIR_TAG_PREVIOUS_HEADER,
+    ];
   assertExactHeaderNames(request.headers, allowedHeaders);
-  const source = readAliasPair(
-    request.headers,
-    INTERNAL_SOURCE_TAG_HEADER,
-    INTERNAL_SOURCE_TAG_PREVIOUS_HEADER,
-  );
+  const source = role === "server"
+    ? readAliasPair(
+      request.headers,
+      INTERNAL_SOURCE_TAG_HEADER,
+      INTERNAL_SOURCE_TAG_PREVIOUS_HEADER,
+    )
+    : null;
   const pair = role === "client"
     ? readAliasPair(
       request.headers,
@@ -225,8 +236,17 @@ export function consumeRendezvousAdmissionAliases(
       headers,
       redirect: "manual",
     }),
-    aliases: Object.freeze({ source, pair }),
+    aliases: role === "client"
+      ? Object.freeze({ source: null, pair: requireAliases(pair) })
+      : Object.freeze({ source: requireAliases(source), pair: null }),
   });
+}
+
+function requireAliases(value: ActorAliases | null): ActorAliases {
+  if (value === null) {
+    throw new HttpError("bad_request");
+  }
+  return value;
 }
 
 /** Validate and reconstruct one bounded, canonical publisher response. */

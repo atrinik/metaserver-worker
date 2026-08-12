@@ -93,7 +93,7 @@ describe("internal service boundary", () => {
       `https://rendezvous.meta.atrinik.org/v1/classic/servers/${"2".repeat(64)}?role=client`,
       { headers: { Authorization: "must-not-cross" } },
     ), "client", {
-      source: [CURRENT, PREVIOUS],
+      source: null,
       pair: [PAIR_CURRENT, PAIR_PREVIOUS],
     })).toThrow("The request is invalid.");
   });
@@ -134,7 +134,7 @@ describe("internal service boundary", () => {
         },
       },
     ), "client", {
-      source: [CURRENT, PREVIOUS],
+      source: null,
       pair: [PAIR_CURRENT, PAIR_PREVIOUS],
     });
 
@@ -142,7 +142,7 @@ describe("internal service boundary", () => {
     expect(request.headers.has("Cookie")).toBe(false);
     const consumed = consumeRendezvousAdmissionAliases(request, "client");
     expect(consumed.aliases).toEqual({
-      source: [CURRENT, PREVIOUS],
+      source: null,
       pair: [PAIR_CURRENT, PAIR_PREVIOUS],
     });
     for (const header of [

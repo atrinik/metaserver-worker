@@ -46,6 +46,9 @@ export const MAX_AUTHORIZATION_SIGNAL_BYTES = MAX_SIGNAL_BYTES *
   (MAX_CLIENT_AUTHORIZATION_FRAMES + MAX_SERVER_AUTHORIZATION_FRAMES);
 export const MAX_RENDEZVOUS_CLIENT_SOCKETS = 64;
 export const RENDEZVOUS_ROLLING_WINDOW_MS = 24 * 60 * 60 * 1_000;
+// The replay ledger is a storage/security horizon, not an ordinary admission
+// quota. Reaching this emergency ceiling produces temporary unavailability.
+export const MAX_RENDEZVOUS_REPLAY_ADMISSIONS = 100_000;
 export const MAX_RENDEZVOUS_SESSION_SIGNAL_BYTES =
   MAX_AUTHORIZATION_SIGNAL_BYTES + MAX_SIGNAL_BYTES *
     (MAX_CLIENT_CANDIDATES + MAX_SERVER_CANDIDATES + MAX_COMPLETIONS);

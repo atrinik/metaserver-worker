@@ -23,6 +23,9 @@ DIRECTORY_ARTIFACTS_MIGRATION = (
 GAME_PUBLISHER_MIGRATION = (
     REPOSITORY_ROOT / "migrations" / "0007_game_publisher.sql"
 )
+RENDEZVOUS_COOLDOWN_MIGRATION = (
+    REPOSITORY_ROOT / "migrations" / "0008_rendezvous_client_cooldowns.sql"
+)
 
 
 class RequestControlMigrationTests(unittest.TestCase):
@@ -1387,6 +1390,97 @@ class GamePublisherMigrationTests(unittest.TestCase):
                     statement,
                     (server_id, "c" * 64, online, status, server_id, "d" * 64),
                 )
+
+
+class RendezvousCooldownMigrationTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.database = sqlite3.connect(":memory:")
+        self.addCleanup(self.database.close)
+        for migration in (
+            INITIAL_MIGRATION,
+            REQUEST_CONTROL_MIGRATION,
+            RENDEZVOUS_GENERATION_MIGRATION,
+            SIGNED_PUBLISHER_MIGRATION,
+            DIRECTORY_STATE_MIGRATION,
+            DIRECTORY_ARTIFACTS_MIGRATION,
+            GAME_PUBLISHER_MIGRATION,
+        ):
+            self.database.executescript(migration.read_text(encoding="utf-8"))
+
+    def test_adds_empty_pair_state_without_rewriting_prior_budgets(self) -> None:
+        actor = f"v1.current.{'A' * 43}"
+        self.database.execute(
+            "INSERT INTO request_budgets "
+            "(actor_key, scope, window_start, request_count, expires_at) "
+            "VALUES (?, 'rendezvous-client-source-server', 0, 10, 86400)",
+            (actor,),
+        )
+        before = self.database.execute(
+            "SELECT * FROM request_budgets"
+        ).fetchall()
+
+        self.database.executescript(
+            RENDEZVOUS_COOLDOWN_MIGRATION.read_text(encoding="utf-8")
+        )
+
+        self.assertEqual(
+            self.database.execute("SELECT * FROM request_budgets").fetchall(),
+            before,
+        )
+        self.assertEqual(
+            self.database.execute(
+                "SELECT COUNT(*) FROM rendezvous_pair_attempts"
+            ).fetchone(),
+            (0,),
+        )
+        self.assertEqual(
+            self.database.execute(
+                "SELECT COUNT(*) FROM rendezvous_pair_cooldowns"
+            ).fetchone(),
+            (0,),
+        )
+
+    def test_enforces_closed_opaque_actor_and_timing_shapes(self) -> None:
+        self.database.executescript(
+            RENDEZVOUS_COOLDOWN_MIGRATION.read_text(encoding="utf-8")
+        )
+        actor = f"v1.current.{'A' * 43}"
+        self.database.execute(
+            "INSERT INTO rendezvous_pair_attempts "
+            "(actor_key, attempt_id, attempted_at, expires_at) "
+            "VALUES (?, ?, 100, 160)",
+            (actor, "1" * 32),
+        )
+        self.database.execute(
+            "INSERT INTO rendezvous_pair_cooldowns "
+            "(actor_key, blocked_until, penalty_level, last_burst_at, expires_at) "
+            "VALUES (?, 130, 0, 100, 1900)",
+            (actor,),
+        )
+        invalid = (
+            (
+                "INSERT INTO rendezvous_pair_attempts "
+                "(actor_key, attempt_id, attempted_at, expires_at) "
+                "VALUES (?, ?, 100, 161)",
+                (actor, "2" * 32),
+            ),
+            (
+                "INSERT INTO rendezvous_pair_attempts "
+                "(actor_key, attempt_id, attempted_at, expires_at) "
+                "VALUES (?, ?, 100, 160)",
+                ("192.0.2.1", "3" * 32),
+            ),
+            (
+                "INSERT INTO rendezvous_pair_cooldowns "
+                "(actor_key, blocked_until, penalty_level, last_burst_at, expires_at) "
+                "VALUES (?, 100, 0, 100, 1900)",
+                (f"v1.other.{'E' * 43}",),
+            ),
+        )
+        for statement, parameters in invalid:
+            with self.subTest(statement=statement):
+                with self.assertRaises(sqlite3.IntegrityError):
+                    self.database.execute(statement, parameters)
 
 
 if __name__ == "__main__":

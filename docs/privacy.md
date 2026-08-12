@@ -71,12 +71,13 @@ covering global ingress, each compatibility route, canonical publishing, and
 the distinct rendezvous actor dimensions.
 
 Every request checks both current and previous tags while rotation overlap is
-active. Fixed-window admission mirrors one logical counter into both alias rows
-with one D1 statement; a missing current alias inherits the previous count
-without charging twice. During a rolling `A/Z` to `B/A` deployment, either
-version advances its overlapping pair from the maximum equal-expiry count.
-This conservatively heals the lagging alias while charging each request once;
-an expiry/window mismatch still fails closed.
+active. Compatibility fixed-window admission mirrors one logical counter into
+both alias rows with one D1 statement. Canonical rendezvous pair admission
+instead stores one random opaque attempt ID under both aliases in one atomic
+batch and mirrors the exact cooldown tuple. During a rolling `A/Z` to `B/A`
+deployment, shared `A` carries the rolling attempt set and cooldown forward
+without charging twice; raw addresses and per-request network metadata are
+never persisted.
 
 Retain the previous key for at least the longest live budget window plus
 deployment propagation, rotate at a UTC budget boundary, and remove expired
@@ -243,9 +244,10 @@ The closed outcomes are `completed`, `client_disconnected`,
 `authorization_failed`, and `internal_error`. There is no address, source tag,
 server identity, connection identity, ticket, credential, candidate, exception text, or
 free-form close reason in the schema. The at-most-one-point-per-accepted-session
-rule also bounds this custom stream to at most 50 terminal-summary attempts per
-server in a rolling day. Zone `101` counts remain the authority for
-finding a missing best-effort terminal point.
+rule bounds the custom stream directly; native source shielding, exact pair
+cooldowns, and finite session work bound admitted attempts without using the
+metrics stream as an admission ledger. Zone `101` counts remain the authority
+for finding a missing best-effort terminal point.
 
 The production `DIRECTORY_METRICS` target is
 `atrinik_metaserver_directory`; a canary uses only
@@ -376,8 +378,10 @@ are `accepted_at_ms` and exactly two nullable replay-alias columns. The first
 valid passwordless client candidate or protected `auth_init` derives and
 atomically claims both aliases; the same
 transaction rejects a collision against either column before forwarding the
-candidate. A room retains no more than 50 rows and deletes every row whose
-acceptance time is at or before the rolling 24-hour cutoff.
+candidate. The room deletes every row whose acceptance time is at or before
+the rolling 24-hour cutoff. Its high emergency row ceiling is storage-only;
+exhaustion returns temporary unavailability and never a player-facing daily
+budget response.
 
 The aliases are versioned HMAC-SHA-256 values derived with the current and
 previous source-tag keys over this purpose-separated domain:

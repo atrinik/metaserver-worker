@@ -13,14 +13,14 @@ safety ceilings, not target traffic.
    deployment gate, and canary are specified in
    [edge-policy.md](edge-policy.md).
 2. Worker request control combines fast route-specific Rate Limiting bindings
-   with D1 counters. Native bindings are permissive, per Cloudflare location,
-   and eventually consistent; D1 provides the exact UTC fixed-window source,
-   source/server-pair, and authenticated-identity budgets. One conditional
-   multi-row UPSERT admits at most the configured count and mirrors rotating
-   tag aliases without double charging.
-3. The SQLite-backed per-server Durable Object provides the exact rolling
-   client-session authority. It atomically prunes rows at or before the 24-hour
-   cutoff and records a new acceptance before returning `101`. On the first
+   with D1 state. Native bindings are permissive, per Cloudflare location, and
+   eventually consistent. D1 provides the exact UTC fixed-window compatibility
+   and authenticated-identity budgets plus the canonical client's rolling
+   source/server-pair cooldown. One atomic batch mirrors rotating pair aliases
+   without double charging or extending a live cooldown.
+3. The SQLite-backed per-server Durable Object retains the exact 24-hour
+   replay authority. It atomically prunes expired rows and reserves a replay
+   row before returning `101`. On the first
    client candidate, that reserved row atomically claims current/previous-key
    HMAC replay aliases or rejects a collision. The same room enforces the
    active-socket and per-session work ceilings because every rendezvous for one
@@ -28,11 +28,9 @@ safety ceilings, not target traffic.
 
 All three layers are required. WAF stops mitigated traffic before it can become
 a Worker charge, the native binding avoids D1 and Durable Object work during a
-local burst, D1 stops a loop that stays below that burst or moves between
-locations, and the Durable Object prevents distributed sources from exceeding
-one server's exact rolling allowance. A WAF or native rejection is not proof
-that the exact room quota is exhausted, and a Durable Object rejection still
-costs the preceding Worker invocation.
+local burst, D1 applies exact pair backoff across locations, and the Durable
+Object preserves ticket replay isolation and finite session work. Its replay
+ledger is not an ordinary player admission quota.
 
 The compatibility/core Worker checks the 10/minute global binding before the
 10/minute directory, OTP, and update bindings, so an all-one-route burst may
@@ -53,11 +51,13 @@ shared by ID. Public routing remains disabled until the WAF/canary cutover.
 | Temporary OTP source | 10/minute | 48/UTC day |
 | Temporary update source | 10/minute | 48/UTC day |
 | Authenticated classic/canonical publisher identity | 2/minute | 48/UTC day |
-| Client rendezvous source | 5/minute | 50/UTC day |
-| Client source/server pair | covered by client burst | 10/UTC day |
+| Canonical client rendezvous source | 60/minute; not also charged to global | none |
+| Canonical client source/server pair after live-target lookup | covered by client burst | 20 eligible attempts/rolling 60 seconds, then 30..900-second cooldown |
+| Compatibility client rendezvous source | 5/minute plus global | 50/UTC day |
+| Compatibility client source/server pair | covered by client burst | 10/UTC day |
 | Server-role rendezvous source before authentication | covered by global burst | 50/UTC day |
 | Authenticated server rendezvous identity | 3/minute | 50/UTC day |
-| Accepted client sessions per server | n/a | 50/rolling 24 hours (exact per-server DO control) |
+| Accepted client sessions per server | n/a | no ordinary daily quota; replay state remains bounded for 24 hours |
 
 Static directory hosts execute no Worker after cutover and therefore have no
 D1 directory budget. Cache/probe abuse is handled at the edge.
@@ -76,10 +76,19 @@ route. Unknown-host/path probes still invoke the compatibility Worker before a
 bounded rejection, so the pre-Worker WAF/raw-URI policy remains mandatory for
 invocation-cost control.
 
-## Rendezvous structural ceilings
+## Canonical rendezvous cooldown and structural ceilings
 
-The rolling admission is only the outer bound. One accepted client attempt is
-also constrained as follows:
+Only a route-valid canonical client request whose server lookup finds a fresh,
+public Classic target consumes a pair attempt. Unknown, retired, private, or
+offline targets cannot build durable pair strikes. The first 20 eligible
+attempts in a rolling 60-second window are admitted. The next request starts a
+30-second cooldown; a complete later burst after expiry doubles the next
+cooldown through 60, 120, 240, 480, and at most 900 seconds. Retries during a
+cooldown return the remaining delay without mutation or escalation. Thirty
+minutes without another threshold crossing resets the next penalty to 30
+seconds. No ordinary client counter resets at UTC midnight.
+
+One accepted client attempt is also constrained as follows:
 
 | Dimension | Ceiling |
 | --- | ---: |
@@ -122,8 +131,10 @@ digest, and bounded counters only until that deadline.
 Long-window replay rejection instead uses the admission row's two
 purpose-separated HMAC-SHA-256 aliases, derived with the current and previous
 source-tag keys and scoped to the canonical deployment hostname plus opaque
-Durable Object room ID. At most 50 such rows exist in one room; none contains a
-raw ticket, unkeyed SHA-256 routing digest, connection ID, or candidate address.
+Durable Object room ID. The replay ledger has a high emergency storage ceiling
+and is pruned over the 24-hour security horizon; reaching that ceiling returns
+temporary unavailability rather than a multi-hour player `429`. No row contains
+a raw ticket, unkeyed SHA-256 routing digest, connection ID, or candidate address.
 The protocol requires an honest client to generate 32 random ticket bytes and
 encode them as 64 lowercase hex characters. The Worker enforces that shape and
 single use but cannot prove the entropy of a peer-supplied value.
@@ -155,16 +166,16 @@ A rejected request returns `429`, `Cache-Control: no-store`, a bounded integer
 ```
 
 Native minute limits use a 60-second retry. Fixed-window retry is the remaining
-window duration clamped to 1..86,400 seconds. The exact rendezvous rolling
-limit uses the earliest retained admission expiry; its stable reason is
-`rendezvous_server_sessions_rolling`. Rejected durable calls do not keep
-incrementing the stored count.
+window duration clamped to 1..86,400 seconds. The canonical pair cooldown uses
+`rendezvous_client_pair_cooldown`; both header and body carry its exact
+remaining 1..900-second delay. Rejected cooldown retries do not consume a
+burst slot, extend `blocked_until`, or increase the penalty.
 
 Reason values are a closed route/dimension vocabulary: `global_burst`, the
 `compat_status_daily`, `compat_directory_*`, `compat_otp_*`, and
 `compat_update_*` burst/daily
-variants, `publish_burst|daily`, and the rendezvous client/server burst/daily
-variants plus `rendezvous_server_sessions_rolling`. The `Retry-After` header
+variants, `publish_burst|daily`, and the compatibility rendezvous client/server
+burst/daily variants plus `rendezvous_client_pair_cooldown`. The `Retry-After` header
 and `retry_after_seconds` body member are generated from one bounded value.
 
 A request-control binding/D1 failure or malformed/over-policy configuration
@@ -174,15 +185,13 @@ lower a canary ceiling but cannot raise the reviewed maxima; the Worker also
 strictly bounds OTP/listing/retention lifetimes and uses the classifier's fixed
 body-size contract rather than a second environment override.
 
-The rendezvous-specific variables
-`RENDEZVOUS_CLIENT_ROLLING_LIMIT`,
-`RENDEZVOUS_ACTIVE_CLIENT_LIMIT`, and
-`RENDEZVOUS_CLIENT_SESSION_SECONDS` are required. The checked-in configuration
-sets the reviewed 50, 16, and 15 maxima. A reviewed canary or emergency version
-may lower them to a positive integer, but missing, malformed, zero, or
-policy-raising values fail closed in the Worker before source-tag derivation,
-native counters, D1 budgets, server lookup, or Durable Object invocation. The
-room independently validates the same environment as the final authority. The
+The coordinator requires the five `RENDEZVOUS_CLIENT_PAIR_*` burst, window,
+initial/maximum cooldown, and reset variables; the checked-in values are
+20, 60, 30, 900, and 1800 seconds. The room independently requires
+`RENDEZVOUS_ACTIVE_CLIENT_LIMIT=16` and
+`RENDEZVOUS_CLIENT_SESSION_SECONDS=15`. Missing, malformed, incoherent, or
+policy-raising values fail closed before the affected authority performs work.
+The
 64-client-socket, frame-count, frame-size, and total-byte ceilings are
 structural constants rather than runtime overrides.
 
@@ -219,22 +228,20 @@ terminal summary described in [privacy.md](privacy.md). No per-frame or
 rejected-session custom point is emitted, so the custom dataset itself cannot
 become a request-shaped cost amplifier.
 
-Shared networks are why anonymous source budgets remain materially larger than
-normal use and why the source/server-pair dimension is separate. Several
-legitimate clients behind one NAT share the WAF/native source key and global
-daily source tag, but ordinarily differ at the server-pair dimension. The
-per-server rolling quota remains exact regardless of NAT or Cloudflare
-location. An anonymous source tag is a coarse recovery/abuse boundary, not a
+Shared networks are why the canonical native source shield is deliberately
+coarse and why exact backoff uses a source/server-pair dimension. Several
+legitimate clients behind one NAT share the native source key but ordinarily
+differ at the server-pair dimension. A source that retries intermittently all
+day does not accumulate toward a calendar-day ban. An anonymous source tag is a coarse recovery/abuse boundary, not a
 durable client identity or permission to disclose candidates. A producer must
 still use exponential backoff with jitter and honor `Retry-After`; rate
 limiting is not a substitute for fixing a retry loop.
 
 Native current/previous alias checks are sequential and conservative: if the
-second rejects, the first may already have been charged locally. D1 remains the
-exact daily authority. For rolling `A/Z` to `B/A` deployments, an admission
-advances the requested pair from the maximum equal-expiry count; this heals a
-lagging alias without resetting the budget. Expiry/window divergence and D1
-errors fail closed.
+second rejects, the first may already have been charged locally. For rolling
+`A/Z` to `B/A` deployments, each eligible D1 attempt has one opaque request ID
+mirrored to both aliases; the shared `A` carries the rolling cohort and active
+cooldown forward without charging twice. D1 errors fail closed.
 
 The per-room SQLite replay ledger uses the same `A/Z` then `B/A` overlap shape,
 but claims both HMAC aliases atomically on the first candidate. A replay matches

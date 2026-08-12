@@ -10,9 +10,10 @@
   bounded; test malformed and replayed input at the boundary.
 - Keep the Worker-to-rendezvous-room upgrade contract explicitly versioned and
   fail closed across deployment skew. Use hibernation attachments only for
-  bounded live-session routing and terminal-teardown state, the room's SQLite
-  ledger for exact rolling admissions and purpose-separated replay tags, and
-  one alarm for expiry; never add candidate persistence or per-session timers.
+  bounded live-session routing and terminal-teardown state, D1 for the exact
+  eligible source/server rolling-burst cooldown, the room's SQLite ledger only
+  for bounded purpose-separated replay tags, and one alarm for expiry; never
+  add candidate persistence or per-session timers.
 - `wrangler.jsonc` is the sole state-owning core configuration. It deliberately
   uses declarative `exports` for both SQLite Durable Objects and the narrow
   publisher/rendezvous Worker entrypoints, and contains a placeholder D1 ID.

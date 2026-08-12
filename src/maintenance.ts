@@ -8,6 +8,8 @@ export const MAINTENANCE_TARGETS = [
   "one_time_tokens",
   "rate_limits",
   "request_budgets",
+  "rendezvous_pair_attempts",
+  "rendezvous_pair_cooldowns",
   "publisher_nonces",
 ] as const;
 
@@ -18,6 +20,7 @@ export interface MaintenanceCutoffs {
   readonly oneTimeTokensAtOrBefore: number;
   readonly rateLimitsBefore: number;
   readonly requestBudgetsAtOrBefore: number;
+  readonly rendezvousPairAtOrBefore: number;
   readonly publisherNoncesAtOrBefore: number;
 }
 
@@ -54,7 +57,7 @@ interface MaintenanceStatement {
 /**
  * Delete every expirable state class in bounded, round-robin batches.
  *
- * At production bounds this performs at most 40 deletes and five probes.
+ * At production bounds this performs at most 56 deletes and seven probes.
  * Round-robin ordering keeps a backlog in one legacy table from starving
  * cleanup of newer state.
  */
@@ -202,6 +205,32 @@ function maintenanceStatements(
         )`,
       probeSql:
         "SELECT 1 AS present FROM request_budgets WHERE expires_at <= ? LIMIT 1",
+    },
+    {
+      target: "rendezvous_pair_attempts",
+      cutoff: cutoffs.rendezvousPairAtOrBefore,
+      deleteSql: `DELETE FROM rendezvous_pair_attempts
+        WHERE (actor_key, attempt_id) IN (
+          SELECT actor_key, attempt_id FROM rendezvous_pair_attempts
+           WHERE expires_at <= ?1
+           ORDER BY expires_at, actor_key, attempt_id
+           LIMIT ?2
+        )`,
+      probeSql:
+        "SELECT 1 AS present FROM rendezvous_pair_attempts WHERE expires_at <= ? LIMIT 1",
+    },
+    {
+      target: "rendezvous_pair_cooldowns",
+      cutoff: cutoffs.rendezvousPairAtOrBefore,
+      deleteSql: `DELETE FROM rendezvous_pair_cooldowns
+        WHERE actor_key IN (
+          SELECT actor_key FROM rendezvous_pair_cooldowns
+           WHERE expires_at <= ?1
+           ORDER BY expires_at, actor_key
+           LIMIT ?2
+        )`,
+      probeSql:
+        "SELECT 1 AS present FROM rendezvous_pair_cooldowns WHERE expires_at <= ? LIMIT 1",
     },
     {
       target: "publisher_nonces",

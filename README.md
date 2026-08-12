@@ -133,8 +133,9 @@ complete series and exercise upgrades from populated production-shaped state.
 Never edit, reorder, or reuse an applied migration number.
 
 The SQLite-backed `RendezvousRoom` Durable Object is declared through
-Wrangler's `exports` configuration. Its application SQLite admission ledger
-retains at most 50 rows per room. A row records its acceptance time and, when
+Wrangler's `exports` configuration. Its application SQLite replay ledger has a
+high emergency storage ceiling and a 24-hour security horizon, but it is not
+an ordinary client quota. A row records its acceptance time and, when
 the client's first candidate or protected `auth_init` atomically claims it,
 exactly two
 purpose-separated HMAC-SHA-256 replay aliases derived with the current and
@@ -187,9 +188,10 @@ QUIC endpoint from the HTTPS source.
 The request path emits only the closed, redacted diagnostic events described in
 [docs/privacy.md](docs/privacy.md).
 
-Native rate bindings cap local bursts, D1 enforces exact fixed-window budgets,
-and each per-server Durable Object enforces the exact 50-session rolling
-24-hour ceiling before accepting a client. Rooms admit at most 16 active client
+Native rate bindings cap local bursts. D1 enforces exact fixed-window
+compatibility/authenticated budgets and the canonical client's rolling
+source/server-pair cooldown. Each per-server Durable Object preserves replay
+rejection for 24 hours without imposing a daily player quota. Rooms admit at most 16 active client
 attempts and retain 64 client sockets only as an absolute implementation
 ceiling. A
 pre-Worker WAF rule is still required to prevent a blocked loop from consuming
