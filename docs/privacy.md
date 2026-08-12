@@ -429,10 +429,16 @@ a strict current/previous tuple at the coordinator, and removed before server lo
 the room upgrade. Dynamic HTTP responses are accepted only when their status-
 specific headers and canonical JSON/text body match the fixed public contract
 within a 2,048-byte and 15-second ceiling; every accepted HTTP body is
-reconstructed instead of streamed from the coordinator. A successful
-WebSocket must contain only the exact selected subprotocol/security headers and
-a live socket. This internal envelope contains only keyed aliases, never the
-source address.
+reconstructed instead of streamed from the coordinator. Cloudflare's
+production Service Binding transport may attach the runtime-owned
+`CF-Worker-Status: ok` marker, and Workerd may materialize `Content-Length` for
+a fixed body. The edge accepts only that exact healthy marker and only the
+canonical decimal body byte length; `exception`, duplicate, or unknown status
+values and every other transport-added or coordinator-supplied header fail
+closed. Runtime metadata is removed during reconstruction, including from a
+successful WebSocket response. A successful WebSocket must contain only the
+exact selected subprotocol/security headers and a live socket. This internal
+envelope contains only keyed aliases, never the source address.
 
 Every compatibility update is stored addressless: its numeric `quic_host` and
 port are discarded, and the directory omits both `Address` and `Port` rather
