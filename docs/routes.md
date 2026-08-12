@@ -98,8 +98,9 @@ SHA-256 independent from the public origin validator, and accept non-empty
 state only through the signed Game publisher. Classic JSON/XML follow
 [classic directory protocol 4](classic-directory-v4.md). The later service
 split canary must prove exact GET/HEAD/path/query handling, R2's opaque strong
-ETag, alias-upload `Last-Modified`, CSP/nosniff/CORS/root redirect rules, cache
-expiry, public-to-private and endpoint-removal bounds, `r2.dev` disablement,
+ETag, alias-upload `Last-Modified`, CSP/nosniff/CORS, plaintext same-path
+redirect rules, direct R2 HTTPS root `404`, cache expiry, public-to-private and
+endpoint-removal bounds, `r2.dev` disablement,
 and zero Worker invocations before DNS cutover.
 The internal `/manifest.json` alias is builder coordination and is not a public
 route; the static-host edge allowlist must deny it and every other path.

@@ -1292,17 +1292,17 @@ def verify_validator_separation(observations: Sequence[ArtifactObservation]) -> 
 
 def verify_root_and_negative_routes(fetch: Fetch, origin: str) -> None:
     root = fetch("GET", origin + "/", {}, MAX_ERROR_BYTES)
-    if root.status != 308:
-        fail("GET / must return 308")
-    if one_header(root, "Location") != origin + "/index.html":
-        fail("GET / does not redirect to the same origin's HTML alias")
+    if root.status != 404:
+        fail("HTTPS GET / must return 404")
+    no_header(root, "Location")
     no_header(root, "Set-Cookie")
+    no_header(root, "CF-Worker-Status")
     root_head = fetch("HEAD", origin + "/", {}, 0)
-    if root_head.status != 308 or root_head.body:
-        fail("HEAD / must return one bodyless 308")
-    if one_header(root_head, "Location") != origin + "/index.html":
-        fail("HEAD / does not redirect to the same origin's HTML alias")
+    if root_head.status != 404 or root_head.body:
+        fail("HTTPS HEAD / must return one bodyless 404")
+    no_header(root_head, "Location")
     no_header(root_head, "Set-Cookie")
+    no_header(root_head, "CF-Worker-Status")
 
     for method, path in NEGATIVE_REQUESTS:
         response = fetch(method, origin + path, {}, MAX_ERROR_BYTES)

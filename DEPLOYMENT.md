@@ -212,9 +212,10 @@ strong validator and its alias upload time as `Last-Modified`; body SHA-256 is
 independent integrity metadata. The builder rejects a malformed native ETag
 and never begins alias publication before `generatedAt` or within the final
 reviewed lifetime margin. Direct R2 still cannot supply CSP, nosniff, CORS, or
-the root redirect by itself. This deployment MUST remain domainless until the
-service-split canary proves those zone/bucket policies, the public response
-metadata, and the public-to-private/endpoint-removal cache bound. A rollback
+the plaintext scheme redirect by itself. This deployment MUST remain
+domainless until the service-split canary proves those zone/bucket policies,
+the public response metadata, and the public-to-private/endpoint-removal cache
+bound. A rollback
 may rerender the current authoritative model with a reviewed renderer; it must
 not blindly restore an older generation that could re-expose removed data.
 
@@ -574,11 +575,12 @@ evidence, not public-read atomicity.
 
     Substitute the reviewed isolated hostnames; never copy these examples into
     a production or unrelated zone. The verifier requires `GET` and `HEAD` on
-    every public alias, root's same-origin 308, rejection of queries, write
-    methods, unknown/encoded paths and `/manifest.json`, byte-bounded valid
-    bodies with the same generation and complete normalized server model, exact media/security/
-    cache/CORS headers, an opaque quoted strong `ETag` of 3 through 128 bytes,
-    and `Last-Modified` at or after that body's `generatedAt` and before its
+    every public alias, direct R2 HTTPS root's body-bounded GET `404` and
+    bodyless HEAD `404`, rejection of queries, write methods, unknown/encoded
+    paths and `/manifest.json`, byte-bounded valid bodies with the same
+    generation and complete normalized server model, exact media/security/cache/CORS
+    headers, an opaque quoted strong `ETag` of 3 through 128 bytes, and
+    `Last-Modified` at or after that body's `generatedAt` and before its
     `expiresAt`. It also requires bodyless validator-matched `304` responses,
     prevents one validator from naming different representation bytes, and
     permits only bounded monotonic adjacent-generation convergence. Both
