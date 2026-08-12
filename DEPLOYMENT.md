@@ -64,10 +64,16 @@ not a Cloudflare deployment.
    `atrinik_metaserver_directory`; these are the comparison baselines for the
    canary dry run below.
 
-8. Confirm the production artifact has `workers_dev: false` and
-   `preview_urls: false`. Review and stage
-   [docs/edge-policy.md](docs/edge-policy.md); no production custom domain may
-   be attached before its raw-target gate and rate-policy decision pass review.
+8. Confirm every production artifact has `workers_dev: false` and
+   `preview_urls: false` and read both settings back from the account. Derive
+   each base URL from that Worker's service/account metadata and each available
+   active-version URL from that version's `urls` metadata, then probe them for
+   an unavailable response. The core implements Durable Objects, so Cloudflare
+   does not generate its version-preview URL; preserve the metadata-proven
+   absence instead of inventing a sixth probe.
+   Review and stage [docs/edge-policy.md](docs/edge-policy.md); no production
+   custom domain may be attached before its raw-target gate, plaintext policy,
+   staged per-host HSTS plan, and rate-policy decision pass review.
 9. Confirm the artifact has the `RENDEZVOUS_METRICS` and `DIRECTORY_METRICS`
    Analytics Engine bindings targeting only their reviewed datasets, the
    SQLite `RENDEZVOUS` and `DIRECTORY_BUILDER` Durable Object bindings, and the
@@ -526,8 +532,11 @@ evidence, not public-read atomicity.
     passes.
 21. With explicit live-change authorization, attach each canary public alias
     bucket to a canary-only custom domain and keep `r2.dev` disabled. Install
-    the exact static-host allowlist, root redirect, Cache Everything, response
-    header, and CORS rules from [docs/edge-policy.md](docs/edge-policy.md).
+    the exact static-host allowlist, plaintext root/alias redirects, Cache
+    Everything, response-header, staged per-host HSTS, and CORS rules from
+    [docs/edge-policy.md](docs/edge-policy.md). Install the publisher and
+    rendezvous block-outside raw-target rules before attaching those canary
+    Workers; both rules block plaintext rather than redirecting it.
     Run the bounded credential-free verifier against both exact canary hosts:
 
     ```sh
@@ -538,6 +547,28 @@ evidence, not public-read atomicity.
     python3 scripts/static_origin_canary.py \
       --profile game-v1 \
       --base-url https://game-directory-canary.example.org \
+      --json
+    python3 scripts/edge_ingress_canary.py \
+      --static-host classic-directory-canary.example.org \
+      --publisher-host publish-canary.example.org \
+      --rendezvous-host rendezvous-canary.example.org \
+      --hsts-max-age 300 \
+      --core-base-url https://atrinik-metaserver.account-name.workers.dev/ \
+      --publisher-base-url https://atrinik-metaserver-publisher.account-name.workers.dev/ \
+      --publisher-version-url https://version-prefix-atrinik-metaserver-publisher.account-name.workers.dev/ \
+      --rendezvous-base-url https://atrinik-metaserver-rendezvous.account-name.workers.dev/ \
+      --rendezvous-version-url https://version-prefix-atrinik-metaserver-rendezvous.account-name.workers.dev/ \
+      --json
+    python3 scripts/edge_ingress_canary.py \
+      --static-host game-directory-canary.example.org \
+      --publisher-host publish-canary.example.org \
+      --rendezvous-host rendezvous-canary.example.org \
+      --hsts-max-age 300 \
+      --core-base-url https://atrinik-metaserver.account-name.workers.dev/ \
+      --publisher-base-url https://atrinik-metaserver-publisher.account-name.workers.dev/ \
+      --publisher-version-url https://version-prefix-atrinik-metaserver-publisher.account-name.workers.dev/ \
+      --rendezvous-base-url https://atrinik-metaserver-rendezvous.account-name.workers.dev/ \
+      --rendezvous-version-url https://version-prefix-atrinik-metaserver-rendezvous.account-name.workers.dev/ \
       --json
     ```
 
@@ -550,9 +581,18 @@ evidence, not public-read atomicity.
     and `Last-Modified` at or after that body's `generatedAt` and before its
     `expiresAt`. It also requires bodyless validator-matched `304` responses,
     prevents one validator from naming different representation bytes, and
-    permits only bounded monotonic adjacent-generation convergence. It accepts
-    no Cloudflare token and has no mutation path. Preserve its JSON summary in
-    the private release record, not the response bodies or validators. Then
+    permits only bounded monotonic adjacent-generation convergence. Both
+    verifiers accept no Cloudflare token and have no mutation path. The ingress
+    verifier additionally requires exact same-host/path plaintext `308`
+    responses only for the four static aliases, exact WAF `403` blocks without
+    redirects for negative and dynamic plaintext, all five account-derived
+    alternate Worker URLs unavailable, metadata-proven absence of a core
+    version-preview URL, exact five-minute per-host HSTS without
+    `includeSubDomains` or `preload`, and no internal response metadata. Public
+    status alone cannot prove pre-Worker enforcement: correlate all eight fixed
+    block probes with the expected WAF Security Events and require zero Worker
+    invocation delta. Preserve both JSON summaries in the private release
+    record, not response bodies, validators, or account coordinates. Then
     fill the cache shortly before expiry and independently prove its freshness
     does not extend past the body's absolute expiry and no stale-if-error policy
     revives it; a single verifier run cannot simulate that passage of time.

@@ -170,7 +170,6 @@ class WranglerSecurityConfigurationTests(unittest.TestCase):
         normalized_policy = " ".join(edge_policy.split())
         normalized_deployment = " ".join(deployment.split())
         for value in (
-            'http.host in {"meta.atrinik.org" "classic.meta.atrinik.org"}',
             'http.request.method in {"GET" "HEAD"}',
             '"/" "/index.html" "/index.json" "/index.xml"',
             "/manifest.json",
@@ -198,10 +197,45 @@ class WranglerSecurityConfigurationTests(unittest.TestCase):
             "python3 scripts/static_origin_canary.py",
             normalized_deployment,
         )
+        self.assertIn(
+            "python3 scripts/edge_ingress_canary.py",
+            normalized_deployment,
+        )
         self.assertIn("--profile classic-v1", normalized_deployment)
         self.assertIn("--profile game-v1", normalized_deployment)
+        self.assertIn("--hsts-max-age 300", normalized_deployment)
+        self.assertIn("Strict-Transport-Security: max-age=300", edge_policy)
         self.assertIn(
-            "accepts no Cloudflare token and has no mutation path",
+            "Do not include `includeSubDomains` or `preload`",
+            edge_policy,
+        )
+        self.assertIn("A `403` alone does not prove", edge_policy)
+        self.assertNotIn(
+            'http.host in {"meta.atrinik.org" "classic.meta.atrinik.org"}',
+            edge_policy,
+        )
+        self.assertIn('http.host eq "classic.meta.atrinik.org"', edge_policy)
+        self.assertIn('http.host eq "meta.atrinik.org"', edge_policy)
+        self.assertIn("correlate all eight fixed", edge_policy)
+        for option in (
+            "--core-base-url",
+            "--publisher-base-url",
+            "--publisher-version-url",
+            "--rendezvous-base-url",
+            "--rendezvous-version-url",
+        ):
+            self.assertGreaterEqual(normalized_deployment.count(option), 2)
+        self.assertIn("does not generate its version-preview URL", deployment)
+        self.assertIn(
+            '"https://publish.meta.atrinik.org/"',
+            edge_policy,
+        )
+        self.assertIn(
+            '"https://rendezvous.meta.atrinik.org/"',
+            edge_policy,
+        )
+        self.assertIn(
+            "accept no Cloudflare token and have no mutation path",
             normalized_deployment,
         )
 
