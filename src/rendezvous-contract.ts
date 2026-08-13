@@ -257,7 +257,6 @@ interface InternalPublicationBase {
 
 export interface InternalClassicPublication extends InternalPublicationBase {
   readonly directoryProfile: "classic-v1";
-  readonly publisherAuthentication: "signed-certificate-v1";
   readonly playersCount: number;
   readonly version: string;
   readonly textComment: string;
@@ -265,7 +264,6 @@ export interface InternalClassicPublication extends InternalPublicationBase {
 
 export interface InternalGamePublication extends InternalPublicationBase {
   readonly directoryProfile: "game-v1";
-  readonly publisherAuthentication: "signed-certificate-v1";
   readonly description: string;
   readonly region: string | null;
   readonly protocolMajor: 1;
@@ -284,7 +282,6 @@ export type InternalRendezvousPublication =
 const INTERNAL_PUBLICATION_BASE_KEYS = [
   "serverId",
   "directoryProfile",
-  "publisherAuthentication",
   "publisherSequence",
   "publisherNonce",
   "publisherNonceExpiresAt",
@@ -419,7 +416,6 @@ export async function validateInternalRendezvousPublication(
     !HEX_64.test(parsed.serverId) ||
     (parsed.directoryProfile !== "classic-v1" &&
       parsed.directoryProfile !== "game-v1") ||
-    parsed.publisherAuthentication !== "signed-certificate-v1" ||
     !isPublisherReplayMetadata(parsed) ||
     typeof parsed.commitToken !== "string" ||
     !HEX_64.test(parsed.commitToken) ||
@@ -477,7 +473,6 @@ export async function validateInternalRendezvousPublication(
     return {
       ...common,
       directoryProfile: "classic-v1",
-      publisherAuthentication: "signed-certificate-v1",
       playersCount: parsed.playersCount,
       version: parsed.version,
       textComment: parsed.textComment,
@@ -485,7 +480,6 @@ export async function validateInternalRendezvousPublication(
   }
 
   if (
-    parsed.publisherAuthentication !== "signed-certificate-v1" ||
     !hasExactKeys(parsed, INTERNAL_GAME_PUBLICATION_KEYS) ||
     !isGameDirectoryText(parsed.name, 80, false) ||
     !isGameDirectoryText(parsed.description, 512, true) ||
@@ -514,7 +508,6 @@ export async function validateInternalRendezvousPublication(
   return {
     ...common,
     directoryProfile: "game-v1",
-    publisherAuthentication: "signed-certificate-v1",
     description: parsed.description,
     region: parsed.region,
     protocolMajor: 1,
@@ -794,7 +787,6 @@ function isCanonicalPublicationEndpoint(
 
 type ValidPublisherReplayMetadata = {
   readonly directoryProfile: DirectoryProfile;
-  readonly publisherAuthentication: "signed-certificate-v1";
   readonly publisherSequence: string;
   readonly publisherNonce: string;
   readonly publisherNonceExpiresAt: number;
@@ -804,7 +796,6 @@ function isPublisherReplayMetadata(
   value: Record<string, unknown>,
 ): value is Record<string, unknown> & ValidPublisherReplayMetadata {
   if (
-    value.publisherAuthentication !== "signed-certificate-v1" ||
     typeof value.publisherSequence !== "string" ||
     !PUBLISH_SEQUENCE.test(value.publisherSequence) ||
     typeof value.publisherNonce !== "string" ||

@@ -6,6 +6,11 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 PATTERN = re.compile(
     r"COMPAT_[A-Z0-9_]+|compat-key-v1|"
+    r"server_owners|server_blacklist|one_time_tokens|\brate_limits\b|"
+    r"\b(?:source_ip|auth_key|current_ip|authentication_kind)\b|"
+    r"publisherAuthentication|signedOwnerSchemaAnchor|legacyShadowMutation|"
+    r"reset-owner|blacklist-(?:add|remove)|"
+    r"\b(?:FROM|INTO|UPDATE|TABLE|JOIN)\s+servers\b|"
     r"compat-(?:status|directory|otp|update(?:-source|-server)?|"
     r"rendezvous(?:-[a-z-]+)?)|"
     r"/index\.wsgi/(?:otp|update)|/v2/(?:servers|rendezvous)"
@@ -24,8 +29,11 @@ HISTORICAL_PREFIXES = (
 )
 
 NEGATIVE_FIXTURES = {
-    "test/maintenance.test.ts": {"compat-directory"},
-    "test/rendezvous-contract.test.ts": {"compat-key-v1"},
+    "scripts/static_origin_canary.py": {"source_ip"},
+    "test/rendezvous-contract.test.ts": {
+        "compat-key-v1",
+        "publisherAuthentication",
+    },
     "test/routes.test.ts": {
         "/v2/servers",
         "/index.wsgi/otp",
@@ -40,6 +48,23 @@ NEGATIVE_FIXTURES = {
 
 
 class RetiredSurfaceSourcePolicyTests(unittest.TestCase):
+    def test_storage_removal_requires_noncanonical_deny_disposition(self) -> None:
+        deployment = (ROOT / "DEPLOYMENT.md").read_text(encoding="utf-8")
+        migration = (
+            ROOT / "migrations" / "0009_remove_legacy_storage.sql"
+        ).read_text(encoding="utf-8")
+        for required in (
+            "Require the noncanonical count to be zero",
+            "explicitly retires it",
+            "exact enabled Cloudflare WAF rule",
+            "never the raw legacy pattern",
+        ):
+            self.assertIn(required, deployment)
+        self.assertIn("FROM server_blacklist", migration)
+        self.assertIn("typeof(pattern) <> 'text'", migration)
+        self.assertIn("length(pattern) <> 64", migration)
+        self.assertIn("pattern GLOB '*[^0-9a-f]*'", migration)
+
     def test_supported_guidance_omits_retired_registration_terminology(
         self,
     ) -> None:

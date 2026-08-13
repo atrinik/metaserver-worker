@@ -89,13 +89,12 @@ independent keys so the same tested overlap path is always exercised.
 
 ## Retired physical state
 
-The core no longer reads or writes the old `servers`, challenge, source-rate,
-or request-address ownership fields. They remain inert only because applied
-migrations are immutable and #39 owns their forward-only physical removal.
-Until that migration removes the non-null historical `auth_key` column, signed
-publication stores only a deterministic certificate-bound schema anchor (the
-public 64-hex server ID repeated to the column's required length); it is not an
-authentication secret or accepted credential.
+Migration `0009_remove_legacy_storage.sql` physically removes the old shadow
+directory, shared-key ownership, challenge, source-rate, and raw/wildcard deny
+state. Canonical presence is parented directly to the profile-scoped signed
+publisher replay row. D1 Time Travel may retain the pre-migration database in
+Cloudflare recovery snapshots for its configured retention window; it is
+disaster-recovery history, not active application state or a supported rollback.
 Rollback may use the runtime-retirement bridge release, never a release that
 can reactivate those writers. A missing direct hostname remains NULL in
 canonical state, and the HTTPS request address is never inferred.
@@ -109,9 +108,10 @@ The server can consume the authenticated `minimumNextSequence` response to
 advance its protected local high-water mark; it never deletes or replaces its
 identity as a recovery shortcut.
 
-Stable server-ID blacklist entries remain the application policy. Operational
-address/CIDR rules belong in Cloudflare WAF and do not cross the Service
-Binding.
+Exact canonical server-ID denial entries retain only the identity and bounded
+creation time. They have no wildcard, address, CIDR, or free-text field.
+Operational address/CIDR rules belong in Cloudflare WAF and do not cross the
+Service Binding.
 
 ## Static artifact state
 
@@ -184,7 +184,7 @@ application logs:
 - rendezvous replay aliases or Durable Object room IDs;
 - server authentication material, signatures, nonces, or rendezvous tokens;
 - candidate endpoints;
-- blacklist patterns; or
+- raw, wildcard, address, or CIDR deny patterns; or
 - operator-supplied/free-form reasons.
 
 Aggregate request/status counts remain visible in Worker Metrics and WAF

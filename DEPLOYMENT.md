@@ -139,6 +139,46 @@ After the canonical-only core is active:
    require zero Worker/D1 work. A Worker-generated retirement response fails
    this gate.
 
+## Apply the forward-only storage migration
+
+Apply `0009_remove_legacy_storage.sql` only after the retired-path audit is
+accepted and before rendezvous or publishing is re-enabled:
+
+1. Capture a private D1 Time Travel bookmark and exact pre-migration row counts
+   only. Do not export row values. Confirm the core, publisher, and rendezvous
+   circuits are disabled, schedules are suspended, and the active v2 bridge
+   cohort and production database ID match the reviewed release evidence.
+2. Count exact 64-lowercase-hex deny rows separately from every noncanonical
+   legacy pattern. Require the noncanonical count to be zero. Before deleting a
+   noncanonical row, bind its digest to a protected reviewed disposition that
+   either explicitly retires it or maps it to exact enabled Cloudflare WAF rule
+   IDs, actions, expressions, and order. Read those WAF rules back immediately
+   before and after migration. Retain only counts, digests, rule identifiers,
+   and expression digests—never the raw legacy pattern. Migration `0009`
+   independently aborts before schema mutation if any such row remains.
+3. Run the migration once through Wrangler's ordered D1 migration command. It
+   removes compatibility-owned presence and entries, advances only affected
+   visible revisions, and coalesces the corresponding outbox work before
+   rebuilding the canonical tables.
+4. Read back the applied-migration ledger, `PRAGMA foreign_key_check`, exact
+   canonical table/trigger/index inventory, and aggregate pre/post row counts.
+   Require the retired tables to be absent and the canonical replay, nonce,
+   presence, directory, revision, outbox, and artifact-coordination counts to
+   match the reviewed migration proof.
+5. Deploy the schema-clean core provider first and then activate the exact
+   prevalidated publisher and rendezvous callers. After each activation,
+   require exact versions, bindings, secrets-by-name, routes, schedules, and
+   circuit settings. A post-migration rollback is a disabled-circuit forward
+   fix; never redeploy a schema-incompatible pre-migration Worker.
+6. Re-enable scheduled cleanup/reconciliation, then canonical publishing and
+   rendezvous in reviewed order. Run fresh Classic and Game signed publication,
+   replay rejection, static generation/expiry, and rendezvous canaries. Purge
+   only aliases whose reconciled revision changed.
+
+Retain only the migration time, Time Travel bookmark metadata, schema/ledger
+digests, aggregate row counts, and canary outcomes in protected evidence. The
+bookmark does not authorize restoring retired APIs or active legacy state.
+
 ## Canary and enable
 
 1. Re-read the exact active core/publisher/rendezvous versions and configs
@@ -230,11 +270,13 @@ bounded, and redacted; they are not traffic accounting.
 
 ## Administrative SQL
 
-Generate ownership reset or server-ID blacklist SQL with
+Generate canonical identity reset or server-ID denial SQL with
 `scripts/admin_sql.py`, review it, and apply it only with explicit authorization.
+The supported commands are `reset-identity`, `deny-add`, and `deny-remove`; each
+accepts one exact 64-lowercase-hex server identity (uppercase operator input is
+normalized before SQL is emitted). Wildcards, addresses, and CIDRs are rejected.
 Do not use administrative SQL to restore retired routes or clear ordinary
-rendezvous cooldowns. Physical removal of inert tables/columns belongs to #39
-after this bridge is deployed and observed.
+rendezvous cooldowns.
 
 ## Roll back
 

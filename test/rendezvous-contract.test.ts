@@ -34,7 +34,6 @@ const GENERATION = "0".repeat(64);
 const PUBLICATION = Object.freeze({
   serverId: "1".repeat(64),
   directoryProfile: "classic-v1",
-  publisherAuthentication: "signed-certificate-v1",
   publisherSequence: "1",
   publisherNonce: "6".repeat(32),
   publisherNonceExpiresAt: 2_000_086_400,
@@ -240,7 +239,6 @@ describe("internal rendezvous upgrade contract", () => {
     const gamePublication = {
       serverId: PUBLICATION.serverId,
       directoryProfile: "game-v1",
-      publisherAuthentication: "signed-certificate-v1",
       publisherSequence: "1",
       publisherNonce: "6".repeat(32),
       publisherNonceExpiresAt: PUBLICATION.now + 86_400,
@@ -284,9 +282,6 @@ describe("internal rendezvous upgrade contract", () => {
       {
         ...PUBLICATION,
         publisherAuthentication: "compat-key-v1",
-        publisherSequence: null,
-        publisherNonce: null,
-        publisherNonceExpiresAt: null,
       },
       { ...PUBLICATION, generation: "A".repeat(64) },
       { ...PUBLICATION, serverId: "4".repeat(64) },

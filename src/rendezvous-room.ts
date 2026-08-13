@@ -271,11 +271,9 @@ export class RendezvousRoom extends DurableObject<CoreEnv> {
   private async commitPublication(
     publication: InternalRendezvousPublication,
   ): Promise<Response> {
-    if (publication.publisherAuthentication === "signed-certificate-v1") {
-      const conflict = await this.signedPublicationConflict(publication);
-      if (conflict !== null) {
-        return publishReplayResponse(conflict);
-      }
+    const conflict = await this.signedPublicationConflict(publication);
+    if (conflict !== null) {
+      return publishReplayResponse(conflict);
     }
     const publishedGeneration = await this.reconcilePublishedGeneration(
       publication.directoryProfile,

@@ -24,8 +24,6 @@ interface SignedVector {
 }
 
 interface StoredSignedPublication {
-  readonly authentication_kind: string;
-  readonly auth_key: string;
   readonly directory_fingerprint: string;
   readonly last_nonce: string;
   readonly last_sequence: string;
@@ -126,8 +124,7 @@ function testEnvironment(options: {
 
 async function storedPublication(): Promise<StoredSignedPublication | null> {
   return env.DB.prepare(
-    `SELECT owners.authentication_kind, owners.auth_key,
-            entries.directory_fingerprint,
+    `SELECT entries.directory_fingerprint,
             replay.last_nonce, replay.last_sequence,
             presence.rendezvous_generation,
             presence.rendezvous_token_hash
@@ -135,7 +132,6 @@ async function storedPublication(): Promise<StoredSignedPublication | null> {
        JOIN directory_entries AS entries
          ON entries.profile = presence.profile
         AND entries.server_id = presence.server_id
-       JOIN server_owners AS owners USING (server_id)
        JOIN publisher_replay AS replay
          ON replay.server_id = presence.server_id
         AND replay.profile = presence.profile
@@ -166,9 +162,7 @@ beforeEach(async () => {
     env.DB.prepare("DELETE FROM publisher_replay"),
     env.DB.prepare("DELETE FROM directory_entries"),
     env.DB.prepare("DELETE FROM server_presence"),
-    env.DB.prepare("DELETE FROM servers"),
-    env.DB.prepare("DELETE FROM server_owners"),
-    env.DB.prepare("DELETE FROM server_blacklist"),
+    env.DB.prepare("DELETE FROM server_denials"),
     env.DB.prepare("DELETE FROM request_budgets"),
     env.DB.prepare(
       "UPDATE directory_revisions SET revision = 0, updated_at = 0",
@@ -344,16 +338,15 @@ describe("classic signed publisher", () => {
     expect(await directoryState()).toEqual({ revision: 0, outbox: [] });
   });
 
-  it("charges an authenticated blacklisted identity before rejecting it", async () => {
+  it("charges an authenticated denied identity before rejecting it", async () => {
     const limit = vi.fn(async () => ({ success: true }));
     const workerEnv = testEnvironment({
       publishLimiter: { limit } as RateLimit,
     });
     await env.DB.prepare(
-      "INSERT INTO server_blacklist (pattern, reason, created_at) VALUES (?, ?, ?)",
+      "INSERT INTO server_denials (server_id, created_at) VALUES (?, ?)",
     ).bind(
-      `${publisherFixture.server_id.slice(0, 8)}*`,
-      "test identity block",
+      publisherFixture.server_id,
       1,
     ).run();
 
@@ -390,8 +383,6 @@ describe("classic signed publisher", () => {
 
     const storedInitial = await storedPublication();
     expect(storedInitial).toMatchObject({
-      authentication_kind: "signed-certificate-v1",
-      auth_key: publisherFixture.server_id.repeat(2),
       last_nonce: publisherFixture.nonce,
       last_sequence: publisherFixture.sequence,
       rendezvous_token_hash: await sha256Hex(initialBody.rendezvousToken),
@@ -482,13 +473,10 @@ describe("classic signed publisher", () => {
       rendezvous_generation: expect.stringMatching(/^[0-9a-f]{64}$/),
     });
     expect(await env.DB.prepare(
-      `SELECT owners.authentication_kind, replay.last_sequence,
-              replay.last_nonce
-         FROM server_owners AS owners
-         JOIN publisher_replay AS replay USING (server_id)
-        WHERE owners.server_id = ? AND replay.profile = 'classic-v1'`,
+      `SELECT replay.last_sequence, replay.last_nonce
+         FROM publisher_replay AS replay
+        WHERE replay.server_id = ? AND replay.profile = 'classic-v1'`,
     ).bind(publisherFixture.server_id).first()).toEqual({
-      authentication_kind: "signed-certificate-v1",
       last_sequence: publisherFixture.private.sequence,
       last_nonce: publisherFixture.private.nonce,
     });
@@ -526,12 +514,11 @@ describe("Game Protocol 1 signed publisher", () => {
     ).first<number>("count")).toBe(0);
   });
 
-  it("attributes a Game identity blacklist match to the Game publisher", async () => {
+  it("attributes a Game identity denial to the Game publisher", async () => {
     await env.DB.prepare(
-      "INSERT INTO server_blacklist (pattern, reason, created_at) VALUES (?, ?, ?)",
+      "INSERT INTO server_denials (server_id, created_at) VALUES (?, ?)",
     ).bind(
-      `${gamePublisherFixture.server_id.slice(0, 8)}*`,
-      "test game identity block",
+      gamePublisherFixture.server_id,
       1,
     ).run();
     const warning = vi.spyOn(console, "warn").mockImplementation(() => {});
@@ -614,9 +601,6 @@ describe("Game Protocol 1 signed publisher", () => {
     expect(await env.DB.prepare(
       `SELECT COUNT(*) AS count FROM directory_entries
         WHERE profile = 'classic-v1' AND server_id = ?`,
-    ).bind(gamePublisherFixture.server_id).first<number>("count")).toBe(0);
-    expect(await env.DB.prepare(
-      "SELECT COUNT(*) AS count FROM servers WHERE server_id = ?",
     ).bind(gamePublisherFixture.server_id).first<number>("count")).toBe(0);
     expect(await env.DB.prepare(
       `SELECT request_count FROM request_budgets

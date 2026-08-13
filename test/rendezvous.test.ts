@@ -160,7 +160,6 @@ function generationPublicationRequest(
     body: JSON.stringify({
       serverId,
       directoryProfile,
-      publisherAuthentication: "signed-certificate-v1",
       publisherSequence,
       publisherNonce: generation.slice(0, 32),
       publisherNonceExpiresAt: 2_000_086_400,
@@ -188,10 +187,10 @@ async function seedPublishedGeneration(
 ): Promise<void> {
   await env.DB.batch([
     env.DB.prepare(
-      `INSERT INTO server_owners
-         (server_id, auth_key, current_ip, ip_changed_at, created_at, updated_at)
-       VALUES (?, ?, '', 0, 0, 0)`,
-    ).bind(serverId, serverId.repeat(2)),
+      `INSERT INTO publisher_replay
+         (server_id, profile, last_sequence, last_nonce, commit_token, updated_at)
+       VALUES (?, 'classic-v1', '1', ?, ?, 0)`,
+    ).bind(serverId, "1".repeat(32), "1".repeat(64)),
     env.DB.prepare(
       `INSERT INTO server_presence
          (profile, server_id, last_seen, rendezvous_token_hash,
@@ -1236,14 +1235,11 @@ describe("RendezvousRoom protected authorization", () => {
     });
 
     expect(await env.DB.prepare(
-      `SELECT owners.rendezvous_generation AS owner_generation,
-              presence.rendezvous_generation AS listing_generation,
+      `SELECT presence.rendezvous_generation AS listing_generation,
               presence.rendezvous_token_hash
-         FROM server_owners AS owners
-         JOIN server_presence AS presence USING (server_id)
-        WHERE presence.profile = 'classic-v1' AND owners.server_id = ?`,
+         FROM server_presence AS presence
+        WHERE presence.profile = 'classic-v1' AND presence.server_id = ?`,
     ).bind(serverId).first()).toEqual({
-      owner_generation: newGeneration,
       listing_generation: newGeneration,
       rendezvous_token_hash: "f".repeat(64),
     });

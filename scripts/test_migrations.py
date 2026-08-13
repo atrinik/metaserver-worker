@@ -26,6 +26,9 @@ GAME_PUBLISHER_MIGRATION = (
 RENDEZVOUS_COOLDOWN_MIGRATION = (
     REPOSITORY_ROOT / "migrations" / "0008_rendezvous_client_cooldowns.sql"
 )
+LEGACY_STORAGE_REMOVAL_MIGRATION = (
+    REPOSITORY_ROOT / "migrations" / "0009_remove_legacy_storage.sql"
+)
 
 
 class RequestControlMigrationTests(unittest.TestCase):
@@ -1481,6 +1484,319 @@ class RendezvousCooldownMigrationTests(unittest.TestCase):
             with self.subTest(statement=statement):
                 with self.assertRaises(sqlite3.IntegrityError):
                     self.database.execute(statement, parameters)
+
+
+class LegacyStorageRemovalMigrationTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.database = sqlite3.connect(":memory:")
+        self.addCleanup(self.database.close)
+        self.database.execute("PRAGMA foreign_keys = ON")
+        for migration in (
+            INITIAL_MIGRATION,
+            REQUEST_CONTROL_MIGRATION,
+            RENDEZVOUS_GENERATION_MIGRATION,
+            SIGNED_PUBLISHER_MIGRATION,
+            DIRECTORY_STATE_MIGRATION,
+            DIRECTORY_ARTIFACTS_MIGRATION,
+            GAME_PUBLISHER_MIGRATION,
+            RENDEZVOUS_COOLDOWN_MIGRATION,
+        ):
+            self.database.executescript(migration.read_text(encoding="utf-8"))
+
+    def apply(self) -> None:
+        self.database.executescript(
+            LEGACY_STORAGE_REMOVAL_MIGRATION.read_text(encoding="utf-8")
+        )
+
+    def seed_signed(
+        self,
+        server_id: str,
+        profile: str,
+        discriminator: str,
+    ) -> None:
+        self.database.execute(
+            "INSERT INTO server_owners "
+            "(server_id, auth_key, current_ip, ip_changed_at, created_at, "
+            "updated_at, rendezvous_generation, authentication_kind) "
+            "VALUES (?, ?, '', 0, 1, 1, ?, 'signed-certificate-v1')",
+            (server_id, "0" * 128, discriminator * 64),
+        )
+        self.database.execute(
+            "INSERT INTO publisher_replay "
+            "(server_id, profile, last_sequence, last_nonce, commit_token, updated_at) "
+            "VALUES (?, ?, '7', ?, ?, 1)",
+            (server_id, profile, discriminator * 32, discriminator * 64),
+        )
+        self.database.execute(
+            "INSERT INTO publisher_nonces "
+            "(server_id, profile, nonce, expires_at, created_at) "
+            "VALUES (?, ?, ?, 100, 1)",
+            (server_id, profile, discriminator * 32),
+        )
+        self.database.execute(
+            "INSERT INTO server_presence "
+            "(profile, server_id, last_seen, rendezvous_token_hash, "
+            "rendezvous_generation) VALUES (?, ?, 10, ?, ?)",
+            (profile, server_id, discriminator * 64, discriminator * 64),
+        )
+        if profile == "classic-v1":
+            self.database.execute(
+                "INSERT INTO directory_entries "
+                "(profile, server_id, name, players_count, version, text_comment, "
+                "quic_cert_sha256, password_required, directory_fingerprint) "
+                "VALUES (?, ?, 'Classic', 2, '4.0', '', ?, 0, ?)",
+                (profile, server_id, server_id, discriminator * 64),
+            )
+        else:
+            self.database.execute(
+                "INSERT INTO directory_entries "
+                "(profile, server_id, name, description, protocol_major, "
+                "protocol_minor, content_id, content_revision_sha256, "
+                "players_online, players_capacity, status, game_json_bytes, "
+                "quic_cert_sha256, password_required, directory_fingerprint) "
+                "VALUES (?, ?, 'Game', '', 1, 0, 'atrinik-main', ?, "
+                "1, 64, 'online', 1, ?, 0, ?)",
+                (profile, server_id, discriminator * 64, server_id, discriminator * 64),
+            )
+
+    def test_empty_upgrade_has_only_canonical_tables(self) -> None:
+        self.apply()
+        self.assertEqual(
+            self.database.execute("PRAGMA foreign_key_check").fetchall(), []
+        )
+        tables = {
+            row[0] for row in self.database.execute(
+                "SELECT name FROM sqlite_master WHERE type = 'table'"
+            )
+        }
+        self.assertTrue({"server_denials", "publisher_replay", "server_presence"} <= tables)
+        self.assertTrue({
+            "one_time_tokens", "rate_limits", "servers", "server_owners",
+            "server_blacklist",
+        }.isdisjoint(tables))
+        self.assertEqual(
+            [
+                row[1] for row in self.database.execute(
+                    "PRAGMA table_info(server_denials)"
+                )
+            ],
+            ["server_id", "created_at"],
+        )
+
+    def test_rejects_unresolved_noncanonical_denials_before_schema_changes(self) -> None:
+        self.database.execute(
+            "INSERT INTO server_blacklist (pattern, reason, created_at) "
+            "VALUES ('192.0.2.*', 'requires reviewed disposition', 1)"
+        )
+        self.database.execute(
+            "INSERT INTO server_blacklist (pattern, reason, created_at) "
+            "VALUES (?, 'non-text pattern', 1)",
+            (sqlite3.Binary(b"a" * 64),),
+        )
+        tables_before = self.database.execute(
+            "SELECT name FROM sqlite_master WHERE type = 'table' ORDER BY name"
+        ).fetchall()
+
+        with self.assertRaises(sqlite3.IntegrityError):
+            self.apply()
+
+        self.assertEqual(
+            self.database.execute(
+                "SELECT name FROM sqlite_master WHERE type = 'table' ORDER BY name"
+            ).fetchall(),
+            tables_before,
+        )
+        self.assertEqual(
+            self.database.execute(
+                "SELECT count(*) FROM server_blacklist"
+            ).fetchone(),
+            (2,),
+        )
+
+    def test_mixed_upgrade_preserves_only_exact_signed_state(self) -> None:
+        classic_id, game_id, compat_id = "a" * 64, "b" * 64, "c" * 64
+        self.seed_signed(classic_id, "classic-v1", "1")
+        self.seed_signed(game_id, "game-v1", "2")
+        self.database.execute(
+            "INSERT INTO server_owners "
+            "(server_id, auth_key, current_ip, ip_changed_at, created_at, updated_at) "
+            "VALUES (?, ?, '192.0.2.1', 1, 1, 1)",
+            (compat_id, "3" * 128),
+        )
+        self.database.execute(
+            "INSERT INTO server_presence "
+            "(profile, server_id, last_seen, rendezvous_token_hash, "
+            "rendezvous_generation) VALUES ('classic-v1', ?, 10, ?, ?)",
+            (compat_id, "3" * 64, "3" * 64),
+        )
+        self.database.execute(
+            "INSERT INTO directory_entries "
+            "(profile, server_id, name, players_count, version, text_comment, "
+            "quic_cert_sha256, password_required, directory_fingerprint) "
+            "VALUES ('classic-v1', ?, 'Compat', 0, '4.0', '', ?, 0, ?)",
+            (compat_id, compat_id, "3" * 64),
+        )
+        for server_id in (classic_id, compat_id):
+            self.database.execute(
+                "INSERT INTO servers "
+                "(server_id, source_ip, name, players_count, version, text_comment, "
+                "last_seen, is_public, quic_host, quic_port, quic_cert_sha256, "
+                "password_required, rendezvous_token_hash, rendezvous_generation, "
+                "directory_fingerprint) "
+                "VALUES (?, '192.0.2.1', 'Shadow', 0, '4.0', '', 1, 1, '', 1, "
+                "?, 0, ?, ?, ?)",
+                (server_id, server_id, "4" * 64, "4" * 64, "4" * 64),
+            )
+        self.database.execute(
+            "INSERT INTO one_time_tokens "
+            "(token_hash, source_ip, expires_at, created_at) "
+            "VALUES ('legacy-token', '192.0.2.1', 60, 1)"
+        )
+        self.database.execute(
+            "INSERT INTO rate_limits "
+            "(source_ip, scope, window_start, request_count) "
+            "VALUES ('192.0.2.1', 'update', 0, 1)"
+        )
+        self.database.execute(
+            "INSERT INTO request_budgets "
+            "(actor_key, scope, window_start, request_count, expires_at) "
+            "VALUES (?, 'publish-server', 0, 2, 60)",
+            (classic_id,),
+        )
+        self.database.execute(
+            "INSERT INTO request_budgets "
+            "(actor_key, scope, window_start, request_count, expires_at) "
+            "VALUES (?, 'compat-directory', 0, 2, 60)",
+            (f"v1.current.{'A' * 43}",),
+        )
+        self.database.executemany(
+            "INSERT INTO server_blacklist (pattern, reason, created_at) VALUES (?, ?, 1)",
+            ((classic_id, "exact"), ("192.0.2.*", "raw wildcard")),
+        )
+        self.database.execute(
+            "DELETE FROM server_blacklist WHERE pattern = '192.0.2.*'"
+        )
+        self.database.execute(
+            "INSERT INTO server_blacklist (pattern, reason, created_at) VALUES (?, ?, ?)",
+            (game_id, "invalid\x00reason", -1),
+        )
+        self.database.execute(
+            "UPDATE directory_artifact_publications SET "
+            "published_revision = 4, generation = 5, generated_at = 10, "
+            "expires_at = 20, model_sha256 = ?, html_sha256 = ?, xml_sha256 = ?, "
+            "json_sha256 = ?, manifest_sha256 = ?, html_bytes = 1, xml_bytes = 1, "
+            "json_bytes = 1, manifest_bytes = 1, published_at = 11 "
+            "WHERE profile = 'game-v1'",
+            tuple(character * 64 for character in "45678"),
+        )
+        self.database.execute(
+            "INSERT INTO directory_artifact_history "
+            "(profile, generation, committed_at) VALUES ('game-v1', 5, 11)"
+        )
+        self.database.execute(
+            "INSERT INTO directory_artifact_commits "
+            "(profile, commit_token, revision, generation, committed_at) "
+            "VALUES ('game-v1', ?, 4, 5, 11)",
+            ("9" * 64,),
+        )
+        artifact_before = {
+            table: self.database.execute(
+                f"SELECT * FROM {table} ORDER BY 1, 2"
+            ).fetchall()
+            for table in (
+                "directory_artifact_publications",
+                "directory_artifact_history",
+                "directory_artifact_commits",
+            )
+        }
+
+        self.apply()
+
+        self.assertEqual(
+            self.database.execute(
+                "SELECT profile, server_id FROM server_presence ORDER BY profile"
+            ).fetchall(),
+            [("classic-v1", classic_id), ("game-v1", game_id)],
+        )
+        self.assertEqual(
+            self.database.execute(
+                "SELECT profile, server_id FROM directory_entries ORDER BY profile"
+            ).fetchall(),
+            [("classic-v1", classic_id), ("game-v1", game_id)],
+        )
+        self.assertEqual(
+            self.database.execute(
+                "SELECT server_id, profile, last_sequence FROM publisher_replay "
+                "ORDER BY profile"
+            ).fetchall(),
+            [(classic_id, "classic-v1", "7"), (game_id, "game-v1", "7")],
+        )
+        self.assertEqual(
+            self.database.execute(
+                "SELECT actor_key, scope, request_count FROM request_budgets"
+            ).fetchall(),
+            [(classic_id, "publish-server", 2)],
+        )
+        self.assertEqual(
+            self.database.execute(
+                "SELECT server_id FROM server_denials ORDER BY server_id"
+            ).fetchall(),
+            [(classic_id,), (game_id,)],
+        )
+        self.assertEqual(
+            self.database.execute(
+                "SELECT revision FROM directory_revisions WHERE profile = 'classic-v1'"
+            ).fetchone(),
+            (1,),
+        )
+        self.assertEqual(
+            self.database.execute(
+                "SELECT profile, revision FROM directory_outbox"
+            ).fetchall(),
+            [("classic-v1", 1)],
+        )
+        self.assertEqual(
+            self.database.execute("PRAGMA foreign_key_check").fetchall(), []
+        )
+        for table, rows in artifact_before.items():
+            self.assertEqual(
+                self.database.execute(
+                    f"SELECT * FROM {table} ORDER BY 1, 2"
+                ).fetchall(),
+                rows,
+            )
+        self.assertEqual(
+            {
+                (row[2], row[3], row[4], row[6])
+                for row in self.database.execute(
+                    "PRAGMA foreign_key_list(server_presence)"
+                )
+            },
+            {
+                ("publisher_replay", "server_id", "server_id", "CASCADE"),
+                ("publisher_replay", "profile", "profile", "CASCADE"),
+            },
+        )
+        with self.assertRaises(sqlite3.IntegrityError):
+            self.database.execute(
+                "INSERT INTO request_budgets "
+                "(actor_key, scope, window_start, request_count, expires_at) "
+                "VALUES (?, 'compat-directory', 0, 1, 60)",
+                (classic_id,),
+            )
+        self.database.execute(
+            "DELETE FROM publisher_replay WHERE server_id = ? AND profile = 'classic-v1'",
+            (classic_id,),
+        )
+        self.assertIsNone(self.database.execute(
+            "SELECT 1 FROM server_presence WHERE server_id = ?", (classic_id,)
+        ).fetchone())
+        self.assertIsNone(self.database.execute(
+            "SELECT 1 FROM directory_entries WHERE server_id = ?", (classic_id,)
+        ).fetchone())
+        self.assertIsNone(self.database.execute(
+            "SELECT 1 FROM publisher_nonces WHERE server_id = ?", (classic_id,)
+        ).fetchone())
 
 
 if __name__ == "__main__":
