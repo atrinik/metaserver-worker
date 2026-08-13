@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Generate reviewable D1 SQL for metaserver ownership administration.
+"""Generate reviewable D1 SQL for canonical metaserver identity administration.
 
 This tool never connects to Cloudflare. Redirect its output to a file, review it,
 and then pass that file to ``wrangler d1 execute --remote --file``.
@@ -28,7 +28,7 @@ def sql_string(value: object) -> str:
     return "'" + value.replace("'", "''") + "'"
 
 
-def command_reset_owner(args: argparse.Namespace) -> str:
+def command_reset_identity(args: argparse.Namespace) -> str:
     server_id = server_identity(args.server_id)
     quoted = sql_string(server_id)
     return (
@@ -59,33 +59,23 @@ def command_reset_owner(args: argparse.Namespace) -> str:
         f"DELETE FROM publisher_replay WHERE server_id = {quoted};\n"
         f"DELETE FROM directory_entries WHERE server_id = {quoted};\n"
         f"DELETE FROM server_presence WHERE server_id = {quoted};\n"
-        f"DELETE FROM servers WHERE server_id = {quoted};\n"
-        f"DELETE FROM server_owners WHERE server_id = {quoted};\n"
     )
 
 
-def validate_glob(pattern: str) -> str:
-    if not pattern or len(pattern) > 253 or "\x00" in pattern:
-        raise ValueError("blacklist pattern must contain 1-253 characters")
-    return pattern.lower()
-
-
-def command_blacklist_add(args: argparse.Namespace) -> str:
-    pattern = validate_glob(args.pattern)
-    if len(args.reason) > 256:
-        raise ValueError("blacklist reason must be at most 256 characters")
+def command_deny_add(args: argparse.Namespace) -> str:
+    server_id = server_identity(args.server_id)
     return (
-        "INSERT INTO server_blacklist (pattern, reason, created_at) "
-        f"VALUES ({sql_string(pattern)}, {sql_string(args.reason)}, unixepoch()) "
-        "ON CONFLICT(pattern) DO UPDATE SET "
-        "reason = excluded.reason, created_at = excluded.created_at;\n"
+        "INSERT INTO server_denials (server_id, created_at) "
+        f"VALUES ({sql_string(server_id)}, unixepoch()) "
+        "ON CONFLICT(server_id) DO UPDATE SET "
+        "created_at = excluded.created_at;\n"
     )
 
 
-def command_blacklist_remove(args: argparse.Namespace) -> str:
+def command_deny_remove(args: argparse.Namespace) -> str:
     return (
-        "DELETE FROM server_blacklist WHERE pattern = "
-        f"{sql_string(validate_glob(args.pattern))};\n"
+        "DELETE FROM server_denials WHERE server_id = "
+        f"{sql_string(server_identity(args.server_id))};\n"
     )
 
 
@@ -93,21 +83,20 @@ def parser() -> argparse.ArgumentParser:
     root = argparse.ArgumentParser(description=__doc__)
     commands = root.add_subparsers(dest="command", required=True)
 
-    reset_owner = commands.add_parser(
-        "reset-owner",
-        help="generate SQL that removes one owner and all of its listings",
+    reset_identity = commands.add_parser(
+        "reset-identity",
+        help="generate SQL that removes one signed identity and all of its listings",
     )
-    reset_owner.add_argument("server_id")
-    reset_owner.set_defaults(handler=command_reset_owner)
+    reset_identity.add_argument("server_id")
+    reset_identity.set_defaults(handler=command_reset_identity)
 
-    blacklist_add = commands.add_parser("blacklist-add")
-    blacklist_add.add_argument("pattern")
-    blacklist_add.add_argument("reason")
-    blacklist_add.set_defaults(handler=command_blacklist_add)
+    deny_add = commands.add_parser("deny-add")
+    deny_add.add_argument("server_id")
+    deny_add.set_defaults(handler=command_deny_add)
 
-    blacklist_remove = commands.add_parser("blacklist-remove")
-    blacklist_remove.add_argument("pattern")
-    blacklist_remove.set_defaults(handler=command_blacklist_remove)
+    deny_remove = commands.add_parser("deny-remove")
+    deny_remove.add_argument("server_id")
+    deny_remove.set_defaults(handler=command_deny_remove)
     return root
 
 

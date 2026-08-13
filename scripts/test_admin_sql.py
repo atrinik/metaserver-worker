@@ -21,23 +21,6 @@ class AdminSqlTest(unittest.TestCase):
 
     def seed_server(self, connection: sqlite3.Connection, server_id: str) -> None:
         connection.execute(
-            """INSERT INTO server_owners
-                   (server_id, auth_key, current_ip, ip_changed_at,
-                    created_at, updated_at)
-               VALUES (?, ?, '192.0.2.1', 1, 1, 1)""",
-            (server_id, "a" * 128),
-        )
-        connection.execute(
-            """INSERT INTO servers
-                   (server_id, source_ip, name, players_count, version,
-                    text_comment, last_seen, is_public, quic_host, quic_port,
-                    quic_cert_sha256, password_required,
-                    rendezvous_token_hash)
-               VALUES (?, '192.0.2.1', 'Test', 0, '4.0.0', 'Test server',
-                       1, 1, '192.0.2.1', 1730, ?, 0, ?)""",
-            (server_id, server_id, "f" * 64),
-        )
-        connection.execute(
             """INSERT INTO publisher_replay
                    (server_id, profile, last_sequence, last_nonce,
                     commit_token, updated_at)
@@ -67,10 +50,17 @@ class AdminSqlTest(unittest.TestCase):
             (server_id, "1" * 32),
         )
 
-    def test_reset_owner_executes_and_is_scoped_to_one_identity(self) -> None:
+    def test_reset_identity_executes_and_is_scoped_to_one_identity(self) -> None:
         connection = self.database()
         self.seed_server(connection, SERVER_ID)
         self.seed_server(connection, OTHER_SERVER_ID)
+        connection.execute(
+            """INSERT INTO publisher_replay
+                   (server_id, profile, last_sequence, last_nonce,
+                    commit_token, updated_at)
+               VALUES (?, 'game-v1', '1', ?, ?, 1)""",
+            (SERVER_ID, "2" * 32, "2" * 64),
+        )
         connection.execute(
             """INSERT INTO server_presence
                    (profile, server_id, last_seen, rendezvous_token_hash,
@@ -90,7 +80,7 @@ class AdminSqlTest(unittest.TestCase):
             (SERVER_ID, "b" * 64, SERVER_ID, "c" * 64),
         )
 
-        sql = admin_sql.command_reset_owner(
+        sql = admin_sql.command_reset_identity(
             argparse.Namespace(server_id=SERVER_ID.upper()),
         )
         connection.executescript(sql)
@@ -111,8 +101,6 @@ class AdminSqlTest(unittest.TestCase):
         for table in (
             "directory_entries",
             "server_presence",
-            "servers",
-            "server_owners",
             "publisher_replay",
             "publisher_nonces",
         ):
@@ -121,15 +109,14 @@ class AdminSqlTest(unittest.TestCase):
             ).fetchall()
             self.assertEqual(identities, [(OTHER_SERVER_ID,)])
 
-    def test_reset_owner_keeps_private_only_presence_revision_neutral(self) -> None:
+    def test_reset_identity_keeps_private_only_presence_revision_neutral(self) -> None:
         connection = self.database()
         self.seed_server(connection, SERVER_ID)
         connection.execute(
             "DELETE FROM directory_entries WHERE server_id = ?", (SERVER_ID,)
         )
-        connection.execute("DELETE FROM servers WHERE server_id = ?", (SERVER_ID,))
 
-        connection.executescript(admin_sql.command_reset_owner(
+        connection.executescript(admin_sql.command_reset_identity(
             argparse.Namespace(server_id=SERVER_ID),
         ))
 
@@ -144,50 +131,47 @@ class AdminSqlTest(unittest.TestCase):
             (0,),
         )
 
-    def test_blacklist_commands_execute_and_escape_operator_input(self) -> None:
+    def test_denial_commands_execute_and_normalize_identity(self) -> None:
         connection = self.database()
-        add_sql = admin_sql.command_blacklist_add(
-            argparse.Namespace(pattern="1111*", reason="operator's test"),
+        add_sql = admin_sql.command_deny_add(
+            argparse.Namespace(server_id=SERVER_ID.upper()),
         )
         connection.executescript(add_sql)
         self.assertEqual(
             connection.execute(
-                "SELECT pattern, reason FROM server_blacklist",
+                "SELECT server_id FROM server_denials",
             ).fetchone(),
-            ("1111*", "operator's test"),
+            (SERVER_ID,),
         )
 
-        update_sql = admin_sql.command_blacklist_add(
-            argparse.Namespace(pattern="1111*", reason="updated"),
+        update_sql = admin_sql.command_deny_add(
+            argparse.Namespace(server_id=SERVER_ID),
         )
         connection.executescript(update_sql)
         self.assertEqual(
             connection.execute(
-                "SELECT reason FROM server_blacklist WHERE pattern = '1111*'",
+                "SELECT server_id FROM server_denials WHERE server_id = ?",
+                (SERVER_ID,),
             ).fetchone(),
-            ("updated",),
+            (SERVER_ID,),
         )
 
-        remove_sql = admin_sql.command_blacklist_remove(
-            argparse.Namespace(pattern="1111*"),
+        remove_sql = admin_sql.command_deny_remove(
+            argparse.Namespace(server_id=SERVER_ID),
         )
         connection.executescript(remove_sql)
         self.assertEqual(
-            connection.execute("SELECT COUNT(*) FROM server_blacklist").fetchone(),
+            connection.execute("SELECT COUNT(*) FROM server_denials").fetchone(),
             (0,),
         )
 
     def test_rejects_invalid_operator_input(self) -> None:
         with self.assertRaisesRegex(ValueError, "server_id"):
-            admin_sql.command_reset_owner(argparse.Namespace(server_id="bad"))
-        with self.assertRaisesRegex(ValueError, "1-253"):
-            admin_sql.command_blacklist_remove(argparse.Namespace(pattern=""))
+            admin_sql.command_reset_identity(argparse.Namespace(server_id="bad"))
+        with self.assertRaisesRegex(ValueError, "server_id"):
+            admin_sql.command_deny_remove(argparse.Namespace(server_id=""))
         with self.assertRaisesRegex(ValueError, "NUL"):
             admin_sql.sql_string("bad\x00value")
-        with self.assertRaisesRegex(ValueError, "at most 256"):
-            admin_sql.command_blacklist_add(
-                argparse.Namespace(pattern="1*", reason="x" * 257),
-            )
 
 
 if __name__ == "__main__":

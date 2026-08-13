@@ -36,8 +36,6 @@ beforeEach(async () => {
     env.DB.prepare("DELETE FROM directory_outbox"),
     env.DB.prepare("DELETE FROM publisher_nonces"),
     env.DB.prepare("DELETE FROM publisher_replay"),
-    env.DB.prepare("DELETE FROM servers"),
-    env.DB.prepare("DELETE FROM server_owners"),
     env.DB.prepare(
       "UPDATE directory_revisions SET revision = 0, updated_at = 0",
     ),
@@ -1008,7 +1006,6 @@ function publication(
   return {
     serverId,
     directoryProfile: "classic-v1",
-    publisherAuthentication: "signed-certificate-v1",
     publisherSequence: "1",
     publisherNonce: "1".repeat(32),
     publisherNonceExpiresAt: now + 300,
@@ -1039,7 +1036,6 @@ function gamePublication(
   return {
     serverId,
     directoryProfile: "game-v1",
-    publisherAuthentication: "signed-certificate-v1",
     publisherSequence: "1",
     publisherNonce: "2".repeat(32),
     publisherNonceExpiresAt: now + 300,

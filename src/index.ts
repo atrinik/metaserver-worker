@@ -272,7 +272,7 @@ async function publishClassicServer(
     now,
     "classic-v1",
   );
-  await enforceServerIdentityBlacklist(
+  await enforceServerIdentityDenial(
     env,
     route.serverId,
     "publish-classic",
@@ -283,7 +283,6 @@ async function publishClassicServer(
   const publication = {
     serverId: route.serverId,
     directoryProfile: "classic-v1",
-    publisherAuthentication: "signed-certificate-v1",
     publisherSequence: authenticated.sequence,
     publisherNonce: authenticated.nonce,
     publisherNonceExpiresAt: authenticated.nonceExpiresAt,
@@ -374,14 +373,13 @@ async function publishGameServer(
     now,
     "game-v1",
   );
-  await enforceServerIdentityBlacklist(env, route.serverId, "publish-game");
+  await enforceServerIdentityDenial(env, route.serverId, "publish-game");
 
   const payload = authenticated.payload;
   const rendezvousToken = randomToken();
   const publication = {
     serverId: route.serverId,
     directoryProfile: "game-v1",
-    publisherAuthentication: "signed-certificate-v1",
     publisherSequence: authenticated.sequence,
     publisherNonce: authenticated.nonce,
     publisherNonceExpiresAt: authenticated.nonceExpiresAt,
@@ -630,19 +628,19 @@ async function enforceAuthenticatedPublishBudget(
   });
 }
 
-async function enforceServerIdentityBlacklist(
+async function enforceServerIdentityDenial(
   env: CoreEnv,
   serverId: string,
   route: BlacklistRoute,
 ): Promise<void> {
   const matched = await env.DB.prepare(
     `SELECT 1 AS matched
-       FROM server_blacklist
-      WHERE ? GLOB pattern
+       FROM server_denials
+      WHERE server_id = ?
       LIMIT 1`,
   ).bind(serverId).first<number>("matched");
   if (matched !== null) {
     logBlacklistMatch(route, "server_identity");
-    throw new RequestError("The server is blacklisted", 403);
+    throw new RequestError("The server identity is denied", 403);
   }
 }

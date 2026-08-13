@@ -202,16 +202,14 @@ describe("compiled named Worker Service Bindings", () => {
     const tokenHash = createHash("sha256").update(TEST_TOKEN).digest("hex");
     await bindings.DB.batch([
       bindings.DB.prepare(
-        `INSERT INTO server_owners
-           (server_id, auth_key, current_ip, ip_changed_at, created_at,
-            updated_at, rendezvous_generation, authentication_kind)
-         VALUES (?, ?, '', 0, ?, ?, ?, 'signed-certificate-v1')`,
+        `INSERT INTO publisher_replay
+           (server_id, profile, last_sequence, last_nonce, commit_token, updated_at)
+         VALUES (?, 'classic-v1', '1', ?, ?, ?)`,
       ).bind(
         publisherFixture.server_id,
-        publisherFixture.server_id.repeat(2),
+        "1".repeat(32),
+        "1".repeat(64),
         now,
-        now,
-        "b".repeat(64),
       ),
       bindings.DB.prepare(
         `INSERT INTO server_presence

@@ -26,8 +26,6 @@ beforeEach(async () => {
     env.DB.prepare("DELETE FROM directory_outbox"),
     env.DB.prepare("DELETE FROM publisher_nonces"),
     env.DB.prepare("DELETE FROM publisher_replay"),
-    env.DB.prepare("DELETE FROM servers"),
-    env.DB.prepare("DELETE FROM server_owners"),
     env.DB.prepare(
       "UPDATE directory_revisions SET revision = 0, updated_at = 0",
     ),
@@ -234,21 +232,10 @@ describe("profile-scoped directory expiry", () => {
       accepted: true,
       visibleChanged: true,
     });
-    await env.DB.prepare(
-      `CREATE TRIGGER server_owners_test_ignore_game_update
-       BEFORE UPDATE ON server_owners
-       WHEN NEW.server_id = '${serverId}'
-       BEGIN
-         SELECT RAISE(IGNORE);
-       END`,
-    ).run();
     await expect(persistRendezvousPublication(env.DB, game)).resolves.toEqual({
       accepted: true,
       visibleChanged: true,
     });
-    await env.DB.prepare(
-      "DROP TRIGGER server_owners_test_ignore_game_update",
-    ).run();
 
     expect(await env.DB.prepare(
       `SELECT profile, rendezvous_generation
@@ -267,9 +254,6 @@ describe("profile-scoped directory expiry", () => {
         { profile: "game-v1", name: "Game" },
       ],
     });
-    expect(await env.DB.prepare(
-      "SELECT 1 FROM servers WHERE server_id = ?",
-    ).bind(serverId).first()).toBeNull();
     expect(await env.DB.prepare(
       `SELECT profile, revision FROM directory_revisions ORDER BY profile`,
     ).all()).toMatchObject({
@@ -312,9 +296,6 @@ describe("profile-scoped directory expiry", () => {
       hostname: "play.example.net",
       port: 1730,
     });
-    expect(await env.DB.prepare(
-      "SELECT 1 FROM servers WHERE server_id = ?",
-    ).bind(serverId).first()).toBeNull();
   });
 
   it("persists a canonical IDNA A-label fallback", async () => {
@@ -760,9 +741,7 @@ async function snapshotDirectoryState(): Promise<unknown> {
     "directory_revisions",
     "publisher_nonces",
     "publisher_replay",
-    "server_owners",
     "server_presence",
-    "servers",
   ] as const;
   return Promise.all(tables.map(async (table) => ({
     table,
@@ -779,7 +758,6 @@ function publication(
 ): InternalRendezvousPublication {
   const common = {
     serverId,
-    publisherAuthentication: "signed-certificate-v1",
     publisherSequence: "1",
     publisherNonce: discriminator.repeat(32),
     publisherNonceExpiresAt: 1_000,
@@ -820,17 +798,24 @@ function publication(
       };
 }
 
+function replaySeed(
+  serverId: string,
+  profile: "classic-v1" | "game-v1",
+): D1PreparedStatement {
+  return env.DB.prepare(
+    `INSERT OR IGNORE INTO publisher_replay
+       (server_id, profile, last_sequence, last_nonce, commit_token, updated_at)
+     VALUES (?, ?, '1', ?, ?, 0)`,
+  ).bind(serverId, profile, serverId.slice(0, 32), serverId);
+}
+
 async function seedPublic(
   serverId: string,
   profile: "classic-v1" | "game-v1",
   lastSeen: number,
 ): Promise<void> {
   await env.DB.batch([
-    env.DB.prepare(
-      `INSERT OR IGNORE INTO server_owners
-         (server_id, auth_key, current_ip, ip_changed_at, created_at, updated_at)
-       VALUES (?, ?, '', 0, 0, 0)`,
-    ).bind(serverId, "a".repeat(128)),
+    replaySeed(serverId, profile),
     env.DB.prepare(
       `INSERT INTO server_presence
          (profile, server_id, last_seen, rendezvous_token_hash,
@@ -863,11 +848,7 @@ async function seedPrivate(
   lastSeen: number,
 ): Promise<void> {
   await env.DB.batch([
-    env.DB.prepare(
-      `INSERT OR IGNORE INTO server_owners
-         (server_id, auth_key, current_ip, ip_changed_at, created_at, updated_at)
-       VALUES (?, ?, '', 0, 0, 0)`,
-    ).bind(serverId, "a".repeat(128)),
+    replaySeed(serverId, profile),
     env.DB.prepare(
       `INSERT INTO server_presence
          (profile, server_id, last_seen, rendezvous_token_hash,

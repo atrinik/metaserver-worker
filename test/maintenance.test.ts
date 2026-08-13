@@ -18,7 +18,7 @@ beforeEach(async () => {
 });
 
 describe("bounded canonical state maintenance", () => {
-  it("round-robins every active state class and leaves retired rows for migration", async () => {
+  it("round-robins every active canonical state class", async () => {
     for (let index = 0; index < 6; index += 1) {
       const serverId = index.toString(16).padStart(64, "0");
       const timestamp = index < 5 ? EXPIRED_AT : LIVE_AT;
@@ -26,7 +26,7 @@ describe("bounded canonical state maintenance", () => {
         `INSERT INTO request_budgets
            (actor_key, scope, window_start, request_count, expires_at)
          VALUES (?, 'publish-server', ?, 1, ?)`,
-      ).bind(`v1.key-${index}.${"A".repeat(43)}`, index, timestamp).run();
+      ).bind(serverId, index, timestamp).run();
       await env.DB.prepare(
         `INSERT INTO rendezvous_pair_attempts
            (actor_key, attempt_id, attempted_at, expires_at)
@@ -51,12 +51,6 @@ describe("bounded canonical state maintenance", () => {
          VALUES (?, 'classic-v1', ?, ?, 0)`,
       ).bind(serverId, index.toString(16).padStart(32, "1"), timestamp).run();
     }
-    await env.DB.prepare(
-      `INSERT INTO request_budgets
-         (actor_key, scope, window_start, request_count, expires_at)
-       VALUES (?, 'compat-directory', 0, 1, ?)`,
-    ).bind(`v1.retired.${"Z".repeat(43)}`, EXPIRED_AT).run();
-
     expect(MAINTENANCE_TARGETS).toEqual([
       "request_budgets",
       "rendezvous_pair_attempts",
@@ -87,9 +81,6 @@ describe("bounded canonical state maintenance", () => {
     }
     expect(await env.DB.prepare(
       "SELECT COUNT(*) AS count FROM request_budgets",
-    ).first<number>("count")).toBe(2);
-    expect(await env.DB.prepare(
-      "SELECT COUNT(*) AS count FROM request_budgets WHERE scope = 'compat-directory'",
     ).first<number>("count")).toBe(1);
   });
 

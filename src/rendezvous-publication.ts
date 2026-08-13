@@ -26,14 +26,6 @@ export interface PublicationPersistenceResult {
 }
 
 const TOKEN_GENERATION = /^[0-9a-f]{64}$/;
-const EMPTY_GENERATION = "0".repeat(64);
-
-// Migration 0001 requires a 128-hex auth_key until #39 removes the inactive
-// column. Signed publication uses a deterministic certificate-bound schema
-// anchor rather than preserving the retired shared-key sentinel.
-function signedOwnerSchemaAnchor(serverId: string): string {
-  return serverId.repeat(2);
-}
 
 export async function readPublishedGeneration(
   db: D1Database,
@@ -147,43 +139,6 @@ async function persistSignedPublication(
       publication.now,
       ...signedGuardBindings(publication),
     ),
-    db.prepare(
-      `INSERT INTO server_owners
-         (server_id, auth_key, current_ip, ip_changed_at, created_at,
-          updated_at, rendezvous_generation, authentication_kind)
-       SELECT ?, ?, '', ?, ?, ?, ?, 'signed-certificate-v1'
-        WHERE ${signedCommitGuard()}
-       ON CONFLICT(server_id) DO UPDATE SET
-         auth_key = excluded.auth_key,
-         current_ip = '',
-         ip_changed_at = CASE
-           WHEN server_owners.current_ip <> '' THEN excluded.ip_changed_at
-           ELSE server_owners.ip_changed_at
-         END,
-         updated_at = excluded.updated_at,
-         rendezvous_generation = CASE
-           WHEN ? = 'classic-v1' THEN excluded.rendezvous_generation
-           ELSE server_owners.rendezvous_generation
-         END,
-         authentication_kind = excluded.authentication_kind
-       WHERE ? = 'classic-v1' OR
-             server_owners.auth_key <> excluded.auth_key OR
-             server_owners.current_ip <> '' OR
-             server_owners.authentication_kind <>
-                 excluded.authentication_kind`,
-    ).bind(
-      publication.serverId,
-      signedOwnerSchemaAnchor(publication.serverId),
-      publication.now,
-      publication.now,
-      publication.now,
-      publication.directoryProfile === "classic-v1"
-        ? publication.generation
-        : EMPTY_GENERATION,
-      ...signedGuardBindings(publication),
-      publication.directoryProfile,
-      publication.directoryProfile,
-    ),
     presenceMutation(db, publication),
     visibleRevisionStatement(db, publication),
     visibleOutboxStatement(db, publication),
@@ -191,7 +146,7 @@ async function persistSignedPublication(
     publicationAssertion(db, publication),
   ]);
 
-  requireBatchResults(persisted, 8);
+  requireBatchResults(persisted, 7);
   const accepted = changes(persisted, 0) === 1;
   if (!accepted) {
     if (persisted.some((_, index) => index > 0 && changes(persisted, index) !== 0)) {
@@ -199,19 +154,14 @@ async function persistSignedPublication(
     }
     return { accepted: false, visibleChanged: false };
   }
-  if (
-    changes(persisted, 1) !== 1 ||
-    changes(persisted, 2) > 1 ||
-    (publication.directoryProfile === "classic-v1" &&
-      changes(persisted, 2) !== 1)
-  ) {
+  if (changes(persisted, 1) !== 1) {
     throw new Error("Signed publication did not persist required state");
   }
-  if (changes(persisted, 7) !== 0) {
+  if (changes(persisted, 6) !== 0) {
     throw new Error("Signed publication assertion produced durable state");
   }
-  requireDirectoryMutationResults(persisted, publication, 6, 3);
-  return publicationResult(persisted, 4, 5);
+  requireDirectoryMutationResults(persisted, publication, 5, 2);
+  return publicationResult(persisted, 3, 4);
 }
 
 function publicationResult(
@@ -551,22 +501,11 @@ function publicationAuthenticationPredicate(
 ): SqlPredicate {
   return {
     sql: `EXISTS (
-      SELECT 1 FROM server_owners AS owners
-       WHERE owners.server_id = ?
-         AND owners.authentication_kind = 'signed-certificate-v1'
-         AND owners.current_ip = ''
-         AND owners.auth_key = ?
-         AND (? <> 'classic-v1' OR owners.rendezvous_generation = ?)
-    ) AND EXISTS (
       SELECT 1 FROM publisher_nonces AS nonces
        WHERE nonces.server_id = ? AND nonces.profile = ?
          AND nonces.nonce = ? AND nonces.expires_at = ?
     )`,
     bindings: [
-      publication.serverId,
-      signedOwnerSchemaAnchor(publication.serverId),
-      publication.directoryProfile,
-      publication.generation,
       publication.serverId,
       publication.directoryProfile,
       publication.publisherNonce,
@@ -763,15 +702,10 @@ export async function rendezvousPublicationMatches(
   const replay = await db.prepare(
       `SELECT COUNT(*) AS matches
          FROM publisher_replay AS replay
-         JOIN server_owners AS owners USING (server_id)
         WHERE replay.server_id = ? AND replay.profile = ?
           AND replay.last_sequence = ?
           AND replay.last_nonce = ?
           AND replay.commit_token = ?
-          AND owners.authentication_kind = 'signed-certificate-v1'
-          AND owners.current_ip = ''
-          AND owners.auth_key = ?
-          AND (? <> 'classic-v1' OR owners.rendezvous_generation = ?)
           AND EXISTS (
             SELECT 1 FROM publisher_nonces AS nonces
              WHERE nonces.server_id = replay.server_id
@@ -784,9 +718,6 @@ export async function rendezvousPublicationMatches(
       publication.publisherSequence,
       publication.publisherNonce,
       publication.commitToken,
-      signedOwnerSchemaAnchor(publication.serverId),
-      publication.directoryProfile,
-      publication.generation,
     ).first<PublicationMatchRecord>();
   if (replay?.matches !== 1) {
     return false;

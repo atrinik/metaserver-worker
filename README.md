@@ -110,7 +110,7 @@ create, alter, or delete Cloudflare resources and accepts no API token.
 The checked-in core Wrangler file has a placeholder D1 ID. All three checked-in
 Wrangler files have no production route. Supply reviewed production bindings
 during the provider-first deployment procedure. Never run remote migrations,
-deployments, or owner resets merely to validate a change.
+deployments, or identity resets merely to validate a change.
 
 The Worker requires current and previous source-tag HMAC secrets. Their names
 are declared in all three dynamic-service configurations; values belong only in
@@ -158,7 +158,7 @@ suppresses guessed terminal telemetry, and deletes the flag once cleanup is
 durable or the transports are closed. The client protocol requires 32 random
 ticket bytes encoded as 64 lowercase hex characters; the Worker enforces shape
 and single use but cannot prove client entropy.
-Ownership resets and blacklist changes should be generated with
+Canonical identity resets and server-ID denial changes should be generated with
 `scripts/admin_sql.py`, reviewed, and only then applied by an authorized
 operator.
 
@@ -171,9 +171,10 @@ Purpose-separated rotating HMAC tags protect coarse edge shields and the
 canonical client pair cooldown; authenticated stages use the server identity.
 Only a signed, canonical DNS hostname is eligible for persistence. Canonical `xn--`
 labels are checked with strict, non-transitional UTS #46 processing, including
-STD3, hyphen, joiner, bidirectional, and DNS-length checks. Retired physical
-columns remain inert until the ordered storage cleanup in #39. No publish
-infers a QUIC endpoint from the HTTPS source.
+STD3, hyphen, joiner, bidirectional, and DNS-length checks. Migration
+`0009_remove_legacy_storage.sql` physically removes retired ownership, OTP,
+source-rate, shadow-directory, and wildcard-denial storage. No publish infers a
+QUIC endpoint from the HTTPS source.
 The request path emits only the closed, redacted diagnostic events described in
 [docs/privacy.md](docs/privacy.md).
 

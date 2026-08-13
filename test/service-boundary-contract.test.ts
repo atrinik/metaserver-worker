@@ -137,8 +137,6 @@ beforeEach(async () => {
     env.DB.prepare("DELETE FROM publisher_replay"),
     env.DB.prepare("DELETE FROM directory_entries"),
     env.DB.prepare("DELETE FROM server_presence"),
-    env.DB.prepare("DELETE FROM servers"),
-    env.DB.prepare("DELETE FROM server_owners"),
     env.DB.prepare("DELETE FROM request_budgets"),
     env.DB.prepare("DELETE FROM rendezvous_pair_attempts"),
     env.DB.prepare("DELETE FROM rendezvous_pair_cooldowns"),
@@ -159,7 +157,6 @@ describe("in-process service-boundary contract", () => {
       await persistRendezvousPublication(env.DB, {
         serverId,
         directoryProfile: "classic-v1",
-        publisherAuthentication: "signed-certificate-v1",
         publisherSequence: String(index + 1),
         publisherNonce: String(index + 1).repeat(32),
         publisherNonceExpiresAt: now + 86_400,
