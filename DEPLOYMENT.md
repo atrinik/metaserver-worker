@@ -11,6 +11,24 @@ are stateless public edges with one named Service Binding each.
 
 ## Prepare
 
+Use explicit protected targets for every Wrangler command; the checked-in
+resource IDs and disabled values are review fixtures, not production inputs:
+
+```sh
+readonly ATRINIK_PROD_CORE_CONFIG=/secure/path/atrinik-metaserver.production.jsonc
+readonly ATRINIK_PROD_PUBLISHER_CONFIG=/secure/path/atrinik-publisher.production.jsonc
+readonly ATRINIK_PROD_RENDEZVOUS_CONFIG=/secure/path/atrinik-rendezvous.production.jsonc
+readonly ATRINIK_PROD_CORE_SECRETS=/secure/path/atrinik-core-secrets.json
+readonly ATRINIK_PROD_EDGE_SECRETS=/secure/path/atrinik-edge-source-tags.json
+```
+
+Both secret files must be owner-only, ignored, bounded, and reviewed by binding
+name without printing values. The core file must supply every currently
+required encrypted binding, including the source-tag pair and cache-purge
+credential; the edge file supplies only the shared reviewed source-tag pair.
+Do not use sequential `secret put` operations or an incomplete file that would
+create an unreviewed intermediate version.
+
 1. Work from an exact reviewed release commit with a clean tree. Record the
    commit, Wrangler version, account, zone, database, buckets, Durable Object
    namespaces, service names, routes/domains, active version IDs, configuration
@@ -61,24 +79,45 @@ The core contains Durable Object `exports`, so its lifecycle reconciliation is
 deploy-only. Do not use `wrangler versions upload` or `versions deploy` for the
 core.
 
-1. Stage and validate `atrinik-metaserver-publisher` and
-   `atrinik-metaserver-rendezvous` plus their exact Service Binding/config
-   readbacks without activating the new rendezvous caller.
+1. Upload, but do not activate, exact versions for
+   `atrinik-metaserver-publisher` and `atrinik-metaserver-rendezvous` from the
+   reviewed protected configs. Supply the complete edge secret file atomically,
+   record the returned version IDs, and read back source/message/config/Service
+   Binding authority before continuing:
+
+   ```sh
+   npx wrangler versions upload --strict \
+     --config "$ATRINIK_PROD_PUBLISHER_CONFIG" \
+     --secrets-file "$ATRINIK_PROD_EDGE_SECRETS" \
+     --tag runtime-retirement-bridge \
+     --message "stage canonical-only publisher caller"
+   npx wrangler versions upload --strict \
+     --config "$ATRINIK_PROD_RENDEZVOUS_CONFIG" \
+     --secrets-file "$ATRINIK_PROD_EDGE_SECRETS" \
+     --tag runtime-retirement-bridge \
+     --message "stage canonical-only rendezvous caller"
+   ```
 2. Apply only reviewed pending D1 migrations. This bridge normally has none;
    stop if the remote migration list differs from the plan.
 3. Directly deploy the state-owning core at 100%:
 
    ```sh
-   npx wrangler deploy --strict -c wrangler.jsonc
+   npx wrangler deploy --strict \
+     --config "$ATRINIK_PROD_CORE_CONFIG" \
+     --secrets-file "$ATRINIK_PROD_CORE_SECRETS" \
+     --tag runtime-retirement-bridge \
+     --message "deploy canonical-only state provider"
    ```
 
    Record the exact no-change Durable Object exports reconciliation, active
    version, bindings, variables, schedules, and domainless state. The new core
    accepts and scrubs the old caller's exact source-alias envelope but does not
    use or persist it. It also accepts the new subset that omits those aliases.
-4. Activate the already-validated publisher caller, then the rendezvous caller,
-   at 100%. The new rendezvous caller omits the retired source aliases. Re-read
-   all three active versions and service linkage after each activation.
+4. Activate the exact already-validated publisher version ID, then the exact
+   rendezvous version ID, each at 100% with `wrangler versions deploy` and its
+   matching protected config. The new rendezvous caller omits the retired
+   source aliases. Do not upload a replacement during this step. Re-read all
+   three active versions and service linkage after each activation.
 5. Keep rendezvous disabled until the entire provider/caller cohort is exact.
    A partial or drifted cohort is a fix-forward stop condition.
 

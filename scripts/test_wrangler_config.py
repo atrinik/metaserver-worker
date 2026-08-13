@@ -199,9 +199,29 @@ class WranglerSecurityConfigurationTests(unittest.TestCase):
 
     def test_exports_rollout_uses_direct_deploy_only(self) -> None:
         guide = DEPLOYMENT_GUIDE.read_text(encoding="utf-8")
-        self.assertNotIn("npx wrangler versions upload", guide)
-        self.assertNotIn("npx wrangler versions deploy", guide)
+        self.assertNotIn(
+            'npx wrangler versions upload --strict \\\n'
+            '     --config "$ATRINIK_PROD_CORE_CONFIG"',
+            guide,
+        )
+        self.assertNotIn(
+            'npx wrangler versions deploy \\\n'
+            '     --config "$ATRINIK_PROD_CORE_CONFIG"',
+            guide,
+        )
+        self.assertIn(
+            'npx wrangler versions upload --strict \\\n'
+            '     --config "$ATRINIK_PROD_PUBLISHER_CONFIG"',
+            guide,
+        )
+        self.assertIn(
+            'npx wrangler versions upload --strict \\\n'
+            '     --config "$ATRINIK_PROD_RENDEZVOUS_CONFIG"',
+            guide,
+        )
         self.assertIn("npx wrangler deploy --strict", guide)
+        self.assertIn('--config "$ATRINIK_PROD_CORE_CONFIG"', guide)
+        self.assertIn('--secrets-file "$ATRINIK_PROD_CORE_SECRETS"', guide)
         self.assertIn("Durable Object exports reconciliation", guide)
         self.assertIn("Rollback cannot cross the lifecycle change", guide)
         cutover = guide[guide.index("## Deploy provider first"):]
