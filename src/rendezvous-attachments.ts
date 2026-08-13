@@ -13,8 +13,9 @@ import {
 import type { RendezvousTerminalOutcome } from "./rendezvous-contract";
 
 export const ATTACHMENT_VERSION = 2;
-export const MAX_RETAINED_TICKETS =
-  RENDEZVOUS_POLICY_MAXIMUMS.rendezvousClientRollingLimit;
+// Tickets live only for the 15-second signaling attempt. This independent
+// attachment ceiling is not a player-facing daily admission quota.
+export const MAX_RETAINED_TICKETS = 50;
 export const MAX_SESSION_MS =
   RENDEZVOUS_POLICY_MAXIMUMS.rendezvousClientSessionSeconds * 1_000;
 

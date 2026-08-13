@@ -268,14 +268,15 @@ WebSocket headers, role, and authentication. Do not copy the compatibility
 health, directory, OTP, or update paths onto this host.
 
 Where the plan supports the required host/method/path fields, use a source-IP
-characteristic and an initial 10 requests per 60 seconds with a 60-second
+characteristic and an initial 60 requests per 60 seconds with a 60-second
 mitigation for this dedicated dynamic host. This WAF ceiling is a coarse
 pre-invocation shield shared by clients behind one NAT, not the rendezvous
-admission authority. The Worker still applies the 5/minute client and 3/minute
-server-role native bindings and pseudonymous daily budgets; the per-server
-Durable Object still applies the exact 50-session rolling window, atomic
-current/previous-key replay-alias claim, and structural work limits. Canary and
-alert on all three layers independently.
+admission authority. The Worker applies one 60/minute client-native shield
+without also charging the global bucket, then an exact eligible-pair rolling
+burst/cooldown in D1. Server-role native/daily policy is unchanged. The
+per-server Durable Object retains atomic current/previous-key replay-alias
+claims and structural work limits but no ordinary daily session quota. Canary
+and alert on all three layers independently.
 
 After the dedicated rule passes its release gate, remove rendezvous from the
 compatibility rule in the same coordinated consumer cutover. Keep

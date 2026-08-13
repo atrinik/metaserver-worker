@@ -7,7 +7,6 @@ import {
   rendezvousPolicyConfiguration,
 } from "./config";
 import type { RendezvousPolicyConfiguration } from "./config";
-import { HttpError, httpErrorResponse } from "./http";
 import {
   requiredSourceTagKeyRing,
 } from "./privacy";
@@ -122,8 +121,8 @@ type RoomErrorCode = keyof typeof ROOM_ERROR_DEFINITIONS;
 /**
  * One signaling-only room per published server identity. All state that may
  * contain a raw ticket is bounded and attached to hibernatable WebSockets.
- * SQLite contains the exact rolling admissions and purpose-separated replay
- * tags, but never raw tickets or candidate endpoints.
+ * SQLite contains bounded purpose-separated replay tags, but no ordinary
+ * player quota, raw tickets, or candidate endpoints.
  */
 export class RendezvousRoom extends DurableObject<CoreEnv> {
   private readonly admissions: RendezvousAdmissionStore;
@@ -904,13 +903,17 @@ export class RendezvousRoom extends DurableObject<CoreEnv> {
 
     const admission = this.admissions.consume(
       now,
-      policy.rendezvousClientRollingLimit,
     );
     if (!admission.accepted) {
-      return httpErrorResponse(new HttpError("rate_limited", {
-        rateLimitReason: "rendezvous_server_sessions_rolling",
-        retryAfterSeconds: admission.retryAfterSeconds,
-      }));
+      // A bounded prune can deliberately leave an expired backlog. Keep its
+      // continuation alarm live before returning the fixed temporary failure.
+      try {
+        await this.scheduleAdmissionAlarm(now);
+      } catch {
+        // The existing alarm, if any, remains the platform retry path. Do not
+        // turn maintenance diagnostics into a distinguishable public error.
+      }
+      return roomError("room_unavailable");
     }
 
     let room: WebSocket | null = null;

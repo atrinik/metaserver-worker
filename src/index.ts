@@ -73,6 +73,7 @@ import {
 import type { RequestBudgetScope } from "./rate-limit";
 import { handleRequestError } from "./request-errors";
 import { openRendezvous, RendezvousRoom } from "./rendezvous";
+import { consumeRendezvousPairCooldown } from "./rendezvous-cooldown";
 import {
   INTERNAL_DIRECTORY_CHANGED_HEADER,
   INTERNAL_RENDEZVOUS_PUBLISH_URL,
@@ -266,6 +267,7 @@ export default {
         oneTimeTokensAtOrBefore: now,
         rateLimitsBefore: now - 86_400,
         requestBudgetsAtOrBefore: now,
+        rendezvousPairAtOrBefore: now,
         publisherNoncesAtOrBefore: now,
       }, {
         batchSize: 1_000,
@@ -452,25 +454,11 @@ async function openCanonicalRendezvous(
   now: number,
 ): Promise<Response> {
   if (route.role === "client") {
-    if (aliases.pair === null) {
+    if (aliases.pair === null || aliases.source !== null) {
       throw new Error("Client rendezvous omitted pair admission aliases");
     }
-    await consumeAliasedFixedWindowBudget(env.DB, {
-      actorKeys: aliases.source,
-      scope: "rendezvous-client-source",
-      limit: control.compatibilityRendezvousClientSourceDaily,
-      now,
-      window: utcDayWindow(now),
-    });
-    await consumeAliasedFixedWindowBudget(env.DB, {
-      actorKeys: aliases.pair,
-      scope: "rendezvous-client-source-server",
-      limit: control.compatibilityRendezvousClientPairDaily,
-      now,
-      window: utcDayWindow(now),
-    });
   } else {
-    if (aliases.pair !== null) {
+    if (aliases.pair !== null || aliases.source === null) {
       throw new Error("Server rendezvous included pair admission aliases");
     }
     await consumeAliasedFixedWindowBudget(env.DB, {
@@ -484,6 +472,22 @@ async function openCanonicalRendezvous(
 
   return openRendezvous(request, env, route.serverId, route.role, {
     listingTtlSeconds: control.listingTtlSeconds,
+    async clientEligible(): Promise<void> {
+      if (aliases.pair === null) {
+        throw new Error("Client rendezvous omitted pair admission aliases");
+      }
+      await consumeRendezvousPairCooldown(env.DB, {
+        actorKeys: aliases.pair,
+        now,
+        burstLimit: control.rendezvousClientPairBurstLimit,
+        windowSeconds: control.rendezvousClientPairWindowSeconds,
+        initialCooldownSeconds:
+          control.rendezvousClientPairInitialCooldownSeconds,
+        maximumCooldownSeconds:
+          control.rendezvousClientPairMaximumCooldownSeconds,
+        resetSeconds: control.rendezvousClientPairResetSeconds,
+      });
+    },
     async serverAuthenticated(): Promise<void> {
       await enforceNativeBurst(
         env.RENDEZVOUS_SERVER_RATE_LIMITER,

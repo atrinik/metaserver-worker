@@ -1,9 +1,11 @@
-import { RENDEZVOUS_POLICY_MAXIMUMS } from "./config";
-import { boundedRetryAfter } from "./http";
 import type { RendezvousReplayTags } from "./privacy";
-import { RENDEZVOUS_ROLLING_WINDOW_MS } from "./rendezvous-contract";
+import {
+  MAX_RENDEZVOUS_REPLAY_ADMISSIONS,
+  RENDEZVOUS_ROLLING_WINDOW_MS,
+} from "./rendezvous-contract";
 
 const CURRENT_SCHEMA_VERSION = 1;
+const REPLAY_PRUNE_BATCH_SIZE = 256;
 const MAX_ACCEPTED_AT_MS =
   Number.MAX_SAFE_INTEGER - RENDEZVOUS_ROLLING_WINDOW_MS;
 const REPLAY_TAG_PATTERN =
@@ -133,7 +135,7 @@ export type RendezvousAdmissionConsumeResult =
     }
   | {
       readonly accepted: false;
-      readonly retryAfterSeconds: number;
+      readonly reason: "maintenance_backlog" | "storage_capacity";
     };
 
 export type RendezvousAdmissionClaimResult =
@@ -159,7 +161,18 @@ export class RendezvousAdmissionStoreError extends Error {
  * the room's blockConcurrencyWhile() initialization callback.
  */
 export class RendezvousAdmissionStore {
-  constructor(private readonly storage: AdmissionStorage) {}
+  constructor(
+    private readonly storage: AdmissionStorage,
+    private readonly maximumRetained = MAX_RENDEZVOUS_REPLAY_ADMISSIONS,
+  ) {
+    if (
+      !Number.isSafeInteger(maximumRetained) ||
+      maximumRetained < 1 ||
+      maximumRetained > MAX_RENDEZVOUS_REPLAY_ADMISSIONS
+    ) {
+      throw new RangeError("Invalid rendezvous replay storage ceiling");
+    }
+  }
 
   initialize(): void {
     this.storage.transactionSync(() => {
@@ -192,41 +205,26 @@ export class RendezvousAdmissionStore {
     });
   }
 
-  consume(nowMs: number, limit: number): RendezvousAdmissionConsumeResult {
+  consume(nowMs: number): RendezvousAdmissionConsumeResult {
     assertNow(nowMs);
-    assertLimit(limit);
 
     return this.storage.transactionSync(() => {
       const sql = this.storage.sql;
-      pruneBefore(sql, nowMs - RENDEZVOUS_ROLLING_WINDOW_MS);
+      const prune = pruneBefore(
+        sql,
+        nowMs - RENDEZVOUS_ROLLING_WINDOW_MS,
+      );
+      if (prune.backlog) {
+        return { accepted: false, reason: "maintenance_backlog" };
+      }
 
       const { count } = sql.exec<{ count: number }>(
         "SELECT COUNT(*) AS count FROM rendezvous_admissions",
       ).one();
       assertRetainedCount(count);
 
-      if (count >= limit) {
-        // The row at count-limit is the last row that must expire before the
-        // retained count falls below a newly lowered limit.
-        const thresholdRows = sql.exec<{ accepted_at_ms: number }>(
-          `SELECT accepted_at_ms
-             FROM rendezvous_admissions
-            ORDER BY accepted_at_ms, id
-            LIMIT 1 OFFSET ?`,
-          count - limit,
-        ).toArray();
-        const threshold = thresholdRows[0];
-        if (thresholdRows.length !== 1 || threshold === undefined) {
-          throw corruptSchema();
-        }
-        assertAcceptedAt(threshold.accepted_at_ms);
-        return {
-          accepted: false,
-          retryAfterSeconds: retryAfterUntil(
-            threshold.accepted_at_ms + RENDEZVOUS_ROLLING_WINDOW_MS,
-            nowMs,
-          ),
-        };
+      if (count >= this.maximumRetained) {
+        return { accepted: false, reason: "storage_capacity" };
       }
 
       const inserted = sql.exec<{ id: number }>(
@@ -267,7 +265,7 @@ export class RendezvousAdmissionStore {
       pruneBefore(
         this.storage.sql,
         nowMs - RENDEZVOUS_ROLLING_WINDOW_MS,
-      )
+      ).deleted
     );
   }
 
@@ -391,28 +389,33 @@ function assertStoredRows(sql: SqlStorage): void {
   ).one();
   assertRetainedCount(count);
 
-  const tags = new Set<string>();
-  const rows = sql.exec<AdmissionRow>(
-    `SELECT id, accepted_at_ms, ticket_replay_tag_current,
-            ticket_replay_tag_previous
-       FROM rendezvous_admissions
-      ORDER BY accepted_at_ms, id`,
+  const integrity = sql.exec<{ quick_check: string }>(
+    "PRAGMA quick_check(1)",
   ).toArray();
-  for (const row of rows) {
-    assertStoredRow(row);
-    if (row.ticket_replay_tag_current === null) {
-      continue;
-    }
-    const previous = row.ticket_replay_tag_previous;
-    if (
-      previous === null ||
-      tags.has(row.ticket_replay_tag_current) ||
-      tags.has(previous)
-    ) {
-      throw corruptSchema();
-    }
-    tags.add(row.ticket_replay_tag_current);
-    tags.add(previous);
+  if (integrity.length !== 1 || integrity[0]?.quick_check !== "ok") {
+    throw corruptSchema();
+  }
+
+  // The two partial unique indexes cover duplicates within each alias column.
+  // Probe cross-column collisions in SQLite so cold start returns at most one
+  // row instead of materializing the complete replay ledger in Worker memory.
+  const collision = sql.exec<{ invalid: number }>(
+    `SELECT 1 AS invalid
+       FROM (
+         SELECT ticket_replay_tag_current AS replay_tag
+           FROM rendezvous_admissions
+          WHERE ticket_replay_tag_current IS NOT NULL
+         UNION ALL
+         SELECT ticket_replay_tag_previous AS replay_tag
+           FROM rendezvous_admissions
+          WHERE ticket_replay_tag_previous IS NOT NULL
+       )
+      GROUP BY replay_tag
+     HAVING COUNT(*) > 1
+      LIMIT 1`,
+  ).toArray();
+  if (collision.length !== 0) {
+    throw corruptSchema();
   }
 }
 
@@ -439,16 +442,56 @@ function assertStoredRow(row: AdmissionRow): void {
   }
 }
 
-function pruneBefore(sql: SqlStorage, cutoffMs: number): number {
-  return sql.exec<{ id: number }>(
-    "DELETE FROM rendezvous_admissions WHERE accepted_at_ms <= ? RETURNING id",
-    cutoffMs,
-  ).toArray().length;
+interface PruneResult {
+  readonly backlog: boolean;
+  readonly deleted: number;
 }
 
-function retryAfterUntil(expiresAtMs: number, nowMs: number): number {
-  // boundedRetryAfter accepts seconds and applies the required ceiling.
-  return boundedRetryAfter((expiresAtMs - nowMs) / 1_000);
+function pruneBefore(sql: SqlStorage, cutoffMs: number): PruneResult {
+  const { count } = sql.exec<{ count: number }>(
+    `SELECT COUNT(*) AS count
+       FROM (
+         SELECT id
+           FROM rendezvous_admissions
+          WHERE accepted_at_ms <= ?
+          ORDER BY accepted_at_ms, id
+          LIMIT ?
+       )`,
+    cutoffMs,
+    REPLAY_PRUNE_BATCH_SIZE,
+  ).one();
+  if (
+    !Number.isSafeInteger(count) ||
+    count < 0 ||
+    count > REPLAY_PRUNE_BATCH_SIZE
+  ) {
+    throw corruptSchema();
+  }
+  sql.exec(
+    `DELETE FROM rendezvous_admissions
+      WHERE id IN (
+        SELECT id
+          FROM rendezvous_admissions
+         WHERE accepted_at_ms <= ?
+         ORDER BY accepted_at_ms, id
+         LIMIT ?
+      )`,
+    cutoffMs,
+    REPLAY_PRUNE_BATCH_SIZE,
+  );
+  const backlog = sql.exec<{ present: number }>(
+    `SELECT EXISTS(
+       SELECT 1
+         FROM rendezvous_admissions
+        WHERE accepted_at_ms <= ?
+        LIMIT 1
+     ) AS present`,
+    cutoffMs,
+  ).one().present;
+  if (backlog !== 0 && backlog !== 1) {
+    throw corruptSchema();
+  }
+  return { backlog: backlog === 1, deleted: count };
 }
 
 function assertNow(value: number): void {
@@ -463,21 +506,11 @@ function assertAcceptedAt(value: number): void {
   }
 }
 
-function assertLimit(value: number): void {
-  if (
-    !Number.isSafeInteger(value) ||
-    value < 1 ||
-    value > RENDEZVOUS_POLICY_MAXIMUMS.rendezvousClientRollingLimit
-  ) {
-    throw new RangeError("Invalid rendezvous admission limit");
-  }
-}
-
 function assertRetainedCount(value: number): void {
   if (
     !Number.isSafeInteger(value) ||
     value < 0 ||
-    value > RENDEZVOUS_POLICY_MAXIMUMS.rendezvousClientRollingLimit
+    value > MAX_RENDEZVOUS_REPLAY_ADMISSIONS
   ) {
     throw corruptSchema();
   }

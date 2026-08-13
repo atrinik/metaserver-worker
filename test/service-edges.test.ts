@@ -278,14 +278,14 @@ describe("rendezvous edge Worker", () => {
     );
     expect(response.status).toBe(101);
     expect(response.webSocket).not.toBeNull();
-    expect(configured.globalLimit).toHaveBeenCalledTimes(2);
+    expect(configured.globalLimit).not.toHaveBeenCalled();
     expect(configured.clientLimit).toHaveBeenCalledTimes(2);
     expect(forwarded?.headers.has("CF-Connecting-IP")).toBe(false);
     expect(forwarded?.headers.has("Cookie")).toBe(false);
     expect(forwarded?.cf).toBeUndefined();
+    expect(forwarded?.headers.has(INTERNAL_SOURCE_TAG_HEADER)).toBe(false);
+    expect(forwarded?.headers.has(INTERNAL_SOURCE_TAG_PREVIOUS_HEADER)).toBe(false);
     for (const header of [
-      INTERNAL_SOURCE_TAG_HEADER,
-      INTERNAL_SOURCE_TAG_PREVIOUS_HEADER,
       INTERNAL_PAIR_TAG_HEADER,
       INTERNAL_PAIR_TAG_PREVIOUS_HEADER,
     ]) {
@@ -308,6 +308,7 @@ describe("rendezvous edge Worker", () => {
       configured.env,
     );
     expect(response.status).toBe(401);
+    expect(configured.globalLimit).toHaveBeenCalledTimes(2);
     expect(configured.clientLimit).not.toHaveBeenCalled();
     expect(forwarded?.headers.has(INTERNAL_PAIR_TAG_HEADER)).toBe(false);
     expect(forwarded?.headers.has(INTERNAL_PAIR_TAG_PREVIOUS_HEADER)).toBe(false);

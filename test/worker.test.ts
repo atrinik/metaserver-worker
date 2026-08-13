@@ -227,7 +227,6 @@ describe("metaserver Worker", () => {
 
   it("keeps non-rendezvous routes independent of room-only policy", async () => {
     const missingRoomPolicy = overrideEnv({
-      RENDEZVOUS_CLIENT_ROLLING_LIMIT: undefined,
       RENDEZVOUS_ACTIVE_CLIENT_LIMIT: undefined,
       RENDEZVOUS_CLIENT_SESSION_SECONDS: undefined,
     });
@@ -247,7 +246,7 @@ describe("metaserver Worker", () => {
       throw new Error("Rendezvous Durable Object must not be invoked");
     });
     const invalid = overrideEnv({
-      RENDEZVOUS_CLIENT_ROLLING_LIMIT: undefined,
+      RENDEZVOUS_ACTIVE_CLIENT_LIMIT: undefined,
       GLOBAL_RATE_LIMITER: { limit: globalLimit },
       RENDEZVOUS_CLIENT_RATE_LIMITER: { limit: rendezvousLimit },
       RENDEZVOUS: { getByName },

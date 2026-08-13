@@ -20,10 +20,14 @@ export const REQUEST_BUDGET_SCOPES = [
 ] as const;
 
 export type RequestBudgetScope = typeof REQUEST_BUDGET_SCOPES[number];
-export type RequestControlScope = "global" | RequestBudgetScope;
+export type RequestControlScope =
+  | "global"
+  | "rendezvous-client-pair-cooldown"
+  | RequestBudgetScope;
 
 export const REQUEST_LIMIT_REASONS = [
   "burst_limit_exceeded",
+  "cooldown_active",
   "request_budget_exceeded",
 ] as const;
 
@@ -420,7 +424,7 @@ function requireBudgetScope(scope: string): asserts scope is RequestBudgetScope 
 }
 
 function requireControlScope(scope: string): asserts scope is RequestControlScope {
-  if (scope !== "global") {
+  if (scope !== "global" && scope !== "rendezvous-client-pair-cooldown") {
     requireBudgetScope(scope);
   }
 }

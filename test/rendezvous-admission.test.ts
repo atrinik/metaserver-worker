@@ -19,26 +19,102 @@ function admissionRoom(name: string): DurableObjectStub<RendezvousRoom> {
 }
 
 describe("RendezvousAdmissionStore", () => {
-  it("computes availability correctly when a canary lowers 50 to 8", async () => {
-    const stub = admissionRoom("lowered-limit");
+  it("retains replay rows without turning the security horizon into a quota", async () => {
+    const stub = admissionRoom("storage-only");
     await runInDurableObject(stub, (_instance, state) => {
       const store = new RendezvousAdmissionStore(state.storage);
       store.initialize();
       const now = 2_000_000_000_000;
       const oldest = now - 50_000;
-      for (let index = 0; index < 50; index += 1) {
-        expect(store.consume(oldest + index * 1_000, 50)).toMatchObject({
+      for (let index = 0; index < 100; index += 1) {
+        expect(store.consume(oldest + index)).toMatchObject({
           accepted: true,
         });
       }
+      expect(store.consume(now)).toMatchObject({ accepted: true });
+    });
+  });
 
-      expect(store.consume(now, 8)).toEqual({
+  it("reports emergency replay storage exhaustion as capacity, not rate limiting", async () => {
+    const stub = admissionRoom("emergency-capacity");
+    await runInDurableObject(stub, (_instance, state) => {
+      const store = new RendezvousAdmissionStore(state.storage, 2);
+      store.initialize();
+      expect(store.consume(2_000_000_000_000)).toMatchObject({ accepted: true });
+      expect(store.consume(2_000_000_000_001)).toMatchObject({ accepted: true });
+      expect(store.consume(2_000_000_000_002)).toEqual({
         accepted: false,
-        retryAfterSeconds: 86_392,
+        reason: "storage_capacity",
       });
+    });
+  });
 
-      const availableAt = oldest + 42_000 + RENDEZVOUS_ROLLING_WINDOW_MS;
-      expect(store.consume(availableAt, 8)).toMatchObject({ accepted: true });
+  it("initializes at the emergency ceiling without materializing the ledger", async () => {
+    const stub = admissionRoom("bounded-cold-start");
+    await runInDurableObject(stub, (_instance, state) => {
+      const store = new RendezvousAdmissionStore(state.storage);
+      store.initialize();
+      const now = 2_000_000_000_000;
+      state.storage.sql.exec(
+        `WITH digits(n) AS (
+           VALUES (0), (1), (2), (3), (4), (5), (6), (7), (8), (9)
+         )
+         INSERT INTO rendezvous_admissions (accepted_at_ms)
+         SELECT ?1 - 100000 +
+                a.n + 10 * b.n + 100 * c.n + 1000 * d.n + 10000 * e.n
+           FROM digits AS a
+           CROSS JOIN digits AS b
+           CROSS JOIN digits AS c
+           CROSS JOIN digits AS d
+           CROSS JOIN digits AS e`,
+        now,
+      );
+
+      const restarted = new RendezvousAdmissionStore(state.storage);
+      expect(() => restarted.initialize()).not.toThrow();
+      expect(restarted.consume(now)).toEqual({
+        accepted: false,
+        reason: "storage_capacity",
+      });
+    });
+  });
+
+  it("prunes an expired replay backlog in fixed batches before admission", async () => {
+    const stub = admissionRoom("bounded-prune-backlog");
+    await runInDurableObject(stub, (_instance, state) => {
+      const store = new RendezvousAdmissionStore(state.storage);
+      store.initialize();
+      const now = 2_000_000_000_000;
+      const cutoff = now - RENDEZVOUS_ROLLING_WINDOW_MS;
+      state.storage.sql.exec(
+        `WITH RECURSIVE expired(n) AS (
+           VALUES (1)
+           UNION ALL
+           SELECT n + 1 FROM expired WHERE n < 600
+         )
+         INSERT INTO rendezvous_admissions (accepted_at_ms)
+         SELECT ?1 - n FROM expired`,
+        cutoff,
+      );
+
+      expect(store.consume(now)).toEqual({
+        accepted: false,
+        reason: "maintenance_backlog",
+      });
+      expect(state.storage.sql.exec<{ count: number }>(
+        "SELECT COUNT(*) AS count FROM rendezvous_admissions",
+      ).one().count).toBe(344);
+      expect(store.consume(now)).toEqual({
+        accepted: false,
+        reason: "maintenance_backlog",
+      });
+      expect(state.storage.sql.exec<{ count: number }>(
+        "SELECT COUNT(*) AS count FROM rendezvous_admissions",
+      ).one().count).toBe(88);
+      expect(store.consume(now)).toMatchObject({ accepted: true });
+      expect(state.storage.sql.exec<{ count: number }>(
+        "SELECT COUNT(*) AS count FROM rendezvous_admissions",
+      ).one().count).toBe(1);
     });
   });
 
@@ -47,8 +123,8 @@ describe("RendezvousAdmissionStore", () => {
     await runInDurableObject(stub, (_instance, state) => {
       const store = new RendezvousAdmissionStore(state.storage);
       store.initialize();
-      const first = store.consume(2_000_000_000_000, 50);
-      const second = store.consume(2_000_000_000_001, 50);
+      const first = store.consume(2_000_000_000_000);
+      const second = store.consume(2_000_000_000_001);
       if (!first.accepted || !second.accepted) {
         throw new Error("Replay test admissions were unexpectedly rejected");
       }
@@ -75,7 +151,7 @@ describe("RendezvousAdmissionStore", () => {
       const store = new RendezvousAdmissionStore(state.storage);
       store.initialize();
       const acceptedAt = 2_000_000_000_000;
-      expect(store.consume(acceptedAt, 50)).toMatchObject({ accepted: true });
+      expect(store.consume(acceptedAt)).toMatchObject({ accepted: true });
       expect(store.earliestRetainedExpiryMs()).toBe(
         acceptedAt + RENDEZVOUS_ROLLING_WINDOW_MS,
       );
@@ -112,7 +188,7 @@ describe("RendezvousAdmissionStore", () => {
     await runInDurableObject(stub, (_instance, state) => {
       const store = new RendezvousAdmissionStore(state.storage);
       store.initialize();
-      const admission = store.consume(2_000_000_000_000, 50);
+      const admission = store.consume(2_000_000_000_000);
       if (!admission.accepted) {
         throw new Error("Replay validation admission was rejected");
       }

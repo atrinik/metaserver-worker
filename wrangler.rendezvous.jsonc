@@ -26,7 +26,7 @@
       "name": "RENDEZVOUS_CLIENT_RATE_LIMITER",
       "namespace_id": "1202",
       "simple": {
-        "limit": 5,
+        "limit": 60,
         "period": 60
       }
     }

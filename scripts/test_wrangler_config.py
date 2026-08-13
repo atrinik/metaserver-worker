@@ -170,13 +170,21 @@ class WranglerSecurityConfigurationTests(unittest.TestCase):
             {
                 name: self.configuration["vars"][name]
                 for name in (
-                    "RENDEZVOUS_CLIENT_ROLLING_LIMIT",
+                    "RENDEZVOUS_CLIENT_PAIR_BURST_LIMIT",
+                    "RENDEZVOUS_CLIENT_PAIR_WINDOW_SECONDS",
+                    "RENDEZVOUS_CLIENT_PAIR_INITIAL_COOLDOWN_SECONDS",
+                    "RENDEZVOUS_CLIENT_PAIR_MAXIMUM_COOLDOWN_SECONDS",
+                    "RENDEZVOUS_CLIENT_PAIR_RESET_SECONDS",
                     "RENDEZVOUS_ACTIVE_CLIENT_LIMIT",
                     "RENDEZVOUS_CLIENT_SESSION_SECONDS",
                 )
             },
             {
-                "RENDEZVOUS_CLIENT_ROLLING_LIMIT": "50",
+                "RENDEZVOUS_CLIENT_PAIR_BURST_LIMIT": "20",
+                "RENDEZVOUS_CLIENT_PAIR_WINDOW_SECONDS": "60",
+                "RENDEZVOUS_CLIENT_PAIR_INITIAL_COOLDOWN_SECONDS": "30",
+                "RENDEZVOUS_CLIENT_PAIR_MAXIMUM_COOLDOWN_SECONDS": "900",
+                "RENDEZVOUS_CLIENT_PAIR_RESET_SECONDS": "1800",
                 "RENDEZVOUS_ACTIVE_CLIENT_LIMIT": "16",
                 "RENDEZVOUS_CLIENT_SESSION_SECONDS": "15",
             },
@@ -446,6 +454,14 @@ class DynamicServiceBoundaryConfigurationTests(unittest.TestCase):
         self.assertEqual(
             {binding["name"] for binding in self.rendezvous["ratelimits"]},
             {"GLOBAL_RATE_LIMITER", "RENDEZVOUS_CLIENT_RATE_LIMITER"},
+        )
+        rendezvous_limits = {
+            binding["name"]: binding["simple"]
+            for binding in self.rendezvous["ratelimits"]
+        }
+        self.assertEqual(
+            rendezvous_limits["RENDEZVOUS_CLIENT_RATE_LIMITER"],
+            {"limit": 60, "period": 60},
         )
 
     def test_rate_limit_namespaces_are_unique_across_worker_services(self) -> None:

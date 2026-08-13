@@ -84,16 +84,16 @@ not a Cloudflare deployment.
 9. Confirm the artifact has the `RENDEZVOUS_METRICS` and `DIRECTORY_METRICS`
    Analytics Engine bindings targeting only their reviewed datasets, the
    SQLite `RENDEZVOUS` and `DIRECTORY_BUILDER` Durable Object bindings, and the
-   three isolated R2 bucket bindings. Confirm all three rendezvous policy
-   variables. The
-   production values are
-   `RENDEZVOUS_CLIENT_ROLLING_LIMIT=50`,
-   `RENDEZVOUS_ACTIVE_CLIENT_LIMIT=16`, and
-   `RENDEZVOUS_CLIENT_SESSION_SECONDS=15`. A canary or incident version may
-   lower any of them to a positive integer, but configuration cannot raise a
-   reviewed maximum. Missing or malformed values fail in the Worker before
-   source tags, counters, D1, server lookup, or Durable Object work; the room
-   independently validates them again as the final authority.
+   three isolated R2 bucket bindings. Confirm the canonical coordinator values
+   `RENDEZVOUS_CLIENT_PAIR_BURST_LIMIT=20`,
+   `RENDEZVOUS_CLIENT_PAIR_WINDOW_SECONDS=60`,
+   `RENDEZVOUS_CLIENT_PAIR_INITIAL_COOLDOWN_SECONDS=30`,
+   `RENDEZVOUS_CLIENT_PAIR_MAXIMUM_COOLDOWN_SECONDS=900`, and
+   `RENDEZVOUS_CLIENT_PAIR_RESET_SECONDS=1800`. Confirm the room values
+   `RENDEZVOUS_ACTIVE_CLIENT_LIMIT=16` and
+   `RENDEZVOUS_CLIENT_SESSION_SECONDS=15`. Missing, malformed, incoherent, or
+   policy-raising values fail before the affected admission authority performs
+   work.
 10. Confirm `no_web_socket_compression` remains in the compatibility flags.
     Rendezvous carries at most 512-byte signaling frames for at most 15 seconds;
     compression negotiation and per-message CPU/state are unnecessary for that
@@ -112,7 +112,7 @@ Migration `0003_rendezvous_generation.sql` is also additive. It gives every
 existing owner and listing row the same inert all-zero, non-secret generation
 and constrains later values to 64 lowercase hexadecimal characters. Apply it
 before deploying code that selects or writes `rendezvous_generation`. The new
-Worker replaces both sentinels on the next accepted publish. The per-server
+   Worker replaces both sentinels on the next accepted publish. The per-server
 Durable Object serializes the complete update, invalidates the old control,
 then writes the owner guard, listing, bearer-token hash, and generation in one
 D1 batch. A stale concurrent update fails its generation precondition instead
@@ -182,6 +182,13 @@ producer and Rust consumer foundations are released. Leave
 the static-edge policy and live publish-to-artifact canary are reviewed. A
 rollback to code predating `0007` must keep Game publication disabled; it
 cannot interpret Game rows.
+
+Migration `0008_rendezvous_client_cooldowns.sql` adds only the canonical
+client pair-attempt and cooldown tables. Apply it before deploying the #45
+cohort. Existing compatibility `request_budgets` rows remain intact and are
+not imported: canonical daily client counters are obsolete rather than seed
+data for the rolling state machine. Deploy the core before the rendezvous edge,
+then verify both new tables begin empty.
 
 The static-origin validator release advances the private coordination manifest
 to `atrinik-directory-manifest-v2` and removes the obsolete application ETag
@@ -361,9 +368,9 @@ evidence, not public-read atomicity.
    automatic invocation-log volume remains flat.
 10. Exercise the current and previous source-tag keys. Confirm an `A/Z` writer
    stores exactly `A,Z` and a `B/A` writer stores exactly `B,A`; consume each
-   OTP through the other deployment. Alternate `A/Z` and `B/A` budget
-   admissions, confirm the maximum count advances once per request, and confirm
-   each touched pair converges. The shared `A` must use the identical ID,
+   OTP through the other deployment. Alternate `A/Z` and `B/A` canonical pair
+   admissions, confirm one logical rolling attempt per request and exact
+   mirrored cooldown state. The shared `A` must use the identical ID,
    secret, hostname namespace, purpose, and derivation contract. In an isolated
    canary room, claim a fresh rendezvous ticket under `A/Z`, reconstruct the
    room under `B/A`, and confirm replay is rejected through shared `A` while a
@@ -379,13 +386,20 @@ evidence, not public-read atomicity.
     unconsumed source window, force a native/D1 request-control failure and
     confirm a non-cacheable `503 request_control_unavailable` rather than
     admission.
-13. Lower all three `RENDEZVOUS_*` canary values to 8 and use a fresh controlled
-    server identity whose room has no retained admissions. Open one
-    authenticated server-control socket, accept and close eight client sessions,
-    and confirm the ninth returns `429` with reason
-    `rendezvous_server_sessions_rolling` and a header/body `Retry-After` derived
-    from the oldest admission. Confirm a client without a live authenticated
-    server receives a retryable `503` and creates no admission row.
+13. Use a fresh source/server pair and the reviewed canonical cooldown values.
+    Confirm 20 eligible attempts in one rolling minute are admitted and the
+    21st returns `429` with reason `rendezvous_client_pair_cooldown` and an
+    exact 30-second header/body delay. Retry during that cooldown and prove the
+    stored deadline/penalty do not change. After each expiry, require another
+    complete burst and observe 60, 120, 240, 480, then capped 900-second
+    delays. After 30 quiet minutes, prove the next complete burst returns to 30
+    seconds. Spread at least ten valid attempts through a UTC day and across
+    midnight without a daily lockout. Confirm malformed and unknown/offline
+    targets create no pair rows, while a client without a live authenticated
+    room still receives the existing retryable `503` after eligibility. Repeat
+    the rapid and intermittent cohorts from one shared-NAT source and, where
+    available, more than one Cloudflare location; retain only aggregate,
+    redacted counts and delays.
 14. Use another fresh controlled server identity/room. Exercise the structural
     rendezvous bounds: eight concurrent clients are admitted and the ninth is
     rejected as full; every admitted client closes no later than the

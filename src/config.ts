@@ -3,9 +3,16 @@ import { isCanonicalHostname } from "./hostname";
 const MAXIMUM_RETRY_AFTER_SECONDS = 86_400;
 
 export const RENDEZVOUS_POLICY_MAXIMUMS = Object.freeze({
-  rendezvousClientRollingLimit: 50,
   rendezvousActiveClientLimit: 16,
   rendezvousClientSessionSeconds: 15,
+} as const);
+
+export const RENDEZVOUS_COOLDOWN_POLICY_MAXIMUMS = Object.freeze({
+  rendezvousClientPairBurstLimit: 20,
+  rendezvousClientPairWindowSeconds: 60,
+  rendezvousClientPairInitialCooldownSeconds: 30,
+  rendezvousClientPairMaximumCooldownSeconds: 900,
+  rendezvousClientPairResetSeconds: 1_800,
 } as const);
 
 export const REQUEST_CONTROL_POLICY_MAXIMUMS = Object.freeze({
@@ -84,8 +91,11 @@ export interface RendezvousCoordinatorConfigurationInput {
   readonly RENDEZVOUS_HOSTNAME?: string;
   readonly LISTING_TTL_SECONDS?: string;
   readonly ROUTE_DISABLED_RETRY_SECONDS?: string;
-  readonly COMPAT_RENDEZVOUS_CLIENT_SOURCE_DAILY_LIMIT?: string;
-  readonly COMPAT_RENDEZVOUS_CLIENT_PAIR_DAILY_LIMIT?: string;
+  readonly RENDEZVOUS_CLIENT_PAIR_BURST_LIMIT?: string;
+  readonly RENDEZVOUS_CLIENT_PAIR_WINDOW_SECONDS?: string;
+  readonly RENDEZVOUS_CLIENT_PAIR_INITIAL_COOLDOWN_SECONDS?: string;
+  readonly RENDEZVOUS_CLIENT_PAIR_MAXIMUM_COOLDOWN_SECONDS?: string;
+  readonly RENDEZVOUS_CLIENT_PAIR_RESET_SECONDS?: string;
   readonly COMPAT_RENDEZVOUS_SERVER_SOURCE_DAILY_LIMIT?: string;
   readonly COMPAT_RENDEZVOUS_SERVER_DAILY_LIMIT?: string;
 }
@@ -94,20 +104,21 @@ export interface RendezvousCoordinatorConfiguration {
   readonly authority: string;
   readonly listingTtlSeconds: number;
   readonly routeDisabledRetrySeconds: number;
-  readonly compatibilityRendezvousClientSourceDaily: number;
-  readonly compatibilityRendezvousClientPairDaily: number;
+  readonly rendezvousClientPairBurstLimit: number;
+  readonly rendezvousClientPairWindowSeconds: number;
+  readonly rendezvousClientPairInitialCooldownSeconds: number;
+  readonly rendezvousClientPairMaximumCooldownSeconds: number;
+  readonly rendezvousClientPairResetSeconds: number;
   readonly compatibilityRendezvousServerSourceDaily: number;
   readonly compatibilityRendezvousServerDaily: number;
 }
 
 export interface RendezvousPolicyConfigurationInput {
-  readonly RENDEZVOUS_CLIENT_ROLLING_LIMIT?: string;
   readonly RENDEZVOUS_ACTIVE_CLIENT_LIMIT?: string;
   readonly RENDEZVOUS_CLIENT_SESSION_SECONDS?: string;
 }
 
 export interface RendezvousPolicyConfiguration {
-  readonly rendezvousClientRollingLimit: number;
   readonly rendezvousActiveClientLimit: number;
   readonly rendezvousClientSessionSeconds: number;
 }
@@ -220,6 +231,20 @@ export function publisherCoordinatorConfiguration(
 export function rendezvousCoordinatorConfiguration(
   input: RendezvousCoordinatorConfigurationInput,
 ): RendezvousCoordinatorConfiguration {
+  const initialCooldown = strictInteger(
+    input.RENDEZVOUS_CLIENT_PAIR_INITIAL_COOLDOWN_SECONDS,
+    "RENDEZVOUS_CLIENT_PAIR_INITIAL_COOLDOWN_SECONDS",
+    1,
+    RENDEZVOUS_COOLDOWN_POLICY_MAXIMUMS
+      .rendezvousClientPairInitialCooldownSeconds,
+  );
+  const maximumCooldown = strictInteger(
+    input.RENDEZVOUS_CLIENT_PAIR_MAXIMUM_COOLDOWN_SECONDS,
+    "RENDEZVOUS_CLIENT_PAIR_MAXIMUM_COOLDOWN_SECONDS",
+    initialCooldown,
+    RENDEZVOUS_COOLDOWN_POLICY_MAXIMUMS
+      .rendezvousClientPairMaximumCooldownSeconds,
+  );
   return Object.freeze({
     authority: strictDynamicAuthority(
       input.RENDEZVOUS_HOSTNAME,
@@ -232,17 +257,25 @@ export function rendezvousCoordinatorConfiguration(
       1,
       MAXIMUM_RETRY_AFTER_SECONDS,
     ),
-    compatibilityRendezvousClientSourceDaily: strictInteger(
-      input.COMPAT_RENDEZVOUS_CLIENT_SOURCE_DAILY_LIMIT,
-      "COMPAT_RENDEZVOUS_CLIENT_SOURCE_DAILY_LIMIT",
+    rendezvousClientPairBurstLimit: strictInteger(
+      input.RENDEZVOUS_CLIENT_PAIR_BURST_LIMIT,
+      "RENDEZVOUS_CLIENT_PAIR_BURST_LIMIT",
       1,
-      REQUEST_CONTROL_POLICY_MAXIMUMS.compatibilityRendezvousClientSourceDaily,
+      RENDEZVOUS_COOLDOWN_POLICY_MAXIMUMS.rendezvousClientPairBurstLimit,
     ),
-    compatibilityRendezvousClientPairDaily: strictInteger(
-      input.COMPAT_RENDEZVOUS_CLIENT_PAIR_DAILY_LIMIT,
-      "COMPAT_RENDEZVOUS_CLIENT_PAIR_DAILY_LIMIT",
+    rendezvousClientPairWindowSeconds: strictInteger(
+      input.RENDEZVOUS_CLIENT_PAIR_WINDOW_SECONDS,
+      "RENDEZVOUS_CLIENT_PAIR_WINDOW_SECONDS",
       1,
-      REQUEST_CONTROL_POLICY_MAXIMUMS.compatibilityRendezvousClientPairDaily,
+      RENDEZVOUS_COOLDOWN_POLICY_MAXIMUMS.rendezvousClientPairWindowSeconds,
+    ),
+    rendezvousClientPairInitialCooldownSeconds: initialCooldown,
+    rendezvousClientPairMaximumCooldownSeconds: maximumCooldown,
+    rendezvousClientPairResetSeconds: strictInteger(
+      input.RENDEZVOUS_CLIENT_PAIR_RESET_SECONDS,
+      "RENDEZVOUS_CLIENT_PAIR_RESET_SECONDS",
+      maximumCooldown,
+      RENDEZVOUS_COOLDOWN_POLICY_MAXIMUMS.rendezvousClientPairResetSeconds,
     ),
     compatibilityRendezvousServerSourceDaily: strictInteger(
       input.COMPAT_RENDEZVOUS_SERVER_SOURCE_DAILY_LIMIT,
@@ -293,12 +326,6 @@ export function rendezvousPolicyConfiguration(
   input: RendezvousPolicyConfigurationInput,
 ): RendezvousPolicyConfiguration {
   return Object.freeze({
-    rendezvousClientRollingLimit: strictInteger(
-      input.RENDEZVOUS_CLIENT_ROLLING_LIMIT,
-      "RENDEZVOUS_CLIENT_ROLLING_LIMIT",
-      1,
-      RENDEZVOUS_POLICY_MAXIMUMS.rendezvousClientRollingLimit,
-    ),
     rendezvousActiveClientLimit: strictInteger(
       input.RENDEZVOUS_ACTIVE_CLIENT_LIMIT,
       "RENDEZVOUS_ACTIVE_CLIENT_LIMIT",

@@ -22,7 +22,6 @@ const validDirectoryArtifacts = {
 } satisfies DirectoryArtifactConfigurationInput;
 
 const validRendezvousPolicy = {
-  RENDEZVOUS_CLIENT_ROLLING_LIMIT: "50",
   RENDEZVOUS_ACTIVE_CLIENT_LIMIT: "16",
   RENDEZVOUS_CLIENT_SESSION_SECONDS: "15",
 } satisfies RendezvousPolicyConfigurationInput;
@@ -110,23 +109,61 @@ describe("named coordinator configuration", () => {
   });
 
   it("keeps rendezvous policy independent from publisher and compatibility settings", () => {
-    expect(rendezvousCoordinatorConfiguration({
+    const validCoordinator = {
       RENDEZVOUS_HOSTNAME: "rendezvous-canary.example.test",
       LISTING_TTL_SECONDS: "14400",
       ROUTE_DISABLED_RETRY_SECONDS: "300",
-      COMPAT_RENDEZVOUS_CLIENT_SOURCE_DAILY_LIMIT: "50",
-      COMPAT_RENDEZVOUS_CLIENT_PAIR_DAILY_LIMIT: "10",
+      RENDEZVOUS_CLIENT_PAIR_BURST_LIMIT: "20",
+      RENDEZVOUS_CLIENT_PAIR_WINDOW_SECONDS: "60",
+      RENDEZVOUS_CLIENT_PAIR_INITIAL_COOLDOWN_SECONDS: "30",
+      RENDEZVOUS_CLIENT_PAIR_MAXIMUM_COOLDOWN_SECONDS: "900",
+      RENDEZVOUS_CLIENT_PAIR_RESET_SECONDS: "1800",
       COMPAT_RENDEZVOUS_SERVER_SOURCE_DAILY_LIMIT: "50",
       COMPAT_RENDEZVOUS_SERVER_DAILY_LIMIT: "50",
-    })).toEqual({
+    } as const;
+    expect(rendezvousCoordinatorConfiguration(validCoordinator)).toEqual({
       authority: "rendezvous-canary.example.test",
       listingTtlSeconds: 14_400,
       routeDisabledRetrySeconds: 300,
-      compatibilityRendezvousClientSourceDaily: 50,
-      compatibilityRendezvousClientPairDaily: 10,
+      rendezvousClientPairBurstLimit: 20,
+      rendezvousClientPairWindowSeconds: 60,
+      rendezvousClientPairInitialCooldownSeconds: 30,
+      rendezvousClientPairMaximumCooldownSeconds: 900,
+      rendezvousClientPairResetSeconds: 1_800,
       compatibilityRendezvousServerSourceDaily: 50,
       compatibilityRendezvousServerDaily: 50,
     });
+
+    for (const [variable, value] of [
+      ["RENDEZVOUS_CLIENT_PAIR_BURST_LIMIT", undefined],
+      ["RENDEZVOUS_CLIENT_PAIR_BURST_LIMIT", "21"],
+      ["RENDEZVOUS_CLIENT_PAIR_WINDOW_SECONDS", "61"],
+      ["RENDEZVOUS_CLIENT_PAIR_INITIAL_COOLDOWN_SECONDS", "31"],
+      ["RENDEZVOUS_CLIENT_PAIR_MAXIMUM_COOLDOWN_SECONDS", "901"],
+      ["RENDEZVOUS_CLIENT_PAIR_RESET_SECONDS", "1801"],
+    ] as const) {
+      expect(() => rendezvousCoordinatorConfiguration({
+        ...validCoordinator,
+        [variable]: value,
+      })).toThrowError(expect.objectContaining({
+        name: "RequestControlConfigurationError",
+        variable,
+      } satisfies Partial<RequestControlConfigurationError>));
+    }
+    expect(() => rendezvousCoordinatorConfiguration({
+      ...validCoordinator,
+      RENDEZVOUS_CLIENT_PAIR_INITIAL_COOLDOWN_SECONDS: "30",
+      RENDEZVOUS_CLIENT_PAIR_MAXIMUM_COOLDOWN_SECONDS: "29",
+    })).toThrowError(expect.objectContaining({
+      variable: "RENDEZVOUS_CLIENT_PAIR_MAXIMUM_COOLDOWN_SECONDS",
+    }));
+    expect(() => rendezvousCoordinatorConfiguration({
+      ...validCoordinator,
+      RENDEZVOUS_CLIENT_PAIR_MAXIMUM_COOLDOWN_SECONDS: "900",
+      RENDEZVOUS_CLIENT_PAIR_RESET_SECONDS: "899",
+    })).toThrowError(expect.objectContaining({
+      variable: "RENDEZVOUS_CLIENT_PAIR_RESET_SECONDS",
+    }));
   });
 });
 
@@ -134,18 +171,15 @@ describe("rendezvous policy configuration", () => {
   it("accepts the reviewed maxima and minimum canary boundaries", () => {
     const maxima = rendezvousPolicyConfiguration(validRendezvousPolicy);
     expect(maxima).toEqual({
-      rendezvousClientRollingLimit: 50,
       rendezvousActiveClientLimit: 16,
       rendezvousClientSessionSeconds: 15,
     });
     expect(Object.isFrozen(maxima)).toBe(true);
 
     expect(rendezvousPolicyConfiguration({
-      RENDEZVOUS_CLIENT_ROLLING_LIMIT: "1",
       RENDEZVOUS_ACTIVE_CLIENT_LIMIT: "1",
       RENDEZVOUS_CLIENT_SESSION_SECONDS: "1",
     })).toEqual({
-      rendezvousClientRollingLimit: 1,
       rendezvousActiveClientLimit: 1,
       rendezvousClientSessionSeconds: 1,
     });
@@ -153,10 +187,6 @@ describe("rendezvous policy configuration", () => {
 
   it("fails closed for missing, malformed, zero, or policy-raising values", () => {
     for (const [variable, value] of [
-      ["RENDEZVOUS_CLIENT_ROLLING_LIMIT", undefined],
-      ["RENDEZVOUS_CLIENT_ROLLING_LIMIT", ""],
-      ["RENDEZVOUS_CLIENT_ROLLING_LIMIT", "0"],
-      ["RENDEZVOUS_CLIENT_ROLLING_LIMIT", "51"],
       ["RENDEZVOUS_ACTIVE_CLIENT_LIMIT", undefined],
       ["RENDEZVOUS_ACTIVE_CLIENT_LIMIT", "16.0"],
       ["RENDEZVOUS_ACTIVE_CLIENT_LIMIT", "17"],
@@ -256,7 +286,6 @@ describe("request-control configuration", () => {
 
   it("does not couple non-rendezvous routes to room-only policy", () => {
     const {
-      RENDEZVOUS_CLIENT_ROLLING_LIMIT: _rolling,
       RENDEZVOUS_ACTIVE_CLIENT_LIMIT: _active,
       RENDEZVOUS_CLIENT_SESSION_SECONDS: _session,
       ...requestControlOnly

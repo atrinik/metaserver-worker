@@ -50,6 +50,7 @@ type RendezvousErrorCode = keyof typeof RENDEZVOUS_ERROR_DEFINITIONS;
 
 export interface RendezvousAdmissionHooks {
   readonly listingTtlSeconds: number;
+  clientEligible?(): Promise<void>;
   serverAuthenticated(): Promise<void>;
 }
 
@@ -110,6 +111,7 @@ export async function openRendezvous(
     } else if (inviteProtocol) {
       return fixedError("invalid_websocket_subprotocol");
     }
+    await hooks.clientEligible?.();
   }
 
   return env.RENDEZVOUS.getByName(serverId).fetch(new Request(
