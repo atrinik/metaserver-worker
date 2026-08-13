@@ -156,13 +156,32 @@ describe("internal service boundary", () => {
     expect(consumed.request.headers.get("Upgrade")).toBe("websocket");
   });
 
-  it("rejects missing, malformed, or role-incoherent alias envelopes", () => {
+  it("accepts the provider-first server envelope and scrubs the old caller bridge", () => {
     const serverUrl =
       `https://rendezvous.meta.atrinik.org/v1/classic/servers/${"3".repeat(64)}?role=server`;
-    expect(() => consumeRendezvousAdmissionAliases(
+    expect(consumeRendezvousAdmissionAliases(
       new Request(serverUrl),
       "server",
-    )).toThrow("The request is invalid.");
+    ).aliases).toEqual({ source: null, pair: null });
+
+    const bridged = consumeRendezvousAdmissionAliases(new Request(serverUrl, {
+      headers: {
+        [INTERNAL_SOURCE_TAG_HEADER]: CURRENT,
+        [INTERNAL_SOURCE_TAG_PREVIOUS_HEADER]: PREVIOUS,
+      },
+    }), "server");
+    expect(bridged.aliases).toEqual({ source: null, pair: null });
+    expect(bridged.request.headers.has(INTERNAL_SOURCE_TAG_HEADER)).toBe(false);
+    expect(bridged.request.headers.has(INTERNAL_SOURCE_TAG_PREVIOUS_HEADER))
+      .toBe(false);
+  });
+
+  it("rejects malformed or role-incoherent alias envelopes", () => {
+    const serverUrl =
+      `https://rendezvous.meta.atrinik.org/v1/classic/servers/${"3".repeat(64)}?role=server`;
+    expect(() => consumeRendezvousAdmissionAliases(new Request(serverUrl, {
+      headers: { [INTERNAL_SOURCE_TAG_HEADER]: CURRENT },
+    }), "server")).toThrow("The request is invalid.");
 
     const headers = new Headers({
       [INTERNAL_SOURCE_TAG_HEADER]: CURRENT,

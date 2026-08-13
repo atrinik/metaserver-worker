@@ -10,14 +10,8 @@ export const RENDEZVOUS_REPLAY_TAG_VERSION = "v1";
 
 export enum SourceTagPurpose {
   GlobalIngress = "global-ingress",
-  CompatStatus = "compat-status",
-  CompatDirectory = "compat-directory",
-  CompatOtp = "compat-otp",
-  CompatUpdate = "compat-update",
-  PublishIngress = "publish-ingress",
   RendezvousClientGlobal = "rendezvous-client-global",
   RendezvousClientServer = "rendezvous-client-server",
-  RendezvousServer = "rendezvous-server",
 }
 
 const SOURCE_TAG_PURPOSES: ReadonlySet<string> = new Set(
@@ -59,7 +53,6 @@ export interface RequestPrivacyContext {
     purpose: SourceTagPurpose.RendezvousClientServer,
     serverId: string,
   ): Promise<readonly string[]>;
-  matchesLegacySourceAddress(storedValue: string): boolean;
 }
 
 export interface RequestPrivacyOptions {
@@ -216,16 +209,6 @@ export class SourceTagKeyRing {
         return deriveServerTags(purpose, serverId);
       },
 
-      matchesLegacySourceAddress(storedValue: string): boolean {
-        if (typeof storedValue !== "string") {
-          return false;
-        }
-        try {
-          return normalizeIpAddress(storedValue) === canonicalAddress;
-        } catch {
-          return false;
-        }
-      },
     });
   }
 

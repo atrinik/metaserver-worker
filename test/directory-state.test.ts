@@ -1,9 +1,5 @@
 import { env } from "cloudflare:workers";
-import {
-  createExecutionContext,
-  waitOnExecutionContext,
-} from "cloudflare:test";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { beforeEach, describe, expect, it } from "vitest";
 
 import {
   commitDirectoryArtifactPublication,
@@ -12,7 +8,6 @@ import {
   readDirectoryArtifactHistory,
   readDirectoryArtifactPublication,
 } from "../src/directory-state";
-import worker from "../src/index";
 import { MAX_GAME_DIRECTORY_JSON_SERVER_SET_BYTES } from "../src/directory-artifacts";
 import { persistRendezvousPublication } from "../src/rendezvous-publication";
 import type { InternalRendezvousPublication } from "../src/rendezvous-contract";
@@ -273,11 +268,8 @@ describe("profile-scoped directory expiry", () => {
       ],
     });
     expect(await env.DB.prepare(
-      "SELECT name, rendezvous_generation FROM servers WHERE server_id = ?",
-    ).bind(serverId).first()).toEqual({
-      name: "Classic",
-      rendezvous_generation: classic.generation,
-    });
+      "SELECT 1 FROM servers WHERE server_id = ?",
+    ).bind(serverId).first()).toBeNull();
     expect(await env.DB.prepare(
       `SELECT profile, revision FROM directory_revisions ORDER BY profile`,
     ).all()).toMatchObject({
@@ -321,26 +313,8 @@ describe("profile-scoped directory expiry", () => {
       port: 1730,
     });
     expect(await env.DB.prepare(
-      "SELECT source_ip, quic_host, quic_port FROM servers WHERE server_id = ?",
-    ).bind(serverId).first()).toEqual({
-      source_ip: "",
-      quic_host: "play.example.net",
-      quic_port: 1730,
-    });
-
-    vi.spyOn(Date, "now").mockReturnValue(NOW * 1_000);
-    const context = createExecutionContext();
-    const response = await worker.fetch(new Request(
-      "https://meta.example.test/v2/servers",
-      { headers: { "CF-Connecting-IP": "192.0.2.200" } },
-    ), env, context);
-    await waitOnExecutionContext(context);
-    expect(response.status).toBe(200);
-    const xml = await response.text();
-    expect(xml).toContain(`<Id>${serverId}</Id>`);
-    expect(xml).toContain("<Address>play.example.net</Address>");
-    expect(xml).toContain("<Port>1730</Port>");
-    expect(xml).not.toContain("192.0.2.200");
+      "SELECT 1 FROM servers WHERE server_id = ?",
+    ).bind(serverId).first()).toBeNull();
   });
 
   it("persists a canonical IDNA A-label fallback", async () => {

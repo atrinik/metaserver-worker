@@ -102,7 +102,7 @@ export type ActorAliases = readonly [current: string, previous: string];
 
 export type RendezvousAdmissionAliases =
   | { readonly source: null; readonly pair: ActorAliases }
-  | { readonly source: ActorAliases; readonly pair: null };
+  | { readonly source: null; readonly pair: null };
 
 /** Convert the required two-key source-tag result into a strict RPC tuple. */
 export function actorAliases(values: readonly string[]): ActorAliases {
@@ -171,11 +171,9 @@ export function rendezvousServiceRequest(
     additions.set(INTERNAL_PAIR_TAG_HEADER, aliases.pair[0]);
     additions.set(INTERNAL_PAIR_TAG_PREVIOUS_HEADER, aliases.pair[1]);
   } else {
-    if (aliases.source === null || aliases.pair !== null) {
+    if (aliases.source !== null || aliases.pair !== null) {
       throw new HttpError("bad_request");
     }
-    additions.set(INTERNAL_SOURCE_TAG_HEADER, aliases.source[0]);
-    additions.set(INTERNAL_SOURCE_TAG_PREVIOUS_HEADER, aliases.source[1]);
   }
   const allowlist = role === "server"
     ? [...RENDEZVOUS_FORWARD_HEADERS, "Authorization"]
@@ -204,13 +202,20 @@ export function consumeRendezvousAdmissionAliases(
       INTERNAL_PAIR_TAG_PREVIOUS_HEADER,
     ];
   assertExactHeaderNames(request.headers, allowedHeaders);
-  const source = role === "server"
-    ? readAliasPair(
+  // A v1.11.2 caller still supplies the compatibility-era source aliases.
+  // Validate and scrub that bridge envelope, but never return or persist it.
+  // The provider-first v1.12 caller omits both headers.
+  if (
+    role === "server" &&
+    (request.headers.has(INTERNAL_SOURCE_TAG_HEADER) ||
+      request.headers.has(INTERNAL_SOURCE_TAG_PREVIOUS_HEADER))
+  ) {
+    readAliasPair(
       request.headers,
       INTERNAL_SOURCE_TAG_HEADER,
       INTERNAL_SOURCE_TAG_PREVIOUS_HEADER,
-    )
-    : null;
+    );
+  }
   const pair = role === "client"
     ? readAliasPair(
       request.headers,
@@ -238,7 +243,7 @@ export function consumeRendezvousAdmissionAliases(
     }),
     aliases: role === "client"
       ? Object.freeze({ source: null, pair: requireAliases(pair) })
-      : Object.freeze({ source: requireAliases(source), pair: null }),
+      : Object.freeze({ source: null, pair: null }),
   });
 }
 

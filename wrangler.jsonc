@@ -74,50 +74,10 @@
   },
   "ratelimits": [
     {
-      "name": "GLOBAL_RATE_LIMITER",
-      "namespace_id": "1003",
-      "simple": {
-        "limit": 10,
-        "period": 60
-      }
-    },
-    {
-      "name": "DIRECTORY_RATE_LIMITER",
-      "namespace_id": "1005",
-      "simple": {
-        "limit": 10,
-        "period": 60
-      }
-    },
-    {
-      "name": "OTP_RATE_LIMITER",
-      "namespace_id": "1001",
-      "simple": {
-        "limit": 10,
-        "period": 60
-      }
-    },
-    {
-      "name": "UPDATE_RATE_LIMITER",
-      "namespace_id": "1002",
-      "simple": {
-        "limit": 10,
-        "period": 60
-      }
-    },
-    {
       "name": "PUBLISH_IDENTITY_RATE_LIMITER",
       "namespace_id": "1006",
       "simple": {
         "limit": 2,
-        "period": 60
-      }
-    },
-    {
-      "name": "RENDEZVOUS_CLIENT_RATE_LIMITER",
-      "namespace_id": "1004",
-      "simple": {
-        "limit": 5,
         "period": 60
       }
     },
@@ -141,33 +101,17 @@
     "DIRECTORY_CACHE_ZONE_ID": "00000000000000000000000000000000",
     "CLASSIC_DIRECTORY_PUBLIC_ORIGIN": "https://classic.meta.atrinik.org",
     "GAME_DIRECTORY_PUBLIC_ORIGIN": "https://meta.atrinik.org",
-    "COMPAT_HOSTNAME": "meta.atrinik.org",
     "PUBLISH_HOSTNAME": "publish.meta.atrinik.org",
     "RENDEZVOUS_HOSTNAME": "rendezvous.meta.atrinik.org",
-    "COMPAT_STATUS_ENABLED": "enabled",
-    "COMPAT_DIRECTORY_ENABLED": "enabled",
-    "COMPAT_OTP_ENABLED": "enabled",
-    "COMPAT_UPDATE_ENABLED": "enabled",
     "PUBLISH_ENABLED": "disabled",
     "GAME_PUBLISH_ENABLED": "disabled",
     "RENDEZVOUS_ENABLED": "disabled",
-    "COMPAT_RENDEZVOUS_ENABLED": "enabled",
     "SOURCE_TAG_KEY_CURRENT_ID": "2026-08-a",
     "SOURCE_TAG_KEY_PREVIOUS_ID": "2026-07-a",
     "LISTING_TTL_SECONDS": "14400",
-    "OTP_TTL_SECONDS": "120",
-    "STALE_DATA_RETENTION_SECONDS": "18000",
     "ROUTE_DISABLED_RETRY_SECONDS": "300",
-    "COMPAT_STATUS_DAILY_LIMIT": "100",
-    "COMPAT_DIRECTORY_DAILY_LIMIT": "100",
-    "COMPAT_OTP_DAILY_LIMIT": "48",
-    "COMPAT_UPDATE_SOURCE_DAILY_LIMIT": "48",
-    "COMPAT_UPDATE_SERVER_DAILY_LIMIT": "48",
     "PUBLISH_SERVER_DAILY_LIMIT": "48",
-    "COMPAT_RENDEZVOUS_CLIENT_SOURCE_DAILY_LIMIT": "50",
-    "COMPAT_RENDEZVOUS_CLIENT_PAIR_DAILY_LIMIT": "10",
-    "COMPAT_RENDEZVOUS_SERVER_SOURCE_DAILY_LIMIT": "50",
-    "COMPAT_RENDEZVOUS_SERVER_DAILY_LIMIT": "50",
+    "RENDEZVOUS_SERVER_DAILY_LIMIT": "50",
     "RENDEZVOUS_CLIENT_PAIR_BURST_LIMIT": "20",
     "RENDEZVOUS_CLIENT_PAIR_WINDOW_SECONDS": "60",
     "RENDEZVOUS_CLIENT_PAIR_INITIAL_COOLDOWN_SECONDS": "30",

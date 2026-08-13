@@ -6,14 +6,11 @@ learns a selected peer endpoint.
 
 ## Data classes
 
-1. For compatibility requests processed by the core Worker, a newly observed
-   source address exists only while handling that request. For canonical
-   publisher/rendezvous requests, the stateless edge derives the required
+1. For canonical publisher/rendezvous requests, a newly observed source
+   address exists only in the stateless edge while it derives the required
    purpose-separated aliases and reconstructs a fixed allowlisted request;
    neither the raw source address nor browser state crosses the Service Binding
-   into the state-owning core. A compatibility source may be compared with a
-   transitional blacklist rule or legacy challenge, but it is not written to a
-   new row or application diagnostic.
+   into the state-owning core.
 2. Anonymous abuse correlation uses a purpose-separated, keyed HMAC tag with a
    bounded retention window.
 3. QUIC candidates are transient, validated WebSocket message data. A candidate
@@ -21,9 +18,8 @@ learns a selected peer endpoint.
    the client socket bound to its single-use ticket. Candidate addresses are
    never serialized into a WebSocket attachment or written to Durable Object
    SQLite, D1, KV, R2, Analytics Engine, or an application log.
-4. The final direct-directory fallback stores only an operator-published,
-   validated DNS hostname and UDP port. Numeric compatibility endpoints are
-   accepted only to preserve the old request shape and are discarded.
+4. The direct-directory fallback stores only an operator-published, validated
+   DNS hostname and UDP port. It is never inferred from the request source.
 5. Signed publication stores the public certificate-bound server ID, visible
    listing fields, the last accepted unsigned-64 sequence, bounded random nonce
    values until expiry, and non-secret commit/fingerprint/revision values. The
@@ -58,8 +54,8 @@ atrinik-metaserver\0source-tag\0v1\0<deployment-hostname>\0<purpose>\0<canonical
 ```
 
 The source/server-pair purpose appends the canonical 64-hex server identity.
-The configured compatibility or canonical edge hostname separates production,
-canary, and local domains even if an operator accidentally reuses key material;
+The configured canonical edge hostname separates production, canary, and local
+domains even if an operator accidentally reuses key material;
 operators must still provision independent secrets for every environment. The
 two canonical edge Workers receive the same reviewed overlapping key pair but
 derive in distinct authority namespaces. Current and previous key IDs and
@@ -67,13 +63,12 @@ secrets must be distinct; malformed or duplicated material fails request
 admission closed.
 The stored tag is versioned and contains only the key label plus base64url
 HMAC-SHA-256 output; it never contains the address. Purposes are a closed set
-covering global ingress, each compatibility route, canonical publishing, and
-the distinct rendezvous actor dimensions.
+covering authority-separated global ingress and the distinct rendezvous actor
+dimensions.
 
 Every request checks both current and previous tags while rotation overlap is
-active. Compatibility fixed-window admission mirrors one logical counter into
-both alias rows with one D1 statement. Canonical rendezvous pair admission
-instead stores one random opaque attempt ID under both aliases in one atomic
+active. Canonical rendezvous pair admission stores one random opaque attempt ID
+under both aliases in one atomic
 batch and mirrors the exact cooldown tuple. During a rolling `A/Z` to `B/A`
 deployment, shared `A` carries the rolling attempt set and cooldown forward
 without charging twice; raw addresses and per-request network metadata are
@@ -86,41 +81,24 @@ overlap requirement explicit: consecutive deployed pairs must share one exact
 key for strictly more than 24 hours after every old-pair writer has stopped.
 Install alias-aware code and the overlap key before changing which key is
 current. Disjoint key sets cannot reconstruct one exact history. New
-short-lived OTP rows persist both issuer aliases. An `A/Z` issuer therefore
-stores `A` and `Z`, while a `B/A` issuer stores `B` and `A`; either deployment
-can consume either token through the shared `A` alias. A rendezvous row claimed
-under `A/Z` likewise collides with a replay checked under `B/A` through its
+Rendezvous rows claimed under `A/Z` collide with a replay checked under `B/A`
+through the
 shared `A` alias. Shared means the exact same key ID, secret, hostname
 namespace, purpose, and derivation contract. Initial provisioning supplies two
 independent keys so the same tested overlap path is always exercised.
 
-## Compatibility state
+## Retired physical state
 
-New compatibility challenge and request-budget writes use only keyed tags. A
-new OTP row has an empty legacy `source_ip` sentinel and exactly two distinct
-aliases in `source_tag` and `source_tag_previous`; consumption matches either
-stored alias against either request alias. The additive migration leaves the
-old column in place and accepts an already-issued legacy raw-source challenge
-for at most its remaining TTL. The atomic `DELETE ... RETURNING` is the
-one-time-consumption boundary, and a wrong source does not burn the token.
-The pair intentionally links the two rotation pseudonyms only for the OTP's
-short lifetime and cleanup retention; it is never reused across purposes.
-
-Migration `0005_directory_state.sql` creates profile-keyed minimal
-`server_presence` and public-only `directory_entries` tables. It imports every
-classic presence credential but only public directory rows, intentionally
-drops every historical direct endpoint during the import, clears every
-`server_owners.current_ip` and `servers.source_ip`, and deletes private legacy
-rows. New compatibility writes keep the public legacy rollback shadow
-addressless; private writes delete it. A missing direct hostname remains NULL
-in canonical state, and the HTTPS request address is never inferred.
-
-The old raw-source OTP and rate-limit columns remain during the compatibility
-window, as do request-address blacklist patterns. After rollback to the old
-writer is impossible, the ordered compatibility-removal migration must remove
-those tables, columns, and policies after their retention and WAF gates.
-Physical removal—not merely empty sentinels—is required before declaring final
-schema completion.
+The core no longer reads or writes the old `servers`, challenge, source-rate,
+or request-address ownership fields. They remain inert only because applied
+migrations are immutable and #39 owns their forward-only physical removal.
+Until that migration removes the non-null historical `auth_key` column, signed
+publication stores only a deterministic certificate-bound schema anchor (the
+public 64-hex server ID repeated to the column's required length); it is not an
+authentication secret or accepted credential.
+Rollback may use the runtime-retirement bridge release, never a release that
+can reactivate those writers. A missing direct hostname remains NULL in
+canonical state, and the HTTPS request address is never inferred.
 
 The signed replay ledger stores canonical decimal sequences as text because
 SQLite cannot represent the complete unsigned 64-bit range. Nonces are scoped
@@ -131,11 +109,9 @@ The server can consume the authenticated `minimumNextSequence` response to
 advance its protected local high-water mark; it never deletes or replaces its
 identity as a recovery shortcut.
 
-Stable server-ID blacklist entries remain the application policy. During the
-transition, existing raw-address glob entries can still be evaluated against a
-request-scoped address, but the address and matching pattern/reason are not
-written or logged. Move operational address/CIDR rules to Cloudflare WAF before
-removing that compatibility lookup and its raw patterns.
+Stable server-ID blacklist entries remain the application policy. Operational
+address/CIDR rules belong in Cloudflare WAF and do not cross the Service
+Binding.
 
 ## Static artifact state
 
@@ -194,8 +170,8 @@ Automatic invocation logs are disabled. The deliberately retained custom
 diagnostics have closed, low-cardinality schemas:
 
 - `request_rejected`: closed route, public error code, and fixed status;
-- `blacklist_match`: the fixed update route and only the closed match dimension
-  (`server_identity` or `request_source`); and
+- `blacklist_match`: the closed canonical publisher route (`publish-classic` or
+  `publish-game`) and the fixed `server_identity` dimension; and
 - `unexpected_error`: closed handler/internal code and, when applicable, the
   closed request-control dependency name.
 
@@ -345,8 +321,8 @@ authorize the exact ticket.
 
 Each successful publish creates a fresh random 64-hex, non-secret
 rendezvous generation alongside the new bearer-token hash. D1 stores both in
-profile-scoped minimal presence; the legacy owner generation remains only a
-temporary compatibility transaction guard. A private publish deletes its
+profile-scoped minimal presence; the owner generation remains only a
+transaction guard. A private publish deletes its
 public directory row and retires the room while retaining the verifier promised
 by the successful response contract. The per-server
 Durable Object serializes the complete commit, checks the caller's prior D1
@@ -449,10 +425,8 @@ successful WebSocket response. A successful WebSocket must contain only the
 exact selected subprotocol/security headers and a live socket. This internal
 envelope contains only keyed aliases, never the source address.
 
-Every compatibility update is stored addressless: its numeric `quic_host` and
-port are discarded, and the directory omits both `Address` and `Port` rather
-than substituting the request source. Such a record is joinable only through
-rendezvous. Signed publication may add an operator-configured, strictly
+The directory never substitutes the request source for a direct endpoint.
+Signed publication may add an operator-configured, strictly
 validated optional DNS hostname/UDP port pair. That endpoint is public routing
 metadata even when `PasswordRequired` is true; it is not identity. Clients
 still pin the QUIC certificate. Canonical `xn--` labels must round-trip through
@@ -460,7 +434,7 @@ the protocol's strict non-transitional UTS #46 profile; Unicode U-labels and
 malformed or bidi-invalid A-labels fail before persistence. The Worker never
 resolves the hostname or stores its A/AAAA answers.
 
-The compatibility room routes server candidates only to the client socket that
+The canonical room routes server candidates only to the client socket that
 originated their fresh ticket. Admission also requires a currently live server
 control authenticated with the listing's rendezvous token. That server-control
 proof is deliberately separate from a player's game password. A protected

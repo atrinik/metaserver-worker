@@ -13,6 +13,8 @@ import {
 } from "../src/index";
 import publisherWorker from "../src/publisher-worker";
 import rendezvousWorker from "../src/rendezvous-worker";
+import { sha256Hex } from "../src/protocol";
+import { persistRendezvousPublication } from "../src/rendezvous-publication";
 import { CLASSIC_RENDEZVOUS_INVITE_SUBPROTOCOL } from "../src/routes";
 import publisherFixture from "./fixtures/metaserver-publisher-v1.json";
 
@@ -148,6 +150,59 @@ beforeEach(async () => {
 });
 
 describe("in-process service-boundary contract", () => {
+  it("does not let one source/day counter lock out distinct server identities", async () => {
+    const core = coreEnvironment();
+    const edge = rendezvousEnvironment(core);
+    const now = publisherFixture.created;
+    for (const [index, serverId] of ["4".repeat(64), "5".repeat(64)].entries()) {
+      const token = String(index + 1).repeat(64);
+      await persistRendezvousPublication(env.DB, {
+        serverId,
+        directoryProfile: "classic-v1",
+        publisherAuthentication: "signed-certificate-v1",
+        publisherSequence: String(index + 1),
+        publisherNonce: String(index + 1).repeat(32),
+        publisherNonceExpiresAt: now + 86_400,
+        commitToken: String(index + 6).repeat(64),
+        expectedGeneration: null,
+        generation: String(index + 8).repeat(64),
+        tokenHash: await sha256Hex(token),
+        now,
+        visibilityCutoff: now - 14_400,
+        name: `Shared source ${index}`,
+        playersCount: 0,
+        version: "5.9.0",
+        textComment: "Canonical identity isolation",
+        isPublic: true,
+        quicHost: "",
+        quicPort: 1,
+        quicCertSha256: serverId,
+        passwordRequired: false,
+        directoryFingerprint: (index === 0 ? "a" : "b").repeat(64),
+      });
+      const response = await rendezvousWorker.fetch(new Request(
+        `https://rendezvous.meta.atrinik.org/v1/classic/servers/${serverId}?role=server`,
+        {
+          headers: {
+            Authorization: `Bearer ${token}`,
+            "CF-Connecting-IP": "192.0.2.200",
+            Upgrade: "websocket",
+          },
+        },
+      ), edge);
+      expect(response.status).toBe(101);
+      response.webSocket?.accept();
+      response.webSocket?.close(1000, "Test complete");
+    }
+
+    expect(await env.DB.prepare(
+      "SELECT COUNT(*) AS count FROM request_budgets WHERE scope = 'rendezvous-server'",
+    ).first<number>("count")).toBe(2);
+    expect(await env.DB.prepare(
+      "SELECT COUNT(*) AS count FROM request_budgets WHERE scope = 'rendezvous-server-source'",
+    ).first<number>("count")).toBe(0);
+  });
+
   it("keeps isolated canary authorities aligned across edge and core", async () => {
     const core = override(coreEnvironment(), {
       PUBLISH_HOSTNAME: "publish-canary.example.test",

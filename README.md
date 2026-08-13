@@ -6,32 +6,24 @@ This repository owns Atrinik's Cloudflare metaserver services for QUIC-only
 game transport. The services publish discovery metadata and exchange bounded
 connection candidates; they never proxy game traffic.
 
-## Compatibility endpoints
+## Supported services
 
-The temporary compatibility Worker accepts only its configured authority and
-exact legacy paths:
+Classic v5.9.0 is the minimum supported metaserver consumer. The public API is
+canonical-only:
 
-- `GET /` returns temporary service health.
-- `GET /index.wsgi/otp` issues a tagged, single-use update token.
-- `POST /index.wsgi/update` authenticates a server identity and updates its
-  temporary classic directory record.
-- `GET /v2/servers` returns protocol 3 XML.
-- `GET /v2/rendezvous/:server-id?role=client|server` upgrades to a
-  signaling-only WebSocket.
+- static Classic snapshots at `classic.meta.atrinik.org/index.{html,json,xml}`;
+- signed Classic publication at
+  `publish.meta.atrinik.org/v1/classic/servers/{server-id}/publish`;
+- Classic rendezvous at
+  `rendezvous.meta.atrinik.org/v1/classic/servers/{server-id}`; and
+- the independently versioned Game Protocol 1 publisher, rendezvous, and
+  static snapshot contracts.
 
-Every route has an independent emergency circuit breaker and bounded daily
-budget. Directory, OTP, update, and rendezvous also have route-specific burst
-limits; the temporary status route uses the global 10/minute ingress ceiling.
-Non-canonical hosts, methods, paths, queries, and content fail before
-application dispatch.
-These routes remain only for the coordinated consumer cutover; they are not
-aliases on the canonical publisher or rendezvous hosts.
-
-The final hostname and route contract is documented in
-[docs/routes.md](docs/routes.md). `meta.atrinik.org` and
-`classic.meta.atrinik.org` become direct static directory origins;
-`publish.meta.atrinik.org` and `rendezvous.meta.atrinik.org` are isolated
-dynamic services.
+The retired CGI and public `/v2` targets have no application dispatcher,
+redirect, fallback, or rollback path. Edge policy blocks them before Worker
+invocation. `meta.atrinik.org` remains unattached until it is enabled only as a
+static Game R2 origin. The exact route contract is documented in
+[docs/routes.md](docs/routes.md).
 
 The dynamic split is implemented as three deployable Workers. The existing
 `atrinik-metaserver` core remains the sole owner of D1, R2, schedules, and the
@@ -42,13 +34,15 @@ bindings, then call one named core entrypoint through a Service Binding. The
 edges derive pseudonymous aliases and reconstruct a fixed allowlisted request,
 so the raw request address and browser state never cross into the state owner;
 the core independently validates the complete route and protocol again. The
-checked-in edge configurations have no public route and both circuits disabled.
+checked-in edge configurations have no public route and all dynamic circuits
+disabled. The core exports scheduled handlers, Durable Objects, and named
+Service Binding entrypoints only; it has no default `fetch` handler.
 
 There is deliberately no TCP directory, DNS ownership proof, game-port probe,
 or game relay. A server is owned by the SHA-256 identity derived from its
-persistent QUIC certificate. The temporary publisher retains the classic
-OTP/proof protocol; the final publisher folds freshness and identity proof into
-one replay-safe signed request. Rendezvous server peers authenticate separately.
+persistent QUIC certificate. Both publishers fold freshness and identity proof
+into one replay-safe signed request. Rendezvous server peers authenticate
+separately.
 
 Rendezvous is one short, bounded signaling attempt, not a room-wide message
 bus. A client is admitted only while one authenticated server-control socket is
@@ -172,25 +166,20 @@ See [DEPLOYMENT.md](DEPLOYMENT.md) for the release checklist.
 
 ## Request controls and privacy
 
-For requests handled by the foundation Worker, newly observed raw addresses
-remain request-scoped. New challenge and request-control writes use
-purpose-separated, rotating HMAC tags with bounded retention; authenticated
-stages use the server identity. Migration `0005_directory_state.sql` clears
-historical owner/listing address columns, deletes private legacy listing rows,
-and imports public rows without their former endpoint. Compatibility address
-inputs remain accepted at the sunset wire boundary but are discarded; only a
-signed, canonical DNS hostname is eligible for persistence. Canonical `xn--`
+For public requests, newly observed raw addresses remain request-scoped.
+Purpose-separated rotating HMAC tags protect coarse edge shields and the
+canonical client pair cooldown; authenticated stages use the server identity.
+Only a signed, canonical DNS hostname is eligible for persistence. Canonical `xn--`
 labels are checked with strict, non-transitional UTS #46 processing, including
-STD3, hyphen, joiner, bidirectional, and DNS-length checks. Raw legacy
-OTP/rate-limit columns and address blacklist policy remain governed by the
-later signed-publisher compatibility-removal migration. No update infers a
-QUIC endpoint from the HTTPS source.
+STD3, hyphen, joiner, bidirectional, and DNS-length checks. Retired physical
+columns remain inert until the ordered storage cleanup in #39. No publish
+infers a QUIC endpoint from the HTTPS source.
 The request path emits only the closed, redacted diagnostic events described in
 [docs/privacy.md](docs/privacy.md).
 
-Native rate bindings cap local bursts. D1 enforces exact fixed-window
-compatibility/authenticated budgets and the canonical client's rolling
-source/server-pair cooldown. Each per-server Durable Object preserves replay
+Native rate bindings cap local bursts. D1 enforces exact authenticated
+publisher/server budgets and the canonical client's rolling source/server-pair
+cooldown. Each per-server Durable Object preserves replay
 rejection for 24 hours without imposing a daily player quota. Rooms admit at most 16 active client
 attempts and retain 64 client sockets only as an absolute implementation
 ceiling. A

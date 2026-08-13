@@ -57,9 +57,6 @@ describe("privacy-safe source tags", () => {
     expect(await privacy.tag(SourceTagPurpose.GlobalIngress)).toBe(
       "v1.2026-08.RA_EdJMPqDYZch9WFQn0sszNHf1iSoD4brS4yzetq3I",
     );
-    expect(await privacy.tag(SourceTagPurpose.PublishIngress)).toBe(
-      "v1.2026-08.FBOKSiBiZD9C5_rxSFEs5nrgKFdnpStiPinC7QMEahA",
-    );
     expect(await privacy.serverTag(
       SourceTagPurpose.RendezvousClientServer,
       SERVER_ID,
@@ -68,7 +65,6 @@ describe("privacy-safe source tags", () => {
     );
 
     expect(Object.keys(privacy).sort()).toEqual([
-      "matchesLegacySourceAddress",
       "serverTag",
       "serverTags",
       "tag",
@@ -104,22 +100,22 @@ describe("privacy-safe source tags", () => {
   });
 
   it("separates public deployment namespaces without changing tag shape", async () => {
-    const compatibility = await context();
+    const production = await context();
     const canary = await context(
       sourceRequest("192.0.2.10"),
       CURRENT_CONFIGURATION,
       "canary.meta.example.test",
     );
 
-    const compatibilityTag = await compatibility.tag(
+    const productionTag = await production.tag(
       SourceTagPurpose.GlobalIngress,
     );
     const canaryTag = await canary.tag(SourceTagPurpose.GlobalIngress);
     expect(canaryTag).toBe(
       "v1.2026-08.lLMBDJU43ZVPWFHiSOCxDQnTRs7HEEiWpFh4NirQu2g",
     );
-    expect(canaryTag).not.toBe(compatibilityTag);
-    expect(compatibilityTag).toMatch(
+    expect(canaryTag).not.toBe(productionTag);
+    expect(productionTag).toMatch(
       /^v1\.2026-08\.[A-Za-z0-9_-]{43}$/,
     );
     expect(canaryTag).toMatch(/^v1\.2026-08\.[A-Za-z0-9_-]{43}$/);
@@ -129,13 +125,7 @@ describe("privacy-safe source tags", () => {
     const privacy = await context();
     const tags = await Promise.all([
       privacy.tag(SourceTagPurpose.GlobalIngress),
-      privacy.tag(SourceTagPurpose.CompatStatus),
-      privacy.tag(SourceTagPurpose.CompatDirectory),
-      privacy.tag(SourceTagPurpose.CompatOtp),
-      privacy.tag(SourceTagPurpose.CompatUpdate),
-      privacy.tag(SourceTagPurpose.PublishIngress),
       privacy.tag(SourceTagPurpose.RendezvousClientGlobal),
-      privacy.tag(SourceTagPurpose.RendezvousServer),
       privacy.serverTag(SourceTagPurpose.RendezvousClientServer, SERVER_ID),
       privacy.serverTag(SourceTagPurpose.RendezvousClientServer, OTHER_SERVER_ID),
     ]);
@@ -273,22 +263,6 @@ describe("privacy-safe source tags", () => {
     });
   });
 
-  it("compares legacy raw OTP values without exposing the request address", async () => {
-    const ipv4 = await context(sourceRequest("192.0.2.10"));
-    expect(ipv4.matchesLegacySourceAddress("192.000.002.010")).toBe(true);
-    expect(ipv4.matchesLegacySourceAddress("192.0.2.11")).toBe(false);
-    expect(ipv4.matchesLegacySourceAddress("not-an-address")).toBe(false);
-
-    const ipv6 = await context(sourceRequest("2001:db8::1"));
-    expect(ipv6.matchesLegacySourceAddress(
-      "[2001:0db8:0000:0000:0000:0000:0000:0001]",
-    )).toBe(true);
-    expect(ipv6.matchesLegacySourceAddress(
-      "[2001:0db8:0000:0000:0000:0000:0000:0001%legacy]",
-    )).toBe(false);
-    expect(ipv6.matchesLegacySourceAddress("2001:db8::2")).toBe(false);
-  });
-
   it("rejects malformed server IDs before deriving pair tags", async () => {
     const privacy = await context();
     await expect(privacy.serverTag(
@@ -379,7 +353,7 @@ describe("durable rendezvous replay tags", () => {
 
   it("separates canonical deployment hostname namespaces", async () => {
     const ring = await parseSourceTagKeyRing(ROTATING_CONFIGURATION);
-    const compatibility = await ring.rendezvousReplayTags(
+    const production = await ring.rendezvousReplayTags(
       SOURCE_TAG_NAMESPACE,
       RENDEZVOUS_ROOM_ID,
       RENDEZVOUS_CLIENT_TICKET,
@@ -390,8 +364,8 @@ describe("durable rendezvous replay tags", () => {
       RENDEZVOUS_CLIENT_TICKET,
     );
 
-    expect(canary).not.toEqual(compatibility);
-    expect(new Set([...compatibility, ...canary]).size).toBe(4);
+    expect(canary).not.toEqual(production);
+    expect(new Set([...production, ...canary]).size).toBe(4);
   });
 
   it("separates Durable Object room identities", async () => {

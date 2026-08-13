@@ -3,7 +3,7 @@
 In-Worker limits cannot reduce Worker invocation count because they run after
 an invocation begins. Production therefore needs a zone-level request gate and,
 where the plan supports the required fields, a WAF rate-limiting rule in front
-of the compatibility Worker. This document is a reviewed operator
+of each canonical dynamic edge. This document is a reviewed operator
 specification; it does not authorize an automated deployment.
 
 Cloudflare documents the current [rate-limiting rule parameters][rate-params],
@@ -22,7 +22,7 @@ until their own exact-host rules pass this gate. The core alone owns D1, R2,
 schedules, Analytics Engine, and both Durable Objects; each edge has one named
 Service Binding and distinct native rate namespace IDs. A canary must use
 separately reviewed Workers, hostname, secrets, D1 database, Durable Object
-namespaces, Analytics Engine datasets, `COMPAT_HOSTNAME` value, and unique
+namespaces, Analytics Engine datasets, canonical hostname values, and unique
 account-wide `namespace_id` values for each native Rate Limiting binding. The
 [Worker Rate Limiting binding
 contract][worker-rate-binding] shares counters across Workers that reuse a
@@ -85,13 +85,10 @@ allowlists for both the raw and normalized path fields. Cloudflare expressions
 do not support comparing those two fields directly. Use a dynamic target that
 changes only the scheme and preserves the exact authority and raw path.
 
-Do not enable the static rule for `meta.atrinik.org` while the temporary
-compatibility Worker owns that hostname: it would block the compatibility
-publisher and rendezvous routes. Canary with isolated hostnames, attach
-`classic.meta.atrinik.org` first, complete the documented consumer window,
-then detach the compatibility Worker before enabling the static `meta` rule and
-R2 custom domain. A canary substitutes its exact non-production hostnames in
-the expression; copying either production hostname is a stop condition.
+Keep `meta.atrinik.org` unattached while Game rollout is disabled. Its eventual
+origin is the static Game R2 bucket, never a Worker. A canary substitutes its
+exact non-production hostnames in the expression; copying either production
+hostname is a stop condition.
 
 Add a Cache Rule for only the three `index.*` paths whose method set is exactly
 `GET`, `HEAD`, and `PURGE`:
@@ -161,84 +158,21 @@ Substitute only the exact isolated hostnames from the reviewed deployment
 record. The script has no mutation path or Cloudflare credential input;
 resource creation, ruleset changes, and teardown remain separately authorized.
 
-Before attaching `meta.atrinik.org` to the temporary compatibility Worker,
-install a zone custom rule named
-`Atrinik metaserver canonical compatibility targets`. Its action is `Block` and
-its logical allowlist is:
+## Retired-target gate
 
-```text
-http.host eq "meta.atrinik.org" and not (
-  starts_with(lower(raw.http.request.full_uri),
-              "https://meta.atrinik.org/") and (
-    (http.request.method eq "GET" and
-     raw.http.request.uri in {"/" "/v2/servers" "/index.wsgi/otp"}) or
-    (http.request.method eq "POST" and
-     raw.http.request.uri eq "/index.wsgi/update") or
-    (http.request.method eq "GET" and
-     starts_with(raw.http.request.uri.path, "/v2/rendezvous/") and
-     not (raw.http.request.uri.path contains "%") and
-     not (raw.http.request.uri.path contains "\\") and
-     not (raw.http.request.uri.path contains "//") and
-     not (raw.http.request.uri.path contains "/./") and
-     not (raw.http.request.uri.path contains "/../") and
-     raw.http.request.uri.query in {"role=client" "role=server"})
-  )
-)
-```
-
-The Worker remains the final validator for the 64-hex server ID, headers,
-WebSocket upgrade, content type, and body stream. The edge rule removes other
-host/path/method/query probes and ambiguous raw path spellings before they
-invoke it. HTTP fragments are not transmitted to a server and therefore cannot
-be an edge rule input.
-
-Treat this expression as structured policy, not a string to append blindly.
-Fetch the zone `http_request_firewall_custom` entrypoint ruleset, preserve every
-unrelated rule and ordering constraint, add or update only the named rule, then
-fetch it again and compare its enabled expression/action with this document.
-
-## Pre-Worker rate rule
-
-When the plan can match both host and method/path, create a rate-limiting rule
-named `Atrinik metaserver compatibility global burst` with:
-
-```text
-http.host eq "meta.atrinik.org" and (
-  (http.request.method eq "GET" and
-   http.request.uri.path in {"/" "/v2/servers" "/index.wsgi/otp"}) or
-  (http.request.method eq "POST" and
-   http.request.uri.path eq "/index.wsgi/update") or
-  (http.request.method eq "GET" and
-   starts_with(http.request.uri.path, "/v2/rendezvous/"))
-)
-```
-
-- match: the five allowed route families above on
-  `http.host eq "meta.atrinik.org"`;
-- counting characteristic: source IP;
-- threshold: 10 requests in 60 seconds;
-- mitigation: block for 60 seconds; and
-- origin-only counting: enabled (every matched route is dynamic).
-
-This is an invocation-cost guard, not the privacy-preserving application
-identity. Cloudflare owns the edge counter; the Worker never copies its raw key
-to D1 or logs. Route-specific native bindings and exact pseudonymous D1 budgets
-remain mandatory because an IP edge counter is plan/local-policy dependent and
-shared networks need higher daily recovery allowances.
-
-Some plans cannot include the host/method fields needed to scope a rate rule
-safely within the whole `atrinik.org` zone. Do not install a path-only rule that
-could throttle unrelated hosts. Record the unsupported entitlement as a
-release risk, keep the in-Worker fallback, alert on aggregate invocation growth,
-and prioritize the static-directory and producer cutovers. The raw-target
-custom rule and disabled alternative Worker hostnames remain deployment gates.
+Remove the old `meta.atrinik.org` dynamic allowlist and its rate-limiting rule.
+Keep that hostname unattached until static Game rollout. The static exact-host
+rule above and the canonical publisher/rendezvous block-outside rules must deny
+the explicit retired CGI and public `/v2` negative probes before any Worker
+invocation. Read back rule IDs, enabled actions, expressions, and ordering after
+the change. Worker Metrics and primary D1 snapshots must remain unchanged for
+the bounded probe cohort. Never attach the core Worker merely to return a
+retirement response.
 
 ## Dedicated rendezvous hostname
 
-While rendezvous remains a compatibility path on `meta.atrinik.org`, both edge
-rules above must include it. When the canonical rendezvous entrypoint moves to
-`rendezvous.meta.atrinik.org`, install a separately named raw-target gate and
-rate rule on that hostname before attaching its Custom Domain. The coarse
+Install a separately named raw-target gate and rate rule on the canonical
+rendezvous hostname before attaching its Custom Domain. The coarse
 raw-target envelope is:
 
 ```text
@@ -264,8 +198,8 @@ The HTTPS authority prefix makes plaintext part of the block-outside rule;
 never redirect a WebSocket upgrade.
 
 The Worker remains responsible for the exact route shape, 64-hex server ID,
-WebSocket headers, role, and authentication. Do not copy the compatibility
-health, directory, OTP, or update paths onto this host.
+WebSocket headers, role, and authentication. Do not add health, directory,
+challenge, or update paths to this host.
 
 Where the plan supports the required host/method/path fields, use a source-IP
 characteristic and an initial 60 requests per 60 seconds with a 60-second
@@ -278,10 +212,8 @@ per-server Durable Object retains atomic current/previous-key replay-alias
 claims and structural work limits but no ordinary daily session quota. Canary
 and alert on all three layers independently.
 
-After the dedicated rule passes its release gate, remove rendezvous from the
-compatibility rule in the same coordinated consumer cutover. Keep
-`workers.dev` and preview URLs disabled on both deployments so neither edge
-policy has a bypass.
+Keep `workers.dev` and preview URLs disabled on every deployment so edge policy
+has no bypass.
 
 ## Dedicated publisher hostname
 
@@ -312,8 +244,8 @@ http.host eq "publish.meta.atrinik.org" and not (
 The HTTPS authority prefix is part of the allowlist, so plaintext is blocked
 before Worker invocation and is never redirected. The Worker remains the exact
 authority for the 64-hex server ID, path suffix, content headers, bounded body,
-certificate identity, signature, sequence, and nonce. Do not copy a directory,
-compatibility, rendezvous, or health route onto this hostname.
+certificate identity, signature, sequence, and nonce. Do not add a directory,
+rendezvous, or health route to this hostname.
 
 ## Per-host staged HSTS
 

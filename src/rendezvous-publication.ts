@@ -26,8 +26,14 @@ export interface PublicationPersistenceResult {
 }
 
 const TOKEN_GENERATION = /^[0-9a-f]{64}$/;
-const COMPAT_AUTH_KEY_SENTINEL = "0".repeat(128);
 const EMPTY_GENERATION = "0".repeat(64);
+
+// Migration 0001 requires a 128-hex auth_key until #39 removes the inactive
+// column. Signed publication uses a deterministic certificate-bound schema
+// anchor rather than preserving the retired shared-key sentinel.
+function signedOwnerSchemaAnchor(serverId: string): string {
+  return serverId.repeat(2);
+}
 
 export async function readPublishedGeneration(
   db: D1Database,
@@ -79,9 +85,7 @@ export async function persistRendezvousPublication(
   db: D1Database,
   publication: InternalRendezvousPublication,
 ): Promise<PublicationPersistenceResult> {
-  return publication.publisherAuthentication === "signed-certificate-v1"
-    ? persistSignedPublication(db, publication)
-    : persistCompatibilityPublication(db, publication);
+  return persistSignedPublication(db, publication);
 }
 
 async function persistSignedPublication(
@@ -91,9 +95,6 @@ async function persistSignedPublication(
   const sequence = publication.publisherSequence;
   const nonce = publication.publisherNonce;
   const nonceExpiresAt = publication.publisherNonceExpiresAt;
-  if (sequence === null || nonce === null || nonceExpiresAt === null) {
-    throw new Error("Signed publication omitted replay metadata");
-  }
 
   const persisted = await db.batch([
     db.prepare(
@@ -172,7 +173,7 @@ async function persistSignedPublication(
                  excluded.authentication_kind`,
     ).bind(
       publication.serverId,
-      COMPAT_AUTH_KEY_SENTINEL,
+      signedOwnerSchemaAnchor(publication.serverId),
       publication.now,
       publication.now,
       publication.now,
@@ -183,15 +184,14 @@ async function persistSignedPublication(
       publication.directoryProfile,
       publication.directoryProfile,
     ),
-    presenceMutation(db, publication, true),
+    presenceMutation(db, publication),
     visibleRevisionStatement(db, publication),
     visibleOutboxStatement(db, publication),
     directoryEntryMutation(db, publication),
-    legacyShadowMutation(db, publication),
     publicationAssertion(db, publication),
   ]);
 
-  requireBatchResults(persisted, 9);
+  requireBatchResults(persisted, 8);
   const accepted = changes(persisted, 0) === 1;
   if (!accepted) {
     if (persisted.some((_, index) => index > 0 && changes(persisted, index) !== 0)) {
@@ -207,47 +207,11 @@ async function persistSignedPublication(
   ) {
     throw new Error("Signed publication did not persist required state");
   }
-  if (changes(persisted, 8) !== 0) {
+  if (changes(persisted, 7) !== 0) {
     throw new Error("Signed publication assertion produced durable state");
   }
-  requireDirectoryMutationResults(persisted, publication, 6, 3, 7);
+  requireDirectoryMutationResults(persisted, publication, 6, 3);
   return publicationResult(persisted, 4, 5);
-}
-
-async function persistCompatibilityPublication(
-  db: D1Database,
-  publication: InternalRendezvousPublication,
-): Promise<PublicationPersistenceResult> {
-  const persisted = await db.batch([
-    db.prepare(
-      `UPDATE server_owners
-          SET current_ip = '',
-              ip_changed_at = CASE WHEN current_ip <> '' THEN ? ELSE ip_changed_at END,
-              updated_at = ?,
-              rendezvous_generation = ?
-        WHERE server_id = ? AND authentication_kind = 'compat-key-v1'`,
-    ).bind(
-      publication.now,
-      publication.now,
-      publication.generation,
-      publication.serverId,
-    ),
-    presenceMutation(db, publication, false),
-    visibleRevisionStatement(db, publication),
-    visibleOutboxStatement(db, publication),
-    directoryEntryMutation(db, publication),
-    legacyShadowMutation(db, publication),
-    publicationAssertion(db, publication),
-  ]);
-  requireBatchResults(persisted, 7);
-  if (changes(persisted, 0) !== 1) {
-    throw new Error("Compatibility publication did not persist owner state");
-  }
-  if (changes(persisted, 6) !== 0) {
-    throw new Error("Compatibility publication assertion produced durable state");
-  }
-  requireDirectoryMutationResults(persisted, publication, 4, 1, 5);
-  return publicationResult(persisted, 2, 3);
 }
 
 function publicationResult(
@@ -272,18 +236,14 @@ function requireDirectoryMutationResults(
   publication: InternalRendezvousPublication,
   entryIndex: number,
   presenceIndex: number,
-  legacyIndex: number,
 ): void {
-  for (const index of [entryIndex, presenceIndex, legacyIndex]) {
+  for (const index of [entryIndex, presenceIndex]) {
     const value = changes(results, index);
     const required = index === presenceIndex ||
-      (publication.isPublic &&
-        (index !== legacyIndex || publication.directoryProfile === "classic-v1"));
+      publication.isPublic;
     if (
       value > 1 ||
-      (required && value !== 1) ||
-      (index === legacyIndex &&
-        publication.directoryProfile === "game-v1" && value !== 0)
+      (required && value !== 1)
     ) {
       throw new Error("Publication did not persist its directory state");
     }
@@ -451,7 +411,6 @@ function directoryEntryMutation(
 function presenceMutation(
   db: D1Database,
   publication: InternalRendezvousPublication,
-  signed: boolean,
 ): D1PreparedStatement {
   return db.prepare(
     `INSERT INTO server_presence
@@ -464,9 +423,9 @@ function presenceMutation(
               THEN revisions.revision + 1
               ELSE NULL
             END
-       FROM directory_revisions AS revisions
+      FROM directory_revisions AS revisions
       WHERE revisions.profile = ?
-        AND ${signed ? signedCommitGuard() : compatOwnerGuard()}
+        AND ${signedCommitGuard()}
      ON CONFLICT(profile, server_id) DO UPDATE SET
        last_seen = excluded.last_seen,
        rendezvous_token_hash = excluded.rendezvous_token_hash,
@@ -483,67 +442,7 @@ function presenceMutation(
     publication.commitToken,
     ...visiblePredicateBindings(publication),
     publication.directoryProfile,
-    ...(signed
-      ? signedGuardBindings(publication)
-      : compatGuardBindings(publication)),
-  );
-}
-
-function legacyShadowMutation(
-  db: D1Database,
-  publication: InternalRendezvousPublication,
-): D1PreparedStatement {
-  if (publication.directoryProfile !== "classic-v1") {
-    return db.prepare("DELETE FROM servers WHERE 0");
-  }
-  if (!publication.isPublic) {
-    return db.prepare(
-      `DELETE FROM servers
-        WHERE server_id = ?
-          ${publicationPresenceGuard("AND")}`,
-    ).bind(
-      publication.serverId,
-      ...publicationPresenceBindings(publication),
-    );
-  }
-  return db.prepare(
-    `INSERT INTO servers
-       (server_id, source_ip, name, players_count, version, text_comment,
-        last_seen, is_public, quic_host, quic_port, quic_cert_sha256,
-        password_required, rendezvous_token_hash, rendezvous_generation,
-        directory_fingerprint)
-     SELECT ?, '', ?, ?, ?, ?, ?, 1, ?, ?, ?, ?, ?, ?, ?
-      WHERE ${publicationPresenceGuard()}
-     ON CONFLICT(server_id) DO UPDATE SET
-       source_ip = '',
-       name = excluded.name,
-       players_count = excluded.players_count,
-       version = excluded.version,
-       text_comment = excluded.text_comment,
-       last_seen = excluded.last_seen,
-       is_public = 1,
-       quic_host = excluded.quic_host,
-       quic_port = excluded.quic_port,
-       quic_cert_sha256 = excluded.quic_cert_sha256,
-       password_required = excluded.password_required,
-       rendezvous_token_hash = excluded.rendezvous_token_hash,
-       rendezvous_generation = excluded.rendezvous_generation,
-       directory_fingerprint = excluded.directory_fingerprint`,
-  ).bind(
-    publication.serverId,
-    publication.name,
-    publication.playersCount,
-    publication.version,
-    publication.textComment,
-    publication.now,
-    publication.quicHost,
-    publication.quicPort,
-    publication.quicCertSha256,
-    publication.passwordRequired ? 1 : 0,
-    publication.tokenHash,
-    publication.generation,
-    publication.directoryFingerprint,
-    ...publicationPresenceBindings(publication),
+    ...signedGuardBindings(publication),
   );
 }
 
@@ -562,19 +461,6 @@ function signedGuardBindings(
     publication.directoryProfile,
     publication.commitToken,
   ];
-}
-
-function compatOwnerGuard(prefix = ""): string {
-  return `${prefix} EXISTS (
-    SELECT 1 FROM server_owners
-     WHERE server_id = ? AND authentication_kind = 'compat-key-v1'
-  )`;
-}
-
-function compatGuardBindings(
-  publication: InternalRendezvousPublication,
-): readonly [string] {
-  return [publication.serverId];
 }
 
 function publicationPresenceGuard(prefix = ""): string {
@@ -640,18 +526,14 @@ function publicationAssertion(
   db: D1Database,
   publication: InternalRendezvousPublication,
 ): D1PreparedStatement {
-  const accepted = publication.publisherAuthentication ===
-      "signed-certificate-v1"
-    ? {
-        sql: signedCommitGuard(),
-        bindings: signedGuardBindings(publication),
-      }
-    : { sql: "1 = 1", bindings: [] };
+  const accepted = {
+    sql: signedCommitGuard(),
+    bindings: signedGuardBindings(publication),
+  };
   const predicates = [
     publicationAuthenticationPredicate(publication),
     publicationPresencePredicate(publication),
     publicationEntryPredicate(publication),
-    publicationLegacyPredicate(publication),
   ];
   return db.prepare(
     `INSERT INTO directory_transaction_assertions (assertion)
@@ -667,45 +549,28 @@ function publicationAssertion(
 function publicationAuthenticationPredicate(
   publication: InternalRendezvousPublication,
 ): SqlPredicate {
-  if (publication.publisherAuthentication === "signed-certificate-v1") {
-    return {
-      sql: `EXISTS (
-        SELECT 1 FROM server_owners AS owners
-         WHERE owners.server_id = ?
-           AND owners.authentication_kind = 'signed-certificate-v1'
-           AND owners.current_ip = ''
-           AND owners.auth_key = ?
-           AND (? <> 'classic-v1' OR owners.rendezvous_generation = ?)
-      ) AND EXISTS (
-        SELECT 1 FROM publisher_nonces AS nonces
-         WHERE nonces.server_id = ? AND nonces.profile = ?
-           AND nonces.nonce = ? AND nonces.expires_at = ?
-      )`,
-      bindings: [
-        publication.serverId,
-        COMPAT_AUTH_KEY_SENTINEL,
-        publication.directoryProfile,
-        publication.generation,
-        publication.serverId,
-        publication.directoryProfile,
-        publication.publisherNonce,
-        publication.publisherNonceExpiresAt,
-      ],
-    };
-  }
   return {
     sql: `EXISTS (
       SELECT 1 FROM server_owners AS owners
        WHERE owners.server_id = ?
-         AND owners.authentication_kind = 'compat-key-v1'
+         AND owners.authentication_kind = 'signed-certificate-v1'
          AND owners.current_ip = ''
-         AND owners.updated_at = ?
-         AND owners.rendezvous_generation = ?
+         AND owners.auth_key = ?
+         AND (? <> 'classic-v1' OR owners.rendezvous_generation = ?)
+    ) AND EXISTS (
+      SELECT 1 FROM publisher_nonces AS nonces
+       WHERE nonces.server_id = ? AND nonces.profile = ?
+         AND nonces.nonce = ? AND nonces.expires_at = ?
     )`,
     bindings: [
       publication.serverId,
-      publication.now,
+      signedOwnerSchemaAnchor(publication.serverId),
+      publication.directoryProfile,
       publication.generation,
+      publication.serverId,
+      publication.directoryProfile,
+      publication.publisherNonce,
+      publication.publisherNonceExpiresAt,
     ],
   };
 }
@@ -874,50 +739,6 @@ function gamePublicationJsonByteLength(
   });
 }
 
-function publicationLegacyPredicate(
-  publication: InternalRendezvousPublication,
-): SqlPredicate {
-  if (publication.directoryProfile === "game-v1") {
-    return { sql: "1 = 1", bindings: [] };
-  }
-  if (!publication.isPublic) {
-    return {
-      sql: "NOT EXISTS (SELECT 1 FROM servers WHERE server_id = ?)",
-      bindings: [publication.serverId],
-    };
-  }
-  return {
-    sql: `EXISTS (
-      SELECT 1 FROM servers AS legacy
-       WHERE legacy.server_id = ? AND legacy.source_ip = ''
-         AND legacy.name = ? AND legacy.players_count = ?
-         AND legacy.version = ? AND legacy.text_comment = ?
-         AND legacy.last_seen = ? AND legacy.is_public = 1
-         AND legacy.quic_host = ? AND legacy.quic_port = ?
-         AND legacy.quic_cert_sha256 = ?
-         AND legacy.password_required = ?
-         AND legacy.rendezvous_token_hash = ?
-         AND legacy.rendezvous_generation = ?
-         AND legacy.directory_fingerprint = ?
-    )`,
-    bindings: [
-      publication.serverId,
-      publication.name,
-      publication.playersCount,
-      publication.version,
-      publication.textComment,
-      publication.now,
-      publication.quicHost,
-      publication.quicPort,
-      publication.quicCertSha256,
-      publication.passwordRequired ? 1 : 0,
-      publication.tokenHash,
-      publication.generation,
-      publication.directoryFingerprint,
-    ],
-  };
-}
-
 function requireBatchResults(
   results: readonly D1Result<unknown>[],
   expected: number,
@@ -939,8 +760,7 @@ export async function rendezvousPublicationMatches(
   db: D1Database,
   publication: InternalRendezvousPublication,
 ): Promise<boolean> {
-  if (publication.publisherAuthentication === "signed-certificate-v1") {
-    const replay = await db.prepare(
+  const replay = await db.prepare(
       `SELECT COUNT(*) AS matches
          FROM publisher_replay AS replay
          JOIN server_owners AS owners USING (server_id)
@@ -950,6 +770,7 @@ export async function rendezvousPublicationMatches(
           AND replay.commit_token = ?
           AND owners.authentication_kind = 'signed-certificate-v1'
           AND owners.current_ip = ''
+          AND owners.auth_key = ?
           AND (? <> 'classic-v1' OR owners.rendezvous_generation = ?)
           AND EXISTS (
             SELECT 1 FROM publisher_nonces AS nonces
@@ -963,30 +784,12 @@ export async function rendezvousPublicationMatches(
       publication.publisherSequence,
       publication.publisherNonce,
       publication.commitToken,
+      signedOwnerSchemaAnchor(publication.serverId),
       publication.directoryProfile,
       publication.generation,
     ).first<PublicationMatchRecord>();
-    if (replay?.matches !== 1) {
-      return false;
-    }
-  } else {
-    const owner = await db.prepare(
-      `SELECT COUNT(*) AS matches
-         FROM server_owners
-        WHERE server_id = ?
-          AND authentication_kind = 'compat-key-v1'
-          AND current_ip = ''
-          AND updated_at = ?
-          AND rendezvous_generation = ?`,
-    ).bind(
-      publication.serverId,
-      publication.now,
-      publication.generation,
-    )
-      .first<PublicationMatchRecord>();
-    if (owner?.matches !== 1) {
-      return false;
-    }
+  if (replay?.matches !== 1) {
+    return false;
   }
 
   const committedPresence = publicationPresencePredicate(publication);
@@ -997,10 +800,7 @@ export async function rendezvousPublicationMatches(
     return false;
   }
 
-  const exactState = [
-    publicationEntryPredicate(publication),
-    publicationLegacyPredicate(publication),
-  ];
+  const exactState = [publicationEntryPredicate(publication)];
   const record = await db.prepare(
     `SELECT COUNT(*) AS matches
       WHERE ${exactState.map((predicate) => predicate.sql).join(" AND ")}`,

@@ -1,13 +1,10 @@
 import { HttpError } from "./http";
-import { isCanonicalHostname } from "./hostname";
 
 export const PUBLISH_AUTHORITY = "publish.meta.atrinik.org";
 export const RENDEZVOUS_AUTHORITY = "rendezvous.meta.atrinik.org";
-export const COMPATIBILITY_AUTHORITY = "meta.atrinik.org";
 export const CLASSIC_RENDEZVOUS_INVITE_SUBPROTOCOL =
   "atrinik-classic-rendezvous-invite-v1";
 export const PUBLISH_MAX_BODY_BYTES = 4_096;
-export const COMPATIBILITY_UPDATE_MAX_BODY_BYTES = 100_000;
 
 const SERVER_ID = /^[0-9a-f]{64}$/;
 const MAX_REQUEST_TARGET_BYTES = 2_048;
@@ -60,32 +57,6 @@ export type CanonicalDynamicRoute =
       readonly role: RendezvousRole;
       readonly subprotocol: ClassicRendezvousSubprotocol | null;
       readonly authority: string;
-    };
-
-export type CompatibilityRoute =
-  | {
-      readonly kind: "compatibility-status";
-      readonly generation: "classic";
-    }
-  | {
-      readonly kind: "compatibility-directory";
-      readonly generation: "classic";
-    }
-  | {
-      readonly kind: "compatibility-otp";
-      readonly generation: "classic";
-    }
-  | {
-      readonly kind: "compatibility-update";
-      readonly generation: "classic";
-      readonly maximumBodyBytes: typeof COMPATIBILITY_UPDATE_MAX_BODY_BYTES;
-    }
-  | {
-      readonly kind: "compatibility-rendezvous";
-      readonly generation: "classic";
-      readonly serverId: string;
-      readonly role: RendezvousRole;
-      readonly subprotocol: ClassicRendezvousSubprotocol | null;
     };
 
 interface ParsedTarget {
@@ -153,64 +124,6 @@ export function classifyCanonicalRendezvousRoute(
   return classifyRendezvous(input, target, authority);
 }
 
-/**
- * Models the currently deployed classic routes without making them aliases of
- * the canonical services. Callers must opt into compatibility dispatch and can
- * remove it independently at the end of the cutover window.
- */
-export function classifyCompatibilityRoute(
-  input: RouteInput,
-  expectedAuthority = COMPATIBILITY_AUTHORITY,
-): CompatibilityRoute {
-  rejectAmbiguousCriticalHeaders(input.headers);
-  const authority = validateCompatibilityAuthority(expectedAuthority);
-  const target = parseTarget(input.target);
-  if (target.authority !== authority) {
-    throw new HttpError("misdirected_request");
-  }
-  enforceHostHeader(input.headers, authority);
-
-  switch (target.path) {
-    case "/":
-      enforceMethod(input.method, "GET");
-      enforceNoQuery(target.query);
-      enforceNoBody(input);
-      enforceNoUpgrade(input.headers);
-      return { kind: "compatibility-status", generation: "classic" };
-    case "/v2/servers":
-      enforceMethod(input.method, "GET");
-      enforceNoQuery(target.query);
-      enforceNoBody(input);
-      enforceNoUpgrade(input.headers);
-      return { kind: "compatibility-directory", generation: "classic" };
-    case "/index.wsgi/otp":
-      enforceMethod(input.method, "GET");
-      enforceNoQuery(target.query);
-      enforceNoBody(input);
-      enforceNoUpgrade(input.headers);
-      return { kind: "compatibility-otp", generation: "classic" };
-    case "/index.wsgi/update":
-      enforceMethod(input.method, "POST");
-      enforceNoQuery(target.query);
-      enforceCompatibilityUpdateBody(input);
-      enforceNoUpgrade(input.headers);
-      return {
-        kind: "compatibility-update",
-        generation: "classic",
-        maximumBodyBytes: COMPATIBILITY_UPDATE_MAX_BODY_BYTES,
-      };
-    default:
-      return classifyCompatibilityRendezvous(input, target);
-  }
-}
-
-function validateCompatibilityAuthority(value: string): string {
-  if (!isCanonicalHostname(value)) {
-    throw new HttpError("misdirected_request");
-  }
-  return value;
-}
-
 function classifyPublisher(
   input: RouteInput,
   target: ParsedTarget,
@@ -259,30 +172,6 @@ function classifyRendezvous(
     role,
     subprotocol,
     authority,
-  };
-}
-
-function classifyCompatibilityRendezvous(
-  input: RouteInput,
-  target: ParsedTarget,
-): CompatibilityRoute {
-  const match = /^\/v2\/rendezvous\/([^/]+)$/.exec(target.path);
-  if (match === null) {
-    throw new HttpError("not_found");
-  }
-  const serverId = validateServerId(match[1]);
-
-  enforceMethod(input.method, "GET");
-  const role = parseRendezvousRole(target.query);
-  enforceNoBody(input);
-  enforceWebSocketUpgrade(input.headers);
-  const subprotocol = parseRendezvousSubprotocol(input.headers, true);
-  return {
-    kind: "compatibility-rendezvous",
-    generation: "classic",
-    serverId,
-    role,
-    subprotocol,
   };
 }
 
@@ -409,31 +298,6 @@ function enforcePublisherBody(input: RouteInput): void {
     throw new HttpError("body_required");
   }
   if (length !== null && length > PUBLISH_MAX_BODY_BYTES) {
-    throw new HttpError("payload_too_large");
-  }
-}
-
-function enforceCompatibilityUpdateBody(input: RouteInput): void {
-  const contentType = input.headers.get("Content-Type") ?? "";
-  const isUrlEncoded = contentType === "application/x-www-form-urlencoded";
-  const isMultipart = /^multipart\/form-data; boundary=[0-9A-Za-z'()+_\-./:=?]{1,70}$/.test(
-    contentType,
-  );
-  if (!isUrlEncoded && !isMultipart) {
-    throw new HttpError("unsupported_media_type");
-  }
-  if (
-    input.headers.has("Content-Encoding") ||
-    input.headers.has("Transfer-Encoding")
-  ) {
-    throw new HttpError("unsupported_media_type");
-  }
-
-  const length = declaredContentLength(input.headers);
-  if (!input.hasBody || length === 0) {
-    throw new HttpError("body_required");
-  }
-  if (length !== null && length > COMPATIBILITY_UPDATE_MAX_BODY_BYTES) {
     throw new HttpError("payload_too_large");
   }
 }

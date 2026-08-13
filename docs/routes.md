@@ -3,26 +3,13 @@
 Route versions describe HTTP deployment contracts. They are independent of
 the version carried inside a directory representation or game protocol.
 
-## Compatibility service
+## Retired surface
 
-During the coordinated classic cutover, the compatibility Worker accepts only
-the configured `COMPAT_HOSTNAME` authority (currently `meta.atrinik.org`) and
-these exact requests:
-
-| Method | Path | Query | Purpose |
-| --- | --- | --- | --- |
-| `GET` | `/` | none | temporary public health response |
-| `GET` | `/index.wsgi/otp` | none | temporary classic publish challenge |
-| `POST` | `/index.wsgi/update` | none | temporary classic publish update |
-| `GET` | `/v2/servers` | none | temporary dynamic classic directory |
-| `GET` | `/v2/rendezvous/{server-id}` | exactly `role=client` or `role=server` | temporary classic rendezvous |
-
-Every compatibility route is independently circuit-breaker controlled and has
-a daily budget. The temporary status route uses the global ingress burst; the
-other routes also have narrower route-specific bursts. They are not aliases
-for the canonical service hosts and never redirect authenticated requests or
-WebSocket upgrades. After supported classic consumers move, these routes are
-removed before `meta.atrinik.org` becomes a static Game Protocol 1 origin.
+Classic v5.9.0 is the minimum supported release. The former CGI and public
+`/v2` API has no Worker handler, redirect, fallback, or supported rollback.
+Exact negative probes are blocked at the edge before invocation. The private
+Service Binding URL `https://rendezvous.internal/v2` is a separate versioned
+capability and is not public routing.
 
 ## Canonical services
 
@@ -36,16 +23,16 @@ publisher and rendezvous handlers are exposed:
 | `rendezvous.meta.atrinik.org` | `GET` WebSocket | `/v1/servers/{server-id}?role=client\|server` | no body or content headers; exactly one `role` query |
 | `rendezvous.meta.atrinik.org` | `GET` WebSocket | `/v1/classic/servers/{server-id}?role=client\|server` | no body or content headers; exactly one `role` query |
 
-The checked-in service-boundary foundation does not attach those authorities.
-The publisher and rendezvous edge Workers start domainless and disabled. Each
+The checked-in Wrangler files deliberately declare no routes or Custom Domains
+and keep both dynamic circuits disabled; production attachment and enablement
+are separately reviewed Cloudflare state. Each
 edge rejects every other host/method/path/query/body shape, derives only the
 route-specific pseudonymous admission aliases, strips raw request-source and
 browser headers, and calls one named core Worker entrypoint. The core parses the
 same canonical contract again before authentication, D1, or Durable Object
 work. The Service Binding is private routing and is not an alias, redirect, or
-additional public URL. Compatibility routes remain on the core until the
-coordinated consumer cutover; static directory authorities never pass through
-any Worker.
+additional public URL. Static directory authorities never pass through any
+Worker, and the state-owning core has no default `fetch` handler.
 
 `server-id` is exactly 64 lowercase hexadecimal characters. The publisher
 payload and signature fields are owned by the signed-publishing contract; the
@@ -80,9 +67,7 @@ exactly once.
 Successful responses contain the new server-role rendezvous token and use
 `Cache-Control: no-store`. Replay responses are also `no-store`. Clients
 must not follow redirects for a signed publish because authority and path are
-covered by the signature. The compatibility OTP/update routes remain
-independent during the rollback window and cannot authenticate an identity
-after its first accepted signed publication upgrades that owner.
+covered by the signature. There is no alternate publisher path.
 
 The two directory authorities are static origins and are never accepted by a
 dynamic Worker:
@@ -91,17 +76,18 @@ dynamic Worker:
   Game Protocol 1.
 - `classic.meta.atrinik.org`: the same four paths for the classic generation.
 
-The current implementation builds those fixed aliases in isolated R2 buckets,
-but this foundation release does not attach either authority. Game JSON/XML
+The current implementation builds those fixed aliases in isolated R2 buckets.
+Classic production is attached only through its reviewed static custom domain;
+Game remains unattached until its independent rollout. Game JSON/XML
 follow the protocol-owned `atrinik-directory-v1` version 2 fixtures, keep body
 SHA-256 independent from the public origin validator, and accept non-empty
 state only through the signed Game publisher. Classic JSON/XML follow
-[classic directory protocol 4](classic-directory-v4.md). The later service
-split canary must prove exact GET/HEAD/path/query handling, R2's opaque strong
+[classic directory protocol 4](classic-directory-v4.md). Every new or changed
+static attachment must prove exact GET/HEAD/path/query handling, R2's opaque strong
 ETag, alias-upload `Last-Modified`, CSP/nosniff/CORS, plaintext same-path
 redirect rules, direct R2 HTTPS root `404`, cache expiry, public-to-private and
 endpoint-removal bounds, `r2.dev` disablement,
-and zero Worker invocations before DNS cutover.
+and zero Worker invocations before attachment or rule changes are accepted.
 The internal `/manifest.json` alias is builder coordination and is not a public
 route; the static-host edge allowlist must deny it and every other path.
 
@@ -114,9 +100,8 @@ atomic. Game Protocol 1 explicitly permits bounded monotonic cross-format
 convergence; the service-split canary must measure that bound and prove
 interrupted convergence repairs before either authority is attached.
 
-Compatibility updates are always represented addresslessly: their numeric
-endpoint input is discarded, and the Worker never fills an address from the
-HTTPS request source. Signed publication can opt into a canonical DNS hostname
+The Worker never fills an address from the HTTPS request source. Signed
+publication can opt into a canonical DNS hostname
 and UDP port; only that explicit pair may produce `Address` and `Port`. A
 present endpoint is public even when `PasswordRequired` is true; the password
 remains an in-game authentication step and does not conceal routing metadata.

@@ -7,7 +7,7 @@ import {
 } from "cloudflare:test";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
-import worker, { handlePublisherCoordinatorRequest } from "../src/index";
+import { handlePublisherCoordinatorRequest } from "../src/index";
 import { gameDirectoryServerJsonByteLength } from "../src/directory-artifacts";
 import { publisherServiceRequest } from "../src/internal-service";
 import { sha256Hex } from "../src/protocol";
@@ -190,18 +190,6 @@ beforeEach(async () => {
 });
 
 describe("classic signed publisher", () => {
-  it("cannot bypass the public publisher edge through the core default handler", async () => {
-    const context = createExecutionContext();
-    const response = await worker.fetch(
-      publishRequest(initialVector()),
-      testEnvironment(),
-      context,
-    );
-    await waitOnExecutionContext(context);
-    expect(response.status).toBe(421);
-    expect(await storedPublication()).toBeNull();
-  });
-
   it.each([null, "legacy-unknown"])(
     "preserves a committed legacy Room success for change marker %s",
     async (marker) => {
@@ -403,7 +391,7 @@ describe("classic signed publisher", () => {
     const storedInitial = await storedPublication();
     expect(storedInitial).toMatchObject({
       authentication_kind: "signed-certificate-v1",
-      auth_key: "0".repeat(128),
+      auth_key: publisherFixture.server_id.repeat(2),
       last_nonce: publisherFixture.nonce,
       last_sequence: publisherFixture.sequence,
       rendezvous_token_hash: await sha256Hex(initialBody.rendezvousToken),
@@ -536,6 +524,27 @@ describe("Game Protocol 1 signed publisher", () => {
     expect(await env.DB.prepare(
       "SELECT COUNT(*) AS count FROM server_presence",
     ).first<number>("count")).toBe(0);
+  });
+
+  it("attributes a Game identity blacklist match to the Game publisher", async () => {
+    await env.DB.prepare(
+      "INSERT INTO server_blacklist (pattern, reason, created_at) VALUES (?, ?, ?)",
+    ).bind(
+      `${gamePublisherFixture.server_id.slice(0, 8)}*`,
+      "test game identity block",
+      1,
+    ).run();
+    const warning = vi.spyOn(console, "warn").mockImplementation(() => {});
+
+    const response = await callWorker(gamePublishRequest(), testEnvironment());
+
+    expect(response.status).toBe(403);
+    expect(warning).toHaveBeenCalledWith({
+      event: "blacklist_match",
+      route: "publish-game",
+      dimension: "server_identity",
+    });
+    warning.mockRestore();
   });
 
   it("commits the protocol fixture into isolated Game state and rejects replay", async () => {

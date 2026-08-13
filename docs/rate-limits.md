@@ -14,10 +14,10 @@ safety ceilings, not target traffic.
    [edge-policy.md](edge-policy.md).
 2. Worker request control combines fast route-specific Rate Limiting bindings
    with D1 state. Native bindings are permissive, per Cloudflare location, and
-   eventually consistent. D1 provides the exact UTC fixed-window compatibility
-   and authenticated-identity budgets plus the canonical client's rolling
-   source/server-pair cooldown. One atomic batch mirrors rotating pair aliases
-   without double charging or extending a live cooldown.
+   eventually consistent. D1 provides exact UTC fixed-window authenticated
+   identity budgets plus the canonical client's rolling source/server-pair
+   cooldown. One atomic batch mirrors rotating pair aliases without double
+   charging or extending a live cooldown.
 3. The SQLite-backed per-server Durable Object retains the exact 24-hour
    replay authority. It atomically prunes expired rows and reserves a replay
    row before returning `101`. On the first
@@ -32,30 +32,23 @@ local burst, D1 applies exact pair backoff across locations, and the Durable
 Object preserves ticket replay isolation and finite session work. Its replay
 ledger is not an ordinary player admission quota.
 
-The compatibility/core Worker checks the 10/minute global binding before the
-10/minute directory, OTP, and update bindings, so an all-one-route burst may
-surface the global reason first. The separate bindings are intentional
-defense-in-depth. The domainless canonical publisher and rendezvous edge
-Workers now have independent namespace IDs and only the native bindings needed
-by their own routes; the core retains the exact authenticated and D1 budgets.
+The domainless canonical publisher and rendezvous edge Workers have independent
+namespace IDs and only the native bindings needed by their own routes; the core
+retains the exact authenticated and D1 budgets.
 No namespace ID is reused across the three Workers because native counters are
-shared by ID. Public routing remains disabled until the WAF/canary cutover.
+shared by ID. Checked-in dynamic circuits remain disabled and domainless;
+production routing is accepted only through the separately reviewed WAF,
+attachment, configuration-readback, and canary procedure.
 
 ## Initial ceilings
 
 | Actor and route | Native burst | Durable budget |
 | --- | ---: | ---: |
-| Any dynamic ingress source tag | 10/minute | WAF/metrics only |
-| Temporary public status source | covered by global burst | 100/UTC day |
-| Temporary dynamic directory source | 10/minute | 100/UTC day |
-| Temporary OTP source | 10/minute | 48/UTC day |
-| Temporary update source | 10/minute | 48/UTC day |
-| Authenticated classic/canonical publisher identity | 2/minute | 48/UTC day |
+| Publisher ingress source | 10/minute | none |
+| Authenticated Classic/Game publisher identity | 2/minute | 48/UTC day |
 | Canonical client rendezvous source | 60/minute; not also charged to global | none |
 | Canonical client source/server pair after live-target lookup | covered by client burst | 20 eligible attempts/rolling 60 seconds, then 30..900-second cooldown |
-| Compatibility client rendezvous source | 5/minute plus global | 50/UTC day |
-| Compatibility client source/server pair | covered by client burst | 10/UTC day |
-| Server-role rendezvous source before authentication | covered by global burst | 50/UTC day |
+| Server-role rendezvous source before authentication | 10/minute | none |
 | Authenticated server rendezvous identity | 3/minute | 50/UTC day |
 | Accepted client sessions per server | n/a | no ordinary daily quota; replay state remains bounded for 24 hours |
 
@@ -65,16 +58,13 @@ D1 directory budget. Cache/probe abuse is handled at the edge.
 Anonymous dimensions use rotating source tags. Authenticated server limits are
 applied only after authentication; a path parameter is not an authenticated
 identity. Each route has its own counter scope so one activity cannot exhaust
-another. Initial classic registration is protected by the source budget; the
-server-identity budget starts after an existing owner proves its key and
-before it consumes the one-time token. A rejected identity budget therefore
-cannot burn authentication state or mutate a listing. The signed publisher
-will authenticate every publish, including the first.
+another. The signed publisher authenticates every publish, including the first,
+before charging the server-identity budget. A rejected identity budget cannot
+consume replay state or mutate a listing.
 
-The global in-Worker limiter runs only after a request matches a valid dynamic
-route. Unknown-host/path probes still invoke the compatibility Worker before a
-bounded rejection, so the pre-Worker WAF/raw-URI policy remains mandatory for
-invocation-cost control.
+Each native limiter runs only after a request matches a valid canonical route.
+The pre-Worker WAF/raw-URI policy remains mandatory for invocation-cost control
+of retired and malformed targets.
 
 ## Canonical rendezvous cooldown and structural ceilings
 
@@ -171,18 +161,17 @@ window duration clamped to 1..86,400 seconds. The canonical pair cooldown uses
 remaining 1..900-second delay. Rejected cooldown retries do not consume a
 burst slot, extend `blocked_until`, or increase the penalty.
 
-Reason values are a closed route/dimension vocabulary: `global_burst`, the
-`compat_status_daily`, `compat_directory_*`, `compat_otp_*`, and
-`compat_update_*` burst/daily
-variants, `publish_burst|daily`, and the compatibility rendezvous client/server
-burst/daily variants plus `rendezvous_client_pair_cooldown`. The `Retry-After` header
-and `retry_after_seconds` body member are generated from one bounded value.
+Reason values are a closed route/dimension vocabulary: `global_burst`,
+`publish_burst|daily`, `rendezvous_client_burst`,
+`rendezvous_client_pair_cooldown`, and
+`rendezvous_server_burst|daily`. The `Retry-After` header and
+`retry_after_seconds` body member are generated from one bounded value.
 
 A request-control binding/D1 failure or malformed/over-policy configuration
 fails closed with `503 request_control_unavailable`, `Cache-Control: no-store`,
 and `Retry-After: 60`. It is never treated as admission. Configuration may
 lower a canary ceiling but cannot raise the reviewed maxima; the Worker also
-strictly bounds OTP/listing/retention lifetimes and uses the classifier's fixed
+strictly bounds listing/retention lifetimes and uses the classifier's fixed
 body-size contract rather than a second environment override.
 
 The coordinator requires the five `RENDEZVOUS_CLIENT_PAIR_*` burst, window,
@@ -196,12 +185,6 @@ The
 structural constants rather than runtime overrides.
 
 ## Circuit breakers
-
-Compatibility route flags can disable status, directory, OTP, update, or
-rendezvous without a code change. Only the exact value `enabled` opens a route; `disabled`,
-missing, differently cased, padded, or malformed values fail closed. A disabled
-route returns a stable non-cacheable `503` and bounded `Retry-After`; it never
-falls back to another authentication or routing path.
 
 The publisher and rendezvous edges and their core coordinators each require the
 corresponding breaker to be exactly `enabled`; both checked-in edge breakers and
@@ -252,9 +235,9 @@ stopped; a disjoint or prematurely retired pair loses that exact comparison and
 must fail deployment closed.
 
 Rotation temporarily doubles anonymous counter rows/writes. The hourly task
-round-robins servers, OTPs, legacy counters, and request budgets through at most
-eight indexed batches of 1,000 rows per state class (8,000/class/run and no more
-than 36 D1 statements including backlog probes). If expired rows remain, the
+round-robins canonical request budgets, rendezvous pair attempts/cooldowns, and
+publisher nonces through at most eight indexed batches of 1,000 rows per state
+class (8,000/class/run and no more than 32 deletes plus four probes). If expired rows remain, the
 scheduled invocation fails so the bounded `unexpected_error` diagnostic and
 platform error alerts expose the backlog. Operators should inspect only
 aggregate age/count queries—never actor keys—to diagnose it.

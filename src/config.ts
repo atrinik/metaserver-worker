@@ -15,20 +15,10 @@ export const RENDEZVOUS_COOLDOWN_POLICY_MAXIMUMS = Object.freeze({
   rendezvousClientPairResetSeconds: 1_800,
 } as const);
 
-export const REQUEST_CONTROL_POLICY_MAXIMUMS = Object.freeze({
-  otpTtlSeconds: 300,
+export const CANONICAL_POLICY_MAXIMUMS = Object.freeze({
   listingTtlSeconds: 86_400,
-  staleDataRetentionSeconds: 86_400,
-  compatibilityStatusDaily: 100,
-  compatibilityDirectoryDaily: 100,
-  compatibilityOtpDaily: 48,
-  compatibilityUpdateSourceDaily: 48,
-  compatibilityUpdateServerDaily: 48,
   publishServerDaily: 48,
-  compatibilityRendezvousClientSourceDaily: 50,
-  compatibilityRendezvousClientPairDaily: 10,
-  compatibilityRendezvousServerSourceDaily: 50,
-  compatibilityRendezvousServerDaily: 50,
+  rendezvousServerDaily: 50,
 } as const);
 
 export const DIRECTORY_ARTIFACT_POLICY_MAXIMUMS = Object.freeze({
@@ -87,6 +77,14 @@ export interface PublisherCoordinatorConfiguration {
   readonly routeDisabledRetrySeconds: number;
 }
 
+export interface ScheduledMaintenanceConfigurationInput {
+  readonly LISTING_TTL_SECONDS?: string;
+}
+
+export interface ScheduledMaintenanceConfiguration {
+  readonly listingTtlSeconds: number;
+}
+
 export interface RendezvousCoordinatorConfigurationInput {
   readonly RENDEZVOUS_HOSTNAME?: string;
   readonly LISTING_TTL_SECONDS?: string;
@@ -96,8 +94,7 @@ export interface RendezvousCoordinatorConfigurationInput {
   readonly RENDEZVOUS_CLIENT_PAIR_INITIAL_COOLDOWN_SECONDS?: string;
   readonly RENDEZVOUS_CLIENT_PAIR_MAXIMUM_COOLDOWN_SECONDS?: string;
   readonly RENDEZVOUS_CLIENT_PAIR_RESET_SECONDS?: string;
-  readonly COMPAT_RENDEZVOUS_SERVER_SOURCE_DAILY_LIMIT?: string;
-  readonly COMPAT_RENDEZVOUS_SERVER_DAILY_LIMIT?: string;
+  readonly RENDEZVOUS_SERVER_DAILY_LIMIT?: string;
 }
 
 export interface RendezvousCoordinatorConfiguration {
@@ -109,8 +106,7 @@ export interface RendezvousCoordinatorConfiguration {
   readonly rendezvousClientPairInitialCooldownSeconds: number;
   readonly rendezvousClientPairMaximumCooldownSeconds: number;
   readonly rendezvousClientPairResetSeconds: number;
-  readonly compatibilityRendezvousServerSourceDaily: number;
-  readonly compatibilityRendezvousServerDaily: number;
+  readonly rendezvousServerDaily: number;
 }
 
 export interface RendezvousPolicyConfigurationInput {
@@ -121,42 +117,6 @@ export interface RendezvousPolicyConfigurationInput {
 export interface RendezvousPolicyConfiguration {
   readonly rendezvousActiveClientLimit: number;
   readonly rendezvousClientSessionSeconds: number;
-}
-
-export interface RequestControlConfigurationInput {
-  readonly COMPAT_HOSTNAME?: string;
-  readonly OTP_TTL_SECONDS?: string;
-  readonly LISTING_TTL_SECONDS?: string;
-  readonly STALE_DATA_RETENTION_SECONDS?: string;
-  readonly ROUTE_DISABLED_RETRY_SECONDS?: string;
-  readonly COMPAT_STATUS_DAILY_LIMIT?: string;
-  readonly COMPAT_DIRECTORY_DAILY_LIMIT?: string;
-  readonly COMPAT_OTP_DAILY_LIMIT?: string;
-  readonly COMPAT_UPDATE_SOURCE_DAILY_LIMIT?: string;
-  readonly COMPAT_UPDATE_SERVER_DAILY_LIMIT?: string;
-  readonly PUBLISH_SERVER_DAILY_LIMIT?: string;
-  readonly COMPAT_RENDEZVOUS_CLIENT_SOURCE_DAILY_LIMIT?: string;
-  readonly COMPAT_RENDEZVOUS_CLIENT_PAIR_DAILY_LIMIT?: string;
-  readonly COMPAT_RENDEZVOUS_SERVER_SOURCE_DAILY_LIMIT?: string;
-  readonly COMPAT_RENDEZVOUS_SERVER_DAILY_LIMIT?: string;
-}
-
-export interface RequestControlConfiguration {
-  readonly compatibilityHostname: string;
-  readonly otpTtlSeconds: number;
-  readonly listingTtlSeconds: number;
-  readonly staleDataRetentionSeconds: number;
-  readonly routeDisabledRetrySeconds: number;
-  readonly compatibilityStatusDaily: number;
-  readonly compatibilityDirectoryDaily: number;
-  readonly compatibilityOtpDaily: number;
-  readonly compatibilityUpdateSourceDaily: number;
-  readonly compatibilityUpdateServerDaily: number;
-  readonly publishServerDaily: number;
-  readonly compatibilityRendezvousClientSourceDaily: number;
-  readonly compatibilityRendezvousClientPairDaily: number;
-  readonly compatibilityRendezvousServerSourceDaily: number;
-  readonly compatibilityRendezvousServerDaily: number;
 }
 
 export class RequestControlConfigurationError extends Error {
@@ -216,7 +176,7 @@ export function publisherCoordinatorConfiguration(
       input.PUBLISH_SERVER_DAILY_LIMIT,
       "PUBLISH_SERVER_DAILY_LIMIT",
       1,
-      REQUEST_CONTROL_POLICY_MAXIMUMS.publishServerDaily,
+      CANONICAL_POLICY_MAXIMUMS.publishServerDaily,
     ),
     routeDisabledRetrySeconds: strictInteger(
       input.ROUTE_DISABLED_RETRY_SECONDS,
@@ -277,18 +237,21 @@ export function rendezvousCoordinatorConfiguration(
       maximumCooldown,
       RENDEZVOUS_COOLDOWN_POLICY_MAXIMUMS.rendezvousClientPairResetSeconds,
     ),
-    compatibilityRendezvousServerSourceDaily: strictInteger(
-      input.COMPAT_RENDEZVOUS_SERVER_SOURCE_DAILY_LIMIT,
-      "COMPAT_RENDEZVOUS_SERVER_SOURCE_DAILY_LIMIT",
+    rendezvousServerDaily: strictInteger(
+      input.RENDEZVOUS_SERVER_DAILY_LIMIT,
+      "RENDEZVOUS_SERVER_DAILY_LIMIT",
       1,
-      REQUEST_CONTROL_POLICY_MAXIMUMS.compatibilityRendezvousServerSourceDaily,
+      CANONICAL_POLICY_MAXIMUMS.rendezvousServerDaily,
     ),
-    compatibilityRendezvousServerDaily: strictInteger(
-      input.COMPAT_RENDEZVOUS_SERVER_DAILY_LIMIT,
-      "COMPAT_RENDEZVOUS_SERVER_DAILY_LIMIT",
-      1,
-      REQUEST_CONTROL_POLICY_MAXIMUMS.compatibilityRendezvousServerDaily,
-    ),
+  });
+}
+
+/** Parse only policy consumed by the private scheduled handler. */
+export function scheduledMaintenanceConfiguration(
+  input: ScheduledMaintenanceConfigurationInput,
+): ScheduledMaintenanceConfiguration {
+  return Object.freeze({
+    listingTtlSeconds: parseListingTtlSeconds(input.LISTING_TTL_SECONDS),
   });
 }
 
@@ -341,115 +304,12 @@ export function rendezvousPolicyConfiguration(
   });
 }
 
-/**
- * Parse every request-control ceiling as one fail-closed configuration unit.
- * Values may be lowered for a canary, but configuration can never silently
- * raise the reviewed policy maximums.
- */
-export function requestControlConfiguration(
-  input: RequestControlConfigurationInput,
-): RequestControlConfiguration {
-  const compatibilityHostname = input.COMPAT_HOSTNAME;
-  if (!isCanonicalHostname(compatibilityHostname)) {
-    throw new RequestControlConfigurationError("COMPAT_HOSTNAME");
-  }
-  const listingTtlSeconds = strictInteger(
-    input.LISTING_TTL_SECONDS,
-    "LISTING_TTL_SECONDS",
-    MINIMUM_LISTING_TTL_SECONDS,
-    REQUEST_CONTROL_POLICY_MAXIMUMS.listingTtlSeconds,
-  );
-  const staleDataRetentionSeconds = strictInteger(
-    input.STALE_DATA_RETENTION_SECONDS,
-    "STALE_DATA_RETENTION_SECONDS",
-    listingTtlSeconds,
-    REQUEST_CONTROL_POLICY_MAXIMUMS.staleDataRetentionSeconds,
-  );
-  return Object.freeze({
-    compatibilityHostname,
-    otpTtlSeconds: strictInteger(
-      input.OTP_TTL_SECONDS,
-      "OTP_TTL_SECONDS",
-      1,
-      REQUEST_CONTROL_POLICY_MAXIMUMS.otpTtlSeconds,
-    ),
-    listingTtlSeconds,
-    staleDataRetentionSeconds,
-    routeDisabledRetrySeconds: strictInteger(
-      input.ROUTE_DISABLED_RETRY_SECONDS,
-      "ROUTE_DISABLED_RETRY_SECONDS",
-      1,
-      MAXIMUM_RETRY_AFTER_SECONDS,
-    ),
-    compatibilityStatusDaily: strictInteger(
-      input.COMPAT_STATUS_DAILY_LIMIT,
-      "COMPAT_STATUS_DAILY_LIMIT",
-      1,
-      REQUEST_CONTROL_POLICY_MAXIMUMS.compatibilityStatusDaily,
-    ),
-    compatibilityDirectoryDaily: strictInteger(
-      input.COMPAT_DIRECTORY_DAILY_LIMIT,
-      "COMPAT_DIRECTORY_DAILY_LIMIT",
-      1,
-      REQUEST_CONTROL_POLICY_MAXIMUMS.compatibilityDirectoryDaily,
-    ),
-    compatibilityOtpDaily: strictInteger(
-      input.COMPAT_OTP_DAILY_LIMIT,
-      "COMPAT_OTP_DAILY_LIMIT",
-      1,
-      REQUEST_CONTROL_POLICY_MAXIMUMS.compatibilityOtpDaily,
-    ),
-    compatibilityUpdateSourceDaily: strictInteger(
-      input.COMPAT_UPDATE_SOURCE_DAILY_LIMIT,
-      "COMPAT_UPDATE_SOURCE_DAILY_LIMIT",
-      1,
-      REQUEST_CONTROL_POLICY_MAXIMUMS.compatibilityUpdateSourceDaily,
-    ),
-    compatibilityUpdateServerDaily: strictInteger(
-      input.COMPAT_UPDATE_SERVER_DAILY_LIMIT,
-      "COMPAT_UPDATE_SERVER_DAILY_LIMIT",
-      1,
-      REQUEST_CONTROL_POLICY_MAXIMUMS.compatibilityUpdateServerDaily,
-    ),
-    publishServerDaily: strictInteger(
-      input.PUBLISH_SERVER_DAILY_LIMIT,
-      "PUBLISH_SERVER_DAILY_LIMIT",
-      1,
-      REQUEST_CONTROL_POLICY_MAXIMUMS.publishServerDaily,
-    ),
-    compatibilityRendezvousClientSourceDaily: strictInteger(
-      input.COMPAT_RENDEZVOUS_CLIENT_SOURCE_DAILY_LIMIT,
-      "COMPAT_RENDEZVOUS_CLIENT_SOURCE_DAILY_LIMIT",
-      1,
-      REQUEST_CONTROL_POLICY_MAXIMUMS.compatibilityRendezvousClientSourceDaily,
-    ),
-    compatibilityRendezvousClientPairDaily: strictInteger(
-      input.COMPAT_RENDEZVOUS_CLIENT_PAIR_DAILY_LIMIT,
-      "COMPAT_RENDEZVOUS_CLIENT_PAIR_DAILY_LIMIT",
-      1,
-      REQUEST_CONTROL_POLICY_MAXIMUMS.compatibilityRendezvousClientPairDaily,
-    ),
-    compatibilityRendezvousServerSourceDaily: strictInteger(
-      input.COMPAT_RENDEZVOUS_SERVER_SOURCE_DAILY_LIMIT,
-      "COMPAT_RENDEZVOUS_SERVER_SOURCE_DAILY_LIMIT",
-      1,
-      REQUEST_CONTROL_POLICY_MAXIMUMS.compatibilityRendezvousServerSourceDaily,
-    ),
-    compatibilityRendezvousServerDaily: strictInteger(
-      input.COMPAT_RENDEZVOUS_SERVER_DAILY_LIMIT,
-      "COMPAT_RENDEZVOUS_SERVER_DAILY_LIMIT",
-      1,
-      REQUEST_CONTROL_POLICY_MAXIMUMS.compatibilityRendezvousServerDaily,
-    ),
-  });
-}
-
 function parseListingTtlSeconds(value: string | undefined): number {
   return strictInteger(
     value,
     "LISTING_TTL_SECONDS",
     MINIMUM_LISTING_TTL_SECONDS,
-    REQUEST_CONTROL_POLICY_MAXIMUMS.listingTtlSeconds,
+    CANONICAL_POLICY_MAXIMUMS.listingTtlSeconds,
   );
 }
 
