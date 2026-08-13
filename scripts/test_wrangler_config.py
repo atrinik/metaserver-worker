@@ -23,14 +23,9 @@ class WranglerSecurityConfigurationTests(unittest.TestCase):
         self.assertIs(self.configuration.get("workers_dev"), False)
         self.assertIs(self.configuration.get("preview_urls"), False)
 
-    def test_request_control_bindings_pin_reviewed_limits(self) -> None:
+    def test_canonical_core_bindings_pin_reviewed_limits(self) -> None:
         expected_bindings = {
-            "GLOBAL_RATE_LIMITER": ("1003", 10),
-            "DIRECTORY_RATE_LIMITER": ("1005", 10),
-            "OTP_RATE_LIMITER": ("1001", 10),
-            "UPDATE_RATE_LIMITER": ("1002", 10),
             "PUBLISH_IDENTITY_RATE_LIMITER": ("1006", 2),
-            "RENDEZVOUS_CLIENT_RATE_LIMITER": ("1004", 5),
             "RENDEZVOUS_SERVER_RATE_LIMITER": ("1007", 3),
         }
         bindings = self.configuration.get("ratelimits", [])
@@ -54,6 +49,18 @@ class WranglerSecurityConfigurationTests(unittest.TestCase):
         self.assertEqual(
             self.configuration["vars"]["PUBLISH_SERVER_DAILY_LIMIT"], "48"
         )
+        self.assertEqual(
+            self.configuration["vars"]["RENDEZVOUS_SERVER_DAILY_LIMIT"],
+            "50",
+        )
+        for retired in (
+            "GLOBAL_RATE_LIMITER",
+            "DIRECTORY_RATE_LIMITER",
+            "OTP_RATE_LIMITER",
+            "UPDATE_RATE_LIMITER",
+            "RENDEZVOUS_CLIENT_RATE_LIMITER",
+        ):
+            self.assertNotIn(retired, {binding["name"] for binding in bindings})
 
     def test_source_tag_secrets_and_logging_policy_are_pinned(self) -> None:
         self.assertEqual(
@@ -196,11 +203,11 @@ class WranglerSecurityConfigurationTests(unittest.TestCase):
         self.assertNotIn("npx wrangler versions deploy", guide)
         self.assertIn("npx wrangler deploy --strict", guide)
         self.assertIn("Durable Object exports reconciliation", guide)
-        self.assertIn("rollback cannot cross the lifecycle change", guide)
-        cutover = guide[guide.index("## Cut over"):]
+        self.assertIn("Rollback cannot cross the lifecycle change", guide)
+        cutover = guide[guide.index("## Deploy provider first"):]
         self.assertLess(
-            cutover.index("Apply only pending ordered migrations"),
-            cutover.index("atrinik-metaserver-publisher"),
+            cutover.index("Apply only reviewed pending D1 migrations"),
+            cutover.index("Directly deploy the state-owning core"),
         )
 
     def test_static_origin_policy_pins_zero_worker_delivery_contract(self) -> None:
@@ -287,6 +294,8 @@ class WranglerSecurityConfigurationTests(unittest.TestCase):
         self.assertIn('http.host eq "classic.meta.atrinik.org"', edge_policy)
         self.assertIn('http.host eq "meta.atrinik.org"', edge_policy)
         self.assertIn("correlate all eight fixed", edge_policy)
+        self.assertIn("zero Worker/D1 work", normalized_deployment)
+        self.assertIn("no default core `fetch` handler", normalized_deployment)
         for option in (
             "--core-base-url",
             "--publisher-base-url",
@@ -542,9 +551,10 @@ class DynamicServiceBoundaryConfigurationTests(unittest.TestCase):
 
     def test_runbook_pins_isolated_canary_and_three_service_rotation(self) -> None:
         guide = DEPLOYMENT_GUIDE.read_text(encoding="utf-8")
-        self.assertIn("ten native Rate Limiting bindings", guide)
-        self.assertIn("atrinik-metaserver-publisher-canary", guide)
-        self.assertIn("atrinik-metaserver-rendezvous-canary", guide)
+        normalized = " ".join(guide.split())
+        self.assertIn("Classic v5.9.0", guide)
+        self.assertIn("complete 24-hour replay-row lifetime", normalized)
+        self.assertIn("Deploy provider first", guide)
         rotation = guide[guide.index("## Rotate source-tag keys"):]
         self.assertIn("atrinik-metaserver-publisher", rotation)
         self.assertIn("atrinik-metaserver-rendezvous", rotation)

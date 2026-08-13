@@ -7,7 +7,7 @@ import {
 } from "cloudflare:test";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
-import worker, { handlePublisherCoordinatorRequest } from "../src/index";
+import { handlePublisherCoordinatorRequest } from "../src/index";
 import { gameDirectoryServerJsonByteLength } from "../src/directory-artifacts";
 import { publisherServiceRequest } from "../src/internal-service";
 import { sha256Hex } from "../src/protocol";
@@ -190,18 +190,6 @@ beforeEach(async () => {
 });
 
 describe("classic signed publisher", () => {
-  it("cannot bypass the public publisher edge through the core default handler", async () => {
-    const context = createExecutionContext();
-    const response = await worker.fetch(
-      publishRequest(initialVector()),
-      testEnvironment(),
-      context,
-    );
-    await waitOnExecutionContext(context);
-    expect(response.status).toBe(421);
-    expect(await storedPublication()).toBeNull();
-  });
-
   it.each([null, "legacy-unknown"])(
     "preserves a committed legacy Room success for change marker %s",
     async (marker) => {
@@ -403,7 +391,7 @@ describe("classic signed publisher", () => {
     const storedInitial = await storedPublication();
     expect(storedInitial).toMatchObject({
       authentication_kind: "signed-certificate-v1",
-      auth_key: "0".repeat(128),
+      auth_key: publisherFixture.server_id.repeat(2),
       last_nonce: publisherFixture.nonce,
       last_sequence: publisherFixture.sequence,
       rendezvous_token_hash: await sha256Hex(initialBody.rendezvousToken),

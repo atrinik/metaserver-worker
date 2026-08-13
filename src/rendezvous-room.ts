@@ -1071,7 +1071,7 @@ export class RendezvousRoom extends DurableObject<CoreEnv> {
     const [ticketDigest, replayTags] = await Promise.all([
       this.digestTicket(parsed.signal.ticket),
       this.replayTagKeys.rendezvousReplayTags(
-        this.env.COMPAT_HOSTNAME,
+        this.env.RENDEZVOUS_HOSTNAME,
         this.ctx.id.toString(),
         parsed.signal.ticket,
       ),

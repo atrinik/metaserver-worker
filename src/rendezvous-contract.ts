@@ -237,9 +237,9 @@ export interface InternalRendezvousUpgrade {
 
 interface InternalPublicationBase {
   readonly serverId: string;
-  readonly publisherSequence: string | null;
-  readonly publisherNonce: string | null;
-  readonly publisherNonceExpiresAt: number | null;
+  readonly publisherSequence: string;
+  readonly publisherNonce: string;
+  readonly publisherNonceExpiresAt: number;
   readonly commitToken: string;
   readonly expectedGeneration: string | null;
   readonly generation: string;
@@ -257,9 +257,7 @@ interface InternalPublicationBase {
 
 export interface InternalClassicPublication extends InternalPublicationBase {
   readonly directoryProfile: "classic-v1";
-  readonly publisherAuthentication:
-    | "compat-key-v1"
-    | "signed-certificate-v1";
+  readonly publisherAuthentication: "signed-certificate-v1";
   readonly playersCount: number;
   readonly version: string;
   readonly textComment: string;
@@ -421,8 +419,7 @@ export async function validateInternalRendezvousPublication(
     !HEX_64.test(parsed.serverId) ||
     (parsed.directoryProfile !== "classic-v1" &&
       parsed.directoryProfile !== "game-v1") ||
-    (parsed.publisherAuthentication !== "compat-key-v1" &&
-      parsed.publisherAuthentication !== "signed-certificate-v1") ||
+    parsed.publisherAuthentication !== "signed-certificate-v1" ||
     !isPublisherReplayMetadata(parsed) ||
     typeof parsed.commitToken !== "string" ||
     !HEX_64.test(parsed.commitToken) ||
@@ -480,7 +477,7 @@ export async function validateInternalRendezvousPublication(
     return {
       ...common,
       directoryProfile: "classic-v1",
-      publisherAuthentication: parsed.publisherAuthentication,
+      publisherAuthentication: "signed-certificate-v1",
       playersCount: parsed.playersCount,
       version: parsed.version,
       textComment: parsed.textComment,
@@ -795,31 +792,17 @@ function isCanonicalPublicationEndpoint(
     : isCanonicalHostname(host);
 }
 
-type ValidPublisherReplayMetadata =
-  | {
-      readonly directoryProfile: "classic-v1";
-      readonly publisherAuthentication: "compat-key-v1";
-      readonly publisherSequence: null;
-      readonly publisherNonce: null;
-      readonly publisherNonceExpiresAt: null;
-    }
-  | {
-      readonly directoryProfile: DirectoryProfile;
-      readonly publisherAuthentication: "signed-certificate-v1";
-      readonly publisherSequence: string;
-      readonly publisherNonce: string;
-      readonly publisherNonceExpiresAt: number;
-    };
+type ValidPublisherReplayMetadata = {
+  readonly directoryProfile: DirectoryProfile;
+  readonly publisherAuthentication: "signed-certificate-v1";
+  readonly publisherSequence: string;
+  readonly publisherNonce: string;
+  readonly publisherNonceExpiresAt: number;
+};
 
 function isPublisherReplayMetadata(
   value: Record<string, unknown>,
 ): value is Record<string, unknown> & ValidPublisherReplayMetadata {
-  if (value.publisherAuthentication === "compat-key-v1") {
-    return value.directoryProfile === "classic-v1" &&
-      value.publisherSequence === null &&
-      value.publisherNonce === null &&
-      value.publisherNonceExpiresAt === null;
-  }
   if (
     value.publisherAuthentication !== "signed-certificate-v1" ||
     typeof value.publisherSequence !== "string" ||

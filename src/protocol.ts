@@ -1,9 +1,3 @@
-import { isDirectoryText } from "./directory-state";
-import type { UpdatePayload } from "./types";
-
-const HEX_64 = /^[0-9a-f]{64}$/;
-const HEX_128 = /^[0-9a-f]{128}$/;
-
 export const DIRECT_CANDIDATE_KINDS = [
   "lan",
   "ipv6",
@@ -29,14 +23,6 @@ export class RequestError extends Error {
   }
 }
 
-export async function sha512Hex(value: string): Promise<string> {
-  const digest = await crypto.subtle.digest(
-    "SHA-512",
-    new TextEncoder().encode(value),
-  );
-  return bytesToHex(new Uint8Array(digest));
-}
-
 export async function sha256Hex(value: string): Promise<string> {
   const digest = await crypto.subtle.digest(
     "SHA-256",
@@ -47,21 +33,6 @@ export async function sha256Hex(value: string): Promise<string> {
 
 function bytesToHex(bytes: Uint8Array): string {
   return Array.from(bytes, (byte) => byte.toString(16).padStart(2, "0")).join("");
-}
-
-export async function deriveStoredKey(
-  registrationKey: string,
-  ownerId: string,
-): Promise<string> {
-  return sha512Hex(registrationKey + ownerId);
-}
-
-export async function deriveUpdateProof(
-  otp: string,
-  storedKey: string,
-  cotp: string,
-): Promise<string> {
-  return sha512Hex(otp + storedKey + cotp);
 }
 
 export async function constantTimeEqual(
@@ -79,174 +50,10 @@ export async function constantTimeEqual(
   );
 }
 
-export function formatOtpResponse(otp: string): string {
-  // The C server searches for this exact token, including the whitespace.
-  return `{"otp": "${otp}"}`;
-}
-
 export function randomToken(): string {
   const bytes = new Uint8Array(32);
   crypto.getRandomValues(bytes);
   return bytesToHex(bytes);
-}
-
-export function parseUpdatePayload(form: FormData): UpdatePayload {
-  const serverId = requiredField(form, "server_id", 64).toLowerCase();
-  const quicPort = parsePort(requiredField(form, "quic_port", 5), "quic_port");
-  const quicCertSha256 = requiredField(
-    form,
-    "quic_cert_sha256",
-    64,
-  ).toLowerCase();
-  if (!HEX_64.test(serverId) || !HEX_64.test(quicCertSha256) ||
-      serverId !== quicCertSha256) {
-    throw new RequestError("Invalid QUIC server identity");
-  }
-
-  const quicHostRaw = optionalField(form, "quic_host", 64);
-  const quicHost = quicHostRaw === null
-    ? null
-    : normalizeIpAddress(quicHostRaw);
-  const playersCountRaw = requiredField(form, "num_players", 10, true);
-  const playersCount = parseUnsignedInteger(
-    playersCountRaw || "0",
-    "num_players",
-    4_294_967_295,
-  );
-  const registrationRaw = optionalField(form, "registration", 1);
-  if (registrationRaw !== null && registrationRaw !== "0" && registrationRaw !== "1") {
-    throw new RequestError("Invalid registration marker");
-  }
-
-  const cotp = requiredField(form, "cotp", 128).toLowerCase();
-  const key = requiredField(form, "key", 128).toLowerCase();
-  if (!HEX_128.test(cotp) || !HEX_128.test(key)) {
-    throw new RequestError("Invalid authentication value");
-  }
-
-  const name = requiredField(form, "name", 80);
-  const version = requiredField(form, "version", 32);
-  const textComment = optionalField(form, "text_comment", 256) ??
-    "No description.";
-  if (
-    !isDirectoryText(name, 80, false) ||
-    !isDirectoryText(version, 32, false) ||
-    !isDirectoryText(textComment, 256, true)
-  ) {
-    throw new RequestError("Invalid directory text");
-  }
-
-  return {
-    serverId,
-    name,
-    playersCount,
-    version,
-    textComment,
-    otp: requiredField(form, "otp", 256),
-    cotp,
-    key,
-    registration: registrationRaw === "1",
-    isPublic: parseBooleanField(form, "public", false),
-    quicHost,
-    quicPort,
-    quicCertSha256,
-    passwordRequired: parseBooleanField(form, "password_required", false),
-  };
-}
-function parseBooleanField(
-  form: FormData,
-  name: string,
-  fallback: boolean,
-): boolean {
-  const value = optionalField(form, name, 5);
-  if (value === null) {
-    return fallback;
-  }
-  if (["1", "true", "on"].includes(value.toLowerCase())) {
-    return true;
-  }
-  if (["0", "false", "off"].includes(value.toLowerCase())) {
-    return false;
-  }
-  throw new RequestError(`Invalid ${name}`);
-}
-
-function requiredField(
-  form: FormData,
-  name: string,
-  maximumLength: number,
-  allowEmpty = false,
-): string {
-  const values = form.getAll(name);
-  const value = values[0];
-  if (values.length !== 1) {
-    throw new RequestError(`Ambiguous field: ${name}`);
-  }
-  if (typeof value !== "string") {
-    throw new RequestError(`Missing field: ${name}`);
-  }
-
-  const trimmed = value.trim();
-  if ((!allowEmpty && trimmed.length === 0) || trimmed.length > maximumLength) {
-    throw new RequestError(`Invalid field: ${name}`);
-  }
-
-  return trimmed;
-}
-
-function optionalField(
-  form: FormData,
-  name: string,
-  maximumLength: number,
-): string | null {
-  const values = form.getAll(name);
-  if (values.length === 0) {
-    return null;
-  }
-  if (values.length !== 1) {
-    throw new RequestError(`Ambiguous field: ${name}`);
-  }
-  const value = values[0];
-  if (value === "") {
-    return null;
-  }
-
-  if (typeof value !== "string" || value.length > maximumLength) {
-    throw new RequestError(`Invalid field: ${name}`);
-  }
-
-  return value;
-}
-
-function parsePort(value: string, name: string): number {
-  return parseUnsignedInteger(value, name, 65_535, 1);
-}
-
-function parseUnsignedInteger(
-  value: string,
-  name: string,
-  maximum: number,
-  minimum = 0,
-): number {
-  if (!/^\d+$/.test(value)) {
-    throw new RequestError(`Invalid ${name}`);
-  }
-
-  const parsed = Number(value);
-  if (!Number.isSafeInteger(parsed) || parsed < minimum || parsed > maximum) {
-    throw new RequestError(`Invalid ${name}`);
-  }
-  return parsed;
-}
-
-export function escapeXml(value: string): string {
-  return value
-    .replace(/[\u0000-\u0008\u000b\u000c\u000e-\u001f\ufffe\uffff]/g, "")
-    .replace(/&/g, "&amp;")
-    .replace(/</g, "&lt;")
-    .replace(/>/g, "&gt;")
-    .replace(/"/g, "&quot;")
-    .replace(/'/g, "&apos;");
 }
 
 export function normalizeIpAddress(value: string): string {

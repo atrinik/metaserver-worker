@@ -44,12 +44,10 @@ export default {
         keys: await requiredSourceTagKeyRing(env),
         namespace: control.authority,
       });
-      const source = route.role === "client"
-        ? actorAliases(await privacy.tags(
-          SourceTagPurpose.RendezvousClientGlobal,
-        ))
-        : actorAliases(await privacy.tags(SourceTagPurpose.RendezvousServer));
       if (route.role === "client") {
+        const source = actorAliases(await privacy.tags(
+          SourceTagPurpose.RendezvousClientGlobal,
+        ));
         await enforceNativeBurstAliases(
           env.RENDEZVOUS_CLIENT_RATE_LIMITER,
           source,
@@ -75,7 +73,7 @@ export default {
           route.role,
           route.role === "client"
             ? { source: null, pair: requirePair(pair) }
-            : { source, pair: null },
+            : { source: null, pair: null },
         )),
         route.subprotocol,
       );

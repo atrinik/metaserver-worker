@@ -3,9 +3,7 @@ import { describe, expect, it } from "vitest";
 import { HttpError } from "../src/http";
 import {
   classifyCanonicalRoute,
-  classifyCompatibilityRoute,
   CLASSIC_RENDEZVOUS_INVITE_SUBPROTOCOL,
-  COMPATIBILITY_AUTHORITY,
   PUBLISH_AUTHORITY,
   PUBLISH_MAX_BODY_BYTES,
   RENDEZVOUS_AUTHORITY,
@@ -45,19 +43,6 @@ function rendezvousInput(
   };
 }
 
-function compatibilityInput(
-  path: string,
-  overrides: Partial<RouteInput> = {},
-): RouteInput {
-  return {
-    target: `https://${COMPATIBILITY_AUTHORITY}${path}`,
-    method: "GET",
-    headers: new Headers(),
-    hasBody: false,
-    ...overrides,
-  };
-}
-
 function canonicalError(input: RouteInput): HttpError {
   try {
     classifyCanonicalRoute(input);
@@ -68,18 +53,6 @@ function canonicalError(input: RouteInput): HttpError {
     throw error;
   }
   throw new Error("Expected canonical route classification to fail");
-}
-
-function compatibilityError(input: RouteInput): HttpError {
-  try {
-    classifyCompatibilityRoute(input);
-  } catch (error) {
-    if (error instanceof HttpError) {
-      return error;
-    }
-    throw error;
-  }
-  throw new Error("Expected compatibility route classification to fail");
 }
 
 describe("canonical dynamic route grammar", () => {
@@ -399,174 +372,20 @@ describe("canonical dynamic route grammar", () => {
       }),
     })).code).toBe("ambiguous_header");
   });
-});
-
-describe("separate classic compatibility grammar", () => {
-  it("models current status, directory, OTP, and update routes", () => {
-    expect(classifyCompatibilityRoute(compatibilityInput("/"))).toEqual({
-      kind: "compatibility-status",
-      generation: "classic",
-    });
-    expect(classifyCompatibilityRoute(
-      compatibilityInput("/v2/servers"),
-    )).toEqual({
-      kind: "compatibility-directory",
-      generation: "classic",
-    });
-    expect(classifyCompatibilityRoute(
-      compatibilityInput("/index.wsgi/otp"),
-    )).toEqual({
-      kind: "compatibility-otp",
-      generation: "classic",
-    });
-    expect(classifyCompatibilityRoute(compatibilityInput(
-      "/index.wsgi/update",
-      {
-        method: "POST",
-        hasBody: true,
-        headers: new Headers({
-          "Content-Type": "application/x-www-form-urlencoded",
-        }),
-      },
-    ))).toEqual({
-      kind: "compatibility-update",
-      generation: "classic",
-      maximumBodyBytes: 100_000,
-    });
-  });
-
-  it("models legacy client and authenticated server rendezvous queries", () => {
-    const headers = rendezvousInput().headers;
-    expect(classifyCompatibilityRoute(compatibilityInput(
-      `/v2/rendezvous/${SERVER_ID}?role=client`,
-      { headers },
-    ))).toEqual({
-      kind: "compatibility-rendezvous",
-      generation: "classic",
-      serverId: SERVER_ID,
-      role: "client",
-      subprotocol: null,
-    });
-    expect(classifyCompatibilityRoute(compatibilityInput(
-      `/v2/rendezvous/${SERVER_ID}?role=server`,
-      { headers },
-    ))).toEqual({
-      kind: "compatibility-rendezvous",
-      generation: "classic",
-      serverId: SERVER_ID,
-      role: "server",
-      subprotocol: null,
-    });
-  });
-
-  it("does not expose compatibility through canonical classification", () => {
-    expect(canonicalError(compatibilityInput("/index.wsgi/otp")).code).toBe(
-      "misdirected_request",
-    );
-    expect(compatibilityError(publisherInput()).code).toBe(
-      "misdirected_request",
-    );
-  });
-
-  it("uses one exact validated compatibility authority per deployment", () => {
-    const configured = "compatibility.example.test";
-    expect(classifyCompatibilityRoute({
-      ...compatibilityInput("/v2/servers"),
-      target: `https://${configured}/v2/servers`,
-    }, configured).kind).toBe("compatibility-directory");
-
-    for (const authority of [
-      "",
-      "META.ATRINIK.ORG",
-      "meta.atrinik.org:443",
-      "localhost",
-      "-bad.example.test",
-    ]) {
-      expect(() => classifyCompatibilityRoute(
-        compatibilityInput("/v2/servers"),
-        authority,
-      )).toThrowError(expect.objectContaining({
-        code: "misdirected_request",
-      }));
-    }
-  });
-
-  it("rejects non-exact compatibility methods, queries, bodies, and tokens", () => {
-    expect(compatibilityError(compatibilityInput("/?status=1")).code).toBe(
-      "unexpected_query",
-    );
-    expect(compatibilityError(compatibilityInput("/v2/servers", {
-      method: "POST",
-    })).code).toBe("method_not_allowed");
-    expect(compatibilityError(compatibilityInput("/index.wsgi/otp", {
-      hasBody: true,
-    })).code).toBe("unexpected_body");
-    expect(compatibilityError(compatibilityInput("/index.wsgi/update", {
-      method: "POST",
-      hasBody: true,
-      headers: new Headers({ "Content-Type": "application/json" }),
-    })).code).toBe("unsupported_media_type");
-
-    for (const path of ["/", "/v2/servers", "/index.wsgi/otp"]) {
-      for (const [name, value] of [
-        ["Content-Length", "0"],
-        ["Content-Type", "text/plain"],
-        ["Content-Encoding", "identity"],
-        ["Transfer-Encoding", "chunked"],
-      ] as const) {
-        expect(compatibilityError(compatibilityInput(path, {
-          headers: new Headers({ [name]: value }),
-        })).code).toBe("unexpected_body");
+  it("rejects retired public paths on every canonical authority", () => {
+    for (const authority of [PUBLISH_AUTHORITY, RENDEZVOUS_AUTHORITY]) {
+      for (const path of [
+        "/", "/v2/servers", "/index.wsgi/otp", "/index.wsgi/update",
+        `/v2/rendezvous/${SERVER_ID}?role=client`,
+      ]) {
+        const error = canonicalError({
+          target: `https://${authority}${path}`,
+          method: "GET",
+          headers: new Headers(),
+          hasBody: false,
+        });
+        expect(error.code).toBe("not_found");
       }
     }
-
-    const headers = rendezvousInput().headers;
-    for (const query of [
-      `role=server&token=${"a".repeat(64)}`,
-      `token=${"a".repeat(64)}&role=server`,
-      `role=client&token=${"a".repeat(64)}`,
-      "role=client&extra=1",
-      "role=client&role=client",
-      "role=server&token=not-a-token",
-    ]) {
-      expect(compatibilityError(compatibilityInput(
-        `/v2/rendezvous/${SERVER_ID}?${query}`,
-        { headers },
-      )).code).toBe("unexpected_query");
-    }
-
-    for (const [name, value] of [
-      ["Content-Length", "0"],
-      ["Content-Type", "text/plain"],
-      ["Content-Encoding", "identity"],
-      ["Transfer-Encoding", "chunked"],
-    ] as const) {
-      const contentHeaders = new Headers(headers);
-      contentHeaders.set(name, value);
-      expect(compatibilityError(compatibilityInput(
-        `/v2/rendezvous/${SERVER_ID}?role=client`,
-        { headers: contentHeaders },
-      )).code).toBe("unexpected_body");
-    }
-
-    const subprotocolHeaders = new Headers(headers);
-    subprotocolHeaders.set("Sec-WebSocket-Protocol", "atrinik-rendezvous");
-    expect(compatibilityError(compatibilityInput(
-      `/v2/rendezvous/${SERVER_ID}?role=client`,
-      { headers: subprotocolHeaders },
-    )).code).toBe("bad_request");
-
-    const inviteHeaders = new Headers(headers);
-    inviteHeaders.set(
-      "Sec-WebSocket-Protocol",
-      CLASSIC_RENDEZVOUS_INVITE_SUBPROTOCOL,
-    );
-    expect(classifyCompatibilityRoute(compatibilityInput(
-      `/v2/rendezvous/${SERVER_ID}?role=client`,
-      { headers: inviteHeaders },
-    ))).toMatchObject({
-      kind: "compatibility-rendezvous",
-      subprotocol: CLASSIC_RENDEZVOUS_INVITE_SUBPROTOCOL,
-    });
   });
 });

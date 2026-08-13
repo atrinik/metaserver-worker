@@ -3,7 +3,6 @@ import { beforeEach, describe, expect, it } from "vitest";
 
 import {
   boundedRetryAfter,
-  consumeAliasedFixedWindowBudget,
   consumeFixedWindowBudget,
   enforceNativeBurst,
   enforceNativeBurstAliases,
@@ -15,7 +14,6 @@ import {
   utcDayWindow,
 } from "../src/rate-limit";
 import type {
-  FixedWindow,
   FixedWindowBudgetRequest,
   RequestBudgetAdmission,
   RequestBudgetScope,
@@ -25,7 +23,6 @@ const HMAC_DIGEST = "A".repeat(43);
 const SERVER_ACTOR = "1".repeat(64);
 const TEST_TRIGGER_NAMES = [
   "request_budgets_test_abort_insert",
-  "request_budgets_test_ignore_insert",
 ] as const;
 
 function sourceActor(keyId = "current"): string {
@@ -37,8 +34,8 @@ function request(
 ): FixedWindowBudgetRequest {
   const now = 1_786_147_200;
   return {
-    actorKey: sourceActor(),
-    scope: "compat-directory",
+    actorKey: SERVER_ACTOR,
+    scope: "publish-server",
     limit: 3,
     now,
     window: utcDayWindow(now),
@@ -140,8 +137,8 @@ describe("fixed request-budget windows", () => {
 
   it("admits no more than the configured limit under concurrency", async () => {
     const budget = request({
-      actorKey: sourceActor("parallel"),
-      scope: "rendezvous-client-source",
+      actorKey: "2".repeat(64),
+      scope: "publish-server",
       limit: 5,
     });
     const outcomes = await Promise.all(Array.from({ length: 32 }, async () => {
@@ -169,258 +166,8 @@ describe("fixed request-budget windows", () => {
     )).toBe(5);
   });
 
-  it("mirrors a previous-key counter into the current alias without double charging", async () => {
-    const now = 1_786_147_200;
-    const window = utcDayWindow(now);
-    const current = sourceActor("current-b");
-    const previous = sourceActor("previous-a");
-    const previousRequest = request({
-      actorKey: previous,
-      limit: 3,
-      now,
-      window,
-    });
-    await consumeFixedWindowBudget(env.DB, previousRequest);
-    await consumeFixedWindowBudget(env.DB, previousRequest);
-
-    const admission = await consumeAliasedFixedWindowBudget(env.DB, {
-      actorKeys: [current, previous],
-      scope: "compat-directory",
-      limit: 3,
-      now,
-      window,
-    });
-    expect(admission).toMatchObject({ count: 3, remaining: 0 });
-    expect(await readCount(current, "compat-directory", window.startAt)).toBe(3);
-    expect(await readCount(previous, "compat-directory", window.startAt)).toBe(3);
-
-    await expect(consumeAliasedFixedWindowBudget(env.DB, {
-      actorKeys: [current, previous],
-      scope: "compat-directory",
-      limit: 3,
-      now,
-      window,
-    })).rejects.toBeInstanceOf(RequestBudgetExceeded);
-    expect(await readCount(current, "compat-directory", window.startAt)).toBe(3);
-    expect(await readCount(previous, "compat-directory", window.startAt)).toBe(3);
-  });
-
-  it("preserves one mirrored count when the same aliases arrive in reverse order", async () => {
-    const now = 1_786_147_200;
-    const window = utcDayWindow(now);
-    const first = sourceActor("reverse-a");
-    const second = sourceActor("reverse-b");
-
-    expect(await consumeAliasedFixedWindowBudget(env.DB, {
-      actorKeys: [first, second],
-      scope: "compat-directory",
-      limit: 4,
-      now,
-      window,
-    })).toMatchObject({ count: 1, remaining: 3 });
-    expect(await consumeAliasedFixedWindowBudget(env.DB, {
-      actorKeys: [second, first],
-      scope: "compat-directory",
-      limit: 4,
-      now,
-      window,
-    })).toMatchObject({ count: 2, remaining: 2 });
-
-    expect(await readCount(first, "compat-directory", window.startAt)).toBe(2);
-    expect(await readCount(second, "compat-directory", window.startAt)).toBe(2);
-  });
-
-  it("deduplicates repeated aliases before consuming the logical request", async () => {
-    const now = 1_786_147_200;
-    const window = utcDayWindow(now);
-    const actorKey = sourceActor("duplicate");
-
-    const first = await consumeAliasedFixedWindowBudget(env.DB, {
-      actorKeys: [actorKey, actorKey],
-      scope: "compat-directory",
-      limit: 3,
-      now,
-      window,
-    });
-    const second = await consumeAliasedFixedWindowBudget(env.DB, {
-      actorKeys: [actorKey, actorKey],
-      scope: "compat-directory",
-      limit: 3,
-      now,
-      window,
-    });
-
-    expect([first.count, second.count]).toEqual([1, 2]);
-    expect(await env.DB.prepare(
-      "SELECT COUNT(*) AS count FROM request_budgets",
-    ).first<number>("count")).toBe(1);
-    expect(await readCount(actorKey, "compat-directory", window.startAt)).toBe(2);
-  });
-
-  it("reports an exhausted previous alias without mutating a missing current row", async () => {
-    const now = 1_786_147_200;
-    const window = utcDayWindow(now);
-    const current = sourceActor("rotated-current");
-    const previous = sourceActor("exhausted-previous");
-    await consumeFixedWindowBudget(env.DB, request({
-      actorKey: previous,
-      limit: 1,
-      now,
-      window,
-    }));
-
-    await expect(consumeAliasedFixedWindowBudget(env.DB, {
-      actorKeys: [current, previous],
-      scope: "compat-directory",
-      limit: 1,
-      now,
-      window,
-    })).rejects.toMatchObject({
-      name: "RequestBudgetExceeded",
-      retryAfterSeconds: window.endAt - now,
-    });
-    expect(await readCount(current, "compat-directory", window.startAt)).toBeNull();
-    expect(await readCount(previous, "compat-directory", window.startAt)).toBe(1);
-  });
-
-  it("admits one logical request across both aliases under concurrency", async () => {
-    const now = 1_786_147_200;
-    const window = utcDayWindow(now);
-    const current = sourceActor("parallel-b");
-    const previous = sourceActor("parallel-a");
-    const outcomes = await Promise.all(Array.from({ length: 32 }, async () => {
-      try {
-        await consumeAliasedFixedWindowBudget(env.DB, {
-          actorKeys: [current, previous],
-          scope: "rendezvous-client-source",
-          limit: 5,
-          now,
-          window,
-        });
-        return true;
-      } catch (error) {
-        expect(error).toBeInstanceOf(RequestBudgetExceeded);
-        return false;
-      }
-    }));
-
-    expect(outcomes.filter(Boolean)).toHaveLength(5);
-    expect(await readCount(
-      current,
-      "rendezvous-client-source",
-      window.startAt,
-    )).toBe(5);
-    expect(await readCount(
-      previous,
-      "rendezvous-client-source",
-      window.startAt,
-    )).toBe(5);
-  });
-
-  it("advances once through an overlapping rolling key chain", async () => {
-    const now = 1_786_147_200;
-    const window = utcDayWindow(now);
-    const keyA = sourceActor("chain-a");
-    const keyB = sourceActor("chain-b");
-    const keyZ = sourceActor("chain-z");
-    const pairs = [
-      [keyA, keyZ],
-      [keyB, keyA],
-      [keyA, keyZ],
-      [keyB, keyA],
-    ] as const;
-
-    const admittedCounts: number[] = [];
-    for (const actorKeys of pairs) {
-      const admission = await consumeAliasedFixedWindowBudget(env.DB, {
-        actorKeys,
-        scope: "compat-directory",
-        limit: 4,
-        now,
-        window,
-      });
-      admittedCounts.push(admission.count);
-    }
-
-    expect(admittedCounts).toEqual([1, 2, 3, 4]);
-    expect(await readCount(keyA, "compat-directory", window.startAt)).toBe(4);
-    expect(await readCount(keyB, "compat-directory", window.startAt)).toBe(4);
-    expect(await readCount(keyZ, "compat-directory", window.startAt)).toBe(3);
-
-    await expect(consumeAliasedFixedWindowBudget(env.DB, {
-      actorKeys: [keyA, keyZ],
-      scope: "compat-directory",
-      limit: 4,
-      now,
-      window,
-    })).rejects.toBeInstanceOf(RequestBudgetExceeded);
-    expect(await readCount(keyA, "compat-directory", window.startAt)).toBe(4);
-    expect(await readCount(keyZ, "compat-directory", window.startAt)).toBe(3);
-  });
-
-  it("treats an alias expiry mismatch as an internal invariant failure", async () => {
-    const now = 150;
-    const window: FixedWindow = { startAt: 100, endAt: 160 };
-    const current = sourceActor("expiry-current");
-    const previous = sourceActor("expiry-previous");
-    await env.DB.prepare(
-      `INSERT INTO request_budgets
-         (actor_key, scope, window_start, request_count, expires_at)
-       VALUES (?, 'compat-directory', ?, 1, ?)`,
-    ).bind(current, window.startAt, window.endAt + 1).run();
-
-    const error = await captureRejection(consumeAliasedFixedWindowBudget(
-      env.DB,
-      {
-        actorKeys: [current, previous],
-        scope: "compat-directory",
-        limit: 4,
-        now,
-        window,
-      },
-    ));
-    expect(error).not.toBeInstanceOf(RequestControlUnavailable);
-    expect(error).not.toBeInstanceOf(RequestBudgetExceeded);
-    expect(error.message).toContain("aliases are divergent");
-    expect(await readCount(current, "compat-directory", window.startAt)).toBe(1);
-    expect(await readCount(previous, "compat-directory", window.startAt)).toBeNull();
-  });
-
-  it("classifies a partial alias result as an internal invariant failure", async () => {
-    const now = 1_786_147_200;
-    const window = utcDayWindow(now);
-    const first = sourceActor("partial-a");
-    const ignored = sourceActor("partial-z");
-    await env.DB.prepare(
-      `CREATE TRIGGER request_budgets_test_ignore_insert
-       BEFORE INSERT ON request_budgets
-       WHEN NEW.actor_key = '${ignored}'
-       BEGIN
-         SELECT RAISE(IGNORE);
-       END`,
-    ).run();
-
-    const error = await captureRejection(consumeAliasedFixedWindowBudget(
-      env.DB,
-      {
-        actorKeys: [first, ignored],
-        scope: "compat-directory",
-        limit: 4,
-        now,
-        window,
-      },
-    ));
-    expect(error).not.toBeInstanceOf(RequestControlUnavailable);
-    expect(error).not.toBeInstanceOf(RequestBudgetExceeded);
-    expect(error.message).toBe(
-      "Request budget admission returned a partial alias set",
-    );
-    expect(await readCount(first, "compat-directory", window.startAt)).toBe(1);
-    expect(await readCount(ignored, "compat-directory", window.startAt)).toBeNull();
-  });
-
   it("isolates every closed scope for the same actor and window", async () => {
-    const actorKey = sourceActor("scopes");
+    const actorKey = "3".repeat(64);
     const now = 1_786_147_200;
     const window = utcDayWindow(now);
 
@@ -536,7 +283,7 @@ describe("request actor privacy", () => {
       await expect(env.DB.prepare(
         `INSERT INTO request_budgets
            (actor_key, scope, window_start, request_count, expires_at)
-         VALUES (?, 'compat-directory', 0, 1, 60)`,
+         VALUES (?, 'publish-server', 0, 1, 60)`,
       ).bind(actorKey).run()).rejects.toThrow();
     }
 
@@ -553,6 +300,15 @@ describe("request actor privacy", () => {
       "request_count",
       "expires_at",
     ]);
+  });
+
+  it("keeps pseudonymous source tags out of authenticated daily budgets", async () => {
+    await expect(consumeFixedWindowBudget(env.DB, request({
+      actorKey: sourceActor("not-a-server"),
+    }))).rejects.toThrow("authenticated server identity");
+    expect(await env.DB.prepare(
+      "SELECT COUNT(*) AS count FROM request_budgets",
+    ).first<number>("count")).toBe(0);
   });
 });
 
@@ -580,10 +336,10 @@ describe("request-control helpers", () => {
     await enforceNativeBurst(
       accepting,
       sourceActor("burst"),
-      "compat-directory",
+      "publish-server",
     );
     expect(observedKeys).toEqual([
-      `compat-directory.${sourceActor("burst")}`,
+      `publish-server.${sourceActor("burst")}`,
     ]);
 
     const rejecting: RateLimit = {
@@ -620,11 +376,11 @@ describe("request-control helpers", () => {
     await expect(enforceNativeBurstAliases(
       rejectingSecondAlias,
       [current, previous],
-      "compat-directory",
+      "publish-server",
     )).rejects.toBeInstanceOf(RequestBudgetExceeded);
     expect(observedKeys).toEqual([
-      `compat-directory.${current}`,
-      `compat-directory.${previous}`,
+      `publish-server.${current}`,
+      `publish-server.${previous}`,
     ]);
 
     const duplicateKeys: string[] = [];
@@ -637,9 +393,9 @@ describe("request-control helpers", () => {
     await enforceNativeBurstAliases(
       accepting,
       [current, current],
-      "compat-directory",
+      "publish-server",
     );
-    expect(duplicateKeys).toEqual([`compat-directory.${current}`]);
+    expect(duplicateKeys).toEqual([`publish-server.${current}`]);
   });
 
   it("classifies native binding exceptions as temporary unavailability", async () => {
@@ -653,7 +409,7 @@ describe("request-control helpers", () => {
     const error = await captureRejection(enforceNativeBurst(
       unavailable,
       sourceActor("native-failure"),
-      "compat-directory",
+      "publish-server",
     ));
     expect(error).toBeInstanceOf(RequestControlUnavailable);
     if (!(error instanceof RequestControlUnavailable)) {

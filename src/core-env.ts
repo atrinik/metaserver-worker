@@ -3,11 +3,11 @@ import type {
   PublisherCoordinatorConfigurationInput,
   RendezvousCoordinatorConfigurationInput,
   RendezvousPolicyConfigurationInput,
-  RequestControlConfigurationInput,
+  ScheduledMaintenanceConfigurationInput,
 } from "./config";
-import type { SourceTagKeyEnvironment } from "./privacy";
 import type { DirectoryCachePurgeEnvironment } from "./directory-cache-purge";
 import type { DirectoryBuilder } from "./directory-builder";
+import type { SourceTagKeyEnvironment } from "./privacy";
 import type { RendezvousRoom } from "./rendezvous-room";
 
 /**
@@ -22,7 +22,7 @@ export type CoreEnv =
   & PublisherCoordinatorConfigurationInput
   & RendezvousCoordinatorConfigurationInput
   & RendezvousPolicyConfigurationInput
-  & RequestControlConfigurationInput
+  & ScheduledMaintenanceConfigurationInput
   & SourceTagKeyEnvironment
   & DirectoryCachePurgeEnvironment
   & {
@@ -32,22 +32,12 @@ export type CoreEnv =
     readonly GAME_DIRECTORY_PUBLIC: R2Bucket;
     readonly RENDEZVOUS_METRICS: AnalyticsEngineDataset;
     readonly DIRECTORY_METRICS: AnalyticsEngineDataset;
-    readonly GLOBAL_RATE_LIMITER: RateLimit;
-    readonly DIRECTORY_RATE_LIMITER: RateLimit;
-    readonly OTP_RATE_LIMITER: RateLimit;
-    readonly UPDATE_RATE_LIMITER: RateLimit;
     readonly PUBLISH_IDENTITY_RATE_LIMITER: RateLimit;
-    readonly RENDEZVOUS_CLIENT_RATE_LIMITER: RateLimit;
     readonly RENDEZVOUS_SERVER_RATE_LIMITER: RateLimit;
     readonly RENDEZVOUS: DurableObjectNamespace<RendezvousRoom>;
     readonly DIRECTORY_BUILDER: DurableObjectNamespace<DirectoryBuilder>;
-    readonly COMPAT_HOSTNAME: string;
-    readonly COMPAT_STATUS_ENABLED?: string;
-    readonly COMPAT_DIRECTORY_ENABLED?: string;
-    readonly COMPAT_OTP_ENABLED?: string;
-    readonly COMPAT_UPDATE_ENABLED?: string;
+    readonly RENDEZVOUS_HOSTNAME: string;
     readonly PUBLISH_ENABLED?: string;
     readonly GAME_PUBLISH_ENABLED?: string;
     readonly RENDEZVOUS_ENABLED?: string;
-    readonly COMPAT_RENDEZVOUS_ENABLED?: string;
   };

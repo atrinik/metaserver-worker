@@ -6,22 +6,15 @@ const AUTHENTICATED_SERVER_ACTOR_KEY = /^[0-9a-f]{64}$/;
 const VERSIONED_ACTOR_KEY = /^v1\.[A-Za-z0-9_-]{1,32}\.[A-Za-z0-9_-]{43}$/;
 
 export const REQUEST_BUDGET_SCOPES = [
-  "compat-status",
-  "compat-directory",
-  "compat-otp",
-  "compat-update-source",
-  "compat-update-server",
   "publish-server",
   "publish-game-server",
-  "rendezvous-client-source",
-  "rendezvous-client-source-server",
-  "rendezvous-server-source",
   "rendezvous-server",
 ] as const;
 
 export type RequestBudgetScope = typeof REQUEST_BUDGET_SCOPES[number];
 export type RequestControlScope =
   | "global"
+  | "rendezvous-client-source"
   | "rendezvous-client-pair-cooldown"
   | RequestBudgetScope;
 
@@ -48,16 +41,6 @@ export interface FixedWindowBudgetRequest {
   readonly window: FixedWindow;
 }
 
-export interface AliasedFixedWindowBudgetRequest {
-  readonly actorKeys:
-    | readonly [current: string]
-    | readonly [current: string, previous: string];
-  readonly scope: RequestBudgetScope;
-  readonly limit: number;
-  readonly now: number;
-  readonly window: FixedWindow;
-}
-
 export interface RequestBudgetAdmission {
   readonly scope: RequestBudgetScope;
   readonly count: number;
@@ -67,16 +50,13 @@ export interface RequestBudgetAdmission {
 }
 
 interface RequestBudgetRow {
-  actor_key: string;
   request_count: number;
   expires_at: number;
 }
 
 interface RequestBudgetStateRow {
-  row_count: number;
-  maximum_count: number | null;
-  minimum_expiry: number | null;
-  maximum_expiry: number | null;
+  request_count: number;
+  expires_at: number;
 }
 
 export interface RequestBudgetExceededOptions {
@@ -209,72 +189,26 @@ export async function consumeFixedWindowBudget(
   database: D1Database,
   request: FixedWindowBudgetRequest,
 ): Promise<RequestBudgetAdmission> {
-  return consumeAliasedFixedWindowBudget(database, {
-    actorKeys: [request.actorKey],
-    scope: request.scope,
-    limit: request.limit,
-    now: request.now,
-    window: request.window,
-  });
-}
-
-/**
- * Atomically consume one request for a current/previous source-tag alias set.
- *
- * Every alias is written with the same counter. This carries an active window
- * across key rotation without charging one logical request twice. When
- * overlapping deployments leave equal-expiry aliases at different counts,
- * advancing from their maximum conservatively heals the divergence. Expiry
- * divergence fails closed because it crosses fixed-window boundaries.
- */
-export async function consumeAliasedFixedWindowBudget(
-  database: D1Database,
-  request: AliasedFixedWindowBudgetRequest,
-): Promise<RequestBudgetAdmission> {
-  const actorKeys = normalizeActorAliases(request.actorKeys);
+  requireAuthenticatedServerKey(request.actorKey);
   requireBudgetScope(request.scope);
   requireIntegerInRange(request.limit, "limit", 1, MAXIMUM_BUDGET);
   requireNonNegativeInteger(request.now, "now");
   validateWindow(request.window, request.now);
 
-  const previousActorKey = actorKeys[1] ?? null;
   const admitted = await executeDependency(
     "d1",
     () => database.prepare(
-      `WITH aliases(actor_key) AS (
-     SELECT ?1
-       UNION
-       SELECT ?2 WHERE ?2 IS NOT NULL
-     ), state AS (
-       SELECT COALESCE(MAX(b.request_count), 0) AS current_count,
-              COALESCE(MAX(
-                CASE WHEN b.expires_at <> ?6 THEN 1 ELSE 0 END
-              ), 0) AS expiry_mismatch
-         FROM aliases AS a
-         LEFT JOIN request_budgets AS b
-           ON b.actor_key = a.actor_key
-          AND b.scope = ?3
-          AND b.window_start = ?4
-     ), admission(next_count) AS (
-       SELECT current_count + 1
-         FROM state
-        WHERE current_count < ?5
-          AND expiry_mismatch = 0
-     )
-     INSERT INTO request_budgets
-       (actor_key, scope, window_start, request_count, expires_at)
-     SELECT a.actor_key, ?3, ?4, admission.next_count, ?6
-       FROM aliases AS a
-       CROSS JOIN admission
-      WHERE 1
-     ON CONFLICT(actor_key, scope, window_start) DO UPDATE SET
-       request_count = excluded.request_count
-     WHERE request_budgets.expires_at = excluded.expires_at
-     RETURNING actor_key, request_count, expires_at`,
+      `INSERT INTO request_budgets
+         (actor_key, scope, window_start, request_count, expires_at)
+       VALUES (?1, ?2, ?3, 1, ?5)
+       ON CONFLICT(actor_key, scope, window_start) DO UPDATE SET
+         request_count = request_budgets.request_count + 1
+       WHERE request_budgets.expires_at = excluded.expires_at
+         AND request_budgets.request_count < ?4
+       RETURNING request_count, expires_at`,
     )
       .bind(
-        actorKeys[0],
-        previousActorKey,
+        request.actorKey,
         request.scope,
         request.window.startAt,
         request.limit,
@@ -283,21 +217,7 @@ export async function consumeAliasedFixedWindowBudget(
       .all<RequestBudgetRow>(),
   );
 
-  if (admitted.results.length === actorKeys.length) {
-    const counts = new Set(admitted.results.map((row) => row.request_count));
-    const expiries = new Set(admitted.results.map((row) => row.expires_at));
-    const returnedActors = new Set(
-      admitted.results.map((row) => row.actor_key),
-    );
-    if (
-      counts.size !== 1 ||
-      expiries.size !== 1 ||
-      returnedActors.size !== actorKeys.length ||
-      actorKeys.some((actorKey) => !returnedActors.has(actorKey))
-    ) {
-      throw new Error("Request budget aliases produced inconsistent rows");
-    }
-
+  if (admitted.results.length === 1) {
     const admittedCount = admitted.results[0]?.request_count;
     const expiresAt = admitted.results[0]?.expires_at;
     if (admittedCount === undefined || expiresAt === undefined) {
@@ -313,24 +233,18 @@ export async function consumeAliasedFixedWindowBudget(
   }
 
   if (admitted.results.length !== 0) {
-    throw new Error("Request budget admission returned a partial alias set");
+    throw new Error("Request budget admission returned multiple rows");
   }
 
   const state = await executeDependency(
     "d1",
     () => database.prepare(
-      `SELECT COUNT(*) AS row_count,
-            MAX(request_count) AS maximum_count,
-            MIN(expires_at) AS minimum_expiry,
-            MAX(expires_at) AS maximum_expiry
+      `SELECT request_count, expires_at
        FROM request_budgets
-      WHERE actor_key IN (?1, ?2)
-        AND scope = ?3
-        AND window_start = ?4`,
+      WHERE actor_key = ?1 AND scope = ?2 AND window_start = ?3`,
     )
       .bind(
-        actorKeys[0],
-        previousActorKey ?? actorKeys[0],
+        request.actorKey,
         request.scope,
         request.window.startAt,
       )
@@ -339,15 +253,11 @@ export async function consumeAliasedFixedWindowBudget(
 
   if (
     state === null ||
-    state.row_count < 1 ||
-    state.row_count > actorKeys.length ||
-    state.maximum_count === null ||
-    state.minimum_expiry !== request.window.endAt ||
-    state.maximum_expiry !== request.window.endAt
+    state.expires_at !== request.window.endAt
   ) {
-    throw new Error("Request budget aliases are divergent");
+    throw new Error("Request budget window is divergent");
   }
-  if (state.maximum_count < request.limit) {
+  if (state.request_count < request.limit) {
     throw new Error("Request budget admission failed below its limit");
   }
 
@@ -389,6 +299,12 @@ function requireActorKey(actorKey: string): void {
   }
 }
 
+function requireAuthenticatedServerKey(actorKey: string): void {
+  if (!AUTHENTICATED_SERVER_ACTOR_KEY.test(actorKey)) {
+    throw new TypeError("actorKey must be an authenticated server identity");
+  }
+}
+
 function normalizeActorAliases(
   actorKeys:
     | readonly [current: string]
@@ -424,7 +340,11 @@ function requireBudgetScope(scope: string): asserts scope is RequestBudgetScope 
 }
 
 function requireControlScope(scope: string): asserts scope is RequestControlScope {
-  if (scope !== "global" && scope !== "rendezvous-client-pair-cooldown") {
+  if (
+    scope !== "global" &&
+    scope !== "rendezvous-client-source" &&
+    scope !== "rendezvous-client-pair-cooldown"
+  ) {
     requireBudgetScope(scope);
   }
 }

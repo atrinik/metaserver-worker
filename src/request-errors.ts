@@ -103,33 +103,13 @@ function rateLimitReason(error: RequestBudgetExceeded): HttpRateLimitReason {
   switch (error.scope) {
     case "global":
       return "global_burst";
-    case "compat-status":
-      return "compat_status_daily";
-    case "compat-directory":
-      return burst ? "compat_directory_burst" : "compat_directory_daily";
-    case "compat-otp":
-      return burst ? "compat_otp_burst" : "compat_otp_daily";
-    case "compat-update-source":
-      return burst
-        ? "compat_update_source_burst"
-        : "compat_update_source_daily";
-    case "compat-update-server":
-      return burst
-        ? "compat_update_server_burst"
-        : "compat_update_server_daily";
     case "publish-server":
     case "publish-game-server":
       return burst ? "publish_burst" : "publish_daily";
     case "rendezvous-client-source":
-      return burst
-        ? "rendezvous_client_burst"
-        : "rendezvous_client_source_daily";
-    case "rendezvous-client-source-server":
-      return "rendezvous_client_pair_daily";
+      return "rendezvous_client_burst";
     case "rendezvous-client-pair-cooldown":
       return "rendezvous_client_pair_cooldown";
-    case "rendezvous-server-source":
-      return "rendezvous_server_source_daily";
     case "rendezvous-server":
       return burst
         ? "rendezvous_server_burst"

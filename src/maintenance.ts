@@ -4,9 +4,6 @@ const MAXIMUM_BATCH_SIZE = 1_000;
 const MAXIMUM_BATCHES = 8;
 
 export const MAINTENANCE_TARGETS = [
-  "servers",
-  "one_time_tokens",
-  "rate_limits",
   "request_budgets",
   "rendezvous_pair_attempts",
   "rendezvous_pair_cooldowns",
@@ -16,9 +13,6 @@ export const MAINTENANCE_TARGETS = [
 export type MaintenanceTarget = typeof MAINTENANCE_TARGETS[number];
 
 export interface MaintenanceCutoffs {
-  readonly serversBefore: number;
-  readonly oneTimeTokensAtOrBefore: number;
-  readonly rateLimitsBefore: number;
   readonly requestBudgetsAtOrBefore: number;
   readonly rendezvousPairAtOrBefore: number;
   readonly publisherNoncesAtOrBefore: number;
@@ -57,9 +51,9 @@ interface MaintenanceStatement {
 /**
  * Delete every expirable state class in bounded, round-robin batches.
  *
- * At production bounds this performs at most 56 deletes and seven probes.
- * Round-robin ordering keeps a backlog in one legacy table from starving
- * cleanup of newer state.
+ * At production bounds this performs at most 32 deletes and four probes.
+ * Round-robin ordering keeps a backlog in one canonical state class from
+ * starving cleanup of another.
  */
 export async function cleanupExpiredState(
   database: D1Database,
@@ -156,55 +150,23 @@ function maintenanceStatements(
   }
   return [
     {
-      target: "servers",
-      cutoff: cutoffs.serversBefore,
-      deleteSql: `DELETE FROM servers
-        WHERE server_id IN (
-          SELECT server_id FROM servers
-           WHERE last_seen < ?1
-           ORDER BY last_seen
-           LIMIT ?2
-        )`,
-      probeSql: "SELECT 1 AS present FROM servers WHERE last_seen < ? LIMIT 1",
-    },
-    {
-      target: "one_time_tokens",
-      cutoff: cutoffs.oneTimeTokensAtOrBefore,
-      deleteSql: `DELETE FROM one_time_tokens
-        WHERE token_hash IN (
-          SELECT token_hash FROM one_time_tokens
-           WHERE expires_at <= ?1
-           ORDER BY expires_at
-           LIMIT ?2
-        )`,
-      probeSql:
-        "SELECT 1 AS present FROM one_time_tokens WHERE expires_at <= ? LIMIT 1",
-    },
-    {
-      target: "rate_limits",
-      cutoff: cutoffs.rateLimitsBefore,
-      deleteSql: `DELETE FROM rate_limits
-        WHERE (source_ip, scope) IN (
-          SELECT source_ip, scope FROM rate_limits
-           WHERE window_start < ?1
-           ORDER BY window_start
-           LIMIT ?2
-        )`,
-      probeSql:
-        "SELECT 1 AS present FROM rate_limits WHERE window_start < ? LIMIT 1",
-    },
-    {
       target: "request_budgets",
       cutoff: cutoffs.requestBudgetsAtOrBefore,
       deleteSql: `DELETE FROM request_budgets
         WHERE (actor_key, scope, window_start) IN (
           SELECT actor_key, scope, window_start FROM request_budgets
            WHERE expires_at <= ?1
+             AND scope IN ('publish-server', 'publish-game-server',
+                           'rendezvous-server')
            ORDER BY expires_at
            LIMIT ?2
         )`,
       probeSql:
-        "SELECT 1 AS present FROM request_budgets WHERE expires_at <= ? LIMIT 1",
+        `SELECT 1 AS present FROM request_budgets
+          WHERE expires_at <= ?
+            AND scope IN ('publish-server', 'publish-game-server',
+                          'rendezvous-server')
+          LIMIT 1`,
     },
     {
       target: "rendezvous_pair_attempts",

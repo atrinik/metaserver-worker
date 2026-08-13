@@ -3,19 +3,13 @@ import type { RequestControlDependency } from "./rate-limit";
 
 export type DiagnosticRoute =
   | "unclassified"
-  | "compat-status"
-  | "compat-directory"
-  | "compat-otp"
-  | "compat-update"
   | "publish-classic"
   | "publish-game"
   | "rendezvous-client"
-  | "rendezvous-server"
-  | "compat-rendezvous-client"
-  | "compat-rendezvous-server";
+  | "rendezvous-server";
 
-export type BlacklistDimension = "server_identity" | "request_source";
-export type BlacklistRoute = "compat-update" | "publish-classic";
+export type BlacklistDimension = "server_identity";
+export type BlacklistRoute = "publish-classic";
 export type DiagnosticHandler =
   | "fetch"
   | "publisher"

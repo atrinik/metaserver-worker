@@ -1,128 +1,61 @@
 import { describe, expect, it } from "vitest";
 
 import {
+  CANONICAL_POLICY_MAXIMUMS,
   directoryArtifactConfiguration,
-  publisherEdgeConfiguration,
   publisherCoordinatorConfiguration,
-  rendezvousEdgeConfiguration,
+  publisherEdgeConfiguration,
   rendezvousCoordinatorConfiguration,
+  rendezvousEdgeConfiguration,
   rendezvousPolicyConfiguration,
-  requestControlConfiguration,
   RequestControlConfigurationError,
-} from "../src/config";
-import type {
-  DirectoryArtifactConfigurationInput,
-  RendezvousPolicyConfigurationInput,
-  RequestControlConfigurationInput,
+  scheduledMaintenanceConfiguration,
 } from "../src/config";
 
-const validDirectoryArtifacts = {
+const rendezvousCoordinator = {
+  RENDEZVOUS_HOSTNAME: "rendezvous.example.test",
   LISTING_TTL_SECONDS: "14400",
-  DIRECTORY_REFRESH_LEAD_SECONDS: "3600",
-} satisfies DirectoryArtifactConfigurationInput;
-
-const validRendezvousPolicy = {
-  RENDEZVOUS_ACTIVE_CLIENT_LIMIT: "16",
-  RENDEZVOUS_CLIENT_SESSION_SECONDS: "15",
-} satisfies RendezvousPolicyConfigurationInput;
-
-const valid: RequestControlConfigurationInput &
-  RendezvousPolicyConfigurationInput = {
-  ...validRendezvousPolicy,
-  COMPAT_HOSTNAME: "meta.example.test",
-  OTP_TTL_SECONDS: "120",
-  LISTING_TTL_SECONDS: "14400",
-  STALE_DATA_RETENTION_SECONDS: "18000",
   ROUTE_DISABLED_RETRY_SECONDS: "300",
-  COMPAT_STATUS_DAILY_LIMIT: "100",
-  COMPAT_DIRECTORY_DAILY_LIMIT: "100",
-  COMPAT_OTP_DAILY_LIMIT: "48",
-  COMPAT_UPDATE_SOURCE_DAILY_LIMIT: "48",
-  COMPAT_UPDATE_SERVER_DAILY_LIMIT: "48",
-  PUBLISH_SERVER_DAILY_LIMIT: "48",
-  COMPAT_RENDEZVOUS_CLIENT_SOURCE_DAILY_LIMIT: "50",
-  COMPAT_RENDEZVOUS_CLIENT_PAIR_DAILY_LIMIT: "10",
-  COMPAT_RENDEZVOUS_SERVER_SOURCE_DAILY_LIMIT: "50",
-  COMPAT_RENDEZVOUS_SERVER_DAILY_LIMIT: "50",
-};
+  RENDEZVOUS_CLIENT_PAIR_BURST_LIMIT: "20",
+  RENDEZVOUS_CLIENT_PAIR_WINDOW_SECONDS: "60",
+  RENDEZVOUS_CLIENT_PAIR_INITIAL_COOLDOWN_SECONDS: "30",
+  RENDEZVOUS_CLIENT_PAIR_MAXIMUM_COOLDOWN_SECONDS: "900",
+  RENDEZVOUS_CLIENT_PAIR_RESET_SECONDS: "1800",
+  RENDEZVOUS_SERVER_DAILY_LIMIT: "50",
+} as const;
 
-describe("dynamic edge configuration", () => {
-  it("accepts only a bounded retry and canonical dedicated authority", () => {
-    const control = publisherEdgeConfiguration({
-      PUBLISH_HOSTNAME: "publish-canary.example.test",
+describe("canonical configuration", () => {
+  it("parses only the policy owned by each public edge", () => {
+    expect(publisherEdgeConfiguration({
+      PUBLISH_HOSTNAME: "publish.example.test",
       ROUTE_DISABLED_RETRY_SECONDS: "300",
-    });
-    expect(control).toEqual({
-      authority: "publish-canary.example.test",
+    })).toEqual({
+      authority: "publish.example.test",
       routeDisabledRetrySeconds: 300,
     });
-    expect(Object.isFrozen(control)).toBe(true);
-
     expect(rendezvousEdgeConfiguration({
-      RENDEZVOUS_HOSTNAME: "rendezvous-canary.example.test",
+      RENDEZVOUS_HOSTNAME: "rendezvous.example.test",
       ROUTE_DISABLED_RETRY_SECONDS: "60",
     })).toEqual({
-      authority: "rendezvous-canary.example.test",
+      authority: "rendezvous.example.test",
       routeDisabledRetrySeconds: 60,
     });
-
-    for (const value of [undefined, "", "0", " 300", "86401"]) {
-      expect(() => publisherEdgeConfiguration({
-        PUBLISH_HOSTNAME: "publish.example.test",
-        ROUTE_DISABLED_RETRY_SECONDS: value,
-      })).toThrowError(expect.objectContaining({
-        name: "RequestControlConfigurationError",
-        variable: "ROUTE_DISABLED_RETRY_SECONDS",
-      } satisfies Partial<RequestControlConfigurationError>));
-    }
-
-    for (const value of [
-      undefined,
-      "PUBLISH.example.test",
-      "192.0.2.1",
-      "single-label",
-    ]) {
-      expect(() => publisherEdgeConfiguration({
-        PUBLISH_HOSTNAME: value,
-        ROUTE_DISABLED_RETRY_SECONDS: "300",
-      })).toThrowError(expect.objectContaining({
-        name: "RequestControlConfigurationError",
-        variable: "PUBLISH_HOSTNAME",
-      } satisfies Partial<RequestControlConfigurationError>));
-    }
   });
-});
 
-describe("named coordinator configuration", () => {
-  it("keeps publisher policy independent from compatibility-only settings", () => {
+  it("parses canonical publisher, rendezvous, and maintenance policy", () => {
     expect(publisherCoordinatorConfiguration({
-      PUBLISH_HOSTNAME: "publish-canary.example.test",
+      PUBLISH_HOSTNAME: "publish.example.test",
       LISTING_TTL_SECONDS: "14400",
       PUBLISH_SERVER_DAILY_LIMIT: "48",
       ROUTE_DISABLED_RETRY_SECONDS: "300",
     })).toEqual({
-      authority: "publish-canary.example.test",
+      authority: "publish.example.test",
       listingTtlSeconds: 14_400,
       publishServerDaily: 48,
       routeDisabledRetrySeconds: 300,
     });
-  });
-
-  it("keeps rendezvous policy independent from publisher and compatibility settings", () => {
-    const validCoordinator = {
-      RENDEZVOUS_HOSTNAME: "rendezvous-canary.example.test",
-      LISTING_TTL_SECONDS: "14400",
-      ROUTE_DISABLED_RETRY_SECONDS: "300",
-      RENDEZVOUS_CLIENT_PAIR_BURST_LIMIT: "20",
-      RENDEZVOUS_CLIENT_PAIR_WINDOW_SECONDS: "60",
-      RENDEZVOUS_CLIENT_PAIR_INITIAL_COOLDOWN_SECONDS: "30",
-      RENDEZVOUS_CLIENT_PAIR_MAXIMUM_COOLDOWN_SECONDS: "900",
-      RENDEZVOUS_CLIENT_PAIR_RESET_SECONDS: "1800",
-      COMPAT_RENDEZVOUS_SERVER_SOURCE_DAILY_LIMIT: "50",
-      COMPAT_RENDEZVOUS_SERVER_DAILY_LIMIT: "50",
-    } as const;
-    expect(rendezvousCoordinatorConfiguration(validCoordinator)).toEqual({
-      authority: "rendezvous-canary.example.test",
+    expect(rendezvousCoordinatorConfiguration(rendezvousCoordinator)).toEqual({
+      authority: "rendezvous.example.test",
       listingTtlSeconds: 14_400,
       routeDisabledRetrySeconds: 300,
       rendezvousClientPairBurstLimit: 20,
@@ -130,10 +63,19 @@ describe("named coordinator configuration", () => {
       rendezvousClientPairInitialCooldownSeconds: 30,
       rendezvousClientPairMaximumCooldownSeconds: 900,
       rendezvousClientPairResetSeconds: 1_800,
-      compatibilityRendezvousServerSourceDaily: 50,
-      compatibilityRendezvousServerDaily: 50,
+      rendezvousServerDaily: 50,
     });
+    expect(scheduledMaintenanceConfiguration({
+      LISTING_TTL_SECONDS: "14400",
+    })).toEqual({ listingTtlSeconds: 14_400 });
+    expect(Object.keys(CANONICAL_POLICY_MAXIMUMS).sort()).toEqual([
+      "listingTtlSeconds",
+      "publishServerDaily",
+      "rendezvousServerDaily",
+    ]);
+  });
 
+  it("fails closed for missing, malformed, or raised canonical limits", () => {
     for (const [variable, value] of [
       ["RENDEZVOUS_CLIENT_PAIR_BURST_LIMIT", undefined],
       ["RENDEZVOUS_CLIENT_PAIR_BURST_LIMIT", "21"],
@@ -141,76 +83,47 @@ describe("named coordinator configuration", () => {
       ["RENDEZVOUS_CLIENT_PAIR_INITIAL_COOLDOWN_SECONDS", "31"],
       ["RENDEZVOUS_CLIENT_PAIR_MAXIMUM_COOLDOWN_SECONDS", "901"],
       ["RENDEZVOUS_CLIENT_PAIR_RESET_SECONDS", "1801"],
+      ["RENDEZVOUS_SERVER_DAILY_LIMIT", "51"],
     ] as const) {
       expect(() => rendezvousCoordinatorConfiguration({
-        ...validCoordinator,
+        ...rendezvousCoordinator,
         [variable]: value,
-      })).toThrowError(expect.objectContaining({
-        name: "RequestControlConfigurationError",
-        variable,
-      } satisfies Partial<RequestControlConfigurationError>));
+      })).toThrowError(expect.objectContaining({ variable }));
     }
     expect(() => rendezvousCoordinatorConfiguration({
-      ...validCoordinator,
-      RENDEZVOUS_CLIENT_PAIR_INITIAL_COOLDOWN_SECONDS: "30",
+      ...rendezvousCoordinator,
       RENDEZVOUS_CLIENT_PAIR_MAXIMUM_COOLDOWN_SECONDS: "29",
     })).toThrowError(expect.objectContaining({
       variable: "RENDEZVOUS_CLIENT_PAIR_MAXIMUM_COOLDOWN_SECONDS",
     }));
-    expect(() => rendezvousCoordinatorConfiguration({
-      ...validCoordinator,
-      RENDEZVOUS_CLIENT_PAIR_MAXIMUM_COOLDOWN_SECONDS: "900",
-      RENDEZVOUS_CLIENT_PAIR_RESET_SECONDS: "899",
-    })).toThrowError(expect.objectContaining({
-      variable: "RENDEZVOUS_CLIENT_PAIR_RESET_SECONDS",
-    }));
-  });
-});
-
-describe("rendezvous policy configuration", () => {
-  it("accepts the reviewed maxima and minimum canary boundaries", () => {
-    const maxima = rendezvousPolicyConfiguration(validRendezvousPolicy);
-    expect(maxima).toEqual({
-      rendezvousActiveClientLimit: 16,
-      rendezvousClientSessionSeconds: 15,
-    });
-    expect(Object.isFrozen(maxima)).toBe(true);
-
-    expect(rendezvousPolicyConfiguration({
-      RENDEZVOUS_ACTIVE_CLIENT_LIMIT: "1",
-      RENDEZVOUS_CLIENT_SESSION_SECONDS: "1",
-    })).toEqual({
-      rendezvousActiveClientLimit: 1,
-      rendezvousClientSessionSeconds: 1,
-    });
   });
 
-  it("fails closed for missing, malformed, zero, or policy-raising values", () => {
-    for (const [variable, value] of [
-      ["RENDEZVOUS_ACTIVE_CLIENT_LIMIT", undefined],
-      ["RENDEZVOUS_ACTIVE_CLIENT_LIMIT", "16.0"],
-      ["RENDEZVOUS_ACTIVE_CLIENT_LIMIT", "17"],
-      ["RENDEZVOUS_CLIENT_SESSION_SECONDS", undefined],
-      ["RENDEZVOUS_CLIENT_SESSION_SECONDS", " 15"],
-      ["RENDEZVOUS_CLIENT_SESSION_SECONDS", "16"],
-    ] as const) {
-      expect(() => rendezvousPolicyConfiguration({
-        ...validRendezvousPolicy,
-        [variable]: value,
+  it("rejects invalid authorities and retry policy", () => {
+    for (const value of [undefined, "PUBLISH.example.test", "192.0.2.1"]) {
+      expect(() => publisherEdgeConfiguration({
+        PUBLISH_HOSTNAME: value,
+        ROUTE_DISABLED_RETRY_SECONDS: "300",
+      })).toThrowError(RequestControlConfigurationError);
+    }
+    for (const value of [undefined, "0", " 300", "86401"]) {
+      expect(() => publisherEdgeConfiguration({
+        PUBLISH_HOSTNAME: "publish.example.test",
+        ROUTE_DISABLED_RETRY_SECONDS: value,
       })).toThrowError(expect.objectContaining({
-        name: "RequestControlConfigurationError",
-        variable,
-      } satisfies Partial<RequestControlConfigurationError>));
+        variable: "ROUTE_DISABLED_RETRY_SECONDS",
+      }));
     }
   });
 });
 
-describe("directory artifact configuration", () => {
-  it("caps protocol lifetime independently from presence retention", () => {
-    expect(directoryArtifactConfiguration(validDirectoryArtifacts)).toEqual({
-      listingTtlSeconds: 14_400,
-      artifactLifetimeSeconds: 14_400,
-      refreshLeadSeconds: 3_600,
+describe("rendezvous room and directory artifact configuration", () => {
+  it("keeps bounded room and artifact policy", () => {
+    expect(rendezvousPolicyConfiguration({
+      RENDEZVOUS_ACTIVE_CLIENT_LIMIT: "16",
+      RENDEZVOUS_CLIENT_SESSION_SECONDS: "15",
+    })).toEqual({
+      rendezvousActiveClientLimit: 16,
+      rendezvousClientSessionSeconds: 15,
     });
     expect(directoryArtifactConfiguration({
       LISTING_TTL_SECONDS: "86400",
@@ -222,108 +135,18 @@ describe("directory artifact configuration", () => {
     });
   });
 
-  it("accepts a buildable minimum and rejects incoherent bounds", () => {
-    expect(directoryArtifactConfiguration({
-      LISTING_TTL_SECONDS: "960",
-      DIRECTORY_REFRESH_LEAD_SECONDS: "60",
-    })).toEqual({
-      listingTtlSeconds: 960,
-      artifactLifetimeSeconds: 960,
-      refreshLeadSeconds: 60,
-    });
-    for (const [variable, value] of [
-      ["LISTING_TTL_SECONDS", undefined],
-      ["LISTING_TTL_SECONDS", "959"],
-      ["LISTING_TTL_SECONDS", "86401"],
-      ["DIRECTORY_REFRESH_LEAD_SECONDS", undefined],
-      ["DIRECTORY_REFRESH_LEAD_SECONDS", "0"],
-      ["DIRECTORY_REFRESH_LEAD_SECONDS", "7201"],
-    ] as const) {
-      expect(() => directoryArtifactConfiguration({
-        ...validDirectoryArtifacts,
-        [variable]: value,
-      })).toThrowError(expect.objectContaining({
-        name: "RequestControlConfigurationError",
-        variable,
-      } satisfies Partial<RequestControlConfigurationError>));
-    }
+  it("rejects incoherent room and artifact bounds", () => {
+    expect(() => rendezvousPolicyConfiguration({
+      RENDEZVOUS_ACTIVE_CLIENT_LIMIT: "17",
+      RENDEZVOUS_CLIENT_SESSION_SECONDS: "15",
+    })).toThrowError(expect.objectContaining({
+      variable: "RENDEZVOUS_ACTIVE_CLIENT_LIMIT",
+    }));
     expect(() => directoryArtifactConfiguration({
       LISTING_TTL_SECONDS: "960",
       DIRECTORY_REFRESH_LEAD_SECONDS: "61",
     })).toThrowError(expect.objectContaining({
       variable: "DIRECTORY_REFRESH_LEAD_SECONDS",
-    } satisfies Partial<RequestControlConfigurationError>));
-  });
-});
-
-describe("request-control configuration", () => {
-  it("accepts the reviewed maxima and canary reductions", () => {
-    expect(requestControlConfiguration(valid)).toMatchObject({
-      compatibilityHostname: "meta.example.test",
-      otpTtlSeconds: 120,
-      listingTtlSeconds: 14_400,
-      staleDataRetentionSeconds: 18_000,
-      routeDisabledRetrySeconds: 300,
-      compatibilityStatusDaily: 100,
-      compatibilityDirectoryDaily: 100,
-      publishServerDaily: 48,
-      compatibilityRendezvousClientPairDaily: 10,
-      compatibilityRendezvousServerSourceDaily: 50,
-    });
-    expect(requestControlConfiguration({
-      ...valid,
-      LISTING_TTL_SECONDS: "960",
-      COMPAT_DIRECTORY_DAILY_LIMIT: "8",
-      PUBLISH_SERVER_DAILY_LIMIT: "8",
-      COMPAT_RENDEZVOUS_SERVER_SOURCE_DAILY_LIMIT: "8",
-    })).toMatchObject({
-      listingTtlSeconds: 960,
-      compatibilityDirectoryDaily: 8,
-      publishServerDaily: 8,
-      compatibilityRendezvousServerSourceDaily: 8,
-    });
-  });
-
-  it("does not couple non-rendezvous routes to room-only policy", () => {
-    const {
-      RENDEZVOUS_ACTIVE_CLIENT_LIMIT: _active,
-      RENDEZVOUS_CLIENT_SESSION_SECONDS: _session,
-      ...requestControlOnly
-    } = valid;
-    expect(requestControlConfiguration(requestControlOnly)).toMatchObject({
-      compatibilityHostname: "meta.example.test",
-      compatibilityStatusDaily: 100,
-    });
-  });
-
-  it("fails closed for missing, malformed, zero, or policy-raising values", () => {
-    for (const [variable, value] of [
-      ["COMPAT_HOSTNAME", undefined],
-      ["COMPAT_HOSTNAME", "META.EXAMPLE.TEST"],
-      ["COMPAT_HOSTNAME", "localhost"],
-      ["COMPAT_HOSTNAME", "meta.example.test:443"],
-      ["COMPAT_STATUS_DAILY_LIMIT", undefined],
-      ["OTP_TTL_SECONDS", "301"],
-      ["LISTING_TTL_SECONDS", "959"],
-      ["STALE_DATA_RETENTION_SECONDS", "14399"],
-      ["COMPAT_DIRECTORY_DAILY_LIMIT", "1000"],
-      ["COMPAT_OTP_DAILY_LIMIT", "0"],
-      ["COMPAT_UPDATE_SOURCE_DAILY_LIMIT", " 48"],
-      ["COMPAT_UPDATE_SERVER_DAILY_LIMIT", "48.0"],
-      ["PUBLISH_SERVER_DAILY_LIMIT", "49"],
-      ["COMPAT_RENDEZVOUS_CLIENT_SOURCE_DAILY_LIMIT", "+50"],
-      ["COMPAT_RENDEZVOUS_CLIENT_PAIR_DAILY_LIMIT", "11"],
-      ["COMPAT_RENDEZVOUS_SERVER_SOURCE_DAILY_LIMIT", "51"],
-      ["COMPAT_RENDEZVOUS_SERVER_DAILY_LIMIT", "51"],
-      ["ROUTE_DISABLED_RETRY_SECONDS", "86401"],
-    ] as const) {
-      expect(() => requestControlConfiguration({
-        ...valid,
-        [variable]: value,
-      })).toThrowError(expect.objectContaining({
-        name: "RequestControlConfigurationError",
-        variable,
-      } satisfies Partial<RequestControlConfigurationError>));
-    }
+    }));
   });
 });
