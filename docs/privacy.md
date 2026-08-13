@@ -170,8 +170,8 @@ Automatic invocation logs are disabled. The deliberately retained custom
 diagnostics have closed, low-cardinality schemas:
 
 - `request_rejected`: closed route, public error code, and fixed status;
-- `blacklist_match`: the fixed update route and only the closed match dimension
-  (`server_identity` or `request_source`); and
+- `blacklist_match`: the closed canonical publisher route (`publish-classic` or
+  `publish-game`) and the fixed `server_identity` dimension; and
 - `unexpected_error`: closed handler/internal code and, when applicable, the
   closed request-control dependency name.
 

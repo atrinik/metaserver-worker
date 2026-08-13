@@ -526,6 +526,27 @@ describe("Game Protocol 1 signed publisher", () => {
     ).first<number>("count")).toBe(0);
   });
 
+  it("attributes a Game identity blacklist match to the Game publisher", async () => {
+    await env.DB.prepare(
+      "INSERT INTO server_blacklist (pattern, reason, created_at) VALUES (?, ?, ?)",
+    ).bind(
+      `${gamePublisherFixture.server_id.slice(0, 8)}*`,
+      "test game identity block",
+      1,
+    ).run();
+    const warning = vi.spyOn(console, "warn").mockImplementation(() => {});
+
+    const response = await callWorker(gamePublishRequest(), testEnvironment());
+
+    expect(response.status).toBe(403);
+    expect(warning).toHaveBeenCalledWith({
+      event: "blacklist_match",
+      route: "publish-game",
+      dimension: "server_identity",
+    });
+    warning.mockRestore();
+  });
+
   it("commits the protocol fixture into isolated Game state and rejects replay", async () => {
     const response = await callWorker(gamePublishRequest(), testEnvironment());
     expect(response.status).toBe(200);

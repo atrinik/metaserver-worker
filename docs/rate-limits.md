@@ -58,11 +58,9 @@ D1 directory budget. Cache/probe abuse is handled at the edge.
 Anonymous dimensions use rotating source tags. Authenticated server limits are
 applied only after authentication; a path parameter is not an authenticated
 identity. Each route has its own counter scope so one activity cannot exhaust
-another. Initial classic registration is protected by the source budget; the
-server-identity budget starts after an existing owner proves its key and
-before it consumes the one-time token. A rejected identity budget therefore
-cannot burn authentication state or mutate a listing. The signed publisher
-will authenticate every publish, including the first.
+another. The signed publisher authenticates every publish, including the first,
+before charging the server-identity budget. A rejected identity budget cannot
+consume replay state or mutate a listing.
 
 Each native limiter runs only after a request matches a valid canonical route.
 The pre-Worker WAF/raw-URI policy remains mandatory for invocation-cost control

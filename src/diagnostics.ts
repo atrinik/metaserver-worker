@@ -9,7 +9,7 @@ export type DiagnosticRoute =
   | "rendezvous-server";
 
 export type BlacklistDimension = "server_identity";
-export type BlacklistRoute = "publish-classic";
+export type BlacklistRoute = "publish-classic" | "publish-game";
 export type DiagnosticHandler =
   | "fetch"
   | "publisher"

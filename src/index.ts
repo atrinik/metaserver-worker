@@ -23,7 +23,7 @@ import {
 } from "./directory-state";
 import { DirectoryBuilder } from "./directory-builder";
 import { logBlacklistMatch, logUnexpectedError } from "./diagnostics";
-import type { DiagnosticRoute } from "./diagnostics";
+import type { BlacklistRoute, DiagnosticRoute } from "./diagnostics";
 import {
   consumePublisherCoordinatorRequest,
   consumeRendezvousAdmissionAliases,
@@ -272,7 +272,11 @@ async function publishClassicServer(
     now,
     "classic-v1",
   );
-  await enforceServerIdentityBlacklist(env, route.serverId);
+  await enforceServerIdentityBlacklist(
+    env,
+    route.serverId,
+    "publish-classic",
+  );
 
   const payload = authenticated.payload;
   const rendezvousToken = randomToken();
@@ -370,7 +374,7 @@ async function publishGameServer(
     now,
     "game-v1",
   );
-  await enforceServerIdentityBlacklist(env, route.serverId);
+  await enforceServerIdentityBlacklist(env, route.serverId, "publish-game");
 
   const payload = authenticated.payload;
   const rendezvousToken = randomToken();
@@ -629,6 +633,7 @@ async function enforceAuthenticatedPublishBudget(
 async function enforceServerIdentityBlacklist(
   env: CoreEnv,
   serverId: string,
+  route: BlacklistRoute,
 ): Promise<void> {
   const matched = await env.DB.prepare(
     `SELECT 1 AS matched
@@ -637,7 +642,7 @@ async function enforceServerIdentityBlacklist(
       LIMIT 1`,
   ).bind(serverId).first<number>("matched");
   if (matched !== null) {
-    logBlacklistMatch("publish-classic", "server_identity");
+    logBlacklistMatch(route, "server_identity");
     throw new RequestError("The server is blacklisted", 403);
   }
 }

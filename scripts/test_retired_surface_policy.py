@@ -11,6 +11,12 @@ PATTERN = re.compile(
     r"/index\.wsgi/(?:otp|update)|/v2/(?:servers|rendezvous)"
 )
 
+RETIRED_DOCUMENTATION_PATTERN = re.compile(
+    r"\bone[- ]time token\b|\binitial classic registration\b|"
+    r"\bsource budget\b|\bfixed update route\b|`request_source`",
+    re.IGNORECASE,
+)
+
 HISTORICAL_PREFIXES = (
     "migrations/",
     "scripts/test_migrations.py",
@@ -34,6 +40,23 @@ NEGATIVE_FIXTURES = {
 
 
 class RetiredSurfaceSourcePolicyTests(unittest.TestCase):
+    def test_supported_guidance_omits_retired_registration_terminology(
+        self,
+    ) -> None:
+        files = [ROOT / "README.md", ROOT / "DEPLOYMENT.md"]
+        files.extend(
+            path for path in (ROOT / "docs").rglob("*.md") if path.is_file()
+        )
+        violations: list[str] = []
+        for path in sorted(files):
+            text = path.read_text(encoding="utf-8")
+            for match in RETIRED_DOCUMENTATION_PATTERN.finditer(text):
+                line = text.count("\n", 0, match.start()) + 1
+                relative = path.relative_to(ROOT).as_posix()
+                violations.append(f"{relative}:{line}:{match.group(0)}")
+
+        self.assertEqual(violations, [])
+
     def test_legacy_identifiers_exist_only_in_history_or_negative_fixtures(
         self,
     ) -> None:
