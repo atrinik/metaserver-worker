@@ -104,9 +104,11 @@ hook, or local operator command. The machine contract is
 It validates protected production inputs, refuses migration/control-plane
 drift, resolves all bundles before mutation, returns a verified no-op for
 identical deployable input, rejects stale or competing builds, deploys directly
-and strictly in core/publisher/rendezvous order, reads back each exact 100%
-version and the final coherent topology, and runs bounded credential-free
-static and Service Binding canaries.
+and strictly through a core/publisher/rendezvous disabled-circuit cohort,
+restores callers before core, reads back each exact 100% phase and the final
+coherent active topology, and runs bounded credential-free static and Service
+Binding canaries. Newer eligible builds always supersede older ones, and child
+processes receive only the credentials required for their role.
 
 Production identifiers stay in bounded Cloudflare-owned secret configuration
 documents, never in Git or logs. Runtime secret values remain provisioned in

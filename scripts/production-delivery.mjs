@@ -11,6 +11,7 @@ const execFileAsync = promisify(execFile);
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const contractPath = resolve(root, "deployment/workers-builds-production.json");
 const shaPattern = /^[0-9a-f]{40}$/u;
+const uuidPattern = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/u;
 const placeholderPattern = /(?:^0{16,}$|\.example(?:\.|$)|placeholder)/iu;
 
 const expectedWorkerNames = [
@@ -18,11 +19,26 @@ const expectedWorkerNames = [
   "atrinik-metaserver-publisher",
   "atrinik-metaserver-rendezvous",
 ];
-const stateKeys = [
-  "d1_databases",
-  "r2_buckets",
-  "durable_objects",
-  "analytics_engine_datasets",
+const commonConfigurationKeys = [
+  "$schema", "account_id", "name", "main", "compatibility_date",
+  "compatibility_flags", "workers_dev", "preview_urls", "services",
+  "ratelimits", "secrets", "vars", "routes", "logpush", "tail_consumers",
+  "streaming_tail_consumers", "observability",
+];
+const coreConfigurationKeys = [
+  ...commonConfigurationKeys, "d1_databases", "r2_buckets", "durable_objects",
+  "analytics_engine_datasets", "exports", "triggers",
+];
+const protectedEnvironmentNames = [
+  "CLOUDFLARE_ACCOUNT_ID",
+  "CLOUDFLARE_API_TOKEN",
+  "ATRINIK_PRODUCTION_CORE_CONFIG",
+  "ATRINIK_PRODUCTION_PUBLISHER_CONFIG",
+  "ATRINIK_PRODUCTION_RENDEZVOUS_CONFIG",
+  "ATRINIK_WORKERS_BUILDS_API_TOKEN",
+  "ATRINIK_PRODUCTION_CONTROL_PLANE_READY",
+  "WRANGLER_CI_OVERRIDE_NAME",
+  "WRANGLER_CI_MATCH_TAG",
 ];
 
 class DeliveryError extends Error {}
@@ -139,6 +155,18 @@ function assertExactKeys(value, expected, label) {
     fail(`${label} has unexpected or missing fields`);
 }
 
+function assertAllowedKeys(value, allowed, label) {
+  if (!value || typeof value !== "object" || Array.isArray(value))
+    fail(`${label} must be an object`);
+  const unexpected = Object.keys(value).filter((key) => !allowed.includes(key));
+  if (unexpected.length) fail(`${label} has unsupported authority fields`);
+}
+
+function assertArrayObjectKeys(values, allowed, label) {
+  if (!Array.isArray(values)) fail(`${label} must be an array`);
+  for (const value of values) assertAllowedKeys(value, allowed, label);
+}
+
 export function validateContract(contract) {
   assertExactKeys(
     contract,
@@ -172,7 +200,7 @@ export function validateContract(contract) {
     contract.rootDirectory !== "" ||
     contract.productionBranch !== "main" ||
     contract.automaticPush !== true ||
-    contract.pathIncludes.length !== 0 ||
+    JSON.stringify(contract.pathIncludes) !== JSON.stringify(["*"]) ||
     contract.pathExcludes.length !== 0
   )
     fail("Workers Builds production trigger drift");
@@ -312,7 +340,7 @@ export function validateContract(contract) {
       JSON.stringify(["core", "publisher", "rendezvous"]) ||
     invariants.deploymentMode !== "direct-100-percent-strict" ||
     invariants.buildSerialization !==
-      "one-topology-entrypoint-with-current-main-checks" ||
+      "newest-current-main-build-owns-one-topology-entrypoint" ||
     invariants.noOp !==
       "matching-bundles-config-migrations-and-command-contract" ||
     invariants.recovery !==
@@ -353,6 +381,70 @@ function containsPlaceholder(value) {
   return false;
 }
 
+function validateConfigurationAuthority(worker, config) {
+  assertAllowedKeys(
+    config,
+    worker.role === "core" ? coreConfigurationKeys : commonConfigurationKeys,
+    `${worker.role} configuration`,
+  );
+  const expectedEntrypoints = {
+    core: "src/index.ts",
+    publisher: "src/publisher-worker.ts",
+    rendezvous: "src/rendezvous-worker.ts",
+  };
+  if (relative(root, resolve(root, config.main)) !== expectedEntrypoints[worker.role])
+    fail(`${worker.role} entrypoint drift`);
+  assertArrayObjectKeys(config.d1_databases ?? [], [
+    "binding", "database_name", "database_id", "migrations_dir",
+  ], `${worker.role} D1 binding`);
+  assertArrayObjectKeys(config.r2_buckets ?? [], [
+    "binding", "bucket_name",
+  ], `${worker.role} R2 binding`);
+  assertArrayObjectKeys(config.analytics_engine_datasets ?? [], [
+    "binding", "dataset",
+  ], `${worker.role} Analytics Engine binding`);
+  assertAllowedKeys(config.durable_objects ?? { bindings: [] }, ["bindings"],
+    `${worker.role} Durable Object configuration`);
+  assertArrayObjectKeys(config.durable_objects?.bindings ?? [], [
+    "name", "class_name",
+  ], `${worker.role} Durable Object binding`);
+  assertArrayObjectKeys(config.services ?? [], [
+    "binding", "service", "entrypoint",
+  ], `${worker.role} Service Binding`);
+  assertArrayObjectKeys(config.ratelimits ?? [], [
+    "name", "namespace_id", "simple",
+  ], `${worker.role} rate-limit binding`);
+  for (const value of config.ratelimits ?? [])
+    assertAllowedKeys(value.simple, ["limit", "period"],
+      `${worker.role} rate-limit policy`);
+  assertArrayObjectKeys(config.routes ?? [], ["pattern", "custom_domain"],
+    `${worker.role} route`);
+  assertAllowedKeys(config.secrets, ["required"], `${worker.role} secret contract`);
+  assertAllowedKeys(config.triggers ?? { crons: [] }, ["crons"],
+    `${worker.role} trigger contract`);
+  assertAllowedKeys(config.observability, ["enabled", "logs", "traces"],
+    `${worker.role} observability`);
+  assertAllowedKeys(config.observability?.logs, [
+    "enabled", "head_sampling_rate", "invocation_logs", "persist", "destinations",
+  ], `${worker.role} log observability`);
+  assertAllowedKeys(config.observability?.traces, [
+    "enabled", "head_sampling_rate", "persist", "destinations",
+  ], `${worker.role} trace observability`);
+  if (
+    config.logpush !== false ||
+    !sameJson(config.tail_consumers, []) ||
+    !sameJson(config.streaming_tail_consumers, [])
+  ) fail(`${worker.role} log or tail authority drift`);
+  const expectedExports = worker.role === "core" ? {
+    RendezvousRoom: { type: "durable-object", storage: "sqlite" },
+    DirectoryBuilder: { type: "durable-object", storage: "sqlite" },
+    PublisherCoordinator: { type: "worker", cache: { enabled: false } },
+    RendezvousCoordinator: { type: "worker", cache: { enabled: false } },
+  } : {};
+  if (!sameJson(config.exports ?? {}, expectedExports))
+    fail(`${worker.role} exports authority drift`);
+}
+
 function configBindingNames(config) {
   const bindings = [
     ...names(config, "d1_databases"),
@@ -377,6 +469,7 @@ export function validateTopology(contract, configs, { production = false } = {})
 
   for (const [index, config] of configs.entries()) {
     const worker = contract.workers[index];
+    validateConfigurationAuthority(worker, config);
     if (config.name !== worker.name) fail(`${worker.role} Worker name drift`);
     if (config.workers_dev !== false || config.preview_urls !== false)
       fail(`${worker.role} enables an alternate production URL`);
@@ -441,7 +534,7 @@ export function validateTopology(contract, configs, { production = false } = {})
     ["publisher", publisher],
     ["rendezvous", rendezvous],
   ]) {
-    if (stateKeys.some((key) => key in config) || (config.triggers?.crons ?? []).length)
+    if ((config.triggers?.crons ?? []).length)
       fail(`${role} gained state or trigger authority`);
   }
   if (
@@ -455,7 +548,7 @@ export function validateTopology(contract, configs, { production = false } = {})
 }
 
 export function parseVersionMessage(message) {
-  const match = /^atrinik-delivery-v1 source=([0-9a-f]{40}) deploy=([0-9a-f]{64}) migration=([0-9a-f]{64}) control=([0-9a-f]{64}) role=(core|publisher|rendezvous)$/u.exec(
+  const match = /^atrinik-delivery-v1 source=([0-9a-f]{40}) deploy=([0-9a-f]{64}) migration=([0-9a-f]{64}) control=([0-9a-f]{64}) role=(core|publisher|rendezvous) phase=(staged|active)$/u.exec(
     message ?? "",
   );
   return match
@@ -465,6 +558,7 @@ export function parseVersionMessage(message) {
         migration: match[3],
         control: match[4],
         role: match[5],
+        phase: match[6],
       }
     : null;
 }
@@ -488,7 +582,8 @@ export function validateSourceCoordinates(coordinates) {
   if (coordinates.head !== coordinates.sourceSha)
     fail("checkout HEAD does not match WORKERS_CI_COMMIT_SHA");
   if (coordinates.dirty) fail("production checkout is dirty");
-  if (!coordinates.buildUuid) fail("WORKERS_CI_BUILD_UUID is missing");
+  if (!uuidPattern.test(coordinates.buildUuid))
+    fail("WORKERS_CI_BUILD_UUID is missing or invalid");
   if (
     coordinates.overrideName !== expectedWorkerNames[0] ||
     typeof coordinates.matchTag !== "string" ||
@@ -518,7 +613,8 @@ export function deliveryDecision(annotations, plan, sourceSha, controlGate) {
       value?.deploy === plan.deploy &&
       value.migration === plan.migrationDigest &&
       value.control === plan.controls[index] &&
-      value.role === ["core", "publisher", "rendezvous"][index],
+      value.role === ["core", "publisher", "rendezvous"][index] &&
+      value.phase === "active",
   );
   const activeSources = new Set(annotations.map((value) => value?.source));
   const approved = controlGate === `approved:${sourceSha}`;
@@ -543,21 +639,28 @@ export function assertDeployableTopology(annotations, plan) {
         value?.deploy === plan.deploy &&
         value.migration === plan.migrationDigest &&
         value.control === plan.controls[index] &&
-        value.role === ["core", "publisher", "rendezvous"][index],
+        value.role === ["core", "publisher", "rendezvous"][index] &&
+        value.phase === "active",
     )
   )
     fail("production topology is not one coherent deployable configuration");
 }
 
-export function assertCoherentTopology(annotations, plan, sourceSha) {
+export function assertCoherentTopology(
+  annotations,
+  plan,
+  sourceSha,
+  { phase = "active", controls = plan.controls } = {},
+) {
   if (
     !annotations.every(
       (value, index) =>
         value?.source === sourceSha &&
         value.deploy === plan.deploy &&
         value.migration === plan.migrationDigest &&
-        value.control === plan.controls[index] &&
-        value.role === ["core", "publisher", "rendezvous"][index],
+        value.control === controls[index] &&
+        value.role === ["core", "publisher", "rendezvous"][index] &&
+        value.phase === phase,
     )
   )
     fail("final production topology is not one coherent source and configuration");
@@ -571,28 +674,53 @@ export async function orchestrateDelivery({
   workers,
   decision,
   fence,
-  deploy,
-  readback,
+  deployStaged,
+  readbackStaged,
+  verifyStaged,
+  deployActive,
+  readbackActive,
   verifyFinal,
   canaries,
+  recover,
   completed = () => {},
 }) {
-  if (decision === "deploy") {
-    await executeOrderedStages(workers, async (worker, index) => {
+  try {
+    if (decision === "deploy") {
+      await executeOrderedStages(workers, async (worker, index) => {
+        await fence();
+        await deployStaged(worker, index);
+        await fence();
+        await readbackStaged(worker, index);
+        completed(`staged:${worker.role ?? worker}`);
+      });
       await fence();
-      await deploy(worker, index);
-      await fence();
-      await readback(worker, index);
-      completed(worker, index);
-    });
+      await verifyStaged();
+      for (const index of [1, 2, 0]) {
+        const worker = workers[index];
+        await fence();
+        await deployActive(worker, index);
+        await fence();
+        await readbackActive(worker, index);
+        completed(`active:${worker.role ?? worker}`);
+      }
+    }
+    await fence();
+    await verifyFinal(decision);
+    await canaries();
+    await fence();
+    return decision === "deploy"
+      ? "deployed-and-read-back"
+      : "no-deployment-required";
+  } catch (error) {
+    if (decision === "deploy") {
+      try {
+        await recover(error);
+      } catch {
+        fail("production delivery stopped and disabled-circuit recovery was not proven");
+      }
+    }
+    throw error;
   }
-  await fence();
-  await verifyFinal(decision);
-  await canaries();
-  await fence();
-  return decision === "deploy"
-    ? "deployed-and-read-back"
-    : "no-deployment-required";
 }
 
 function controlPlaneView(config) {
@@ -628,16 +756,31 @@ function configurationDigest(config) {
   return sha256Json(canonicalJson(normalized));
 }
 
-export function sanitizedChildEnvironment(input) {
+export function childEnvironment(input, policy = "public") {
   const environment = { ...input };
-  delete environment.WRANGLER_CI_OVERRIDE_NAME;
-  delete environment.WRANGLER_CI_MATCH_TAG;
+  for (const name of protectedEnvironmentNames) delete environment[name];
+  if (policy === "deployment") {
+    if (input.CLOUDFLARE_ACCOUNT_ID)
+      environment.CLOUDFLARE_ACCOUNT_ID = input.CLOUDFLARE_ACCOUNT_ID;
+    if (input.CLOUDFLARE_API_TOKEN)
+      environment.CLOUDFLARE_API_TOKEN = input.CLOUDFLARE_API_TOKEN;
+  } else if (policy !== "public") {
+    fail("unknown subprocess environment policy");
+  }
   return environment;
 }
 
+export function sanitizedChildEnvironment(input) {
+  return childEnvironment(input, "deployment");
+}
+
 async function command(program, args, options = {}) {
-  const { failureCode = "subprocess-execution-failed", ...execOptions } = options;
-  const environment = sanitizedChildEnvironment(process.env);
+  const {
+    failureCode = "subprocess-execution-failed",
+    environmentPolicy = "public",
+    ...execOptions
+  } = options;
+  const environment = childEnvironment(process.env, environmentPolicy);
   try {
     return await execFileAsync(program, args, {
       cwd: root,
@@ -743,6 +886,38 @@ export async function materializeProtectedInputs(input) {
   }
 }
 
+export function disabledCircuitConfiguration(config, role) {
+  const staged = structuredClone(config);
+  const variables = {
+    core: ["PUBLISH_ENABLED", "GAME_PUBLISH_ENABLED", "RENDEZVOUS_ENABLED"],
+    publisher: ["PUBLISH_ENABLED", "GAME_PUBLISH_ENABLED"],
+    rendezvous: ["RENDEZVOUS_ENABLED"],
+  }[role];
+  if (!variables) fail("unknown Worker role for disabled-circuit staging");
+  for (const name of variables) {
+    if (!(name in (staged.vars ?? {})))
+      fail(`${role} disabled-circuit variable is missing`);
+    staged.vars[name] = "disabled";
+  }
+  return staged;
+}
+
+async function materializeStagedConfigurations(directory, configs, workers) {
+  const stagedConfigs = configs.map((config, index) =>
+    disabledCircuitConfiguration(config, workers[index].role));
+  const stagedPaths = [];
+  for (const [index, config] of stagedConfigs.entries()) {
+    const path = resolve(directory, `staged-${workers[index].role}.json`);
+    await writeFile(path, JSON.stringify(config), {
+      encoding: "utf8",
+      mode: 0o600,
+      flag: "wx",
+    });
+    stagedPaths.push(path);
+  }
+  return { stagedConfigs, stagedPaths };
+}
+
 async function migrationLedger() {
   const paths = (await readdir(resolve(root, "migrations")))
     .filter((path) => /^\d{4}_[a-z0-9_]+\.sql$/u.test(path))
@@ -785,11 +960,24 @@ async function bundleWorkers(configPaths) {
   }
 }
 
-async function buildPlan(contract, configPaths, configs, secretSets) {
+async function buildPlan(
+  contract,
+  configPaths,
+  configs,
+  secretSets,
+  stagedPaths = configPaths,
+  stagedConfigs = configs,
+) {
   const migrations = await migrationLedger();
   const bundles = await bundleWorkers(configPaths);
   const configurations = configs.map(configurationDigest);
   const controls = configs.map((config) => sha256Json(controlPlaneView(config)));
+  const stagedConfigurations = stagedConfigs.map(configurationDigest);
+  const stagedControls = stagedConfigs.map(
+    (config) => sha256Json(controlPlaneView(config)));
+  const stagedBundles = sameJson(stagedConfigs, configs)
+    ? bundles
+    : await bundleWorkers(stagedPaths);
   const migrationDigest = sha256Json(migrations);
   const deploy = sha256Json({
     schemaVersion: contract.schemaVersion,
@@ -810,13 +998,17 @@ async function buildPlan(contract, configPaths, configs, secretSets) {
     migrations,
     configurations,
     bundles,
+    stagedConfigurations,
+    stagedBundles,
     secretSets,
   });
   return {
     deploy,
     controls,
+    stagedControls,
     configurations,
     bundles,
+    stagedBundles,
     migrations,
     migrationDigest,
   };
@@ -853,7 +1045,7 @@ async function wranglerJson(configPath, args) {
     "--config",
     configPath,
     "--json",
-  ]);
+  ], { environmentPolicy: "deployment" });
   return JSON.parse(stdout);
 }
 
@@ -895,14 +1087,81 @@ export function selectBuildLeaseOwner(builds, sourceSha, triggerUuid) {
         activeBuild(build) &&
         build.trigger?.trigger_uuid === triggerUuid &&
         build.build_trigger_metadata?.branch === "main" &&
-        build.build_trigger_metadata?.commit_hash === sourceSha,
+        typeof build.build_trigger_metadata?.commit_hash === "string",
     )
     .sort((left, right) => {
       const created = String(left.created_on).localeCompare(String(right.created_on));
       return created || String(left.build_uuid).localeCompare(String(right.build_uuid));
     });
   if (eligible.length === 0) fail("no active eligible production build exists");
-  return eligible[0].build_uuid;
+  const owner = eligible.at(-1);
+  if (owner.build_trigger_metadata.commit_hash !== sourceSha)
+    fail("a newer main build supersedes this production build");
+  return owner.build_uuid;
+}
+
+export function buildLeaseDecision(builds, sourceSha, triggerUuid, buildUuid) {
+  if (selectBuildLeaseOwner(builds, sourceSha, triggerUuid) !== buildUuid)
+    fail("another main build owns the production topology lease");
+  return builds.filter(
+    (build) =>
+      build.build_uuid !== buildUuid &&
+      activeBuild(build) &&
+      build.trigger?.trigger_uuid === triggerUuid &&
+      build.build_trigger_metadata?.branch === "main",
+  );
+}
+
+export function validateBuildTrigger(contract, build, matchTag) {
+  const metadata = build.build_trigger_metadata ?? {};
+  const trigger = build.trigger ?? {};
+  const connection = trigger.repo_connection ?? {};
+  const normalizedRoot = trigger.root_directory === "/" ? "" : trigger.root_directory;
+  if (
+    metadata.build_command !== contract.installCommand ||
+    metadata.deploy_command !== contract.deployCommand ||
+    !["push", "manual", "api"].includes(metadata.build_trigger_source) ||
+    metadata.provider_type !== "github" ||
+    metadata.provider_account_name !== "atrinik" ||
+    metadata.repo_name !== "metaserver-worker" ||
+    (metadata.root_directory === "/" ? "" : metadata.root_directory) !==
+      contract.rootDirectory ||
+    metadata.environment_variables?.SKIP_DEPENDENCY_INSTALL !== "1" ||
+    trigger.build_command !== contract.installCommand ||
+    trigger.deploy_command !== contract.deployCommand ||
+    normalizedRoot !== contract.rootDirectory ||
+    !sameValues(trigger.branch_includes ?? [], [contract.productionBranch]) ||
+    !sameValues(trigger.branch_excludes ?? [], []) ||
+    !sameValues(trigger.path_includes ?? [], contract.pathIncludes) ||
+    !sameValues(trigger.path_excludes ?? [], contract.pathExcludes) ||
+    trigger.external_script_id !== matchTag ||
+    connection.provider_type !== "github" ||
+    connection.provider_account_name !== "atrinik" ||
+    connection.repo_name !== "metaserver-worker"
+  ) fail("live Workers Builds trigger drift");
+}
+
+export function validateBuildEnvironment(contract, environment) {
+  const protectedNames = [
+    contract.protectedInputs.accountVariable,
+    contract.protectedInputs.coreConfigVariable,
+    contract.protectedInputs.publisherConfigVariable,
+    contract.protectedInputs.rendezvousConfigVariable,
+    contract.protectedInputs.buildsApiTokenVariable,
+    contract.protectedInputs.controlPlaneGateVariable,
+  ];
+  if (!sameValues(Object.keys(environment), [
+    ...Object.keys(contract.buildEnvironment),
+    ...protectedNames,
+  ])) fail("live Workers Builds environment inventory drift");
+  if (
+    environment.SKIP_DEPENDENCY_INSTALL?.is_secret !== false ||
+    environment.SKIP_DEPENDENCY_INSTALL?.value !== "1"
+  ) fail("live Workers Builds bootstrap environment drift");
+  for (const name of protectedNames) {
+    if (environment[name]?.is_secret !== true || environment[name]?.value != null)
+      fail("protected Workers Builds environment classification drift");
+  }
 }
 
 async function assertBuildLease(contract, sourceSha, buildUuid) {
@@ -917,31 +1176,35 @@ async function assertBuildLease(contract, sourceSha, buildUuid) {
     { token },
   );
   const triggerUuid = self.trigger?.trigger_uuid;
+  validateBuildTrigger(contract, self, process.env.WRANGLER_CI_MATCH_TAG);
   if (
     self.build_uuid !== buildUuid ||
     !activeBuild(self) ||
     self.build_trigger_metadata?.branch !== "main" ||
     self.build_trigger_metadata?.commit_hash !== sourceSha ||
-    self.build_trigger_metadata?.build_command !== contract.installCommand ||
-    self.build_trigger_metadata?.deploy_command !== contract.deployCommand ||
     typeof triggerUuid !== "string" ||
     !triggerUuid
   )
     fail("Workers Builds execution identity or command drift");
+  validateBuildEnvironment(
+    contract,
+    await cloudflareResult(
+      accountId,
+      `/builds/triggers/${encodeURIComponent(triggerUuid)}/environment_variables`,
+      { token },
+    ),
+  );
   const builds = await cloudflareResult(
     accountId,
     `/builds/workers/${encodeURIComponent(process.env.WRANGLER_CI_MATCH_TAG)}/builds`,
     { token },
   );
   if (!Array.isArray(builds)) fail("Workers Builds lease inventory is invalid");
-  if (selectBuildLeaseOwner(builds, sourceSha, triggerUuid) !== buildUuid)
-    fail("another exact-source build owns the production topology lease");
-  const competitors = builds.filter(
-    (build) =>
-      build.build_uuid !== buildUuid &&
-      activeBuild(build) &&
-      build.trigger?.trigger_uuid === triggerUuid &&
-      build.build_trigger_metadata?.branch === "main",
+  const competitors = buildLeaseDecision(
+    builds,
+    sourceSha,
+    triggerUuid,
+    buildUuid,
   );
   for (const build of competitors)
     await cloudflareResult(
@@ -996,6 +1259,15 @@ async function readActive(configPath) {
 function remoteBindingNames(version) {
   return sorted(
     (version.resources?.bindings ?? []).map(({ name }) => name).filter(Boolean),
+  );
+}
+
+function remoteSecretNames(version) {
+  return sorted(
+    (version.resources?.bindings ?? [])
+      .filter(({ type }) => type === "secret_text")
+      .map(({ name }) => name)
+      .filter(Boolean),
   );
 }
 
@@ -1077,8 +1349,14 @@ function validateReadback(
   const parsed = parseVersionMessage(message);
   if (expectedMessage && message !== expectedMessage)
     fail(`${worker.role} version annotation does not match this deployment`);
-  if (!sameValues(remoteBindingNames(active.version), configBindingNames(config)))
-    fail(`${worker.role} remote binding inventory drift`);
+  if (
+    exact &&
+    !sameValues(remoteBindingNames(active.version), configBindingNames(config))
+  ) fail(`${worker.role} remote binding inventory drift`);
+  if (
+    !exact &&
+    !sameValues(remoteSecretNames(active.version), requiredSecrets(config))
+  ) fail(`${worker.role} remote secret inventory drift`);
   if (exact) validateRemoteBindings(worker, config, active.version);
   const runtime = active.version.resources?.script_runtime ?? {};
   if (
@@ -1155,8 +1433,14 @@ async function readRemoteMigrations(coreConfig) {
   return collectMigrationNames(result);
 }
 
-async function deployWorker(worker, configPath, sourceSha, plan) {
-  const message = `atrinik-delivery-v1 source=${sourceSha} deploy=${plan.deploy} migration=${plan.migrationDigest} control=${plan.controls[worker.order - 1]} role=${worker.role}`;
+async function deployWorker(
+  worker,
+  configPath,
+  sourceSha,
+  plan,
+  { phase = "active", controls = plan.controls } = {},
+) {
+  const message = `atrinik-delivery-v1 source=${sourceSha} deploy=${plan.deploy} migration=${plan.migrationDigest} control=${controls[worker.order - 1]} role=${worker.role} phase=${phase}`;
   await command(resolve(root, "node_modules/.bin/wrangler"), [
     "deploy",
     "--strict",
@@ -1166,7 +1450,7 @@ async function deployWorker(worker, configPath, sourceSha, plan) {
     sourceSha,
     "--message",
     message,
-  ]);
+  ], { environmentPolicy: "deployment" });
   return message;
 }
 
@@ -1229,13 +1513,14 @@ async function main() {
 
   const sourceSha = process.env.WORKERS_CI_COMMIT_SHA ?? "";
   const buildUuid = process.env.WORKERS_CI_BUILD_UUID ?? "";
+  const checkoutHead = await git("rev-parse", "HEAD");
   failureEvidence.sourceSha = shaPattern.test(sourceSha) ? sourceSha : null;
-  failureEvidence.buildUuid = buildUuid || null;
+  failureEvidence.buildUuid = uuidPattern.test(buildUuid) ? buildUuid : null;
   validateSourceCoordinates({
     workersCi: process.env.WORKERS_CI,
     branch: process.env.WORKERS_CI_BRANCH,
     sourceSha,
-    head: await git("rev-parse", "HEAD"),
+    head: checkoutHead,
     dirty: (await git("status", "--porcelain")) !== "",
     buildUuid,
     overrideName: process.env.WRANGLER_CI_OVERRIDE_NAME,
@@ -1250,6 +1535,12 @@ async function main() {
   const { configPaths } = protectedInputs;
   const configs = await Promise.all(configPaths.map(readJsonc));
   validateTopology(contract, configs, { production: true });
+  const { stagedConfigs, stagedPaths } = await materializeStagedConfigurations(
+    protectedInputs.directory,
+    configs,
+    contract.workers,
+  );
+  validateTopology(contract, stagedConfigs, { production: true });
   for (const [index, config] of configs.entries()) {
     if (config.account_id !== process.env.CLOUDFLARE_ACCOUNT_ID)
       fail(`${contract.workers[index].role} account identity drift`);
@@ -1261,7 +1552,14 @@ async function main() {
   await command("npm", ["run", "check"]);
   if ((await git("status", "--porcelain")) !== "")
     fail("repository validation changed tracked or untracked input");
-  const plan = await buildPlan(contract, configPaths, configs, secretSets);
+  const plan = await buildPlan(
+    contract,
+    configPaths,
+    configs,
+    secretSets,
+    stagedPaths,
+    stagedConfigs,
+  );
   failureEvidence.deployableDigest = plan.deploy;
   await assertCurrentMain(contract, sourceSha);
   await assertBuildLease(contract, sourceSha, buildUuid);
@@ -1292,7 +1590,9 @@ async function main() {
     sourceSha,
     process.env[input.controlPlaneGateVariable] ?? "",
   );
-  const expectedMessages = new Map();
+  const expectedStagedMessages = new Map();
+  const expectedActiveMessages = new Map();
+  let coreStaged = false;
   const fence = async () => {
     await assertCurrentMain(contract, sourceSha);
     await assertBuildLease(contract, sourceSha, buildUuid);
@@ -1301,19 +1601,62 @@ async function main() {
     workers: contract.workers,
     decision,
     fence,
-    deploy: async (worker, index) => {
-      failureEvidence.failedRole = worker.role;
-      expectedMessages.set(
+    deployStaged: async (worker, index) => {
+      failureEvidence.failedRole = `staged:${worker.role}`;
+      expectedStagedMessages.set(
+        worker.role,
+        await deployWorker(worker, stagedPaths[index], sourceSha, plan, {
+          phase: "staged",
+          controls: plan.stagedControls,
+        }),
+      );
+    },
+    readbackStaged: async (worker, index) => {
+      validateReadback(
+        worker,
+        stagedConfigs[index],
+        await readActive(stagedPaths[index]),
+        expectedStagedMessages.get(worker.role),
+      );
+      validateLiveControlPlane(
+        worker,
+        stagedConfigs[index],
+        await readLiveControlPlane(worker, process.env.CLOUDFLARE_ACCOUNT_ID),
+      );
+      if (worker.role === "core") coreStaged = true;
+    },
+    verifyStaged: async () => {
+      const annotations = [];
+      for (const [index, worker] of contract.workers.entries()) {
+        annotations.push(validateReadback(
+          worker,
+          stagedConfigs[index],
+          await readActive(stagedPaths[index]),
+        ));
+        validateLiveControlPlane(
+          worker,
+          stagedConfigs[index],
+          await readLiveControlPlane(worker, process.env.CLOUDFLARE_ACCOUNT_ID),
+        );
+      }
+      assertCoherentTopology(annotations, plan, sourceSha, {
+        phase: "staged",
+        controls: plan.stagedControls,
+      });
+    },
+    deployActive: async (worker, index) => {
+      failureEvidence.failedRole = `active:${worker.role}`;
+      expectedActiveMessages.set(
         worker.role,
         await deployWorker(worker, configPaths[index], sourceSha, plan),
       );
     },
-    readback: async (worker, index) => {
+    readbackActive: async (worker, index) => {
       validateReadback(
         worker,
         configs[index],
         await readActive(configPaths[index]),
-        expectedMessages.get(worker.role),
+        expectedActiveMessages.get(worker.role),
       );
       validateLiveControlPlane(
         worker,
@@ -1345,13 +1688,45 @@ async function main() {
       failureEvidence.failedRole = "canaries";
       await runProductionCanaries(contract);
     },
-    completed: (worker) => failureEvidence.completedRoles.push(worker.role),
+    recover: async () => {
+      if (!coreStaged) return;
+      failureEvidence.failedRole = "disabled-circuit-recovery";
+      await fence();
+      let active = await readActive(stagedPaths[0]);
+      const expected = expectedStagedMessages.get("core");
+      if (active.version.annotations?.["workers/message"] !== expected) {
+        expectedStagedMessages.set(
+          "core",
+          await deployWorker(contract.workers[0], stagedPaths[0], sourceSha, plan, {
+            phase: "staged",
+            controls: plan.stagedControls,
+          }),
+        );
+        await fence();
+        active = await readActive(stagedPaths[0]);
+      }
+      validateReadback(
+        contract.workers[0],
+        stagedConfigs[0],
+        active,
+        expectedStagedMessages.get("core"),
+      );
+      validateLiveControlPlane(
+        contract.workers[0],
+        stagedConfigs[0],
+        await readLiveControlPlane(
+          contract.workers[0],
+          process.env.CLOUDFLARE_ACCOUNT_ID,
+        ),
+      );
+    },
+    completed: (stage) => failureEvidence.completedRoles.push(stage),
   });
   console.log(
     JSON.stringify({
       outcome,
-      buildUuid,
-      sourceSha,
+      buildUuid: failureEvidence.buildUuid,
+      sourceSha: checkoutHead,
       deployableDigest: plan.deploy,
       ...(decision === "deploy"
         ? { order: contract.invariants.deploymentOrder }

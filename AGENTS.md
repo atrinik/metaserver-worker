@@ -34,8 +34,9 @@
   selects the pinned npm, runs `npm ci`, and then `npm run deploy:production`
   for every accepted `main` push. Keep its exact
   Node/npm/Wrangler pins, all-path trigger, protected-input names, migration
-  gate, no-op digest, current-main/sole-build lease, strict
-  core/publisher/rendezvous order, coherent readback, and bounded static plus
+  gate, no-op digest, newest-current-main lease, strict disabled-circuit
+  core/publisher/rendezvous staging, caller-before-core restoration, coherent
+  phase readback, least-privilege child environments, and bounded static plus
   Service Binding canaries synchronized with the implementation
   and runbook. `npm run deploy:production:dry-run` must retain zero remote
   mutation paths.

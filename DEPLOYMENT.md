@@ -31,16 +31,20 @@ ATRINIK_PRODUCTION_CORE_CONFIG
 ATRINIK_PRODUCTION_PUBLISHER_CONFIG
 ATRINIK_PRODUCTION_RENDEZVOUS_CONFIG
 ATRINIK_WORKERS_BUILDS_API_TOKEN
+CLOUDFLARE_ACCOUNT_ID
+ATRINIK_PRODUCTION_CONTROL_PLANE_READY
 ```
 
 The entrypoint materializes the configurations as owner-only temporary files
 outside the checkout, resolves only repository-contained entrypoints, and
 removes the files on every exit. The Builds API token is a separate
 user-scoped secret with Workers CI Write only; it arbitrates this production
-trigger by deterministically retaining one exact-SHA build and cancelling
-competing builds before any Worker mutation. The build also supplies the
-intended `CLOUDFLARE_ACCOUNT_ID` and
-`ATRINIK_PRODUCTION_CONTROL_PLANE_READY`. Use `routine` only while the live
+trigger by retaining the newest eligible current-main build, making every
+older build relinquish, and cancelling only older competitors before any
+Worker mutation. It also reconciles the live GitHub repository, root, core
+project tag, branch/watch filters, build/deploy commands, and exact protected
+environment inventory/classification with the checked-in contract. Use
+`routine` only while the live
 control-plane digest is unchanged. After separately authorized
 migration/DNS/WAF/domain/route/trigger, secret-rotation, resource, or ownership
 work, use `approved:<exact-current-main-SHA>` for that retry only, then restore
@@ -56,26 +60,32 @@ The entrypoint performs this fail-closed sequence:
 
 1. Require Workers Builds on `main`, a build UUID, the expected connected core
    project/tag, a clean `HEAD` equal to `WORKERS_CI_COMMIT_SHA`, and the
-   intended account; scrub Wrangler's CI name/tag override from every child.
+   intended account. Repository checks and public canaries receive no protected
+   build inputs; Wrangler receives only deployment authentication and its
+   private configuration path; the lease token remains in the parent process.
 2. Run the complete repository check; validate all three protected configs,
    exact Custom Domains, bindings, variables, secret names, unique rate
    namespaces, disabled alternate URLs, observability, cron schedules, and the
    ordered D1 ledger against live readback.
-3. Resolve all three strict dry-run bundles before mutation and hash them with
-   the configs, migrations, lockfile, commands, canaries, and contract.
+3. Resolve the desired and disabled-circuit strict dry-run bundles before
+   mutation and hash them with the configs, migrations, lockfile, commands,
+   canaries, and contract.
 4. Read back one active 100% version per Worker. If the complete deployable
    digest is already active, report `no-deployment-required`, run the bounded
    canaries, and upload nothing, avoiding a Durable Object restart.
 5. Recheck current `main` before the first upload and before and after every
-   stage; reacquire the sole active Builds lease and deploy directly with
-   `wrangler deploy --strict` in core, publisher, rendezvous order.
-6. Record exact source, deployable, migration, and control-plane digests plus
-   role in each version; verify its 100% activation, exports, runtime, and
-   binding readback before
-   continuing. Re-read the non-versioned routes, Custom Domains, subdomain,
-   schedules, runtime, observability, and declarative exports after each stage;
-   reread one coherent three-role topology, then run bounded Classic/Game
-   static-origin and publisher/rendezvous Service Binding canaries.
+   stage; reacquire the sole active Builds lease. Deploy and read back core,
+   publisher, then rendezvous with every public circuit forced disabled.
+6. Prove the staged three-role cohort is coherent. Restore the desired caller
+   configs in publisher/rendezvous order while core remains disabled, restore
+   core last, and validate every direct `wrangler deploy --strict` at 100%.
+   Thus any pre-final failure leaves or restores the core breakers disabled.
+7. Record exact source, deployable, migration, control-plane, role, and phase
+   in each version. Re-read exports, bindings, routes, Custom Domains,
+   subdomain, schedules, runtime, and observability after each stage; reread
+   one coherent active topology, then run bounded Classic/Game static-origin
+   and publisher/rendezvous Service Binding canaries. A canary/final-readback
+   failure also restores and proves the disabled core configuration.
 
 The build token needs read access to current Worker configuration and the D1
 migration ledger plus exact deployment authority for these three Workers. The
@@ -101,8 +111,9 @@ authorized prerequisite from the same revision, verify it, and manually retry
 that exact SHA through Workers Builds. The retry must still be current `main`;
 never create an empty commit or deploy from a local checkout.
 
-After a partial deployment, record the read-back prefix and fix forward from
-exact current `main`; never roll back across exports or schema. During a
+After a partial deployment, record the read-back phase/role prefix and the
+disabled-core recovery result, then fix forward from exact current `main`;
+never roll back across exports or schema. During a
 provider outage, repository validation and Semantic Release remain independent
 and the Workers Build is retried only after readback is reliable. An emergency
 manual escape requires explicit incident authorization and the exact clean

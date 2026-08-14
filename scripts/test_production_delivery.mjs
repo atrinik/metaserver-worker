@@ -5,6 +5,9 @@ import test from "node:test";
 import {
   activeVersionId,
   assertCoherentTopology,
+  buildLeaseDecision,
+  childEnvironment,
+  disabledCircuitConfiguration,
   deliveryFailureRecord,
   deliveryDecision,
   executeOrderedStages,
@@ -13,6 +16,8 @@ import {
   parseVersionMessage,
   selectBuildLeaseOwner,
   sanitizedChildEnvironment,
+  validateBuildTrigger,
+  validateBuildEnvironment,
   validateContract,
   validateLiveControlPlane,
   validateProtectedDocument,
@@ -148,7 +153,7 @@ test("rejects alternate production URLs and caller state authority", () => {
   ])
     assert.throws(
       () => validateTopology(contract, changed),
-      /alternate production URL|state or trigger authority|Service Binding drift/u,
+      /alternate production URL|state or trigger authority|Service Binding drift|unsupported authority/u,
     );
 });
 
@@ -253,13 +258,13 @@ test("version annotations bind source, deployable input, control plane, and role
   const control = "c".repeat(64);
   assert.deepEqual(
     parseVersionMessage(
-      `atrinik-delivery-v1 source=${source} deploy=${deploy} migration=${migration} control=${control} role=core`,
+      `atrinik-delivery-v1 source=${source} deploy=${deploy} migration=${migration} control=${control} role=core phase=active`,
     ),
-    { source, deploy, migration, control, role: "core" },
+    { source, deploy, migration, control, role: "core", phase: "active" },
   );
   assert.equal(
     parseVersionMessage(
-      `atrinik-delivery-v1 source=${source} deploy=${deploy} migration=${migration} control=${control} role=unknown`,
+      `atrinik-delivery-v1 source=${source} deploy=${deploy} migration=${migration} control=${control} role=unknown phase=active`,
     ),
     null,
   );
@@ -273,7 +278,7 @@ test("rejects non-main, dirty, mixed, stale, and unknown-account sources", () =>
     sourceSha: source,
     head: source,
     dirty: false,
-    buildUuid: "build-1",
+    buildUuid: "11111111-1111-1111-1111-111111111111",
     overrideName: "atrinik-metaserver",
     matchTag: "worker-tag",
     accountId: "b".repeat(32),
@@ -299,14 +304,134 @@ test("rejects non-main, dirty, mixed, stale, and unknown-account sources", () =>
 });
 
 test("scrubs Workers Builds name and tag overrides from every child", () => {
-  assert.deepEqual(
-    sanitizedChildEnvironment({
-      SAFE: "retained",
-      WRANGLER_CI_OVERRIDE_NAME: "atrinik-metaserver",
-      WRANGLER_CI_MATCH_TAG: "core-tag",
-    }),
-    { SAFE: "retained" },
+  const input = {
+    SAFE: "retained",
+    CLOUDFLARE_ACCOUNT_ID: "account",
+    CLOUDFLARE_API_TOKEN: "deploy-token",
+    ATRINIK_PRODUCTION_CORE_CONFIG: "private-config",
+    ATRINIK_WORKERS_BUILDS_API_TOKEN: "lease-token",
+    ATRINIK_PRODUCTION_CONTROL_PLANE_READY: "routine",
+    WRANGLER_CI_OVERRIDE_NAME: "atrinik-metaserver",
+    WRANGLER_CI_MATCH_TAG: "core-tag",
+  };
+  assert.deepEqual(childEnvironment(input), { SAFE: "retained" });
+  assert.deepEqual(sanitizedChildEnvironment(input), {
+    SAFE: "retained",
+    CLOUDFLARE_ACCOUNT_ID: "account",
+    CLOUDFLARE_API_TOKEN: "deploy-token",
+  });
+});
+
+test("rejects every unmodeled Wrangler authority family", () => {
+  for (const field of [
+    "kv_namespaces", "queues", "vectorize", "hyperdrive", "workflows",
+    "dispatch_namespaces", "mtls_certificates", "browser", "ai", "unsafe",
+  ]) {
+    const changed = changedConfigs((value) => {
+      value[1][field] = [];
+    });
+    assert.throws(
+      () => validateTopology(contract, changed),
+      /unsupported authority fields/u,
+    );
+  }
+  const changedNested = changedConfigs((value) => {
+    value[0].d1_databases[0].preview_database_id = "unreviewed";
+  });
+  assert.throws(
+    () => validateTopology(contract, changedNested),
+    /unsupported authority fields/u,
   );
+});
+
+test("creates an exact disabled-circuit staging topology", () => {
+  const desired = structuredClone(configs);
+  desired[0].vars.PUBLISH_ENABLED = "enabled";
+  desired[0].vars.GAME_PUBLISH_ENABLED = "enabled";
+  desired[0].vars.RENDEZVOUS_ENABLED = "enabled";
+  desired[1].vars.PUBLISH_ENABLED = "enabled";
+  desired[1].vars.GAME_PUBLISH_ENABLED = "enabled";
+  desired[2].vars.RENDEZVOUS_ENABLED = "enabled";
+  const staged = desired.map((config, index) =>
+    disabledCircuitConfiguration(config, contract.workers[index].role));
+  assert.doesNotThrow(() => validateTopology(contract, staged));
+  assert.equal(staged[0].vars.PUBLISH_ENABLED, "disabled");
+  assert.equal(staged[0].vars.GAME_PUBLISH_ENABLED, "disabled");
+  assert.equal(staged[0].vars.RENDEZVOUS_ENABLED, "disabled");
+  assert.equal(staged[1].vars.PUBLISH_ENABLED, "disabled");
+  assert.equal(staged[2].vars.RENDEZVOUS_ENABLED, "disabled");
+  assert.equal(desired[0].vars.PUBLISH_ENABLED, "enabled");
+});
+
+test("requires the live Workers Builds trigger to match the contract", () => {
+  const build = {
+    build_trigger_metadata: {
+      build_command: contract.installCommand,
+      deploy_command: contract.deployCommand,
+      build_trigger_source: "push",
+      provider_type: "github",
+      provider_account_name: "atrinik",
+      repo_name: "metaserver-worker",
+      root_directory: "/",
+      environment_variables: { SKIP_DEPENDENCY_INSTALL: "1" },
+    },
+    trigger: {
+      build_command: contract.installCommand,
+      deploy_command: contract.deployCommand,
+      root_directory: "/",
+      branch_includes: ["main"],
+      branch_excludes: [],
+      path_includes: ["*"],
+      path_excludes: [],
+      external_script_id: "worker-tag",
+      repo_connection: {
+        provider_type: "github",
+        provider_account_name: "atrinik",
+        repo_name: "metaserver-worker",
+      },
+    },
+  };
+  assert.doesNotThrow(() => validateBuildTrigger(contract, build, "worker-tag"));
+  for (const mutate of [
+    (value) => { value.trigger.path_excludes = ["docs/**"]; },
+    (value) => { value.trigger.branch_includes = ["production"]; },
+    (value) => { value.trigger.root_directory = "packages/worker"; },
+    (value) => { value.trigger.repo_connection.provider_type = "gitlab"; },
+    (value) => { value.trigger.repo_connection.repo_name = "other"; },
+    (value) => { value.build_trigger_metadata.build_trigger_source = "pull_request"; },
+  ]) {
+    const changed = structuredClone(build);
+    mutate(changed);
+    assert.throws(
+      () => validateBuildTrigger(contract, changed, "worker-tag"),
+      /trigger drift/u,
+    );
+  }
+});
+
+test("requires the exact protected Workers Builds environment", () => {
+  const environment = Object.fromEntries([
+    contract.protectedInputs.accountVariable,
+    contract.protectedInputs.coreConfigVariable,
+    contract.protectedInputs.publisherConfigVariable,
+    contract.protectedInputs.rendezvousConfigVariable,
+    contract.protectedInputs.buildsApiTokenVariable,
+    contract.protectedInputs.controlPlaneGateVariable,
+  ].map((name) => [name, { is_secret: true, value: null }]));
+  environment.SKIP_DEPENDENCY_INSTALL = { is_secret: false, value: "1" };
+  assert.doesNotThrow(() => validateBuildEnvironment(contract, environment));
+  for (const mutate of [
+    (value) => { value.SKIP_DEPENDENCY_INSTALL.value = "0"; },
+    (value) => { value[contract.protectedInputs.coreConfigVariable].is_secret = false; },
+    (value) => { value.UNREVIEWED = { is_secret: true, value: null }; },
+  ]) {
+    const changed = structuredClone(environment);
+    mutate(changed);
+    assert.throws(
+      () => validateBuildEnvironment(contract, changed),
+      /environment|classification/u,
+    );
+  }
 });
 
 test("requires an exact ordered remote migration ledger", () => {
@@ -340,7 +465,29 @@ test("selects one deterministic active exact-source build lease owner", () => {
   ];
   assert.equal(
     selectBuildLeaseOwner(builds, source, "production"),
-    "earlier",
+    "later",
+  );
+  assert.throws(
+    () => selectBuildLeaseOwner(
+      [...builds, build("new-main", "2026-08-14T20:02:00Z", "b".repeat(40))],
+      source,
+      "production",
+    ),
+    /newer main build supersedes/u,
+  );
+  assert.deepEqual(
+    buildLeaseDecision(builds, source, "production", "later")
+      .map(({ build_uuid: uuid }) => uuid),
+    ["earlier", "stale"],
+  );
+  assert.throws(
+    () => buildLeaseDecision(
+      [...builds, build("new-main", "2026-08-14T20:02:00Z", "b".repeat(40))],
+      source,
+      "production",
+      "later",
+    ),
+    /newer main build supersedes/u,
   );
 });
 
@@ -358,6 +505,7 @@ test("no-op requires one coherent active topology and control drift needs exact 
       migration: plan.migrationDigest,
       control: plan.controls[index],
       role,
+      phase: "active",
     }),
   );
   assert.equal(deliveryDecision(annotations, plan, source, "routine"), "no-op");
@@ -444,17 +592,25 @@ test("orchestrator fences every mutation, no-op, final readback, and canary boun
     workers,
     decision: "deploy",
     fence: async () => events.push("fence"),
-    deploy: async (worker) => events.push(`deploy:${worker}`),
-    readback: async (worker) => events.push(`readback:${worker}`),
+    deployStaged: async (worker) => events.push(`deploy-staged:${worker}`),
+    readbackStaged: async (worker) => events.push(`readback-staged:${worker}`),
+    verifyStaged: async () => events.push("verify-staged"),
+    deployActive: async (worker) => events.push(`deploy-active:${worker}`),
+    readbackActive: async (worker) => events.push(`readback-active:${worker}`),
     verifyFinal: async () => events.push("final"),
     canaries: async () => events.push("canaries"),
-    completed: (worker) => events.push(`completed:${worker}`),
+    recover: async () => events.push("unexpected-recovery"),
+    completed: (stage) => events.push(`completed:${stage}`),
   });
   assert.equal(outcome, "deployed-and-read-back");
   assert.deepEqual(events, [
-    "fence", "deploy:core", "fence", "readback:core", "completed:core",
-    "fence", "deploy:publisher", "fence", "readback:publisher", "completed:publisher",
-    "fence", "deploy:rendezvous", "fence", "readback:rendezvous", "completed:rendezvous",
+    "fence", "deploy-staged:core", "fence", "readback-staged:core", "completed:staged:core",
+    "fence", "deploy-staged:publisher", "fence", "readback-staged:publisher", "completed:staged:publisher",
+    "fence", "deploy-staged:rendezvous", "fence", "readback-staged:rendezvous", "completed:staged:rendezvous",
+    "fence", "verify-staged",
+    "fence", "deploy-active:publisher", "fence", "readback-active:publisher", "completed:active:publisher",
+    "fence", "deploy-active:rendezvous", "fence", "readback-active:rendezvous", "completed:active:rendezvous",
+    "fence", "deploy-active:core", "fence", "readback-active:core", "completed:active:core",
     "fence", "final", "canaries", "fence",
   ]);
 
@@ -464,37 +620,99 @@ test("orchestrator fences every mutation, no-op, final readback, and canary boun
       workers,
       decision: "no-op",
       fence: async () => noOpEvents.push("fence"),
-      deploy: async () => noOpEvents.push("unexpected-deploy"),
-      readback: async () => noOpEvents.push("unexpected-readback"),
+      deployStaged: async () => noOpEvents.push("unexpected-deploy"),
+      readbackStaged: async () => noOpEvents.push("unexpected-readback"),
+      verifyStaged: async () => noOpEvents.push("unexpected-staged"),
+      deployActive: async () => noOpEvents.push("unexpected-deploy"),
+      readbackActive: async () => noOpEvents.push("unexpected-readback"),
       verifyFinal: async () => noOpEvents.push("final"),
       canaries: async () => noOpEvents.push("canaries"),
+      recover: async () => noOpEvents.push("unexpected-recovery"),
     }),
     "no-deployment-required",
   );
   assert.deepEqual(noOpEvents, ["fence", "final", "canaries", "fence"]);
 });
 
-test("orchestrator exposes the exact safe partial prefix after every stage failure", async () => {
+test("orchestrator recovers disabled circuits after every asynchronous boundary failure", async () => {
   const workers = ["core", "publisher", "rendezvous"];
-  for (const failedRole of workers) {
+  const targets = [
+    ...Array.from({ length: 15 }, (_, index) => `fence:${index + 1}`),
+    ...workers.flatMap((worker) => [
+      `deploy-staged:${worker}`, `readback-staged:${worker}`,
+    ]),
+    "verify-staged",
+    ...["publisher", "rendezvous", "core"].flatMap((worker) => [
+      `deploy-active:${worker}`, `readback-active:${worker}`,
+    ]),
+    "final",
+    "canaries",
+  ];
+  for (const target of targets) {
     const completed = [];
+    const counts = new Map();
+    const record = (name) => {
+      const occurrence = (counts.get(name) ?? 0) + 1;
+      counts.set(name, occurrence);
+      const identity = name === "fence" ? `${name}:${occurrence}` : name;
+      if (identity === target) throw new Error("closed failure");
+    };
+    let recovered = false;
     await assert.rejects(
       orchestrateDelivery({
         workers,
         decision: "deploy",
-        fence: async () => {},
-        deploy: async (worker) => {
-          if (worker === failedRole) throw new Error("closed failure");
-        },
-        readback: async () => {},
-        verifyFinal: async () => {},
-        canaries: async () => {},
-        completed: (worker) => completed.push(worker),
+        fence: async () => record("fence"),
+        deployStaged: async (worker) => record(`deploy-staged:${worker}`),
+        readbackStaged: async (worker) => record(`readback-staged:${worker}`),
+        verifyStaged: async () => record("verify-staged"),
+        deployActive: async (worker) => record(`deploy-active:${worker}`),
+        readbackActive: async (worker) => record(`readback-active:${worker}`),
+        verifyFinal: async () => record("final"),
+        canaries: async () => record("canaries"),
+        recover: async () => { recovered = true; },
+        completed: (stage) => completed.push(stage),
       }),
       /closed failure/u,
     );
-    assert.deepEqual(completed, workers.slice(0, workers.indexOf(failedRole)));
+    assert.equal(recovered, true, target);
+    assert.equal(new Set(completed).size, completed.length, target);
   }
+});
+
+test("exact-source retry converges and a stale retry cannot mutate", async () => {
+  const workers = ["core", "publisher", "rendezvous"];
+  let first = true;
+  const completed = [];
+  const callbacks = {
+    workers,
+    decision: "deploy",
+    fence: async () => {},
+    deployStaged: async () => {},
+    readbackStaged: async () => {},
+    verifyStaged: async () => {},
+    deployActive: async (worker) => {
+      if (first && worker === "rendezvous") {
+        first = false;
+        throw new Error("partial failure");
+      }
+    },
+    readbackActive: async () => {},
+    verifyFinal: async () => {},
+    canaries: async () => {},
+    recover: async () => {},
+    completed: (stage) => completed.push(stage),
+  };
+  await assert.rejects(orchestrateDelivery(callbacks), /partial failure/u);
+  assert.equal(await orchestrateDelivery(callbacks), "deployed-and-read-back");
+
+  let mutations = 0;
+  await assert.rejects(orchestrateDelivery({
+    ...callbacks,
+    fence: async () => { throw new Error("superseded main"); },
+    deployStaged: async () => { mutations += 1; },
+  }), /superseded main/u);
+  assert.equal(mutations, 0);
 });
 
 test("accepts only bounded protected Workers Builds documents", () => {

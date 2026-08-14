@@ -5,7 +5,7 @@
   "rootDirectory": "",
   "productionBranch": "main",
   "automaticPush": true,
-  "pathIncludes": [],
+  "pathIncludes": ["*"],
   "pathExcludes": [],
   "installCommand": "npm install --global --ignore-scripts npm@11.16.0 && npm ci",
   "validationCommand": "npm run check",
@@ -194,7 +194,7 @@
     "controlPlanePolicy": "explicit-external-gate-before-upload",
     "deploymentOrder": ["core", "publisher", "rendezvous"],
     "deploymentMode": "direct-100-percent-strict",
-    "buildSerialization": "one-topology-entrypoint-with-current-main-checks",
+    "buildSerialization": "newest-current-main-build-owns-one-topology-entrypoint",
     "noOp": "matching-bundles-config-migrations-and-command-contract",
     "recovery": "disabled-circuit-fix-forward-and-exact-current-main-retry"
   }
