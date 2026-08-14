@@ -1,14 +1,89 @@
 import publisherFixture from "./fixtures/metaserver-publisher-v1.json";
 import gamePublisherFixture from "./fixtures/metaserver-game-publisher-v1.json";
+import classicV2Fixture from "./fixtures/metaserver-classic-publisher-v2.json";
 import { describe, expect, it } from "vitest";
 
 import { HttpError } from "../src/http";
 import {
   authenticateClassicPublish,
+  authenticateClassicV2Publish,
   authenticateGamePublish,
   PUBLISH_MAXIMUM_BODY_BYTES,
   readBoundedPublishBody,
 } from "../src/publisher-auth";
+
+interface ClassicV2Vector {
+  readonly body: string;
+  readonly content_digest: string;
+  readonly created: number;
+  readonly nonce: string;
+  readonly path: string;
+  readonly sequence: string;
+  readonly signature_header: string;
+  readonly signature_input: string;
+}
+
+function classicV2Request(vector: ClassicV2Vector): Request {
+  return new Request(`https://${classicV2Fixture.authority}${vector.path}`, {
+    method: "POST",
+    headers: {
+      "Atrinik-Publish-Sequence": vector.sequence,
+      "Atrinik-Server-ID": classicV2Fixture.server_id,
+      "Content-Digest": vector.content_digest,
+      "Content-Type": classicV2Fixture.content_type,
+      Signature: vector.signature_header,
+      "Signature-Input": vector.signature_input,
+    },
+    body: vector.body,
+  });
+}
+
+function requestFromSignatureBase(vector: {
+  readonly body: string;
+  readonly signature_base: string;
+  readonly signature_base64: string;
+}): Request {
+  const values = new Map<string, string>();
+  for (const line of vector.signature_base.split("\n")) {
+    const separator = line.indexOf(": ");
+    if (separator < 1) {
+      throw new Error("Protocol fixture signature base is malformed");
+    }
+    values.set(line.slice(1, separator - 1), line.slice(separator + 2));
+  }
+  const required = (name: string): string => {
+    const value = values.get(name);
+    if (value === undefined) {
+      throw new Error(`Protocol fixture omits ${name}`);
+    }
+    return value;
+  };
+  return new Request(
+    `https://${required("@authority")}${required("@path")}`,
+    {
+      method: required("@method"),
+      headers: {
+        "Atrinik-Publish-Sequence": required("atrinik-publish-sequence"),
+        "Atrinik-Server-ID": required("atrinik-server-id"),
+        "Content-Digest": required("content-digest"),
+        "Content-Type": required("content-type"),
+        Signature: `atrinik=:${vector.signature_base64}:`,
+        "Signature-Input": `atrinik=${required("@signature-params")}`,
+      },
+      body: vector.body,
+    },
+  );
+}
+
+async function authenticateClassicV2(request: Request, now: number) {
+  return authenticateClassicV2Publish(
+    request,
+    await readBoundedPublishBody(request.clone()),
+    classicV2Fixture.server_id,
+    classicV2Fixture.authority,
+    now,
+  );
+}
 
 const NOW = publisherFixture.created;
 
@@ -207,6 +282,74 @@ describe("signed publisher authentication", () => {
       "https://publish.meta.atrinik.org/",
       { method: "POST", body: "" },
     ))).rejects.toMatchObject({ code: "body_required" });
+  });
+});
+
+describe("Classic v2 protocol-owned publisher vectors", () => {
+  it("accepts every signed v2 policy and endpoint combination", async () => {
+    for (const vector of classicV2Fixture.positive) {
+      const authenticated = await authenticateClassicV2(
+        classicV2Request(vector),
+        vector.created,
+      );
+      expect(authenticated).toMatchObject({
+        sequence: vector.sequence,
+        nonce: vector.nonce,
+        payload: JSON.parse(vector.body),
+      });
+    }
+  });
+
+  it("rejects every language-neutral v2 body negative", async () => {
+    const positive = classicV2Fixture.positive[0];
+    if (positive === undefined) {
+      throw new Error("Protocol fixture omits a positive vector");
+    }
+    for (const vector of classicV2Fixture.negative) {
+      const request = classicV2Request({ ...positive, body: vector.body });
+      await expect(authenticateClassicV2(request, positive.created)).rejects
+        .toBeInstanceOf(HttpError);
+    }
+  });
+
+  it("rejects every cryptographic, identity, and route-domain negative", async () => {
+    for (const vector of classicV2Fixture.signature_negative) {
+      await expect(authenticateClassicV2(
+        requestFromSignatureBase(vector),
+        classicV2Fixture.positive[0]?.created ?? 0,
+      )).rejects.toBeInstanceOf(HttpError);
+    }
+  });
+
+  it("rejects both frozen cross-version replay directions", async () => {
+    const v1AtV2 = classicV2Fixture.cross_profile_replay.find(
+      (vector) => vector.name === "v1-at-v2",
+    );
+    const v2AtV1 = classicV2Fixture.cross_profile_replay.find(
+      (vector) => vector.name === "v2-at-v1",
+    );
+    expect(v1AtV2).toBeDefined();
+    expect(v2AtV1).toBeDefined();
+    await expect(authenticateClassicV2(
+      requestFromSignatureBase({
+        body: v1AtV2!.body,
+        signature_base: v1AtV2!.target_signature_base,
+        signature_base64: v1AtV2!.signature_base64,
+      }),
+      classicV2Fixture.positive[0]?.created ?? 0,
+    )).rejects.toBeInstanceOf(HttpError);
+    const request = requestFromSignatureBase({
+      body: v2AtV1!.body,
+      signature_base: v2AtV1!.target_signature_base,
+      signature_base64: v2AtV1!.signature_base64,
+    });
+    await expect(authenticateClassicPublish(
+      request,
+      await readBoundedPublishBody(request.clone()),
+      classicV2Fixture.server_id,
+      classicV2Fixture.authority,
+      classicV2Fixture.positive[0]?.created ?? 0,
+    )).rejects.toBeInstanceOf(HttpError);
   });
 });
 

@@ -149,13 +149,21 @@ python3 scripts/static_origin_canary.py \
   --base-url https://classic-directory-canary.example.org \
   --json
 python3 scripts/static_origin_canary.py \
+  --profile classic-v2 \
+  --base-url https://classic-v5-directory-canary.example.org \
+  --alias-prefix canary-v5 \
+  --json
+python3 scripts/static_origin_canary.py \
   --profile game-v1 \
   --base-url https://game-directory-canary.example.org \
   --json
 ```
 
 Substitute only the exact isolated hostnames from the reviewed deployment
-record. The script has no mutation path or Cloudflare credential input;
+record. The isolated v5 rule substitutes only `/canary-v5/` and the three
+`/canary-v5/index.*` paths for the root allowlist above; never add that prefix
+to the production hostname rule. The script has no mutation path or Cloudflare
+credential input;
 resource creation, ruleset changes, and teardown remain separately authorized.
 
 ## Retired-target gate
@@ -235,6 +243,8 @@ http.host eq "publish.meta.atrinik.org" and not (
     (starts_with(raw.http.request.uri.path, "/v1/servers/") and
      len(raw.http.request.uri.path) eq 84) or
     (starts_with(raw.http.request.uri.path, "/v1/classic/servers/") and
+     len(raw.http.request.uri.path) eq 92) or
+    (starts_with(raw.http.request.uri.path, "/v2/classic/servers/") and
      len(raw.http.request.uri.path) eq 92)
   ) and
   ends_with(raw.http.request.uri.path, "/publish")

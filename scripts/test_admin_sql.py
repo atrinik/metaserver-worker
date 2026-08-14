@@ -89,7 +89,7 @@ class AdminSqlTest(unittest.TestCase):
             connection.execute(
                 "SELECT profile, revision FROM directory_revisions ORDER BY profile"
             ).fetchall(),
-            [("classic-v1", 1), ("game-v1", 1)],
+            [("classic-v1", 1), ("classic-v2", 0), ("game-v1", 1)],
         )
         self.assertEqual(
             connection.execute(
@@ -124,7 +124,7 @@ class AdminSqlTest(unittest.TestCase):
             connection.execute(
                 "SELECT profile, revision FROM directory_revisions ORDER BY profile"
             ).fetchall(),
-            [("classic-v1", 0), ("game-v1", 0)],
+            [("classic-v1", 0), ("classic-v2", 0), ("game-v1", 0)],
         )
         self.assertEqual(
             connection.execute("SELECT count(*) FROM directory_outbox").fetchone(),
@@ -164,6 +164,76 @@ class AdminSqlTest(unittest.TestCase):
             connection.execute("SELECT COUNT(*) FROM server_denials").fetchone(),
             (0,),
         )
+
+    def test_global_classic_retirement_is_one_way_scoped_and_idempotent(self) -> None:
+        connection = self.database()
+        self.seed_server(connection, SERVER_ID)
+        connection.execute(
+            "INSERT INTO publisher_replay "
+            "(server_id, profile, last_sequence, last_nonce, commit_token, updated_at) "
+            "VALUES (?, 'classic-v2', '2', ?, ?, 2)",
+            (OTHER_SERVER_ID, "2" * 32, OTHER_SERVER_ID),
+        )
+        connection.execute(
+            "INSERT INTO server_presence "
+            "(profile, server_id, last_seen, rendezvous_token_hash, "
+            "rendezvous_generation) VALUES ('classic-v2', ?, 2, ?, ?)",
+            (OTHER_SERVER_ID, "e" * 64, "d" * 64),
+        )
+        connection.execute(
+            "INSERT INTO directory_entries "
+            "(profile, server_id, name, players_count, version, text_comment, "
+            "hostname, port, quic_cert_sha256, access_code_required, "
+            "directory_fingerprint) VALUES "
+            "('classic-v2', ?, 'V2', 1, '6.0', '', NULL, NULL, ?, 1, ?)",
+            (OTHER_SERVER_ID, OTHER_SERVER_ID, "c" * 64),
+        )
+        v2_before = connection.execute(
+            "SELECT * FROM publisher_replay WHERE profile = 'classic-v2'"
+        ).fetchall(), connection.execute(
+            "SELECT * FROM server_presence WHERE profile = 'classic-v2'"
+        ).fetchall(), connection.execute(
+            "SELECT * FROM directory_entries WHERE profile = 'classic-v2'"
+        ).fetchall()
+        sql = admin_sql.command_retire_classic_v1(argparse.Namespace(
+            confirm=admin_sql.CLASSIC_V1_RETIREMENT_CONFIRMATION,
+        ))
+        connection.executescript(sql)
+        connection.executescript(sql)
+
+        self.assertEqual(connection.execute(
+            "SELECT mode, activated_at IS NOT NULL FROM classic_receiver_mode"
+        ).fetchone(), ("classic-v1-retired", 1))
+        self.assertEqual(connection.execute(
+            "SELECT count(*) FROM server_presence WHERE profile = 'classic-v1'"
+        ).fetchone(), (0,))
+        self.assertEqual(connection.execute(
+            "SELECT count(*) FROM directory_entries WHERE profile = 'classic-v1'"
+        ).fetchone(), (0,))
+        self.assertEqual(connection.execute(
+            "SELECT last_sequence FROM publisher_replay "
+            "WHERE profile = 'classic-v1' AND server_id = ?", (SERVER_ID,)
+        ).fetchone(), ("1",))
+        self.assertEqual(connection.execute(
+            "SELECT revision FROM directory_revisions WHERE profile = 'classic-v1'"
+        ).fetchone(), (1,))
+        self.assertEqual(v2_before, (
+            connection.execute(
+                "SELECT * FROM publisher_replay WHERE profile = 'classic-v2'"
+            ).fetchall(),
+            connection.execute(
+                "SELECT * FROM server_presence WHERE profile = 'classic-v2'"
+            ).fetchall(),
+            connection.execute(
+                "SELECT * FROM directory_entries WHERE profile = 'classic-v2'"
+            ).fetchall(),
+        ))
+
+    def test_global_classic_retirement_requires_exact_human_gate(self) -> None:
+        with self.assertRaisesRegex(ValueError, "human acceptance"):
+            admin_sql.command_retire_classic_v1(argparse.Namespace(
+                confirm="automatic",
+            ))
 
     def test_rejects_invalid_operator_input(self) -> None:
         with self.assertRaisesRegex(ValueError, "server_id"):

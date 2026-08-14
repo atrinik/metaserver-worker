@@ -79,15 +79,21 @@ export async function openRendezvous(
 
   const cutoff = Math.floor(Date.now() / 1_000) - hooks.listingTtlSeconds;
   const server = await env.DB.prepare(
-    `SELECT entries.password_required, presence.rendezvous_token_hash,
+    `SELECT CASE entries.profile
+              WHEN 'classic-v2' THEN entries.access_code_required
+              ELSE entries.password_required
+            END AS authorization_required,
+            presence.rendezvous_token_hash,
             presence.rendezvous_generation
        FROM server_presence AS presence
        JOIN directory_entries AS entries
          ON entries.profile = presence.profile
         AND entries.server_id = presence.server_id
-      WHERE presence.profile = 'classic-v1'
+      WHERE presence.profile IN ('classic-v1', 'classic-v2')
         AND presence.server_id = ?
-        AND presence.last_seen > ?`,
+        AND presence.last_seen > ?
+      ORDER BY presence.profile = 'classic-v2' DESC
+      LIMIT 1`,
   ).bind(serverId, cutoff).first<RendezvousServerRecord>();
 
   if (server === null) {
@@ -104,7 +110,7 @@ export async function openRendezvous(
     }
     await hooks.serverAuthenticated();
   } else {
-    if (server.password_required === 1) {
+    if (server.authorization_required === 1) {
       if (!inviteProtocol) {
         return fixedError("rendezvous_authorization_unavailable");
       }
@@ -125,7 +131,7 @@ export async function openRendezvous(
           ? "classic-invite-v1"
           : "none",
         [INTERNAL_RENDEZVOUS_AUTHORIZATION_HEADER]:
-          role === "client" && server.password_required === 1
+          role === "client" && server.authorization_required === 1
             ? "required"
             : "not-required",
         [INTERNAL_RENDEZVOUS_GENERATION_HEADER]:

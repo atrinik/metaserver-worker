@@ -59,6 +59,7 @@ describe("profile-scoped directory expiry", () => {
     }
     expect(results).toEqual([
       { expiredEntries: 2, visibleChanged: true },
+      { expiredEntries: 0, visibleChanged: false },
       { expiredEntries: 1, visibleChanged: true },
     ]);
     expect(await env.DB.prepare(
@@ -71,6 +72,7 @@ describe("profile-scoped directory expiry", () => {
     ).all()).toMatchObject({
       results: [
         { profile: "classic-v1", revision: 1, updated_at: NOW },
+        { profile: "classic-v2", revision: 0, updated_at: 0 },
         { profile: "game-v1", revision: 1, updated_at: NOW },
       ],
     });
@@ -259,6 +261,7 @@ describe("profile-scoped directory expiry", () => {
     ).all()).toMatchObject({
       results: [
         { profile: "classic-v1", revision: 1 },
+        { profile: "classic-v2", revision: 0 },
         { profile: "game-v1", revision: 1 },
       ],
     });
@@ -417,6 +420,7 @@ describe("profile-scoped directory expiry", () => {
     ).all()).toMatchObject({
       results: [
         { profile: "classic-v1", revision: 2 },
+        { profile: "classic-v2", revision: 0 },
         { profile: "game-v1", revision: 2 },
       ],
     });
@@ -772,7 +776,7 @@ function publication(
     quicHost: "",
     quicPort: 1,
     quicCertSha256: serverId,
-    passwordRequired: false,
+    authorizationRequired: false,
     directoryFingerprint: discriminator.repeat(64),
   } as const;
   return profile === "classic-v1"

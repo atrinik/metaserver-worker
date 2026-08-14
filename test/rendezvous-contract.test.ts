@@ -51,7 +51,7 @@ const PUBLICATION = Object.freeze({
   quicHost: "play.example.test",
   quicPort: 1_730,
   quicCertSha256: "1".repeat(64),
-  passwordRequired: true,
+  authorizationRequired: true,
   directoryFingerprint: "5".repeat(64),
 });
 
@@ -131,8 +131,8 @@ describe("internal rendezvous upgrade contract", () => {
       authorizationRequired: false,
       generation: GENERATION,
     });
-    expect(INTERNAL_RENDEZVOUS_URL).toContain("/v2");
-    expect(INTERNAL_RENDEZVOUS_ROLE_HEADER).toContain("V2");
+    expect(INTERNAL_RENDEZVOUS_URL).toContain("/v3");
+    expect(INTERNAL_RENDEZVOUS_ROLE_HEADER).toContain("V3");
     expect(INTERNAL_RENDEZVOUS_ROLE_HEADER).not.toBe(
       LEGACY_INTERNAL_RENDEZVOUS_ROLE_HEADER,
     );
@@ -165,6 +165,16 @@ describe("internal rendezvous upgrade contract", () => {
       headers: { [LEGACY_INTERNAL_RENDEZVOUS_V1_ROLE_HEADER]: "client" },
     });
     expect(validateInternalRendezvousUpgrade(v1)).toBeNull();
+
+    const v2 = internalRequest("client", {
+      headers: { "X-Atrinik-Rendezvous-V2-Role": "client" },
+    });
+    expect(validateInternalRendezvousUpgrade(v2)).toBeNull();
+    expect(validateInternalRendezvousUpgrade(internalRequest(
+      "client",
+      {},
+      "https://rendezvous.internal/v2",
+    ))).toBeNull();
   });
 
   it("accepts only coherent invite-protocol authorization metadata", () => {
@@ -262,7 +272,7 @@ describe("internal rendezvous upgrade contract", () => {
       quicHost: "play.example.test",
       quicPort: 1_730,
       quicCertSha256: PUBLICATION.quicCertSha256,
-      passwordRequired: true,
+      authorizationRequired: true,
       directoryFingerprint: PUBLICATION.directoryFingerprint,
     } as const;
     await expect(validateInternalRendezvousPublication(

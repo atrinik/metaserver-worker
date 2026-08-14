@@ -35,10 +35,14 @@ export async function purgeDirectoryAliases(
   environment: DirectoryCachePurgeEnvironment,
   profile: DirectoryProfile,
   fetcher: PurgeFetch = fetch,
+  aliasPrefix = "",
 ): Promise<void> {
+  if (aliasPrefix !== "" && !/^[a-z0-9-]+\/$/.test(aliasPrefix)) {
+    throw new Error("Directory cache purge prefix is invalid");
+  }
   const configuration = cachePurgeConfiguration(environment, profile);
   const files = PUBLIC_ALIAS_PATHS.map((path) =>
-    `${configuration.publicOrigin}${path}`
+    `${configuration.publicOrigin}/${aliasPrefix}${path.slice(1)}`
   );
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), PURGE_TIMEOUT_MILLISECONDS);
@@ -71,7 +75,7 @@ function cachePurgeConfiguration(
 ): Readonly<{ token: string; zoneId: string; publicOrigin: string }> {
   const token = environment.DIRECTORY_CACHE_PURGE_TOKEN;
   const zoneId = environment.DIRECTORY_CACHE_ZONE_ID;
-  const publicOrigin = profile === "classic-v1"
+  const publicOrigin = profile !== "game-v1"
     ? environment.CLASSIC_DIRECTORY_PUBLIC_ORIGIN
     : environment.GAME_DIRECTORY_PUBLIC_ORIGIN;
   if (typeof token !== "string" || !TOKEN.test(token)) {

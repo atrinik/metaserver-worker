@@ -37,6 +37,7 @@ CONTENT_TYPES = {
 }
 MAXIMUM_BYTES = {
     "classic-v1": {path: 4 * 1024 * 1024 for path in PUBLIC_PATHS},
+    "classic-v2": {path: 4 * 1024 * 1024 for path in PUBLIC_PATHS},
     "game-v1": {
         "/index.html": 4 * 1024 * 1024,
         "/index.json": 262_144,
@@ -45,6 +46,7 @@ MAXIMUM_BYTES = {
 }
 SCHEMAS = {
     "classic-v1": "atrinik-classic-directory-v4",
+    "classic-v2": "atrinik-classic-directory-v5",
     "game-v1": "atrinik-directory-v1",
 }
 REQUIRED_CSP = (
@@ -167,6 +169,14 @@ def base_origin(value: str, allow_production: bool) -> tuple[str, str]:
             "canary hostname by default"
         )
     return f"https://{parsed.hostname}", parsed.hostname
+
+
+def alias_prefix(profile: str, value: str) -> str:
+    if value == "":
+        return ""
+    if profile == "classic-v2" and value == "canary-v5":
+        return "/canary-v5"
+    raise ValueError("alias prefix is invalid for the selected profile")
 
 
 def canonical_hostname(value: str) -> bool:
@@ -452,8 +462,17 @@ def render_html_endpoint(endpoint: object) -> str:
 
 
 def render_html_row(profile: str, server: Mapping[str, object]) -> str:
-    password = "required" if server["passwordRequired"] else "not required"
-    if profile == "classic-v1":
+    classic = profile != "game-v1"
+    policy_key = (
+        "accessCodeRequired" if profile == "classic-v2" else "passwordRequired"
+    )
+    protected = bool(server[policy_key])
+    policy = (
+        ("protected" if protected else "open")
+        if profile == "classic-v2"
+        else ("required" if protected else "not required")
+    )
+    if classic:
         cells = (
             f"<code>{server['serverId']}</code>",
             escape_html(server["name"]),
@@ -462,7 +481,7 @@ def render_html_row(profile: str, server: Mapping[str, object]) -> str:
             escape_html(server["textComment"]),
             f"<code>{server['certificateSha256']}</code>",
             "listed",
-            password,
+            policy,
             render_html_endpoint(server.get("endpoint")),
         )
     else:
@@ -486,7 +505,7 @@ def render_html_row(profile: str, server: Mapping[str, object]) -> str:
             f"<code>{content['revisionSha256']}</code>",
             f"{players['online']}/{players['capacity']}",
             str(server["status"]),
-            password,
+            policy,
             render_html_endpoint(server.get("endpoint")),
         )
     return "      <tr>" + "".join(f"<td>{cell}</td>" for cell in cells) + "</tr>"
@@ -499,12 +518,14 @@ def canonical_html(
     expires_at: int,
     semantic: Sequence[str],
 ) -> str:
-    classic = profile == "classic-v1"
+    classic = profile != "game-v1"
     title = "Atrinik Classic servers" if classic else "Atrinik servers"
     headings = (
         (
             "Server ID", "Name", "Version", "Players", "Comment",
-            "Certificate SHA-256", "Status", "Password", "Direct endpoint",
+            "Certificate SHA-256", "Status",
+            "Access code" if profile == "classic-v2" else "Password",
+            "Direct endpoint",
         )
         if classic
         else (
@@ -547,8 +568,13 @@ def canonical_html(
     )
 
 
-def canonical_classic_server(value: object, index: int) -> dict[str, object]:
+def canonical_classic_server(
+    value: object, index: int, profile: str = "classic-v1"
+) -> dict[str, object]:
     context = f"classic server {index}"
+    policy_key = (
+        "accessCodeRequired" if profile == "classic-v2" else "passwordRequired"
+    )
     server = exact_keys(
         value,
         (
@@ -558,7 +584,7 @@ def canonical_classic_server(value: object, index: int) -> dict[str, object]:
             "version",
             "textComment",
             "certificateSha256",
-            "passwordRequired",
+            policy_key,
         ),
         ("endpoint",),
         context,
@@ -580,8 +606,8 @@ def canonical_classic_server(value: object, index: int) -> dict[str, object]:
             server["textComment"], 0, 256, f"{context} comment"
         ),
         "certificateSha256": certificate,
-        "passwordRequired": canonical_boolean(
-            server["passwordRequired"], f"{context} password requirement"
+        policy_key: canonical_boolean(
+            server[policy_key], f"{context} access policy"
         ),
     }
     if "endpoint" in server:
@@ -695,8 +721,8 @@ def canonical_servers(
     if not isinstance(values, list) or len(values) > 512:
         fail("server collection is invalid")
     canonical = tuple(
-        canonical_classic_server(value, index)
-        if profile == "classic-v1"
+        canonical_classic_server(value, index, profile)
+        if profile != "game-v1"
         else canonical_game_server(value, index)
         for index, value in enumerate(values)
     )
@@ -736,7 +762,7 @@ def parse_json_artifact(
         fail("JSON artifact is not one complete canonical object")
     expected_keys = (
         ["schema", "protocol", "generation", "generatedAt", "expiresAt", "servers"]
-        if profile == "classic-v1"
+        if profile != "game-v1"
         else ["schema", "generation", "generatedAt", "expiresAt", "servers"]
     )
     if list(value) != expected_keys:
@@ -752,7 +778,9 @@ def parse_json_artifact(
     reject_forbidden_fields(value)
     if value.get("schema") != SCHEMAS[profile]:
         fail("JSON artifact schema is invalid")
-    if profile == "classic-v1" and value.get("protocol") != 4:
+    if profile != "game-v1" and value.get("protocol") != (
+        5 if profile == "classic-v2" else 4
+    ):
         fail("classic JSON protocol is invalid")
     generation = canonical_generation(value.get("generation"))
     generated_at = canonical_timestamp(value.get("generatedAt"), "generatedAt")
@@ -790,6 +818,7 @@ def xml_whitespace(value: str | None, context: str) -> None:
 def classic_xml_server(
     server: element_tree.Element,
     index: int,
+    profile: str = "classic-v1",
 ) -> dict[str, object]:
     context = f"classic XML server {index}"
     if server.tag != "Server":
@@ -802,9 +831,12 @@ def classic_xml_server(
     for child in children:
         xml_whitespace(child.tail, f"{context} layout")
     tags = [child.tag for child in children]
+    policy_tag = (
+        "AccessCodeRequired" if profile == "classic-v2" else "PasswordRequired"
+    )
     without_endpoint = [
         "Id", "Name", "PlayersCount", "Version", "TextComment",
-        "CertificateSha256", "PasswordRequired",
+        "CertificateSha256", policy_tag,
     ]
     with_endpoint = without_endpoint[:5] + ["Address", "Port"] + without_endpoint[5:]
     if tags not in (without_endpoint, with_endpoint):
@@ -819,8 +851,12 @@ def classic_xml_server(
         "version": values["Version"],
         "textComment": values["TextComment"],
         "certificateSha256": values["CertificateSha256"],
-        "passwordRequired": canonical_boolean_text(
-            values["PasswordRequired"], f"{context} password requirement"
+        (
+            "accessCodeRequired"
+            if profile == "classic-v2"
+            else "passwordRequired"
+        ): canonical_boolean_text(
+            values[policy_tag], f"{context} access policy"
         ),
     }
     if "Address" in values:
@@ -830,7 +866,7 @@ def classic_xml_server(
                 values["Port"], 1, 65_535, f"{context} endpoint"
             ),
         }
-    return canonical_classic_server(value, index)
+    return canonical_classic_server(value, index, profile)
 
 
 def game_xml_server(
@@ -938,14 +974,16 @@ def parse_xml_artifact(
         root = element_tree.fromstring(text)
     except element_tree.ParseError as error:
         fail(f"XML artifact is invalid: {error}")
-    expected_tag = "Servers" if profile == "classic-v1" else "directory"
+    expected_tag = "Servers" if profile != "game-v1" else "directory"
     if root.tag != expected_tag or root.attrib.get("schema") != SCHEMAS[profile]:
         fail("XML artifact root is invalid")
-    if profile == "classic-v1" and root.attrib.get("protocol") != "4":
+    if profile != "game-v1" and root.attrib.get("protocol") != (
+        "5" if profile == "classic-v2" else "4"
+    ):
         fail("classic XML protocol is invalid")
     expected_attributes = (
         ["protocol", "schema", "generation", "generated-at", "expires-at"]
-        if profile == "classic-v1"
+        if profile != "game-v1"
         else ["schema", "generation", "generated-at", "expires-at"]
     )
     if list(root.attrib) != expected_attributes:
@@ -953,8 +991,8 @@ def parse_xml_artifact(
     xml_whitespace(root.text, "XML root")
     xml_whitespace(root.tail, "XML root")
     servers = tuple(
-        classic_xml_server(server, index)
-        if profile == "classic-v1"
+        classic_xml_server(server, index, profile)
+        if profile != "game-v1"
         else game_xml_server(server, index)
         for index, server in enumerate(list(root))
     )
@@ -1007,15 +1045,25 @@ def html_endpoint(fragment: str, context: str) -> dict[str, object] | None:
     )
 
 
-def classic_html_server(cells: Sequence[str], index: int) -> dict[str, object]:
+def classic_html_server(
+    cells: Sequence[str], index: int, profile: str = "classic-v1"
+) -> dict[str, object]:
     context = f"classic HTML server {index}"
     if len(cells) != 9:
         fail(f"{context} has an invalid column count")
     if html_cell(cells[6], f"{context} status") != "listed":
         fail(f"{context} status is invalid")
-    password = html_cell(cells[7], f"{context} password")
-    if password not in ("required", "not required"):
-        fail(f"{context} password requirement is invalid")
+    policy = html_cell(cells[7], f"{context} access policy")
+    allowed_policy = (
+        ("open", "protected")
+        if profile == "classic-v2"
+        else ("required", "not required")
+    )
+    if policy not in allowed_policy:
+        fail(f"{context} access policy is invalid")
+    policy_key = (
+        "accessCodeRequired" if profile == "classic-v2" else "passwordRequired"
+    )
     value: dict[str, object] = {
         "serverId": html_cell(cells[0], f"{context} identity", code=True),
         "name": html_cell(cells[1], f"{context} name"),
@@ -1030,12 +1078,12 @@ def classic_html_server(cells: Sequence[str], index: int) -> dict[str, object]:
         "certificateSha256": html_cell(
             cells[5], f"{context} certificate", code=True
         ),
-        "passwordRequired": password == "required",
+        policy_key: policy in ("required", "protected"),
     }
     endpoint = html_endpoint(cells[8], f"{context} endpoint")
     if endpoint is not None:
         value["endpoint"] = endpoint
-    return canonical_classic_server(value, index)
+    return canonical_classic_server(value, index, profile)
 
 
 def game_html_server(cells: Sequence[str], index: int) -> dict[str, object]:
@@ -1117,8 +1165,8 @@ def parse_html_artifact(
     if len(rows) > 512:
         fail("HTML contains too many servers")
     servers = tuple(
-        classic_html_server(cells, index)
-        if profile == "classic-v1"
+        classic_html_server(cells, index, profile)
+        if profile != "game-v1"
         else game_html_server(cells, index)
         for index, cells in enumerate(rows)
     )
@@ -1377,6 +1425,7 @@ def parser() -> argparse.ArgumentParser:
     root = argparse.ArgumentParser(description=__doc__)
     root.add_argument("--profile", choices=tuple(MAXIMUM_BYTES), required=True)
     root.add_argument("--base-url", required=True)
+    root.add_argument("--alias-prefix", default="")
     root.add_argument("--timeout", type=float, default=10.0)
     root.add_argument("--convergence-seconds", type=int, default=15)
     root.add_argument("--allow-production", action="store_true")
@@ -1392,6 +1441,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         if not 1 <= args.convergence_seconds <= 300:
             raise ValueError("convergence must be between 1 and 300 seconds")
         origin, host = base_origin(args.base_url, args.allow_production)
+        origin += alias_prefix(args.profile, args.alias_prefix)
         result = verify_static_origin(
             origin,
             host,

@@ -80,7 +80,8 @@ interface DirectoryEntryRecord {
   readonly hostname: string | null;
   readonly port: number | null;
   readonly quic_cert_sha256: string;
-  readonly password_required: number;
+  readonly password_required: number | null;
+  readonly access_code_required: number | null;
   readonly last_seen: number;
 }
 
@@ -111,6 +112,10 @@ interface DirectoryModelBase {
 type DirectoryModel = DirectoryModelBase & (
   | {
       readonly profile: "classic-v1";
+      readonly servers: readonly ClassicDirectoryServer[];
+    }
+  | {
+      readonly profile: "classic-v2";
       readonly servers: readonly ClassicDirectoryServer[];
     }
   | {
@@ -264,6 +269,10 @@ export class DirectoryBuilder extends DurableObject<CoreEnv> {
     now: number,
   ): Promise<DirectoryBuildResult> {
     const configuration = directoryArtifactConfiguration(this.env);
+    const aliasPrefix = directoryAliasPrefix(
+      profile,
+      configuration.classicDirectoryCutoverMode,
+    );
     const [model, checkpoint] = await Promise.all([
       this.readModel(
         profile,
@@ -290,7 +299,7 @@ export class DirectoryBuilder extends DurableObject<CoreEnv> {
     const refreshDue = checkpoint.generation === 0 ||
       now >= checkpoint.expiresAt - configuration.refreshLeadSeconds;
     const leaseExtended = model.expiresAt > checkpoint.expiresAt;
-    const publicBucket = profile === "classic-v1"
+    const publicBucket = profile !== "game-v1"
       ? this.env.CLASSIC_DIRECTORY_PUBLIC
       : this.env.GAME_DIRECTORY_PUBLIC;
     if (!revisionChanged && checkpoint.generation > 0 &&
@@ -299,6 +308,7 @@ export class DirectoryBuilder extends DurableObject<CoreEnv> {
         publicBucket,
         profile,
         checkpoint,
+        aliasPrefix,
       );
       if (!aliasesCurrent) {
         // A missing or corrupt alias is repaired under a new generation. The
@@ -334,7 +344,10 @@ export class DirectoryBuilder extends DurableObject<CoreEnv> {
       }
     }
 
-    const observedGeneration = await readPublicGeneration(publicBucket);
+    const observedGeneration = await readPublicGeneration(
+      publicBucket,
+      aliasPrefix,
+    );
     const pending = await this.reserveBuild(
       profile,
       model,
@@ -401,14 +414,20 @@ export class DirectoryBuilder extends DurableObject<CoreEnv> {
         await this.assertFresh(pending);
         await putPublicAlias(
           publicBucket,
-          object.path.slice(1),
+          aliasPrefix + object.path.slice(1),
           object,
           profile,
           pending,
         );
         await this.assertPending(pending);
       }
-      await verifyPublishedObjects(publicBucket, objects, profile, pending);
+      await verifyPublishedObjects(
+        publicBucket,
+        objects,
+        profile,
+        pending,
+        aliasPrefix,
+      );
       await this.assertPending(pending);
     } catch (error) {
       if (error instanceof DirectoryObjectConflictError) {
@@ -513,7 +532,8 @@ export class DirectoryBuilder extends DurableObject<CoreEnv> {
                 entries.players_online, entries.players_capacity, entries.status,
                 entries.game_json_bytes, entries.hostname,
                 entries.port, entries.quic_cert_sha256,
-                entries.password_required, presence.last_seen
+                entries.password_required, entries.access_code_required,
+                presence.last_seen
            FROM directory_entries AS entries
            JOIN server_presence AS presence
              ON presence.profile = entries.profile
@@ -556,7 +576,7 @@ export class DirectoryBuilder extends DurableObject<CoreEnv> {
       revisionRecord.updated_at as number,
     );
     let expiresAt = modelGeneratedAt + artifactLifetimeSeconds;
-    const servers = profile === "classic-v1"
+    const servers = profile !== "game-v1"
       ? rows.map((row) => {
         if (!Number.isSafeInteger(row.last_seen) || row.last_seen < 0) {
           throw new Error("Directory presence timestamp is invalid");
@@ -565,6 +585,15 @@ export class DirectoryBuilder extends DurableObject<CoreEnv> {
         const endpoint = row.hostname === null && row.port === null
           ? {}
           : { endpoint: { hostname: row.hostname, port: row.port } };
+        if (
+          profile === "classic-v2"
+            ? (row.access_code_required !== 0 && row.access_code_required !== 1) ||
+              row.password_required !== null
+            : (row.password_required !== 0 && row.password_required !== 1) ||
+              row.access_code_required !== null
+        ) {
+          throw new Error("Classic directory policy is invalid");
+        }
         return {
           serverId: row.server_id,
           name: row.name,
@@ -572,7 +601,9 @@ export class DirectoryBuilder extends DurableObject<CoreEnv> {
           version: row.version,
           textComment: row.text_comment,
           certificateSha256: row.quic_cert_sha256,
-          passwordRequired: row.password_required === 1,
+          ...(profile === "classic-v2"
+            ? { accessCodeRequired: row.access_code_required === 1 }
+            : { passwordRequired: row.password_required === 1 }),
           ...endpoint,
         } as ClassicDirectoryServer;
       })
@@ -584,6 +615,12 @@ export class DirectoryBuilder extends DurableObject<CoreEnv> {
         const endpoint = row.hostname === null && row.port === null
           ? {}
           : { endpoint: { hostname: row.hostname, port: row.port } };
+        if (
+          (row.password_required !== 0 && row.password_required !== 1) ||
+          row.access_code_required !== null
+        ) {
+          throw new Error("Game directory policy is invalid");
+        }
         const server = {
           serverId: row.server_id,
           certificateSha256: row.quic_cert_sha256,
@@ -627,7 +664,7 @@ export class DirectoryBuilder extends DurableObject<CoreEnv> {
       modelSha256,
       hasPendingOutbox: (pendingOutbox as number) > 0,
     } as const;
-    return profile === "classic-v1"
+    return profile !== "game-v1"
       ? Object.freeze({
           ...model,
           profile,
@@ -786,7 +823,16 @@ export class DirectoryBuilder extends DurableObject<CoreEnv> {
     generation: number,
   ): Promise<boolean> {
     try {
-      await purgeDirectoryAliases(this.env, profile);
+      const configuration = directoryArtifactConfiguration(this.env);
+      await purgeDirectoryAliases(
+        this.env,
+        profile,
+        fetch,
+        directoryAliasPrefix(
+          profile,
+          configuration.classicDirectoryCutoverMode,
+        ),
+      );
       const checkpoint = await readDirectoryArtifactPublication(
         this.env.DB,
         profile,
@@ -964,7 +1010,7 @@ function directorySnapshot(
   model: DirectoryModel,
   pending: PendingBuild,
 ): DirectorySnapshot {
-  if (profile === "classic-v1") {
+  if (profile !== "game-v1") {
     if (model.profile !== profile) {
       throw new Error("Directory model profile is invalid");
     }
@@ -990,10 +1036,26 @@ function directorySnapshot(
   };
 }
 
-async function readPublicGeneration(bucket: R2Bucket): Promise<number> {
+export function directoryAliasPrefix(
+  profile: DirectoryProfile,
+  cutoverMode: "v4-production" | "v5-production",
+): string {
+  if (profile === "game-v1") {
+    return "";
+  }
+  if (profile === "classic-v1") {
+    return cutoverMode === "v4-production" ? "" : "precutover-v4/";
+  }
+  return cutoverMode === "v5-production" ? "" : "canary-v5/";
+}
+
+async function readPublicGeneration(
+  bucket: R2Bucket,
+  aliasPrefix: string,
+): Promise<number> {
   const heads = await Promise.all(
     ["index.html", "index.xml", "index.json", "manifest.json"].map((key) =>
-      bucket.head(key)
+      bucket.head(aliasPrefix + key)
     ),
   );
   return heads.reduce(
@@ -1009,6 +1071,7 @@ async function publishedAliasesMatch(
   bucket: R2Bucket,
   profile: DirectoryProfile,
   checkpoint: DirectoryArtifactPublication,
+  aliasPrefix: string,
 ): Promise<boolean> {
   const pending = Object.freeze({
     token: "0".repeat(64),
@@ -1021,7 +1084,7 @@ async function publishedAliasesMatch(
   const objects = checkpointObjects(profile, checkpoint);
   const representations: Array<{ etag: unknown; bodySha256: unknown }> = [];
   for (const object of objects) {
-    const head = await bucket.head(object.path.slice(1));
+    const head = await bucket.head(aliasPrefix + object.path.slice(1));
     if (head === null) {
       return false;
     }
@@ -1125,7 +1188,7 @@ function aliasPublicationOrder(
   profile: DirectoryProfile,
   objects: readonly RenderedObject[],
 ): readonly RenderedObject[] {
-  const order = profile === "classic-v1"
+  const order = profile !== "game-v1"
     ? ["html", "json", "xml", "manifest"]
     : ["html", "xml", "json", "manifest"];
   return order.map((format) => {
@@ -1369,10 +1432,11 @@ async function verifyPublishedObjects(
   objects: readonly RenderedObject[],
   profile: DirectoryProfile,
   pending: PendingBuild,
+  aliasPrefix: string,
 ): Promise<void> {
   const representations: Array<{ etag: unknown; bodySha256: unknown }> = [];
   for (const object of objects) {
-    const key = object.path.slice(1);
+    const key = aliasPrefix + object.path.slice(1);
     const head = await bucket.head(key);
     if (head === null) {
       throw new DirectoryObjectConflictError(

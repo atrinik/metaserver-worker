@@ -12,14 +12,16 @@ Classic v5.9.0 is the minimum supported metaserver consumer. The public API is
 canonical-only:
 
 - static Classic snapshots at `classic.meta.atrinik.org/index.{html,json,xml}`;
-- signed Classic publication at
-  `publish.meta.atrinik.org/v1/classic/servers/{server-id}/publish`;
+- signed Classic v1 publication at
+  `publish.meta.atrinik.org/v1/classic/servers/{server-id}/publish` during the
+  migration window, and fail-closed Classic v2 publication at
+  `publish.meta.atrinik.org/v2/classic/servers/{server-id}/publish`;
 - Classic rendezvous at
   `rendezvous.meta.atrinik.org/v1/classic/servers/{server-id}`; and
 - the independently versioned Game Protocol 1 publisher, rendezvous, and
   static snapshot contracts.
 
-The retired CGI and public `/v2` targets have no application dispatcher,
+The retired CGI and legacy generic `/v2` targets have no application dispatcher,
 redirect, fallback, or rollback path. Edge policy blocks them before Worker
 invocation. `meta.atrinik.org` remains unattached until it is enabled only as a
 static Game R2 origin. The exact route contract is documented in
@@ -46,11 +48,12 @@ separately.
 
 Rendezvous is one short, bounded signaling attempt, not a room-wide message
 bus. A client is admitted only while one authenticated server-control socket is
-live. A passwordless client's first and only `client_candidate` supplies a
-fresh client-generated ticket; a protected client supplies it in `auth_init`.
+live. An open client's first and only `client_candidate` supplies a fresh
+client-generated ticket; an access-code-protected client supplies it in
+`auth_init`.
 The room binds the ticket to that socket and makes it single-use for the rolling
 24-hour replay window. Only that socket receives matching server messages.
-A protected attempt first relays exactly one `auth_init`, `auth_challenge`,
+An access-code-protected attempt first relays exactly one `auth_init`, `auth_challenge`,
 `auth_proof`, and `auth_result`; the authenticated current server control is
 the only authority that may return `authorized: true`. No candidate is accepted
 before that result. A session lasts at most 15 seconds and can forward at most
@@ -65,12 +68,15 @@ retry counter and closing both fail, the alarm fails into Cloudflare's bounded
 platform retry policy instead of installing another alarm; neither path can
 create a self-sustaining loop.
 
-Password-protected listings accept clients only when both peers negotiate the
+Retained v1 password-protected listings accept clients only when both peers negotiate the
 exact `atrinik-classic-rendezvous-invite-v1` WebSocket subprotocol. The Worker
 relays a challenge/response for a random, expiring invite capability but never
 receives the invite secret and never interprets the proof. The classic server
 verifies the proof in constant time and returns only a generic authorization
-result. The independent in-game join password remains mandatory after QUIC.
+result. The independent v1 in-game join password remains mandatory after QUIC.
+A v2 listing instead publishes only `accessCodeRequired`; the retained
+invite-v1 wire exchange is internal access-code plumbing, and the Worker never
+receives the launch code, rendezvous secret, or post-QUIC result.
 
 ## Development
 
@@ -95,6 +101,11 @@ credential-free verifier:
 python3 scripts/static_origin_canary.py \
   --profile game-v1 \
   --base-url https://game-directory-canary.example.org \
+  --json
+python3 scripts/static_origin_canary.py \
+  --profile classic-v2 \
+  --base-url https://classic-v5-directory-canary.example.org \
+  --alias-prefix canary-v5 \
   --json
 ```
 
@@ -158,6 +169,15 @@ suppresses guessed terminal telemetry, and deletes the flag once cleanup is
 durable or the transports are closed. The client protocol requires 32 random
 ticket bytes encoded as 64 lowercase hex characters; the Worker enforces shape
 and single use but cannot prove client entropy.
+Classic v1 and v2 share one sequence/nonce lineage per certificate identity.
+The first accepted v2 publish atomically removes that identity's v1 presence,
+listing, and rendezvous generation, then durably marks it v2-only. A private
+v2 publish retains authenticated presence and server control while exposing no
+directory, endpoint, display, or policy field and admitting no client
+rendezvous. Sequence `18446744073709551615` may succeed once; every later
+publish returns fixed `publish_sequence_exhausted` without a minimum or state
+mutation.
+
 Canonical identity resets and server-ID denial changes should be generated with
 `scripts/admin_sql.py`, reviewed, and only then applied by an authorized
 operator.
@@ -253,7 +273,13 @@ the 262,144-byte protocol artifact. The independent
 domainless until the static-edge contract and live canary gates land. The Go
 producer and Rust consumer foundations are released, including opaque origin
 validator handling. Classic protocol 4 is specified in
-[docs/classic-directory-v4.md](docs/classic-directory-v4.md). Static authority
+[docs/classic-directory-v4.md](docs/classic-directory-v4.md); Classic v2
+protocol 5 is specified in
+[docs/classic-directory-v5.md](docs/classic-directory-v5.md). With
+`CLASSIC_DIRECTORY_CUTOVER_MODE=v4-production`, v5 writes only below the
+non-production `canary-v5/` prefix and cannot replace v4 aliases. The one-way
+`v5-production` setting reverses the active and pre-cutover namespaces only
+after explicit human canary acceptance. Static authority
 attachment, cache rules, headers, CORS, CSP, custom-domain isolation, and
 consumer cutover remain explicit service-split gates. R2's opaque strong ETag and alias upload
 time satisfy the released validator/`Last-Modified` model only after the live

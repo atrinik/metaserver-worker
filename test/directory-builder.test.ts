@@ -11,6 +11,7 @@ import {
   readDirectoryArtifactHistory,
   readDirectoryArtifactPublication,
 } from "../src/directory-state";
+import { directoryAliasPrefix } from "../src/directory-builder";
 import type { DirectoryBuilder } from "../src/directory-builder";
 import worker from "../src/index";
 import { persistRendezvousPublication } from "../src/rendezvous-publication";
@@ -109,12 +110,12 @@ describe("static directory builder", () => {
           EMPTY_EXPIRES_AT * 1_000,
         );
       }
-      expect((await bucket.get("index.json"))?.text()).resolves.toContain(
+      await expect((await bucket.get("index.json"))?.text()).resolves.toContain(
         '"generation":"1"',
       );
-      expect((await bucket.get("manifest.json"))?.text()).resolves
+      await expect((await bucket.get("manifest.json"))?.text()).resolves
         .not.toContain("strongEtag");
-      expect((await bucket.get("manifest.json"))?.text()).resolves.toContain(
+      await expect((await bucket.get("manifest.json"))?.text()).resolves.toContain(
         '"schema":"atrinik-directory-manifest-v2"',
       );
     }
@@ -163,6 +164,50 @@ describe("static directory builder", () => {
       revision: 1,
     });
     expect(await aliasEtags(env.CLASSIC_DIRECTORY_PUBLIC)).toEqual(before);
+  });
+
+  it("keeps v5 canary aliases disjoint from live v4 aliases", async () => {
+    await env.DIRECTORY_BUILDER.getByName("classic-v1").reconcile();
+    const rootV4 = await (await env.CLASSIC_DIRECTORY_PUBLIC.get(
+      "index.json",
+    ))?.text();
+    expect(rootV4).toContain('"schema":"atrinik-classic-directory-v4"');
+
+    const v5 = await env.DIRECTORY_BUILDER.getByName("classic-v2").reconcile();
+    expect(v5).toMatchObject({
+      profile: "classic-v2",
+      outcome: "published",
+      revision: 0,
+    });
+    expect(await (await env.CLASSIC_DIRECTORY_PUBLIC.get("index.json"))?.text())
+      .toBe(rootV4);
+    expect(await (await env.CLASSIC_DIRECTORY_PUBLIC.get(
+      "canary-v5/index.json",
+    ))?.text()).toContain(
+      '"schema":"atrinik-classic-directory-v5"',
+    );
+    expect((await env.CLASSIC_DIRECTORY_PUBLIC.list()).objects
+      .map(({ key }) => key).sort()).toEqual([
+        "canary-v5/index.html",
+        "canary-v5/index.json",
+        "canary-v5/index.xml",
+        "canary-v5/manifest.json",
+        "index.html",
+        "index.json",
+        "index.xml",
+        "manifest.json",
+      ]);
+  });
+
+  it("selects disjoint aliases on both sides of the human cutover gate", () => {
+    expect(directoryAliasPrefix("game-v1", "v4-production")).toBe("");
+    expect(directoryAliasPrefix("game-v1", "v5-production")).toBe("");
+    expect(directoryAliasPrefix("classic-v1", "v4-production")).toBe("");
+    expect(directoryAliasPrefix("classic-v2", "v4-production"))
+      .toBe("canary-v5/");
+    expect(directoryAliasPrefix("classic-v1", "v5-production"))
+      .toBe("precutover-v4/");
+    expect(directoryAliasPrefix("classic-v2", "v5-production")).toBe("");
   });
 
   it("globally purges only the changed profile aliases after publication", async () => {
@@ -1023,7 +1068,7 @@ function publication(
     quicHost: "",
     quicPort: 1,
     quicCertSha256: serverId,
-    passwordRequired: false,
+    authorizationRequired: false,
     directoryFingerprint: "9".repeat(64),
   };
 }
@@ -1059,7 +1104,7 @@ function gamePublication(
     quicHost: "play.example.org",
     quicPort: 13_327,
     quicCertSha256: serverId,
-    passwordRequired: false,
+    authorizationRequired: false,
     directoryFingerprint: "8".repeat(64),
   };
 }

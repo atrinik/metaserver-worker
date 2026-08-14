@@ -79,6 +79,10 @@ class WranglerSecurityConfigurationTests(unittest.TestCase):
             self.configuration["vars"]["GAME_DIRECTORY_PUBLIC_ORIGIN"],
             "https://meta.atrinik.org",
         )
+        self.assertEqual(
+            self.configuration["vars"]["CLASSIC_DIRECTORY_CUTOVER_MODE"],
+            "v4-production",
+        )
         self.assertRegex(
             self.configuration["vars"]["DIRECTORY_CACHE_ZONE_ID"],
             r"^[0-9a-f]{32}$",

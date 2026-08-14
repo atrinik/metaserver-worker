@@ -134,14 +134,7 @@ export function publisherServiceRequest(request: Request): Request {
  * marker Workerd adds when a Service Binding carries a streaming body.
  */
 export function consumePublisherCoordinatorRequest(request: Request): Request {
-  assertExactHeaderNames(request.headers, [
-    ...PUBLISH_FORWARD_HEADERS,
-    "Transfer-Encoding",
-  ]);
-  const transferEncoding = request.headers.get("Transfer-Encoding");
-  if (transferEncoding !== null && transferEncoding !== "chunked") {
-    throw new HttpError("bad_request");
-  }
+  validatePublisherCoordinatorRequest(request);
   const headers = new Headers(request.headers);
   headers.delete("Transfer-Encoding");
   return new Request(request.url, {
@@ -151,6 +144,18 @@ export function consumePublisherCoordinatorRequest(request: Request): Request {
     signal: request.signal,
     ...(request.body === null ? {} : { body: request.body }),
   });
+}
+
+/** Validate the fixed Service Binding envelope without consuming its body. */
+export function validatePublisherCoordinatorRequest(request: Request): void {
+  assertExactHeaderNames(request.headers, [
+    ...PUBLISH_FORWARD_HEADERS,
+    "Transfer-Encoding",
+  ]);
+  const transferEncoding = request.headers.get("Transfer-Encoding");
+  if (transferEncoding !== null && transferEncoding !== "chunked") {
+    throw new HttpError("bad_request");
+  }
 }
 
 /** Build a source-scrubbed rendezvous request with fixed internal aliases. */
@@ -301,6 +306,9 @@ export async function validatePublisherServiceResponse(
       ? JSON.stringify({
         error: { code: "publish_replay", minimumNextSequence: minimum },
       })
+      : error?.code === "publish_sequence_exhausted" &&
+          Object.keys(error).length === 1
+      ? JSON.stringify({ error: { code: "publish_sequence_exhausted" } })
       : null;
     const headers = jsonResponseHeaders();
     if (
@@ -309,6 +317,17 @@ export async function validatePublisherServiceResponse(
       serviceResponseHeadersEqual(response.headers, headers, body)
     ) {
       return new Response(canonical, { status: 409, headers });
+    }
+  }
+
+  if (response.status === 410) {
+    const canonical = JSON.stringify({ error: { code: "profile_retired" } });
+    const headers = jsonResponseHeaders();
+    if (
+      body === canonical &&
+      serviceResponseHeadersEqual(response.headers, headers, body)
+    ) {
+      return new Response(canonical, { status: 410, headers });
     }
   }
 

@@ -26,6 +26,7 @@ const CRITICAL_HEADERS = [
 ] as const;
 
 export type ProtocolGeneration = "game-protocol-1" | "classic";
+export type PublisherProfile = "classic-v1" | "classic-v2" | "game-v1";
 export type RendezvousRole = "client" | "server";
 export type ClassicRendezvousSubprotocol =
   typeof CLASSIC_RENDEZVOUS_INVITE_SUBPROTOCOL;
@@ -46,6 +47,7 @@ export type CanonicalDynamicRoute =
   | {
       readonly kind: "publish";
       readonly generation: ProtocolGeneration;
+      readonly publisherProfile: PublisherProfile;
       readonly serverId: string;
       readonly authority: string;
       readonly maximumBodyBytes: typeof PUBLISH_MAX_BODY_BYTES;
@@ -141,6 +143,7 @@ function classifyPublisher(
   return {
     kind: "publish",
     generation: route.generation,
+    publisherProfile: route.publisherProfile,
     serverId: route.serverId,
     authority,
     maximumBodyBytes: PUBLISH_MAX_BODY_BYTES,
@@ -216,14 +219,32 @@ function parseTarget(target: string): ParsedTarget {
 function matchCanonicalServerPath(
   path: string,
   publish: boolean,
-): { readonly generation: ProtocolGeneration; readonly serverId: string } | null {
+): {
+  readonly generation: ProtocolGeneration;
+  readonly publisherProfile: PublisherProfile;
+  readonly serverId: string;
+} | null {
   const suffix = publish ? "/publish" : "";
   const game = new RegExp(`^/v1/servers/([^/]+)${suffix}$`).exec(path);
   if (game !== null) {
     return {
       generation: "game-protocol-1",
+      publisherProfile: "game-v1",
       serverId: validateServerId(game[1]),
     };
+  }
+
+  if (publish) {
+    const classicV2 = new RegExp(
+      `^/v2/classic/servers/([^/]+)${suffix}$`,
+    ).exec(path);
+    if (classicV2 !== null) {
+      return {
+        generation: "classic",
+        publisherProfile: "classic-v2",
+        serverId: validateServerId(classicV2[1]),
+      };
+    }
   }
 
   const classic = new RegExp(
@@ -232,6 +253,7 @@ function matchCanonicalServerPath(
   if (classic !== null) {
     return {
       generation: "classic",
+      publisherProfile: "classic-v1",
       serverId: validateServerId(classic[1]),
     };
   }

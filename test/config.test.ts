@@ -126,9 +126,11 @@ describe("rendezvous room and directory artifact configuration", () => {
       rendezvousClientSessionSeconds: 15,
     });
     expect(directoryArtifactConfiguration({
+      CLASSIC_DIRECTORY_CUTOVER_MODE: "v4-production",
       LISTING_TTL_SECONDS: "86400",
       DIRECTORY_REFRESH_LEAD_SECONDS: "7200",
     })).toEqual({
+      classicDirectoryCutoverMode: "v4-production",
       listingTtlSeconds: 86_400,
       artifactLifetimeSeconds: 14_400,
       refreshLeadSeconds: 7_200,
@@ -143,10 +145,18 @@ describe("rendezvous room and directory artifact configuration", () => {
       variable: "RENDEZVOUS_ACTIVE_CLIENT_LIMIT",
     }));
     expect(() => directoryArtifactConfiguration({
+      CLASSIC_DIRECTORY_CUTOVER_MODE: "v4-production",
       LISTING_TTL_SECONDS: "960",
       DIRECTORY_REFRESH_LEAD_SECONDS: "61",
     })).toThrowError(expect.objectContaining({
       variable: "DIRECTORY_REFRESH_LEAD_SECONDS",
+    }));
+    expect(() => directoryArtifactConfiguration({
+      CLASSIC_DIRECTORY_CUTOVER_MODE: "canary",
+      LISTING_TTL_SECONDS: "86400",
+      DIRECTORY_REFRESH_LEAD_SECONDS: "7200",
+    })).toThrowError(expect.objectContaining({
+      variable: "CLASSIC_DIRECTORY_CUTOVER_MODE",
     }));
   });
 });

@@ -59,8 +59,12 @@ Anonymous dimensions use rotating source tags. Authenticated server limits are
 applied only after authentication; a path parameter is not an authenticated
 identity. Each route has its own counter scope so one activity cannot exhaust
 another. The signed publisher authenticates every publish, including the first,
-before charging the server-identity budget. A rejected identity budget cannot
-consume replay state or mutate a listing.
+before charging the server-identity budget. Classic v1 and v2 share one
+identity budget and one replay lineage: changing routes cannot reset sequence
+or nonce history. Game remains independent. A rejected identity budget cannot
+consume replay state or mutate a listing. Once a Classic lineage accepts the
+unsigned-64 maximum, later v1 or v2 requests return
+`publish_sequence_exhausted` without a minimum or mutation.
 
 Each native limiter runs only after a request matches a valid canonical route.
 The pre-Worker WAF/raw-URI policy remains mandatory for invocation-cost control
@@ -97,7 +101,7 @@ One accepted client attempt is also constrained as follows:
 
 A client is admitted only when one authenticated server-control socket is live.
 The single client candidate introduces a fresh client-generated 64-hex ticket
-for a passwordless attempt. A protected attempt introduces it in `auth_init`
+for an open attempt. An access-code-protected attempt introduces it in `auth_init`
 and permits no candidate until the authenticated server completes the exact
 four-frame invite authorization exchange. The room binds it to that client
 socket and rejects duplicate, replayed, or

@@ -134,10 +134,10 @@ function generationPublicationRequest(
   serverId: string,
   expectedGeneration: string,
   generation: string,
-  directoryProfile: "classic-v1" | "game-v1" = "classic-v1",
+  directoryProfile: "classic-v1" | "classic-v2" | "game-v1" = "classic-v1",
 ): Request {
   const publisherSequence = BigInt(`0x${generation.slice(0, 16)}`).toString();
-  const profileFields = directoryProfile === "classic-v1"
+  const profileFields = directoryProfile !== "game-v1"
     ? {
         playersCount: 0,
         version: "4.0.0",
@@ -175,7 +175,7 @@ function generationPublicationRequest(
       quicHost: "",
       quicPort: 1,
       quicCertSha256: serverId,
-      passwordRequired: true,
+      authorizationRequired: true,
       directoryFingerprint: "c".repeat(64),
     }),
   });

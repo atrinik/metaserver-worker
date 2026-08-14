@@ -101,6 +101,7 @@
     "DIRECTORY_CACHE_ZONE_ID": "00000000000000000000000000000000",
     "CLASSIC_DIRECTORY_PUBLIC_ORIGIN": "https://classic.meta.atrinik.org",
     "GAME_DIRECTORY_PUBLIC_ORIGIN": "https://meta.atrinik.org",
+    "CLASSIC_DIRECTORY_CUTOVER_MODE": "v4-production",
     "PUBLISH_HOSTNAME": "publish.meta.atrinik.org",
     "RENDEZVOUS_HOSTNAME": "rendezvous.meta.atrinik.org",
     "PUBLISH_ENABLED": "disabled",

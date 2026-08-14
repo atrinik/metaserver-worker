@@ -29,6 +29,9 @@ RENDEZVOUS_COOLDOWN_MIGRATION = (
 LEGACY_STORAGE_REMOVAL_MIGRATION = (
     REPOSITORY_ROOT / "migrations" / "0009_remove_legacy_storage.sql"
 )
+CLASSIC_ACCESS_CODE_MIGRATION = (
+    REPOSITORY_ROOT / "migrations" / "0010_classic_access_code.sql"
+)
 
 
 class RequestControlMigrationTests(unittest.TestCase):
@@ -1797,6 +1800,155 @@ class LegacyStorageRemovalMigrationTests(unittest.TestCase):
         self.assertIsNone(self.database.execute(
             "SELECT 1 FROM publisher_nonces WHERE server_id = ?", (classic_id,)
         ).fetchone())
+
+
+class ClassicAccessCodeMigrationTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.database = sqlite3.connect(":memory:")
+        self.addCleanup(self.database.close)
+        self.previous_migrations = (
+            INITIAL_MIGRATION,
+            REQUEST_CONTROL_MIGRATION,
+            RENDEZVOUS_GENERATION_MIGRATION,
+            SIGNED_PUBLISHER_MIGRATION,
+            DIRECTORY_STATE_MIGRATION,
+            DIRECTORY_ARTIFACTS_MIGRATION,
+            GAME_PUBLISHER_MIGRATION,
+            RENDEZVOUS_COOLDOWN_MIGRATION,
+            LEGACY_STORAGE_REMOVAL_MIGRATION,
+        )
+        for migration in self.previous_migrations:
+            self.database.executescript(migration.read_text(encoding="utf-8"))
+
+    def seed_profile(self, profile: str, server_id: str) -> None:
+        self.database.execute(
+            "INSERT INTO publisher_replay "
+            "(server_id, profile, last_sequence, last_nonce, commit_token, updated_at) "
+            "VALUES (?, ?, '7', ?, ?, 100)",
+            (server_id, profile, server_id[:32], server_id),
+        )
+        self.database.execute(
+            "INSERT INTO publisher_nonces "
+            "(server_id, profile, nonce, expires_at, created_at) "
+            "VALUES (?, ?, ?, 200, 100)",
+            (server_id, profile, server_id[:32]),
+        )
+        self.database.execute(
+            "INSERT INTO server_presence "
+            "(profile, server_id, last_seen, rendezvous_token_hash, "
+            "rendezvous_generation) VALUES (?, ?, 100, ?, ?)",
+            (profile, server_id, "a" * 64, "b" * 64),
+        )
+        if profile == "classic-v1":
+            self.database.execute(
+                "INSERT INTO directory_entries "
+                "(profile, server_id, name, players_count, version, text_comment, "
+                "hostname, port, quic_cert_sha256, password_required, "
+                "directory_fingerprint) VALUES "
+                "(?, ?, 'Classic', 2, '5.7', '', NULL, NULL, ?, 1, ?)",
+                (profile, server_id, server_id, "c" * 64),
+            )
+        else:
+            self.database.execute(
+                "INSERT INTO directory_entries "
+                "(profile, server_id, name, description, protocol_major, "
+                "protocol_minor, content_id, content_revision_sha256, "
+                "players_online, players_capacity, status, game_json_bytes, "
+                "hostname, port, quic_cert_sha256, password_required, "
+                "directory_fingerprint) VALUES "
+                "(?, ?, 'Game', '', 1, 0, 'atrinik-main', ?, 0, 64, "
+                "'online', 200, NULL, NULL, ?, 0, ?)",
+                (profile, server_id, "d" * 64, server_id, "e" * 64),
+            )
+
+    def test_preserves_v1_and_game_and_adds_disjoint_v2_state(self) -> None:
+        classic_id = "1" * 64
+        game_id = "2" * 64
+        self.seed_profile("classic-v1", classic_id)
+        self.seed_profile("game-v1", game_id)
+        self.database.executescript(
+            CLASSIC_ACCESS_CODE_MIGRATION.read_text(encoding="utf-8")
+        )
+
+        self.assertEqual(
+            self.database.execute(
+                "SELECT profile, server_id, last_seen FROM server_presence "
+                "ORDER BY profile"
+            ).fetchall(),
+            [("classic-v1", classic_id, 100), ("game-v1", game_id, 100)],
+        )
+        self.assertEqual(
+            self.database.execute(
+                "SELECT profile, password_required, access_code_required "
+                "FROM directory_entries ORDER BY profile"
+            ).fetchall(),
+            [("classic-v1", 1, None), ("game-v1", 0, None)],
+        )
+        self.assertEqual(
+            self.database.execute(
+                "SELECT profile, revision FROM directory_revisions ORDER BY profile"
+            ).fetchall(),
+            [("classic-v1", 0), ("classic-v2", 0), ("game-v1", 0)],
+        )
+        self.assertEqual(
+            self.database.execute(
+                "SELECT mode, activated_at FROM classic_receiver_mode"
+            ).fetchone(),
+            ("classic-v1-accepting", None),
+        )
+
+        v2_id = "3" * 64
+        self.database.execute(
+            "INSERT INTO publisher_replay "
+            "(server_id, profile, last_sequence, last_nonce, commit_token, updated_at) "
+            "VALUES (?, 'classic-v2', '8', ?, ?, 101)",
+            (v2_id, v2_id[:32], v2_id),
+        )
+        self.database.execute(
+            "INSERT INTO server_presence "
+            "(profile, server_id, last_seen, rendezvous_token_hash, "
+            "rendezvous_generation) VALUES ('classic-v2', ?, 101, ?, ?)",
+            (v2_id, "a" * 64, "b" * 64),
+        )
+        self.database.execute(
+            "INSERT INTO directory_entries "
+            "(profile, server_id, name, players_count, version, text_comment, "
+            "hostname, port, quic_cert_sha256, access_code_required, "
+            "directory_fingerprint) VALUES "
+            "('classic-v2', ?, 'V2', 2, '6.0', '', NULL, NULL, ?, 1, ?)",
+            (v2_id, v2_id, "f" * 64),
+        )
+        with self.assertRaises(sqlite3.IntegrityError):
+            self.database.execute(
+                "UPDATE directory_entries SET password_required = 1 "
+                "WHERE profile = 'classic-v2' AND server_id = ?",
+                (v2_id,),
+            )
+        self.assertEqual(
+            self.database.execute("SELECT * FROM pragma_foreign_key_check").fetchall(),
+            [],
+        )
+
+    def test_rolls_back_a_failed_migration_transaction(self) -> None:
+        classic_id = "4" * 64
+        self.seed_profile("classic-v1", classic_id)
+        before = self.database.execute(
+            "SELECT * FROM publisher_replay"
+        ).fetchall()
+        script = CLASSIC_ACCESS_CODE_MIGRATION.read_text(encoding="utf-8")
+        with self.assertRaises(sqlite3.DatabaseError):
+            self.database.executescript(
+                "BEGIN IMMEDIATE;\n" + script +
+                "\nSELECT * FROM migration_failure_injection;\nCOMMIT;"
+            )
+        self.database.rollback()
+        self.assertIsNone(self.database.execute(
+            "SELECT name FROM sqlite_master WHERE name = 'classic_receiver_mode'"
+        ).fetchone())
+        self.assertEqual(
+            self.database.execute("SELECT * FROM publisher_replay").fetchall(),
+            before,
+        )
 
 
 if __name__ == "__main__":
