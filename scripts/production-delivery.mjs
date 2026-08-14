@@ -208,7 +208,7 @@ export function validateContract(contract) {
     fail("Workers Builds production trigger drift");
   if (
     contract.installCommand !==
-      "npm install --global --ignore-scripts npm@11.16.0 && npm ci" ||
+      "env -i PATH=\"$PATH\" npm_config_cache=/tmp/atrinik-npm-cache npm install --global --ignore-scripts npm@11.16.0 && env -i PATH=\"$PATH\" npm_config_cache=/tmp/atrinik-npm-cache npm ci --ignore-scripts" ||
     contract.validationCommand !== "npm run check" ||
     contract.deployCommand !== "npm run deploy:production" ||
     contract.reviewCommand !== "npm run deploy:production:dry-run"
@@ -540,6 +540,19 @@ export function validateTopology(contract, configs, { production = false } = {})
   }
 
   const [core, publisher, rendezvous] = configs;
+  if (
+    production &&
+    (!/^[0-9a-f]{32}$/u.test(core.vars?.DIRECTORY_CACHE_ZONE_ID ?? "") ||
+      core.vars?.CLASSIC_DIRECTORY_PUBLIC_ORIGIN !==
+        "https://classic.meta.atrinik.org" ||
+      core.vars?.GAME_DIRECTORY_PUBLIC_ORIGIN !== "https://meta.atrinik.org" ||
+      core.vars?.PUBLISH_HOSTNAME !== publisher.vars?.PUBLISH_HOSTNAME ||
+      publisher.vars?.PUBLISH_HOSTNAME !==
+        contract.workers[1].customDomains[0] ||
+      core.vars?.RENDEZVOUS_HOSTNAME !== rendezvous.vars?.RENDEZVOUS_HOSTNAME ||
+      rendezvous.vars?.RENDEZVOUS_HOSTNAME !==
+        contract.workers[2].customDomains[0])
+  ) fail("production domain, origin, or zone authority drift");
   for (const key of [
     "SOURCE_TAG_KEY_CURRENT_ID",
     "SOURCE_TAG_KEY_PREVIOUS_ID",
@@ -748,6 +761,15 @@ export async function recoverDisabledCore({
   }
   await validateStaged(active, expected);
   return "proven";
+}
+
+export async function deployStagedWithRecoveryIntent(
+  worker,
+  markCorePossiblyMutated,
+  deploy,
+) {
+  if (worker.role === "core") markCorePossiblyMutated();
+  return deploy();
 }
 
 export async function orchestrateDelivery({
@@ -1171,7 +1193,7 @@ export function selectBuildLeaseOwner(builds, sourceSha, triggerUuid) {
         activeBuild(build) &&
         build.trigger?.trigger_uuid === triggerUuid &&
         build.build_trigger_metadata?.branch === "main" &&
-        typeof build.build_trigger_metadata?.commit_hash === "string",
+        build.build_trigger_metadata?.commit_hash === sourceSha,
     )
     .sort((left, right) => {
       const created = String(left.created_on).localeCompare(String(right.created_on));
@@ -1179,8 +1201,6 @@ export function selectBuildLeaseOwner(builds, sourceSha, triggerUuid) {
     });
   if (eligible.length === 0) fail("no active eligible production build exists");
   const owner = eligible.at(-1);
-  if (owner.build_trigger_metadata.commit_hash !== sourceSha)
-    fail("a newer main build supersedes this production build");
   return owner.build_uuid;
 }
 
@@ -1192,7 +1212,8 @@ export function buildLeaseDecision(builds, sourceSha, triggerUuid, buildUuid) {
       build.build_uuid !== buildUuid &&
       activeBuild(build) &&
       build.trigger?.trigger_uuid === triggerUuid &&
-      build.build_trigger_metadata?.branch === "main",
+      build.build_trigger_metadata?.branch === "main" &&
+      build.build_trigger_metadata?.commit_hash === sourceSha,
   );
 }
 
@@ -1308,12 +1329,14 @@ async function assertBuildLease(
     ),
   );
   if (!arbitrate) return;
+  await assertCurrentMain(contract, sourceSha);
   const builds = await cloudflareResult(
     accountId,
     `/builds/workers/${encodeURIComponent(process.env.WRANGLER_CI_MATCH_TAG)}/builds`,
     { token },
   );
   if (!Array.isArray(builds)) fail("Workers Builds lease inventory is invalid");
+  await assertCurrentMain(contract, sourceSha);
   const competitors = buildLeaseDecision(
     builds,
     sourceSha,
@@ -1644,6 +1667,11 @@ async function main() {
   });
 
   const input = contract.protectedInputs;
+  await assertBuildLease(contract, sourceSha, buildUuid, { arbitrate: false });
+  await command("npm", ["run", "check"]);
+  if ((await git("status", "--porcelain")) !== "")
+    fail("repository validation changed tracked or untracked input");
+
   const protectedInputs = await materializeProtectedInputs(input);
   try {
   const { configPaths } = protectedInputs;
@@ -1662,11 +1690,6 @@ async function main() {
   const secretSets = contract.workers.map(({ requiredSecrets }) =>
     sorted(requiredSecrets),
   );
-
-  await assertBuildLease(contract, sourceSha, buildUuid, { arbitrate: false });
-  await command("npm", ["run", "check"]);
-  if ((await git("status", "--porcelain")) !== "")
-    fail("repository validation changed tracked or untracked input");
   const plan = await buildPlan(
     contract,
     configPaths,
@@ -1720,10 +1743,14 @@ async function main() {
       failureEvidence.failedRole = `staged:${worker.role}`;
       expectedStagedMessages.set(
         worker.role,
-        await deployWorker(worker, stagedPaths[index], sourceSha, plan, {
-          phase: "staged",
-          controls: plan.stagedControls,
-        }),
+        await deployStagedWithRecoveryIntent(
+          worker,
+          () => { coreStaged = true; },
+          () => deployWorker(worker, stagedPaths[index], sourceSha, plan, {
+            phase: "staged",
+            controls: plan.stagedControls,
+          }),
+        ),
       );
     },
     readbackStaged: async (worker, index) => {
@@ -1738,7 +1765,6 @@ async function main() {
         stagedConfigs[index],
         await readLiveControlPlane(worker, process.env.CLOUDFLARE_ACCOUNT_ID),
       );
-      if (worker.role === "core") coreStaged = true;
     },
     verifyStaged: async () => {
       const annotations = [];

@@ -15,7 +15,9 @@ Routine delivery uses one Cloudflare Workers Builds connection to
 `atrinik/metaserver-worker`. Configure it exactly from
 `deployment/workers-builds-production.json`: repository root, production
 branch `main`, every push included with no watch-path exclusion, build command
-`npm install --global --ignore-scripts npm@11.16.0 && npm ci`, deploy command
+`env -i PATH="$PATH" npm_config_cache=/tmp/atrinik-npm-cache npm install
+--global --ignore-scripts npm@11.16.0 && env -i PATH="$PATH"
+npm_config_cache=/tmp/atrinik-npm-cache npm ci --ignore-scripts`, deploy command
 `npm run deploy:production`, `SKIP_DEPENDENCY_INSTALL=1`, and the pinned
 Node/npm/Wrangler versions. An accepted pull-request merge into protected
 `main` is the routine authorization. Do not add another production branch,
@@ -61,12 +63,14 @@ The entrypoint performs this fail-closed sequence:
 
 1. Require Workers Builds on `main`, a build UUID, the expected connected core
    project/tag, a clean `HEAD` equal to `WORKERS_CI_COMMIT_SHA`, and the
-   intended account. Before repository code runs, reconcile the live trigger
-   and protected environment. Repository checks and public canaries receive a
-   positive allowlist of non-secret process settings only; Wrangler additionally
-   receives only deployment authentication and its private configuration path;
-   the lease token remains in the parent process.
-2. Run the complete repository check; validate all three protected configs,
+   intended account. The provider install command starts with an empty
+   environment and disables dependency lifecycle scripts. Before repository
+   code runs, reconcile the live trigger and protected environment. Repository
+   checks and public canaries receive a positive allowlist of non-secret process
+   settings only; Wrangler additionally receives only deployment authentication
+   and its private configuration path; the lease token remains in the parent
+   process. Materialize private configurations only after repository checks.
+2. Run the complete repository check; then validate all three protected configs,
    exact Custom Domains, bindings, variables, secret names, unique rate
    namespaces, disabled alternate URLs, observability, cron schedules, and the
    ordered D1 ledger against live readback.

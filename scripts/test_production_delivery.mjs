@@ -11,6 +11,7 @@ import {
   disabledCircuitConfiguration,
   deliveryFailureRecord,
   deliveryDecision,
+  deployStagedWithRecoveryIntent,
   executeOrderedStages,
   orchestrateDelivery,
   materializeProtectedInputs,
@@ -55,6 +56,24 @@ function changedConfigs(change) {
   const value = structuredClone(configs);
   change(value);
   return value;
+}
+
+function productionConfigs(change = () => {}) {
+  return changedConfigs((value) => {
+    for (const config of value) config.account_id = "a".repeat(32);
+    value[0].d1_databases[0].database_id =
+      "11111111-1111-1111-1111-111111111111";
+    value[0].vars.DIRECTORY_CACHE_ZONE_ID = "b".repeat(32);
+    value[1].routes = [{
+      pattern: "publish.meta.atrinik.org",
+      custom_domain: true,
+    }];
+    value[2].routes = [{
+      pattern: "rendezvous.meta.atrinik.org",
+      custom_domain: true,
+    }];
+    change(value);
+  });
 }
 
 function liveControlPlane(index) {
@@ -373,6 +392,25 @@ test("requires every modeled resource identifier and safe observability destinat
   }
 });
 
+test("requires exact production zone, origin, and domain relationships", () => {
+  assert.doesNotThrow(() =>
+    validateTopology(contract, productionConfigs(), { production: true }),
+  );
+  for (const mutate of [
+    (value) => { value[0].vars.DIRECTORY_CACHE_ZONE_ID = "not-a-zone-id"; },
+    (value) => { value[0].vars.CLASSIC_DIRECTORY_PUBLIC_ORIGIN = "https://wrong.invalid"; },
+    (value) => { value[1].vars.PUBLISH_HOSTNAME = "wrong.invalid"; },
+    (value) => { value[2].vars.RENDEZVOUS_HOSTNAME = "wrong.invalid"; },
+  ]) {
+    assert.throws(
+      () => validateTopology(contract, productionConfigs(mutate), {
+        production: true,
+      }),
+      /production domain, origin, or zone authority drift/u,
+    );
+  }
+});
+
 test("creates an exact disabled-circuit staging topology", () => {
   const desired = structuredClone(configs);
   desired[0].vars.PUBLISH_ENABLED = "enabled";
@@ -506,27 +544,23 @@ test("selects one deterministic active exact-source build lease owner", () => {
     selectBuildLeaseOwner(builds, source, "production"),
     "later",
   );
-  assert.throws(
-    () => selectBuildLeaseOwner(
-      [...builds, build("new-main", "2026-08-14T20:02:00Z", "b".repeat(40))],
-      source,
-      "production",
-    ),
-    /newer main build supersedes/u,
+  const withLateStaleRetry = [
+    ...builds,
+    build("late-stale", "2026-08-14T20:02:00Z", "b".repeat(40)),
+  ];
+  assert.equal(
+    selectBuildLeaseOwner(withLateStaleRetry, source, "production"),
+    "later",
   );
   assert.deepEqual(
     buildLeaseDecision(builds, source, "production", "later")
       .map(({ build_uuid: uuid }) => uuid),
-    ["earlier", "stale"],
+    ["earlier"],
   );
-  assert.throws(
-    () => buildLeaseDecision(
-      [...builds, build("new-main", "2026-08-14T20:02:00Z", "b".repeat(40))],
-      source,
-      "production",
-      "later",
-    ),
-    /newer main build supersedes/u,
+  assert.deepEqual(
+    buildLeaseDecision(withLateStaleRetry, source, "production", "later")
+      .map(({ build_uuid: uuid }) => uuid),
+    ["earlier"],
   );
 });
 
@@ -890,6 +924,52 @@ test("disabled-core recovery proves, redeploys, skips, and fails closed", async 
     deployStaged: async () => { throw new Error("recovery failed"); },
     validateStaged: async () => {},
   }), /recovery failed/u);
+});
+
+test("ambiguous staged-core upload marks recovery intent before mutation", async () => {
+  let corePossiblyMutated = false;
+  await assert.rejects(
+    deployStagedWithRecoveryIntent(
+      { role: "core" },
+      () => { corePossiblyMutated = true; },
+      async () => {
+        assert.equal(corePossiblyMutated, true);
+        throw new Error("ambiguous upload result");
+      },
+    ),
+    /ambiguous upload result/u,
+  );
+
+  const events = [];
+  assert.equal(await recoverDisabledCore({
+    coreStaged: corePossiblyMutated,
+    fence: async () => events.push("fence"),
+    readActive: async () => ({
+      version: {
+        annotations: {
+          "workers/message": events.includes("recovered") ? "staged" : "active",
+        },
+      },
+    }),
+    expectedMessage: () => "staged",
+    deployStaged: async () => {
+      events.push("recovered");
+      return "staged";
+    },
+    validateStaged: async (_active, expected) => {
+      assert.equal(expected, "staged");
+      events.push("validated");
+    },
+  }), "proven");
+  assert.deepEqual(events, ["fence", "recovered", "fence", "validated"]);
+
+  let publisherMarked = false;
+  await deployStagedWithRecoveryIntent(
+    { role: "publisher" },
+    () => { publisherMarked = true; },
+    async () => {},
+  );
+  assert.equal(publisherMarked, false);
 });
 
 test("accepts only bounded protected Workers Builds documents", () => {
