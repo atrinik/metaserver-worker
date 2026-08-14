@@ -36,7 +36,8 @@
   Node/npm/Wrangler pins, all-path trigger, protected-input names, migration
   gate, no-op digest, newest-current-main lease, strict disabled-circuit
   core/publisher/rendezvous staging, caller-before-core restoration, coherent
-  phase readback, least-privilege child environments, and bounded static plus
+  phase readback, prefix-proven migration horizons, positive-allowlist child
+  environments, live-trigger reconciliation, and bounded static plus
   Service Binding canaries synchronized with the implementation
   and runbook. `npm run deploy:production:dry-run` must retain zero remote
   mutation paths.

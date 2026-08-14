@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
 import { readFile, rm, stat } from "node:fs/promises";
 import { resolve } from "node:path";
 import test from "node:test";
@@ -14,7 +15,9 @@ import {
   orchestrateDelivery,
   materializeProtectedInputs,
   parseVersionMessage,
+  recoverDisabledCore,
   selectBuildLeaseOwner,
+  selectLiveTrigger,
   sanitizedChildEnvironment,
   validateBuildTrigger,
   validateBuildEnvironment,
@@ -258,13 +261,13 @@ test("version annotations bind source, deployable input, control plane, and role
   const control = "c".repeat(64);
   assert.deepEqual(
     parseVersionMessage(
-      `atrinik-delivery-v1 source=${source} deploy=${deploy} migration=${migration} control=${control} role=core phase=active`,
+      `atrinik-delivery-v1 source=${source} deploy=${deploy} migration=${migration} horizon=10 control=${control} role=core phase=active`,
     ),
-    { source, deploy, migration, control, role: "core", phase: "active" },
+    { source, deploy, migration, migrationHorizon: 10, control, role: "core", phase: "active" },
   );
   assert.equal(
     parseVersionMessage(
-      `atrinik-delivery-v1 source=${source} deploy=${deploy} migration=${migration} control=${control} role=unknown phase=active`,
+      `atrinik-delivery-v1 source=${source} deploy=${deploy} migration=${migration} horizon=10 control=${control} role=unknown phase=active`,
     ),
     null,
   );
@@ -306,6 +309,7 @@ test("rejects non-main, dirty, mixed, stale, and unknown-account sources", () =>
 test("scrubs Workers Builds name and tag overrides from every child", () => {
   const input = {
     SAFE: "retained",
+    UNKNOWN_PROVIDER_SECRET: "must-not-cross",
     CLOUDFLARE_ACCOUNT_ID: "account",
     CLOUDFLARE_API_TOKEN: "deploy-token",
     ATRINIK_PRODUCTION_CORE_CONFIG: "private-config",
@@ -314,9 +318,8 @@ test("scrubs Workers Builds name and tag overrides from every child", () => {
     WRANGLER_CI_OVERRIDE_NAME: "atrinik-metaserver",
     WRANGLER_CI_MATCH_TAG: "core-tag",
   };
-  assert.deepEqual(childEnvironment(input), { SAFE: "retained" });
+  assert.deepEqual(childEnvironment(input), {});
   assert.deepEqual(sanitizedChildEnvironment(input), {
-    SAFE: "retained",
     CLOUDFLARE_ACCOUNT_ID: "account",
     CLOUDFLARE_API_TOKEN: "deploy-token",
   });
@@ -342,6 +345,32 @@ test("rejects every unmodeled Wrangler authority family", () => {
     () => validateTopology(contract, changedNested),
     /unsupported authority fields/u,
   );
+});
+
+test("requires every modeled resource identifier and safe observability destination", () => {
+  for (const mutate of [
+    (value) => { delete value[0].d1_databases[0].database_id; },
+    (value) => { delete value[0].r2_buckets[0].bucket_name; },
+    (value) => { delete value[0].analytics_engine_datasets[0].dataset; },
+    (value) => { delete value[0].durable_objects.bindings[0].class_name; },
+    (value) => { delete value[1].services[0].entrypoint; },
+    (value) => { delete value[2].ratelimits[0].namespace_id; },
+  ]) {
+    const changed = changedConfigs(mutate);
+    assert.throws(
+      () => validateTopology(contract, changed),
+      /missing required identifier/u,
+    );
+  }
+  for (const target of ["logs", "traces"]) {
+    const changed = changedConfigs((value) => {
+      value[0].observability[target].destinations = ["unreviewed-sink"];
+    });
+    assert.throws(
+      () => validateTopology(contract, changed),
+      /destination authority drift/u,
+    );
+  }
 });
 
 test("creates an exact disabled-circuit staging topology", () => {
@@ -434,6 +463,16 @@ test("requires the exact protected Workers Builds environment", () => {
   }
 });
 
+test("selects exactly one current live Workers Builds trigger", () => {
+  const trigger = { trigger_uuid: "production" };
+  assert.equal(selectLiveTrigger([trigger], "production"), trigger);
+  for (const values of [[], [trigger, { ...trigger }], null])
+    assert.throws(
+      () => selectLiveTrigger(values, "production"),
+      /invalid|missing or ambiguous/u,
+    );
+});
+
 test("requires an exact ordered remote migration ledger", () => {
   const expected = ["0001_initial.sql", "0002_request_control.sql"];
   assert.doesNotThrow(() => validateRemoteMigrations(expected, expected));
@@ -496,13 +535,16 @@ test("no-op requires one coherent active topology and control drift needs exact 
   const plan = {
     deploy: "d".repeat(64),
     migrationDigest: "e".repeat(64),
+    migrations: [{ name: "0001_initial.sql", sha256: "a".repeat(64) }],
     controls: ["1".repeat(64), "2".repeat(64), "3".repeat(64)],
+    stagedControls: ["4".repeat(64), "5".repeat(64), "6".repeat(64)],
   };
   const annotations = ["core", "publisher", "rendezvous"].map(
     (role, index) => ({
       source,
       deploy: plan.deploy,
       migration: plan.migrationDigest,
+      migrationHorizon: plan.migrations.length,
       control: plan.controls[index],
       role,
       phase: "active",
@@ -568,6 +610,81 @@ test("no-op requires one coherent active topology and control drift needs exact 
     deliveryDecision(changedControl, plan, source, `approved:${source}`),
     "deploy",
   );
+});
+
+test("only an approved append-only migration horizon can advance", () => {
+  const source = "a".repeat(40);
+  const previous = [{ name: "0001_initial.sql", sha256: "1".repeat(64) }];
+  const migrations = [
+    ...previous,
+    { name: "0002_next.sql", sha256: "2".repeat(64) },
+  ];
+  const digest = (value) => createHash("sha256")
+    .update(JSON.stringify(value)).digest("hex");
+  const plan = {
+    deploy: "d".repeat(64),
+    migrations,
+    migrationDigest: digest(migrations),
+    controls: ["1".repeat(64), "2".repeat(64), "3".repeat(64)],
+    stagedControls: ["4".repeat(64), "5".repeat(64), "6".repeat(64)],
+  };
+  const prior = ["core", "publisher", "rendezvous"].map((role, index) => ({
+    source: "b".repeat(40),
+    deploy: "c".repeat(64),
+    migration: digest(previous),
+    migrationHorizon: 1,
+    control: plan.controls[index],
+    role,
+    phase: "active",
+  }));
+  assert.throws(
+    () => deliveryDecision(prior, plan, source, "routine"),
+    /not authorized/u,
+  );
+  assert.equal(
+    deliveryDecision(prior, plan, source, `approved:${source}`),
+    "deploy",
+  );
+  const partial = prior.map((value, index) => index === 0 ? {
+    ...value,
+    source,
+    deploy: plan.deploy,
+    migration: plan.migrationDigest,
+    migrationHorizon: 2,
+    control: plan.stagedControls[index],
+    phase: "staged",
+  } : value);
+  assert.equal(
+    deliveryDecision(partial, plan, source, `approved:${source}`),
+    "deploy",
+  );
+  const rewritten = prior.map((value) => ({ ...value, migration: "f".repeat(64) }));
+  assert.throws(
+    () => deliveryDecision(rewritten, plan, source, `approved:${source}`),
+    /divergent/u,
+  );
+});
+
+test("internally staged controls resume under the routine gate", () => {
+  const source = "a".repeat(40);
+  const migrations = [{ name: "0001_initial.sql", sha256: "1".repeat(64) }];
+  const plan = {
+    deploy: "d".repeat(64),
+    migrations,
+    migrationDigest: "e".repeat(64),
+    controls: ["1".repeat(64), "2".repeat(64), "3".repeat(64)],
+    stagedControls: ["4".repeat(64), "5".repeat(64), "6".repeat(64)],
+  };
+  const partial = ["core", "publisher", "rendezvous"].map((role, index) => ({
+    source: index === 0 ? "b".repeat(40) : source,
+    deploy: plan.deploy,
+    migration: plan.migrationDigest,
+    migrationHorizon: 1,
+    control: index < 2 ? plan.stagedControls[index] : plan.controls[index],
+    role,
+    phase: index < 2 ? "staged" : "active",
+  }));
+  assert.equal(deliveryDecision(partial, plan, source, "routine"), "deploy");
 });
 
 test("every failed deployment stage stops all later stages", async () => {
@@ -715,6 +832,66 @@ test("exact-source retry converges and a stale retry cannot mutate", async () =>
   assert.equal(mutations, 0);
 });
 
+test("disabled-core recovery proves, redeploys, skips, and fails closed", async () => {
+  const staged = "staged-message";
+  const events = [];
+  const outcome = await recoverDisabledCore({
+    coreStaged: true,
+    fence: async () => events.push("fence"),
+    readActive: async () => ({
+      version: {
+        annotations: { "workers/message": events.includes("deploy") ? staged : "active" },
+      },
+    }),
+    expectedMessage: () => staged,
+    deployStaged: async () => {
+      events.push("deploy");
+      return staged;
+    },
+    validateStaged: async (_active, expected) => {
+      assert.equal(expected, staged);
+      events.push("validated");
+    },
+  });
+  assert.equal(outcome, "proven");
+  assert.deepEqual(events, ["fence", "deploy", "fence", "validated"]);
+
+  const alreadyEvents = [];
+  assert.equal(await recoverDisabledCore({
+    coreStaged: true,
+    fence: async () => alreadyEvents.push("fence"),
+    readActive: async () => ({
+      version: { annotations: { "workers/message": staged } },
+    }),
+    expectedMessage: () => staged,
+    deployStaged: async () => { alreadyEvents.push("unexpected-deploy"); },
+    validateStaged: async () => { alreadyEvents.push("validated"); },
+  }), "proven");
+  assert.deepEqual(alreadyEvents, ["fence", "validated"]);
+
+  let mutations = 0;
+  assert.equal(await recoverDisabledCore({
+    coreStaged: false,
+    fence: async () => {},
+    readActive: async () => {},
+    expectedMessage: () => staged,
+    deployStaged: async () => { mutations += 1; },
+    validateStaged: async () => {},
+  }), "not-needed");
+  assert.equal(mutations, 0);
+
+  await assert.rejects(recoverDisabledCore({
+    coreStaged: true,
+    fence: async () => {},
+    readActive: async () => ({
+      version: { annotations: { "workers/message": "active" } },
+    }),
+    expectedMessage: () => staged,
+    deployStaged: async () => { throw new Error("recovery failed"); },
+    validateStaged: async () => {},
+  }), /recovery failed/u);
+});
+
 test("accepts only bounded protected Workers Builds documents", () => {
   assert.equal(validateProtectedDocument("{}", "CONFIG"), "{}");
   for (const value of [undefined, "", "x".repeat(5 * 1024 + 1), "bad\0value"])
@@ -757,9 +934,12 @@ test("failure evidence never includes raw subprocess or protected input text", (
     buildUuid: "build-1",
     sourceSha: "a".repeat(40),
     deployableDigest: null,
-    failedRole: "core",
-    completedRoles: [],
+    failedRole: "active:publisher",
+    completedRoles: ["staged:core"],
+    recoveryOutcome: "proven",
   });
   assert.equal(record.reason, "unexpected-internal-error");
+  assert.equal(record.failedRole, "active:publisher");
+  assert.equal(record.recoveryOutcome, "proven");
   assert.equal(JSON.stringify(record).includes(secret), false);
 });

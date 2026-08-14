@@ -108,7 +108,9 @@ and strictly through a core/publisher/rendezvous disabled-circuit cohort,
 restores callers before core, reads back each exact 100% phase and the final
 coherent active topology, and runs bounded credential-free static and Service
 Binding canaries. Newer eligible builds always supersede older ones, and child
-processes receive only the credentials required for their role.
+processes receive only a positive allowlist plus the credentials required for
+their role. Append-only migration evolution is prefix-proven and exact-SHA
+approved; staged partial cohorts remain routine fix-forward state.
 
 Production identifiers stay in bounded Cloudflare-owned secret configuration
 documents, never in Git or logs. Runtime secret values remain provisioned in

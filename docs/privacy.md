@@ -51,8 +51,9 @@ validates runtime secret names through provider readback but never receives,
 logs, hashes, or uploads their values. Protected configuration documents exist
 only in owner-only temporary files that are removed on exit; raw provider
 responses and canary bodies are suppressed, leaving only closed pass/fail
-results. Repository checks and public canaries receive no production config or
-Cloudflare token; Wrangler receives only deployment authentication, while the
+results. Repository checks and public canaries receive only an explicit
+non-secret process allowlist and no production config or Cloudflare token;
+Wrangler receives only deployment authentication, while the
 Workers Builds lease token remains parent-only. Build secrets are distinct from
 Worker runtime bindings and are never available to application requests.
 

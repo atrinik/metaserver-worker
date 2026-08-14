@@ -43,7 +43,8 @@ trigger by retaining the newest eligible current-main build, making every
 older build relinquish, and cancelling only older competitors before any
 Worker mutation. It also reconciles the live GitHub repository, root, core
 project tag, branch/watch filters, build/deploy commands, and exact protected
-environment inventory/classification with the checked-in contract. Use
+environment inventory/classification with the checked-in contract. Every fence
+fetches the current trigger rather than trusting the build-start snapshot. Use
 `routine` only while the live
 control-plane digest is unchanged. After separately authorized
 migration/DNS/WAF/domain/route/trigger, secret-rotation, resource, or ownership
@@ -60,9 +61,11 @@ The entrypoint performs this fail-closed sequence:
 
 1. Require Workers Builds on `main`, a build UUID, the expected connected core
    project/tag, a clean `HEAD` equal to `WORKERS_CI_COMMIT_SHA`, and the
-   intended account. Repository checks and public canaries receive no protected
-   build inputs; Wrangler receives only deployment authentication and its
-   private configuration path; the lease token remains in the parent process.
+   intended account. Before repository code runs, reconcile the live trigger
+   and protected environment. Repository checks and public canaries receive a
+   positive allowlist of non-secret process settings only; Wrangler additionally
+   receives only deployment authentication and its private configuration path;
+   the lease token remains in the parent process.
 2. Run the complete repository check; validate all three protected configs,
    exact Custom Domains, bindings, variables, secret names, unique rate
    namespaces, disabled alternate URLs, observability, cron schedules, and the
@@ -80,7 +83,8 @@ The entrypoint performs this fail-closed sequence:
    configs in publisher/rendezvous order while core remains disabled, restore
    core last, and validate every direct `wrangler deploy --strict` at 100%.
    Thus any pre-final failure leaves or restores the core breakers disabled.
-7. Record exact source, deployable, migration, control-plane, role, and phase
+7. Record exact source, deployable, migration digest/horizon, control-plane,
+   role, and phase
    in each version. Re-read exports, bindings, routes, Custom Domains,
    subdomain, schedules, runtime, and observability after each stage; reread
    one coherent active topology, then run bounded Classic/Game static-origin
@@ -110,6 +114,15 @@ safest circuit state and private recovery evidence, perform only the separately
 authorized prerequisite from the same revision, verify it, and manually retry
 that exact SHA through Workers Builds. The retry must still be current `main`;
 never create an empty commit or deploy from a local checkout.
+
+An authorized append-only migration retry is accepted only when the active
+annotation's prior horizon hashes to an exact prefix of the new checked-in
+ledger and the remote name ledger already equals the new ledger. Rewriting,
+reordering, deleting, or inserting into the prior horizon remains divergent.
+An interrupted staged cohort is internal recovery state, not external control
+drift, so the newest routine build can safely finish it. Failure evidence keeps
+the original phase/role and separately records disabled-core recovery as
+`not-needed`, `proven`, or `failed`.
 
 After a partial deployment, record the read-back phase/role prefix and the
 disabled-core recovery result, then fix forward from exact current `main`;
