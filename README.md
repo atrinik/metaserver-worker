@@ -107,9 +107,10 @@ identical deployable input, rejects stale or competing builds, deploys directly
 and strictly through a core/publisher/rendezvous disabled-circuit cohort,
 restores callers before core, reads back each exact 100% phase and the final
 coherent active topology, and runs bounded credential-free static and canonical
-dynamic-envelope canaries. Enabled dynamic probes prove the named Service
-Binding through a fixed closed coordinator rejection; disabled probes prove the
-exact circuit response without adding a health route or WAF exception. Newer
+dynamic-envelope canaries. The publisher probe uses the non-retirable Classic
+v2 envelope. Enabled dynamic probes prove the named Service Binding through a
+fixed closed coordinator rejection; disabled probes prove the exact circuit
+response without adding a health route or WAF exception. Newer
 eligible builds always supersede older ones, and child
 processes receive only a positive allowlist plus the credentials required for
 their role. Append-only migration evolution is prefix-proven and exact-SHA

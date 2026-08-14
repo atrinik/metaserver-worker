@@ -272,11 +272,12 @@ certificate identity, signature, sequence, and nonce. Do not add a directory,
 rendezvous, or health route to this hostname.
 
 The automatic delivery canary stays inside this envelope: it uses `POST` on
-the 92-byte Classic publish path with a bounded JSON body and a syntactically
-valid but cryptographically invalid signature. When the circuit is enabled,
-the coordinator's fixed `401` proves the named core Service Binding; when
-disabled, the exact `503` and retry value prove the intended closed edge. It
-never requires a WAF exception, private credential, or publication write.
+the non-retirable 92-byte Classic v2 publish path with a bounded JSON body and
+a syntactically valid but cryptographically invalid signature. When the
+circuit is enabled, the coordinator's fixed `401` proves the named core
+Service Binding, including after global v1 retirement; when disabled, the
+exact `503` and retry value prove the intended closed edge. It never requires
+a WAF exception, private credential, or publication write.
 
 ## Per-host staged HSTS
 

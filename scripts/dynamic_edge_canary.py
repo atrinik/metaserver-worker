@@ -12,10 +12,14 @@ from urllib.parse import urlsplit
 
 
 SERVER_ID = "0" * 64
-PUBLISH_FIXTURE = json.loads(
-    (Path(__file__).parent.parent / "test/fixtures/metaserver-publisher-v1.json")
+PUBLISH_DOCUMENT = json.loads(
+    (
+        Path(__file__).parent.parent
+        / "test/fixtures/metaserver-classic-publisher-v2.json"
+    )
     .read_text(encoding="utf-8")
 )
+PUBLISH_FIXTURE = PUBLISH_DOCUMENT["positive"][0]
 PUBLISH_PATH = PUBLISH_FIXTURE["path"]
 RENDEZVOUS_PATH = f"/v1/classic/servers/{SERVER_ID}?role=server"
 MAXIMUM_RESPONSE_BYTES = 1_024
@@ -29,9 +33,9 @@ def request_contract(role: str) -> tuple[str, str, bytes | None, dict[str, str]]
             PUBLISH_FIXTURE["body"].encode(),
             {
                 "Atrinik-Publish-Sequence": PUBLISH_FIXTURE["sequence"],
-                "Atrinik-Server-ID": PUBLISH_FIXTURE["server_id"],
+                "Atrinik-Server-ID": PUBLISH_DOCUMENT["server_id"],
                 "Content-Digest": PUBLISH_FIXTURE["content_digest"],
-                "Content-Type": PUBLISH_FIXTURE["content_type"],
+                "Content-Type": PUBLISH_DOCUMENT["content_type"],
                 "Signature": f"atrinik=:{base64.b64encode(bytes(64)).decode()}:",
                 "Signature-Input": PUBLISH_FIXTURE["signature_input"],
             },

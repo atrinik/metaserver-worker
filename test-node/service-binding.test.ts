@@ -5,6 +5,7 @@ import { readD1Migrations } from "@cloudflare/vitest-pool-workers";
 import { Miniflare } from "miniflare";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 
+import classicV2Fixture from "../test/fixtures/metaserver-classic-publisher-v2.json";
 import publisherFixture from "../test/fixtures/metaserver-publisher-v1.json";
 
 const CURRENT_SECRET = "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA";
@@ -181,26 +182,7 @@ afterAll(async () => {
 describe("compiled named Worker Service Bindings", () => {
   it("carries both credential-free production canary envelopes to core", async () => {
     const serverId = "0".repeat(64);
-    const publishTarget =
-      `https://${publisherFixture.authority}${publisherFixture.path}`;
-    const publishResponse = await harness.fetch(
-      "http://service-binding.test/forward",
-      {
-        method: "POST",
-        headers: {
-          "CF-Connecting-IP": "192.0.2.211",
-          "Atrinik-Publish-Sequence": publisherFixture.sequence,
-          "Atrinik-Server-ID": publisherFixture.server_id,
-          "Content-Digest": publisherFixture.content_digest,
-          "Content-Type": publisherFixture.content_type,
-          Signature: `atrinik=:${"A".repeat(86)}==:`,
-          "Signature-Input": publisherFixture.signature_input,
-          "X-Atrinik-Test-Edge": "1",
-          "X-Atrinik-Test-Target": publishTarget,
-        },
-        body: new TextEncoder().encode(publisherFixture.body),
-      },
-    );
+    const publishResponse = await fetchPublisherCanary();
     expect(publishResponse.status).toBe(401);
     const publishBody = await publishResponse.json() as {
       error?: { code?: string };
@@ -317,7 +299,42 @@ describe("compiled named Worker Service Bindings", () => {
     response.webSocket?.accept();
     response.webSocket?.close(1000, "Test complete");
   });
+
+  it("keeps the v2 publisher canary valid after global v1 retirement", async () => {
+    const bindings = await miniflare.getBindings<{ DB: D1Database }>("core");
+    await bindings.DB.prepare(
+      `UPDATE classic_receiver_mode
+          SET mode = 'classic-v1-retired', activated_at = ?
+        WHERE singleton = 1 AND mode = 'classic-v1-accepting'`,
+    ).bind(Math.floor(Date.now() / 1_000)).run();
+
+    const response = await fetchPublisherCanary();
+    expect(response.status, await response.clone().text()).toBe(401);
+    expect(await response.json()).toMatchObject({
+      error: { code: "unauthorized" },
+    });
+  });
 });
+
+async function fetchPublisherCanary(): Promise<Response> {
+  const vector = classicV2Fixture.positive[0];
+  const target = `https://${classicV2Fixture.authority}${vector.path}`;
+  return await harness.fetch("http://service-binding.test/forward", {
+    method: "POST",
+    headers: {
+      "CF-Connecting-IP": "192.0.2.211",
+      "Atrinik-Publish-Sequence": vector.sequence,
+      "Atrinik-Server-ID": classicV2Fixture.server_id,
+      "Content-Digest": vector.content_digest,
+      "Content-Type": classicV2Fixture.content_type,
+      Signature: `atrinik=:${"A".repeat(86)}==:`,
+      "Signature-Input": vector.signature_input,
+      "X-Atrinik-Test-Edge": "1",
+      "X-Atrinik-Test-Target": target,
+    },
+    body: new TextEncoder().encode(vector.body),
+  });
+}
 
 interface WranglerConfiguration {
   readonly vars: Readonly<Record<string, string>>;

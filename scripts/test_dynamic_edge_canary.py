@@ -56,6 +56,7 @@ class DynamicEdgeCanaryTest(unittest.TestCase):
             result["path"],
             dynamic_edge_canary.PUBLISH_PATH,
         )
+        self.assertTrue(result["path"].startswith("/v2/classic/servers/"))
         self.assertEqual(FakeConnection.response.maximum, 1_025)
 
     @mock.patch.object(dynamic_edge_canary.http.client, "HTTPSConnection", FakeConnection)
@@ -109,6 +110,7 @@ class DynamicEdgeCanaryTest(unittest.TestCase):
             "GET", f"/v1/classic/servers/{'0' * 64}?role=server"
         ))
         self.assertEqual(len(publisher[1]), 92)
+        self.assertTrue(publisher[1].startswith("/v2/classic/servers/"))
         self.assertEqual(len(rendezvous[1].split("?", maxsplit=1)[0]), 84)
 
 
