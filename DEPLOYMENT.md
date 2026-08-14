@@ -97,8 +97,13 @@ The entrypoint performs this fail-closed sequence:
    in each version. Re-read exports, bindings, routes, Custom Domains,
    subdomain, schedules, runtime, and observability after each stage; reread
    one coherent active topology, then run bounded Classic/Game static-origin
-   and publisher/rendezvous Service Binding canaries. A canary/final-readback
-   failure also restores and proves the disabled core configuration.
+   canaries. The publisher and rendezvous canaries use credential-free probes
+   inside the exact governed `POST .../publish` and `GET ...?role=server`
+   envelopes: an enabled circuit must return the coordinator's fixed closed
+   rejection across the Service Binding, while a disabled
+   circuit must return its exact local closed response and retry policy. No
+   health-route or WAF exception exists. A canary/final-readback failure also
+   restores and proves the disabled core configuration.
 
 The build token needs read access to current Worker configuration and the D1
 migration ledger plus exact deployment authority for these three Workers. The

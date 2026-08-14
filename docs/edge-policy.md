@@ -217,6 +217,12 @@ The Worker remains responsible for the exact route shape, 64-hex server ID,
 WebSocket headers, role, and authentication. Do not add health, directory,
 challenge, or update paths to this host.
 
+The automatic delivery canary stays inside this envelope: it uses `GET` on the
+84-byte Classic server path with `role=server` and canonical WebSocket headers,
+but no credential. When the circuit is enabled, the fixed `404` proves the
+named core Service Binding; when disabled, the exact `503` and retry value
+prove the intended closed edge. It never requires a WAF exception.
+
 Where the plan supports the required host/method/path fields, use a source-IP
 characteristic and an initial 60 requests per 60 seconds with a 60-second
 mitigation for this dedicated dynamic host. This WAF ceiling is a coarse
@@ -264,6 +270,13 @@ before Worker invocation and is never redirected. The Worker remains the exact
 authority for the 64-hex server ID, path suffix, content headers, bounded body,
 certificate identity, signature, sequence, and nonce. Do not add a directory,
 rendezvous, or health route to this hostname.
+
+The automatic delivery canary stays inside this envelope: it uses `POST` on
+the 92-byte Classic publish path with a bounded JSON body and a syntactically
+valid but cryptographically invalid signature. When the circuit is enabled,
+the coordinator's fixed `401` proves the named core Service Binding; when
+disabled, the exact `503` and retry value prove the intended closed edge. It
+never requires a WAF exception, private credential, or publication write.
 
 ## Per-host staged HSTS
 

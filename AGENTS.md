@@ -38,8 +38,8 @@
   core/publisher/rendezvous staging, caller-before-core restoration, coherent
   phase readback, prefix-proven migration horizons, positive-allowlist child
   environments, live-trigger reconciliation, and bounded static plus
-  Service Binding canaries synchronized with the implementation
-  and runbook. `npm run deploy:production:dry-run` must retain zero remote
+  canonical-envelope Service Binding canaries synchronized with the
+  implementation and runbook. `npm run deploy:production:dry-run` must retain zero remote
   mutation paths.
 - Treat `server_presence` plus the profile-discriminated `directory_entries`
   as authoritative, profile-scoped publication state. Presence retains only

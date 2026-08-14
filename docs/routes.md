@@ -23,8 +23,6 @@ publisher and rendezvous handlers are exposed:
 | `publish.meta.atrinik.org` | `POST` | `/v2/classic/servers/{server-id}/publish` | exact Classic v2 schema/tag with mandatory `accessCodeRequired`; otherwise the same bounded transport envelope |
 | `rendezvous.meta.atrinik.org` | `GET` WebSocket | `/v1/servers/{server-id}?role=client\|server` | no body or content headers; exactly one `role` query |
 | `rendezvous.meta.atrinik.org` | `GET` WebSocket | `/v1/classic/servers/{server-id}?role=client\|server` | no body or content headers; exactly one `role` query |
-| `publish.meta.atrinik.org` | `GET` | `/.well-known/atrinik-deployment-health` | fixed credential-free `204`; traverses only `PublisherCoordinator.deploymentHealth()` and is never cached |
-| `rendezvous.meta.atrinik.org` | `GET` | `/.well-known/atrinik-deployment-health` | fixed credential-free `204`; traverses only `RendezvousCoordinator.deploymentHealth()` and is never cached |
 
 The checked-in Wrangler files deliberately declare no routes or Custom Domains
 and keep both dynamic circuits disabled; production attachment and enablement

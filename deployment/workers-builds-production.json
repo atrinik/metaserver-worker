@@ -50,6 +50,10 @@
         "publisher",
         "--base-url",
         "https://publish.meta.atrinik.org",
+        "--expected-circuit",
+        "$PUBLISH_ENABLED",
+        "--disabled-retry-seconds",
+        "$ROUTE_DISABLED_RETRY_SECONDS",
         "--json"
       ]
     },
@@ -62,6 +66,10 @@
         "rendezvous",
         "--base-url",
         "https://rendezvous.meta.atrinik.org",
+        "--expected-circuit",
+        "$RENDEZVOUS_ENABLED",
+        "--disabled-retry-seconds",
+        "$ROUTE_DISABLED_RETRY_SECONDS",
         "--json"
       ]
     }

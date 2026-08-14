@@ -43,7 +43,6 @@ function publisherEnvironment(
   const base = {
     COORDINATOR: {
       fetch,
-      deploymentHealth: async () => "publisher",
     } as PublisherEnv["COORDINATOR"],
     GLOBAL_RATE_LIMITER: { limit } as RateLimit,
     PUBLISH_HOSTNAME: "publish.meta.atrinik.org",
@@ -76,7 +75,6 @@ function rendezvousEnvironment(
   const base = {
     COORDINATOR: {
       fetch,
-      deploymentHealth: async () => "rendezvous",
     } as RendezvousEnv["COORDINATOR"],
     GLOBAL_RATE_LIMITER: { limit: globalLimit } as RateLimit,
     RENDEZVOUS_CLIENT_RATE_LIMITER: { limit: clientLimit } as RateLimit,
@@ -150,21 +148,6 @@ function rendezvousRequest(
 }
 
 describe("publisher edge Worker", () => {
-  it("proves its core Service Binding while the public circuit is disabled", async () => {
-    const fetch = vi.fn(async () => publisherSuccess());
-    const configured = publisherEnvironment(fetch);
-    const response = await publisherWorker.fetch(
-      new Request(
-        "https://publish.meta.atrinik.org/.well-known/atrinik-deployment-health",
-      ),
-      override(configured.env, { PUBLISH_ENABLED: "disabled" }),
-    );
-    expect(response.status).toBe(204);
-    expect(response.headers.get("Cache-Control")).toBe("no-store");
-    expect(fetch).not.toHaveBeenCalled();
-    expect(configured.limit).not.toHaveBeenCalled();
-  });
-
   it("accepts only its configured isolated canary authority", async () => {
     const configured = publisherEnvironment(async () => publisherSuccess());
     const canary = override(configured.env, {
@@ -265,22 +248,6 @@ describe("publisher edge Worker", () => {
 });
 
 describe("rendezvous edge Worker", () => {
-  it("proves its core Service Binding while the public circuit is disabled", async () => {
-    const fetch = vi.fn(async () => invalidRendezvousToken());
-    const configured = rendezvousEnvironment(fetch);
-    const response = await rendezvousWorker.fetch(
-      new Request(
-        "https://rendezvous.meta.atrinik.org/.well-known/atrinik-deployment-health",
-      ),
-      override(configured.env, { RENDEZVOUS_ENABLED: "disabled" }),
-    );
-    expect(response.status).toBe(204);
-    expect(response.headers.get("Cache-Control")).toBe("no-store");
-    expect(fetch).not.toHaveBeenCalled();
-    expect(configured.globalLimit).not.toHaveBeenCalled();
-    expect(configured.clientLimit).not.toHaveBeenCalled();
-  });
-
   it("accepts only its configured isolated canary authority", async () => {
     const configured = rendezvousEnvironment(async () =>
       invalidRendezvousToken());

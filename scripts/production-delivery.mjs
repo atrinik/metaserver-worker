@@ -264,6 +264,10 @@ export function validateContract(contract) {
         "publisher",
         "--base-url",
         "https://publish.meta.atrinik.org",
+        "--expected-circuit",
+        "$PUBLISH_ENABLED",
+        "--disabled-retry-seconds",
+        "$ROUTE_DISABLED_RETRY_SECONDS",
         "--json",
       ],
     },
@@ -276,6 +280,10 @@ export function validateContract(contract) {
         "rendezvous",
         "--base-url",
         "https://rendezvous.meta.atrinik.org",
+        "--expected-circuit",
+        "$RENDEZVOUS_ENABLED",
+        "--disabled-retry-seconds",
+        "$ROUTE_DISABLED_RETRY_SECONDS",
         "--json",
       ],
     },
@@ -1709,9 +1717,21 @@ async function deployWorker(
   return message;
 }
 
-async function runProductionCanaries(contract) {
+async function runProductionCanaries(contract, configs) {
   for (const canary of contract.productionCanaries) {
-    const [program, ...args] = canary.command;
+    const roleIndex = {
+      "publisher-service-binding": 1,
+      "rendezvous-service-binding": 2,
+    }[canary.name];
+    const variables = roleIndex === undefined ? {} : configs[roleIndex].vars;
+    const resolved = canary.command.map((value) => ({
+      "$PUBLISH_ENABLED": variables.PUBLISH_ENABLED,
+      "$RENDEZVOUS_ENABLED": variables.RENDEZVOUS_ENABLED,
+      "$ROUTE_DISABLED_RETRY_SECONDS": variables.ROUTE_DISABLED_RETRY_SECONDS,
+    })[value] ?? value);
+    if (resolved.some((value) => value.startsWith("$")))
+      fail(`${canary.name} has an unresolved canary input`);
+    const [program, ...args] = resolved;
     await command(program, args, { timeout: 120_000 });
   }
 }
@@ -1946,7 +1966,7 @@ async function main() {
     },
     canaries: async () => {
       failureEvidence.failedRole = "canaries";
-      await runProductionCanaries(contract);
+      await runProductionCanaries(contract, configs);
     },
     recover: async () => {
       const failedRole = failureEvidence.failedRole;

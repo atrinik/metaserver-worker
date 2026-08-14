@@ -37,27 +37,32 @@ beforeAll(async () => {
               const target = headers.get("X-Atrinik-Test-Target");
               if (target === null) return new Response("Missing target", { status: 400 });
               const publisher = new URL(target).hostname === "publish.meta.atrinik.org";
+              const edge = headers.get("X-Atrinik-Test-Edge") === "1";
               const forwardedHeaders = new Headers();
               const allowed = publisher
                 ? ["Atrinik-Publish-Sequence", "Atrinik-Server-ID", "Content-Digest", "Content-Type", "Signature", "Signature-Input"]
                 : ["Authorization", "Connection", "Sec-WebSocket-Key", "Sec-WebSocket-Protocol", "Sec-WebSocket-Version", "Upgrade"];
+              if (edge) allowed.push("CF-Connecting-IP");
               for (const name of allowed) {
                 const value = headers.get(name);
                 if (value !== null) forwardedHeaders.set(name, value);
               }
               if (publisher) forwardedHeaders.set("Content-Type", "application/json");
-              if (!publisher) {
+              if (!publisher && !edge) {
                 forwardedHeaders.set("Atrinik-Internal-Source-Tag", "v1.test-a.aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa");
                 forwardedHeaders.set("Atrinik-Internal-Source-Tag-Previous", "v1.test-b.bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb");
               }
-              const service = publisher
-                ? env.PUBLISH_COORDINATOR
-                : env.RENDEZVOUS_COORDINATOR;
+              const service = edge
+                ? (publisher ? env.PUBLISH_EDGE : env.RENDEZVOUS_EDGE)
+                : (publisher ? env.PUBLISH_COORDINATOR : env.RENDEZVOUS_COORDINATOR);
+              const body = request.body === null
+                ? undefined
+                : await request.arrayBuffer();
               const forwarded = new Request(target, {
                 method: request.method,
                 headers: forwardedHeaders,
                 redirect: "manual",
-                ...(request.body === null ? {} : { body: request.body }),
+                ...(body === undefined ? {} : { body }),
               });
               return service.fetch(forwarded);
             },
@@ -74,6 +79,8 @@ beforeAll(async () => {
             name: "core",
             entrypoint: "RendezvousCoordinator",
           },
+          PUBLISH_EDGE: "publisher",
+          RENDEZVOUS_EDGE: "rendezvous",
         },
       },
       {
@@ -172,18 +179,52 @@ afterAll(async () => {
 });
 
 describe("compiled named Worker Service Bindings", () => {
-  it("proves both public health routes traverse their named core entrypoints", async () => {
-    for (const [worker, authority] of [
-      [publisher, "publish.meta.atrinik.org"],
-      [rendezvous, "rendezvous.meta.atrinik.org"],
-    ] as const) {
-      const response = await worker.fetch(
-        `https://${authority}/.well-known/atrinik-deployment-health`,
-      );
-      expect(response.status).toBe(204);
-      expect(response.headers.get("Cache-Control")).toBe("no-store");
-      expect(await response.text()).toBe("");
-    }
+  it("carries both credential-free production canary envelopes to core", async () => {
+    const serverId = "0".repeat(64);
+    const publishTarget =
+      `https://${publisherFixture.authority}${publisherFixture.path}`;
+    const publishResponse = await harness.fetch(
+      "http://service-binding.test/forward",
+      {
+        method: "POST",
+        headers: {
+          "CF-Connecting-IP": "192.0.2.211",
+          "Atrinik-Publish-Sequence": publisherFixture.sequence,
+          "Atrinik-Server-ID": publisherFixture.server_id,
+          "Content-Digest": publisherFixture.content_digest,
+          "Content-Type": publisherFixture.content_type,
+          Signature: `atrinik=:${"A".repeat(86)}==:`,
+          "Signature-Input": publisherFixture.signature_input,
+          "X-Atrinik-Test-Edge": "1",
+          "X-Atrinik-Test-Target": publishTarget,
+        },
+        body: new TextEncoder().encode(publisherFixture.body),
+      },
+    );
+    expect(publishResponse.status).toBe(401);
+    const publishBody = await publishResponse.json() as {
+      error?: { code?: string };
+    };
+    expect(publishBody.error?.code).toBe("unauthorized");
+
+    const rendezvousTarget =
+      `https://rendezvous.meta.atrinik.org/v1/classic/servers/${serverId}?role=server`;
+    const rendezvousResponse = await harness.fetch(
+      "http://service-binding.test/forward",
+      {
+        headers: {
+          "CF-Connecting-IP": "192.0.2.212",
+          Connection: "Upgrade",
+          "Sec-WebSocket-Key": "AAAAAAAAAAAAAAAAAAAAAA==",
+          "Sec-WebSocket-Version": "13",
+          Upgrade: "websocket",
+          "X-Atrinik-Test-Edge": "1",
+          "X-Atrinik-Test-Target": rendezvousTarget,
+        },
+      },
+    );
+    expect(rendezvousResponse.status).toBe(404);
+    expect(await rendezvousResponse.text()).toBe("Server is offline\n");
   });
 
   it("carries a signed request without public source state", async () => {
