@@ -71,9 +71,10 @@ The entrypoint performs this fail-closed sequence:
    and its private configuration path; the lease token remains in the parent
    process. Materialize private configurations only after repository checks.
 2. Run the complete repository check; then validate all three protected configs,
-   exact Custom Domains, bindings, variables, secret names, unique rate
-   namespaces, disabled alternate URLs, observability, cron schedules, and the
-   ordered D1 ledger against live readback.
+   bounded runtime policies, coherent circuit values, exact Custom Domains and
+   their shared `atrinik.org` zone ID, bindings, variables, secret names, unique
+   rate namespaces, disabled alternate URLs, observability, cron schedules, and
+   the ordered D1 ledger against live readback.
 3. Resolve the desired and disabled-circuit strict dry-run bundles before
    mutation and hash them with the configs, migrations, lockfile, commands,
    canaries, and contract.
@@ -81,8 +82,10 @@ The entrypoint performs this fail-closed sequence:
    digest is already active, report `no-deployment-required`, run the bounded
    canaries, and upload nothing, avoiding a Durable Object restart.
 5. Recheck current `main` before the first upload and before and after every
-   stage; reacquire the sole active Builds lease. Deploy and read back core,
-   publisher, then rendezvous with every public circuit forced disabled.
+   stage; cancel and wait for every stale main build, repeat the inventory until
+   the sole exact-SHA Builds lease converges, and make current `main` the final
+   remote proof. Deploy and read back core, publisher, then rendezvous with every
+   public circuit forced disabled.
 6. Prove the staged three-role cohort is coherent. Restore the desired caller
    configs in publisher/rendezvous order while core remains disabled, restore
    core last, and validate every direct `wrangler deploy --strict` at 100%.

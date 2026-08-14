@@ -169,6 +169,16 @@ function requireNonemptyStrings(value, keys, label) {
   }
 }
 
+function boundedIntegerVariable(variables, name, minimum, maximum) {
+  const value = variables?.[name];
+  if (typeof value !== "string" || !/^[1-9][0-9]*$/u.test(value))
+    fail(`${name} production policy is invalid`);
+  const parsed = Number(value);
+  if (!Number.isSafeInteger(parsed) || parsed < minimum || parsed > maximum)
+    fail(`${name} production policy is invalid`);
+  return parsed;
+}
+
 export function validateContract(contract) {
   assertExactKeys(
     contract,
@@ -540,6 +550,72 @@ export function validateTopology(contract, configs, { production = false } = {})
   }
 
   const [core, publisher, rendezvous] = configs;
+  const circuits = [
+    [core, publisher, "PUBLISH_ENABLED"],
+    [core, publisher, "GAME_PUBLISH_ENABLED"],
+    [core, rendezvous, "RENDEZVOUS_ENABLED"],
+  ];
+  for (const [owner, caller, name] of circuits) {
+    if (
+      !["enabled", "disabled"].includes(owner.vars?.[name]) ||
+      owner.vars?.[name] !== caller.vars?.[name]
+    ) fail(`${name} production circuit authority drift`);
+  }
+  const retrySeconds = boundedIntegerVariable(
+    core.vars,
+    "ROUTE_DISABLED_RETRY_SECONDS",
+    1,
+    86_400,
+  );
+  for (const caller of [publisher, rendezvous]) {
+    if (
+      boundedIntegerVariable(
+        caller.vars,
+        "ROUTE_DISABLED_RETRY_SECONDS",
+        1,
+        86_400,
+      ) !== retrySeconds
+    ) fail("route-disabled retry policy drift");
+  }
+  const listingTtl = boundedIntegerVariable(
+    core.vars,
+    "LISTING_TTL_SECONDS",
+    960,
+    86_400,
+  );
+  boundedIntegerVariable(core.vars, "PUBLISH_SERVER_DAILY_LIMIT", 1, 48);
+  boundedIntegerVariable(core.vars, "RENDEZVOUS_SERVER_DAILY_LIMIT", 1, 50);
+  boundedIntegerVariable(core.vars, "RENDEZVOUS_CLIENT_PAIR_BURST_LIMIT", 1, 20);
+  boundedIntegerVariable(core.vars, "RENDEZVOUS_CLIENT_PAIR_WINDOW_SECONDS", 1, 60);
+  const initialCooldown = boundedIntegerVariable(
+    core.vars,
+    "RENDEZVOUS_CLIENT_PAIR_INITIAL_COOLDOWN_SECONDS",
+    1,
+    30,
+  );
+  const maximumCooldown = boundedIntegerVariable(
+    core.vars,
+    "RENDEZVOUS_CLIENT_PAIR_MAXIMUM_COOLDOWN_SECONDS",
+    initialCooldown,
+    900,
+  );
+  boundedIntegerVariable(
+    core.vars,
+    "RENDEZVOUS_CLIENT_PAIR_RESET_SECONDS",
+    maximumCooldown,
+    1_800,
+  );
+  boundedIntegerVariable(core.vars, "RENDEZVOUS_ACTIVE_CLIENT_LIMIT", 1, 16);
+  boundedIntegerVariable(core.vars, "RENDEZVOUS_CLIENT_SESSION_SECONDS", 1, 15);
+  boundedIntegerVariable(
+    core.vars,
+    "DIRECTORY_REFRESH_LEAD_SECONDS",
+    1,
+    Math.min(7_200, 14_399, listingTtl - 900),
+  );
+  if (!["v4-production", "v5-production"].includes(
+    core.vars?.CLASSIC_DIRECTORY_CUTOVER_MODE,
+  )) fail("Classic directory cutover policy drift");
   if (
     production &&
     (!/^[0-9a-f]{32}$/u.test(core.vars?.DIRECTORY_CACHE_ZONE_ID ?? "") ||
@@ -565,6 +641,11 @@ export function validateTopology(contract, configs, { production = false } = {})
     )
       fail("source-tag configuration epoch drift");
   }
+  if (
+    !/^\d{4}-\d{2}-[a-z0-9]+$/u.test(core.vars.SOURCE_TAG_KEY_CURRENT_ID) ||
+    !/^\d{4}-\d{2}-[a-z0-9]+$/u.test(core.vars.SOURCE_TAG_KEY_PREVIOUS_ID) ||
+    core.vars.SOURCE_TAG_KEY_CURRENT_ID === core.vars.SOURCE_TAG_KEY_PREVIOUS_ID
+  ) fail("source-tag configuration epoch is invalid");
   if (
     !sameValues(names(core, "d1_databases"), ["DB"]) ||
     !sameValues(names(core, "r2_buckets"), [
@@ -1212,9 +1293,68 @@ export function buildLeaseDecision(builds, sourceSha, triggerUuid, buildUuid) {
       build.build_uuid !== buildUuid &&
       activeBuild(build) &&
       build.trigger?.trigger_uuid === triggerUuid &&
-      build.build_trigger_metadata?.branch === "main" &&
-      build.build_trigger_metadata?.commit_hash === sourceSha,
+      build.build_trigger_metadata?.branch === "main",
   );
+}
+
+export async function arbitrateBuildLease({
+  sourceSha,
+  buildUuid,
+  triggerUuid,
+  currentMain,
+  listBuilds,
+  cancelBuild,
+  readBuild,
+  pause = () => wait(1_000),
+  rounds = 3,
+  polls = 30,
+}) {
+  const proveCurrent = async () => {
+    if (await currentMain() !== sourceSha)
+      fail("build SHA is superseded by current main");
+  };
+  for (let round = 0; round < rounds; round += 1) {
+    await proveCurrent();
+    const builds = await listBuilds();
+    if (!Array.isArray(builds)) fail("Workers Builds lease inventory is invalid");
+    await proveCurrent();
+    const competitors = buildLeaseDecision(
+      builds,
+      sourceSha,
+      triggerUuid,
+      buildUuid,
+    );
+    if (competitors.length === 0) {
+      await proveCurrent();
+      return;
+    }
+    for (const build of competitors) {
+      await proveCurrent();
+      await cancelBuild(build.build_uuid);
+    }
+    for (const build of competitors) {
+      let stopped = false;
+      for (let attempt = 0; attempt < polls; attempt += 1) {
+        await proveCurrent();
+        if (!activeBuild(await readBuild(build.build_uuid))) {
+          stopped = true;
+          break;
+        }
+        await pause();
+      }
+      if (!stopped) fail("competing production build did not release the lease");
+    }
+  }
+  await proveCurrent();
+  const finalBuilds = await listBuilds();
+  if (!Array.isArray(finalBuilds)) fail("Workers Builds lease inventory is invalid");
+  if (buildLeaseDecision(
+    finalBuilds,
+    sourceSha,
+    triggerUuid,
+    buildUuid,
+  ).length !== 0) fail("production build lease did not converge");
+  await proveCurrent();
 }
 
 export function validateBuildTrigger(contract, build, matchTag) {
@@ -1329,42 +1469,25 @@ async function assertBuildLease(
     ),
   );
   if (!arbitrate) return;
-  await assertCurrentMain(contract, sourceSha);
-  const builds = await cloudflareResult(
-    accountId,
-    `/builds/workers/${encodeURIComponent(process.env.WRANGLER_CI_MATCH_TAG)}/builds`,
-    { token },
-  );
-  if (!Array.isArray(builds)) fail("Workers Builds lease inventory is invalid");
-  await assertCurrentMain(contract, sourceSha);
-  const competitors = buildLeaseDecision(
-    builds,
+  const buildsPath =
+    `/builds/workers/${encodeURIComponent(process.env.WRANGLER_CI_MATCH_TAG)}/builds`;
+  await arbitrateBuildLease({
     sourceSha,
-    triggerUuid,
     buildUuid,
-  );
-  for (const build of competitors)
-    await cloudflareResult(
+    triggerUuid,
+    currentMain: () => currentMainSha(contract),
+    listBuilds: () => cloudflareResult(accountId, buildsPath, { token }),
+    cancelBuild: (uuid) => cloudflareResult(
       accountId,
-      `/builds/builds/${encodeURIComponent(build.build_uuid)}/cancel`,
+      `/builds/builds/${encodeURIComponent(uuid)}/cancel`,
       { method: "PUT", token },
-    );
-  for (const build of competitors) {
-    let stopped = false;
-    for (let attempt = 0; attempt < 30; attempt += 1) {
-      const value = await cloudflareResult(
-        accountId,
-        `/builds/builds/${encodeURIComponent(build.build_uuid)}`,
-        { token },
-      );
-      if (!activeBuild(value)) {
-        stopped = true;
-        break;
-      }
-      await wait(1_000);
-    }
-    if (!stopped) fail("competing production build did not release the lease");
-  }
+    ),
+    readBuild: (uuid) => cloudflareResult(
+      accountId,
+      `/builds/builds/${encodeURIComponent(uuid)}`,
+      { token },
+    ),
+  });
 }
 
 async function readLiveControlPlane(worker, accountId) {
@@ -1510,7 +1633,7 @@ export function validateLiveControlPlane(
   worker,
   config,
   live,
-  { exactRuntime = true } = {},
+  { exactRuntime = true, expectedZoneId = null } = {},
 ) {
   const expectedRoutes = (config.routes ?? [])
     .filter(({ custom_domain: customDomain }) => customDomain !== true)
@@ -1522,6 +1645,13 @@ export function validateLiveControlPlane(
     fail(`${worker.role} live route drift`);
   if (!sameValues(actualDomains, worker.customDomains))
     fail(`${worker.role} live Custom Domain drift`);
+  if (
+    expectedZoneId !== null &&
+    (live.customDomains ?? []).some(
+      ({ zone_id: zoneId, zone_name: zoneName }) =>
+        zoneId !== expectedZoneId || zoneName !== "atrinik.org",
+    )
+  ) fail(`${worker.role} live Custom Domain zone authority drift`);
   if (
     (live.customDomains ?? []).some(
       ({ enabled, previews_enabled: previewsEnabled }) =>
@@ -1716,6 +1846,7 @@ async function main() {
     );
     validateLiveControlPlane(worker, configs[index], live, {
       exactRuntime: false,
+      expectedZoneId: configs[0].vars.DIRECTORY_CACHE_ZONE_ID,
     });
     const value = await readActive(configPaths[index]);
     annotations.push(
@@ -1764,6 +1895,7 @@ async function main() {
         worker,
         stagedConfigs[index],
         await readLiveControlPlane(worker, process.env.CLOUDFLARE_ACCOUNT_ID),
+        { expectedZoneId: configs[0].vars.DIRECTORY_CACHE_ZONE_ID },
       );
     },
     verifyStaged: async () => {
@@ -1778,6 +1910,7 @@ async function main() {
           worker,
           stagedConfigs[index],
           await readLiveControlPlane(worker, process.env.CLOUDFLARE_ACCOUNT_ID),
+          { expectedZoneId: configs[0].vars.DIRECTORY_CACHE_ZONE_ID },
         );
       }
       assertCoherentTopology(annotations, plan, sourceSha, {
@@ -1803,6 +1936,7 @@ async function main() {
         worker,
         configs[index],
         await readLiveControlPlane(worker, process.env.CLOUDFLARE_ACCOUNT_ID),
+        { expectedZoneId: configs[0].vars.DIRECTORY_CACHE_ZONE_ID },
       );
     },
     verifyFinal: async (finalDecision) => {
@@ -1819,6 +1953,7 @@ async function main() {
           worker,
           configs[index],
           await readLiveControlPlane(worker, process.env.CLOUDFLARE_ACCOUNT_ID),
+          { expectedZoneId: configs[0].vars.DIRECTORY_CACHE_ZONE_ID },
         );
       }
       if (finalDecision === "deploy")
@@ -1862,6 +1997,7 @@ async function main() {
                 contract.workers[0],
                 process.env.CLOUDFLARE_ACCOUNT_ID,
               ),
+              { expectedZoneId: configs[0].vars.DIRECTORY_CACHE_ZONE_ID },
             );
           },
         });

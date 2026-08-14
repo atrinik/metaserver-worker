@@ -5,6 +5,7 @@ import { resolve } from "node:path";
 import test from "node:test";
 import {
   activeVersionId,
+  arbitrateBuildLease,
   assertCoherentTopology,
   buildLeaseDecision,
   childEnvironment,
@@ -87,6 +88,8 @@ function liveControlPlane(index) {
       hostname,
       enabled: true,
       previews_enabled: false,
+      zone_id: "b".repeat(32),
+      zone_name: "atrinik.org",
     })),
     subdomainStatus: { enabled: false, previews_enabled: false },
     serviceEnvironment: {
@@ -411,6 +414,50 @@ test("requires exact production zone, origin, and domain relationships", () => {
   }
 });
 
+test("requires runtime-valid and coherent protected policy values", () => {
+  for (const mutate of [
+    (value) => { value[0].vars.LISTING_TTL_SECONDS = "garbage"; },
+    (value) => { value[1].vars.PUBLISH_ENABLED = "typo"; },
+    (value) => { value[1].vars.PUBLISH_ENABLED = "enabled"; },
+    (value) => { value[2].vars.ROUTE_DISABLED_RETRY_SECONDS = "301"; },
+    (value) => {
+      value[0].vars.SOURCE_TAG_KEY_PREVIOUS_ID =
+        value[0].vars.SOURCE_TAG_KEY_CURRENT_ID;
+      value[1].vars.SOURCE_TAG_KEY_PREVIOUS_ID =
+        value[1].vars.SOURCE_TAG_KEY_CURRENT_ID;
+      value[2].vars.SOURCE_TAG_KEY_PREVIOUS_ID =
+        value[2].vars.SOURCE_TAG_KEY_CURRENT_ID;
+    },
+  ]) {
+    assert.throws(
+      () => validateTopology(contract, changedConfigs(mutate)),
+      /production policy is invalid|production circuit authority drift|retry policy drift|configuration epoch is invalid/u,
+    );
+  }
+});
+
+test("binds the cache purge zone to every live canonical domain", () => {
+  for (const index of [1, 2]) {
+    assert.doesNotThrow(() => validateLiveControlPlane(
+      contract.workers[index],
+      configs[index],
+      liveControlPlane(index),
+      { expectedZoneId: "b".repeat(32) },
+    ));
+    const wrong = liveControlPlane(index);
+    wrong.customDomains[0].zone_id = "c".repeat(32);
+    assert.throws(
+      () => validateLiveControlPlane(
+        contract.workers[index],
+        configs[index],
+        wrong,
+        { expectedZoneId: "b".repeat(32) },
+      ),
+      /Custom Domain zone authority drift/u,
+    );
+  }
+});
+
 test("creates an exact disabled-circuit staging topology", () => {
   const desired = structuredClone(configs);
   desired[0].vars.PUBLISH_ENABLED = "enabled";
@@ -555,13 +602,67 @@ test("selects one deterministic active exact-source build lease owner", () => {
   assert.deepEqual(
     buildLeaseDecision(builds, source, "production", "later")
       .map(({ build_uuid: uuid }) => uuid),
-    ["earlier"],
+    ["earlier", "stale"],
   );
   assert.deepEqual(
     buildLeaseDecision(withLateStaleRetry, source, "production", "later")
       .map(({ build_uuid: uuid }) => uuid),
-    ["earlier"],
+    ["earlier", "stale", "late-stale"],
   );
+});
+
+test("lease arbitration converges after cancellation and detects main advance", async () => {
+  const source = "a".repeat(40);
+  const other = "b".repeat(40);
+  const build = (uuid, commit = source, status = "running") => ({
+    build_uuid: uuid,
+    created_on: uuid === "owner" ? "2026-08-14T20:01:00Z" :
+      "2026-08-14T20:00:00Z",
+    status,
+    trigger: { trigger_uuid: "production" },
+    build_trigger_metadata: { branch: "main", commit_hash: commit },
+  });
+  const states = new Map([
+    ["owner", build("owner")],
+    ["stale", build("stale", other)],
+  ]);
+  const cancelled = [];
+  let lists = 0;
+  await arbitrateBuildLease({
+    sourceSha: source,
+    buildUuid: "owner",
+    triggerUuid: "production",
+    currentMain: async () => source,
+    listBuilds: async () => {
+      lists += 1;
+      if (lists === 2) states.set("retry", build("retry"));
+      return [...states.values()];
+    },
+    cancelBuild: async (uuid) => {
+      cancelled.push(uuid);
+      states.set(uuid, { ...states.get(uuid), status: "stopped" });
+    },
+    readBuild: async (uuid) => states.get(uuid),
+    pause: async () => {},
+  });
+  assert.deepEqual(cancelled, ["stale", "retry"]);
+  assert.equal(lists, 3);
+
+  let mainProofs = 0;
+  await assert.rejects(arbitrateBuildLease({
+    sourceSha: source,
+    buildUuid: "owner",
+    triggerUuid: "production",
+    currentMain: async () => {
+      mainProofs += 1;
+      return mainProofs < 4 ? source : other;
+    },
+    listBuilds: async () => [build("owner"), build("stale", other)],
+    cancelBuild: async () => {},
+    readBuild: async () => build("stale", other),
+    pause: async () => {},
+    polls: 2,
+  }), /superseded by current main/u);
 });
 
 test("no-op requires one coherent active topology and control drift needs exact approval", () => {
