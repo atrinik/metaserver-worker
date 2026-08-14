@@ -81,9 +81,18 @@ cutover from the later global v1 receiver retirement.
    rendezvous state, a response, or a log. Accepting the maximum sequence must
    succeed once; all later lineage requests must return the fixed
    `publish_sequence_exhausted` response without mutation.
-4. Validate the isolated protocol-5 aliases with
-   `scripts/static_origin_canary.py --profile classic-v2 --alias-prefix canary-v5`.
-   Require exact v5
+4. Validate the isolated protocol-5 aliases with the read-only verifier:
+
+   ```sh
+   python3 scripts/static_origin_canary.py \
+     --profile classic-v2 \
+     --base-url https://classic-v5-directory-canary.example.org \
+     --alias-prefix canary-v5 \
+     --json
+   ```
+
+   Substitute only the exact isolated hostname from the reviewed deployment
+   record. Require exact v5
    schema/protocol values, representation checksums, generation agreement,
    expiry, open/protected rendering, private absence, and no password or raw
    access-code material. Record bounded checksums and outcomes only.
