@@ -298,6 +298,14 @@ class WranglerSecurityConfigurationTests(unittest.TestCase):
             "python3 scripts/static_origin_canary.py",
             normalized_deployment,
         )
+        self.assertRegex(
+            deployment,
+            r"python3 scripts/static_origin_canary\.py \\\n"
+            r"\s+--profile classic-v2 \\\n"
+            r"\s+--base-url https://classic-v5-directory-canary\.example\.org \\\n"
+            r"\s+--alias-prefix canary-v5 \\\n"
+            r"\s+--json",
+        )
         self.assertIn(
             "python3 scripts/edge_ingress_canary.py",
             normalized_deployment,
