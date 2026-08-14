@@ -14,6 +14,8 @@ const TEST_TOKEN = "a".repeat(64);
 
 let miniflare: Miniflare;
 let harness: WorkerFetcher;
+let publisher: WorkerFetcher;
+let rendezvous: WorkerFetcher;
 
 beforeAll(async () => {
   const core = await readConfiguration("wrangler.jsonc");
@@ -161,6 +163,8 @@ beforeAll(async () => {
     );
   }
   harness = await miniflare.getWorker("harness") as unknown as WorkerFetcher;
+  publisher = await miniflare.getWorker("publisher") as unknown as WorkerFetcher;
+  rendezvous = await miniflare.getWorker("rendezvous") as unknown as WorkerFetcher;
 });
 
 afterAll(async () => {
@@ -168,6 +172,20 @@ afterAll(async () => {
 });
 
 describe("compiled named Worker Service Bindings", () => {
+  it("proves both public health routes traverse their named core entrypoints", async () => {
+    for (const [worker, authority] of [
+      [publisher, "publish.meta.atrinik.org"],
+      [rendezvous, "rendezvous.meta.atrinik.org"],
+    ] as const) {
+      const response = await worker.fetch(
+        `https://${authority}/.well-known/atrinik-deployment-health`,
+      );
+      expect(response.status).toBe(204);
+      expect(response.headers.get("Cache-Control")).toBe("no-store");
+      expect(await response.text()).toBe("");
+    }
+  });
+
   it("carries a signed request without public source state", async () => {
     const target = `https://${publisherFixture.authority}${publisherFixture.path}`;
     const response = await harness.fetch("http://service-binding.test/forward", {

@@ -10,7 +10,7 @@ The Workers Builds automatic-`main` entrypoint validates this boundary but does
 not own zone rules, DNS, Custom Domain attachment, triggers, or secret
 rotation. Drift fails before upload and requires a separately authorized
 operator correction followed by an exact-current-main provider retry. The
-protected production Wrangler files name only the two canonical dynamic
+protected production Wrangler documents name only the two canonical dynamic
 Custom Domains; the core remains domainless, and all three retain
 `workers_dev: false` and `preview_urls: false`.
 

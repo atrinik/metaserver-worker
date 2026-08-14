@@ -15,40 +15,48 @@ Routine delivery uses one Cloudflare Workers Builds connection to
 `atrinik/metaserver-worker`. Configure it exactly from
 `deployment/workers-builds-production.json`: repository root, production
 branch `main`, every push included with no watch-path exclusion, build command
-`npm ci`, deploy command `npm run deploy:production`, and the pinned
+`npm install --global --ignore-scripts npm@11.16.0 && npm ci`, deploy command
+`npm run deploy:production`, `SKIP_DEPENDENCY_INSTALL=1`, and the pinned
 Node/npm/Wrangler versions. An accepted pull-request merge into protected
 `main` is the routine authorization. Do not add another production branch,
 tag/release gate, GitHub environment approval, deploy hook, Actions deployment
 workflow/secret, or local Wrangler step. Semantic Release independently
 consumes the same accepted SHA and does not gate deployment.
 
-Cloudflare-owned build variables name three absolute, owner-protected JSONC
-configurations and two complete secret files outside the checkout:
+Cloudflare-owned secret build variables contain three minified JSONC
+configurations, each below the provider's 5 KiB variable limit:
 
 ```text
 ATRINIK_PRODUCTION_CORE_CONFIG
 ATRINIK_PRODUCTION_PUBLISHER_CONFIG
 ATRINIK_PRODUCTION_RENDEZVOUS_CONFIG
-ATRINIK_PRODUCTION_CORE_SECRETS
-ATRINIK_PRODUCTION_EDGE_SECRETS
+ATRINIK_WORKERS_BUILDS_API_TOKEN
 ```
 
-The build also supplies the intended `CLOUDFLARE_ACCOUNT_ID` and
+The entrypoint materializes the configurations as owner-only temporary files
+outside the checkout, resolves only repository-contained entrypoints, and
+removes the files on every exit. The Builds API token is a separate
+user-scoped secret with Workers CI Write only; it arbitrates this production
+trigger by deterministically retaining one exact-SHA build and cancelling
+competing builds before any Worker mutation. The build also supplies the
+intended `CLOUDFLARE_ACCOUNT_ID` and
 `ATRINIK_PRODUCTION_CONTROL_PLANE_READY`. Use `routine` only while the live
 control-plane digest is unchanged. After separately authorized
 migration/DNS/WAF/domain/route/trigger, secret-rotation, resource, or ownership
 work, use `approved:<exact-current-main-SHA>` for that retry only, then restore
 `routine`. Never print a protected file, identifier, secret value, recovery
-coordinate, or raw provider response. Build secrets are not runtime bindings;
-the latter come only from the complete protected secret files.
+coordinate, or raw provider response. Routine deploys inherit already
+provisioned encrypted runtime secrets by name and never read, upload, rotate,
+or delete their values.
 The first provider connection also uses this exact-SHA gate because the live
 versions do not yet carry the repository delivery annotations; restore
 `routine` after all three annotated versions pass readback and canaries.
 
 The entrypoint performs this fail-closed sequence:
 
-1. Require Workers Builds on `main`, a build UUID, a clean `HEAD` equal to
-   `WORKERS_CI_COMMIT_SHA`, and the intended account.
+1. Require Workers Builds on `main`, a build UUID, the expected connected core
+   project/tag, a clean `HEAD` equal to `WORKERS_CI_COMMIT_SHA`, and the
+   intended account; scrub Wrangler's CI name/tag override from every child.
 2. Run the complete repository check; validate all three protected configs,
    exact Custom Domains, bindings, variables, secret names, unique rate
    namespaces, disabled alternate URLs, observability, cron schedules, and the
@@ -59,16 +67,20 @@ The entrypoint performs this fail-closed sequence:
    digest is already active, report `no-deployment-required`, run the bounded
    canaries, and upload nothing, avoiding a Durable Object restart.
 5. Recheck current `main` before the first upload and before and after every
-   stage; deploy directly with `wrangler deploy --strict` in core, publisher,
-   rendezvous order.
-6. Record exact source, deployable, and control-plane digests plus role in each
-   version; verify its 100% activation, runtime, and binding readback before
+   stage; reacquire the sole active Builds lease and deploy directly with
+   `wrangler deploy --strict` in core, publisher, rendezvous order.
+6. Record exact source, deployable, migration, and control-plane digests plus
+   role in each version; verify its 100% activation, exports, runtime, and
+   binding readback before
    continuing. Re-read the non-versioned routes, Custom Domains, subdomain,
-   schedules, runtime, and observability after each stage; then run the bounded
-   Classic and Game static-origin canaries.
+   schedules, runtime, observability, and declarative exports after each stage;
+   reread one coherent three-role topology, then run bounded Classic/Game
+   static-origin and publisher/rendezvous Service Binding canaries.
 
-The routine identity needs read access to current Worker configuration and the
-D1 migration ledger plus exact deployment authority for these three Workers.
+The build token needs read access to current Worker configuration and the D1
+migration ledger plus exact deployment authority for these three Workers. The
+separate lease token needs Workers CI Write solely to inspect this trigger and
+cancel competing builds.
 It must not receive D1 migration, DNS, WAF, general account administration,
 secret-read, or destructive-resource authority.
 

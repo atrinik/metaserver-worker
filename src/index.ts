@@ -71,6 +71,10 @@ export { DirectoryBuilder, RendezvousRoom };
 
 /** Narrow internal publisher capability for the domainless publisher edge. */
 export class PublisherCoordinator extends WorkerEntrypoint<CoreEnv> {
+  deploymentHealth(): string {
+    return "publisher";
+  }
+
   async fetch(request: Request): Promise<Response> {
     return handlePublisherCoordinatorRequest(request, this.env, this.ctx);
   }
@@ -78,6 +82,10 @@ export class PublisherCoordinator extends WorkerEntrypoint<CoreEnv> {
 
 /** Narrow internal rendezvous capability for the domainless WebSocket edge. */
 export class RendezvousCoordinator extends WorkerEntrypoint<CoreEnv> {
+  deploymentHealth(): string {
+    return "rendezvous";
+  }
+
   async fetch(request: Request): Promise<Response> {
     return handleRendezvousCoordinatorRequest(request, this.env);
   }

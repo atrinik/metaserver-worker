@@ -1,16 +1,23 @@
 import assert from "node:assert/strict";
-import { readFile } from "node:fs/promises";
+import { readFile, rm, stat } from "node:fs/promises";
 import { resolve } from "node:path";
 import test from "node:test";
 import {
   activeVersionId,
+  assertCoherentTopology,
+  deliveryFailureRecord,
   deliveryDecision,
   executeOrderedStages,
+  orchestrateDelivery,
+  materializeProtectedInputs,
   parseVersionMessage,
+  selectBuildLeaseOwner,
+  sanitizedChildEnvironment,
   validateContract,
   validateLiveControlPlane,
+  validateProtectedDocument,
   validateRemoteMigrations,
-  validateSecretCohort,
+  validateRuntimeExports,
   validateSourceCoordinates,
   validateTopology,
 } from "./production-delivery.mjs";
@@ -105,6 +112,21 @@ test("rejects second approval, rollout, and unordered topology drift", () => {
     changedContract((value) => {
       value.workers[1].order = 1;
     }),
+    changedContract((value) => {
+      value.workers[0].role = "coordinator";
+    }),
+    changedContract((value) => {
+      value.workers[1].configuration = "UNREVIEWED_CONFIG";
+    }),
+    changedContract((value) => {
+      value.workers[0].state.pop();
+    }),
+    changedContract((value) => {
+      value.workers[2].customDomains.push("alternate.example");
+    }),
+    changedContract((value) => {
+      value.workers[0].unexpected = true;
+    }),
   ])
     assert.throws(() => validateContract(changed), /invariant drift|topology drift/u);
 });
@@ -181,6 +203,16 @@ test("rejects missing secrets, duplicate rate namespaces, and production placeho
     () => validateTopology(contract, configs, { production: true }),
     /production config contains a placeholder/u,
   );
+  assert.throws(
+    () =>
+      validateTopology(
+        contract,
+        changedConfigs((value) => {
+          value[1].vars.SOURCE_TAG_KEY_CURRENT_ID = "unreviewed-epoch";
+        }),
+      ),
+    /configuration epoch drift/u,
+  );
 });
 
 test("accepts only one direct 100 percent active version", () => {
@@ -196,19 +228,38 @@ test("accepts only one direct 100 percent active version", () => {
     assert.throws(() => activeVersionId(deployment), /direct 100% version/u);
 });
 
+test("requires exact reconciled Durable Object and Worker exports", () => {
+  const exportsWithCreatedState = Object.fromEntries(
+    Object.entries(configs[0].exports).map(([name, value]) => [
+      name,
+      { ...value, state: "created" },
+    ]),
+  );
+  assert.doesNotThrow(() =>
+    validateRuntimeExports(contract.workers[0], configs[0], exportsWithCreatedState),
+  );
+  const changed = structuredClone(exportsWithCreatedState);
+  delete changed.PublisherCoordinator;
+  assert.throws(
+    () => validateRuntimeExports(contract.workers[0], configs[0], changed),
+    /exports reconciliation drift/u,
+  );
+});
+
 test("version annotations bind source, deployable input, control plane, and role", () => {
   const source = "a".repeat(40);
   const deploy = "b".repeat(64);
+  const migration = "d".repeat(64);
   const control = "c".repeat(64);
   assert.deepEqual(
     parseVersionMessage(
-      `atrinik-delivery-v1 source=${source} deploy=${deploy} control=${control} role=core`,
+      `atrinik-delivery-v1 source=${source} deploy=${deploy} migration=${migration} control=${control} role=core`,
     ),
-    { source, deploy, control, role: "core" },
+    { source, deploy, migration, control, role: "core" },
   );
   assert.equal(
     parseVersionMessage(
-      `atrinik-delivery-v1 source=${source} deploy=${deploy} control=${control} role=unknown`,
+      `atrinik-delivery-v1 source=${source} deploy=${deploy} migration=${migration} control=${control} role=unknown`,
     ),
     null,
   );
@@ -223,6 +274,8 @@ test("rejects non-main, dirty, mixed, stale, and unknown-account sources", () =>
     head: source,
     dirty: false,
     buildUuid: "build-1",
+    overrideName: "atrinik-metaserver",
+    matchTag: "worker-tag",
     accountId: "b".repeat(32),
     currentMain: source,
   };
@@ -234,13 +287,26 @@ test("rejects non-main, dirty, mixed, stale, and unknown-account sources", () =>
     { head: "c".repeat(40) },
     { dirty: true },
     { buildUuid: "" },
+    { overrideName: "atrinik-metaserver-publisher" },
+    { matchTag: "" },
     { accountId: "0" },
     { currentMain: "c".repeat(40) },
   ])
     assert.throws(
       () => validateSourceCoordinates({ ...valid, ...changed }),
-      /restricted|invalid|does not match|dirty|missing|superseded/u,
+      /restricted|invalid|does not match|dirty|missing|unexpected|superseded/u,
     );
+});
+
+test("scrubs Workers Builds name and tag overrides from every child", () => {
+  assert.deepEqual(
+    sanitizedChildEnvironment({
+      SAFE: "retained",
+      WRANGLER_CI_OVERRIDE_NAME: "atrinik-metaserver",
+      WRANGLER_CI_MATCH_TAG: "core-tag",
+    }),
+    { SAFE: "retained" },
+  );
 });
 
 test("requires an exact ordered remote migration ledger", () => {
@@ -257,21 +323,81 @@ test("requires an exact ordered remote migration ledger", () => {
     );
 });
 
+test("selects one deterministic active exact-source build lease owner", () => {
+  const source = "a".repeat(40);
+  const build = (uuid, created, commit = source) => ({
+    build_uuid: uuid,
+    created_on: created,
+    status: "running",
+    trigger: { trigger_uuid: "production" },
+    build_trigger_metadata: { branch: "main", commit_hash: commit },
+  });
+  const builds = [
+    build("later", "2026-08-14T20:01:00Z"),
+    build("earlier", "2026-08-14T20:00:00Z"),
+    build("stale", "2026-08-14T19:59:00Z", "b".repeat(40)),
+    { ...build("stopped", "2026-08-14T19:58:00Z"), status: "stopped" },
+  ];
+  assert.equal(
+    selectBuildLeaseOwner(builds, source, "production"),
+    "earlier",
+  );
+});
+
 test("no-op requires one coherent active topology and control drift needs exact approval", () => {
   const source = "a".repeat(40);
   const plan = {
     deploy: "d".repeat(64),
+    migrationDigest: "e".repeat(64),
     controls: ["1".repeat(64), "2".repeat(64), "3".repeat(64)],
   };
   const annotations = ["core", "publisher", "rendezvous"].map(
     (role, index) => ({
       source,
       deploy: plan.deploy,
+      migration: plan.migrationDigest,
       control: plan.controls[index],
       role,
     }),
   );
   assert.equal(deliveryDecision(annotations, plan, source, "routine"), "no-op");
+  assert.equal(
+    deliveryDecision(
+      annotations,
+      { ...plan, deploy: "9".repeat(64) },
+      source,
+      "routine",
+    ),
+    "deploy",
+  );
+  assert.equal(
+    deliveryDecision(annotations, plan, source, `approved:${source}`),
+    "deploy",
+  );
+  assert.throws(
+    () =>
+      deliveryDecision(
+        annotations.map((value, index) =>
+          index === 0 ? { ...value, migration: "f".repeat(64) } : value,
+        ),
+        plan,
+        source,
+        `approved:${source}`,
+      ),
+    /migration content is divergent/u,
+  );
+  assert.doesNotThrow(() => assertCoherentTopology(annotations, plan, source));
+  assert.throws(
+    () =>
+      assertCoherentTopology(
+        annotations.map((value, index) =>
+          index === 1 ? { ...value, source: "f".repeat(40) } : value,
+        ),
+        plan,
+        source,
+      ),
+    /not one coherent/u,
+  );
   assert.equal(
     deliveryDecision(
       annotations.map((value, index) =>
@@ -311,26 +437,111 @@ test("every failed deployment stage stops all later stages", async () => {
   }
 });
 
-test("requires distinct matching source-tag secrets across core and callers", () => {
-  const core = {
-    SOURCE_TAG_KEY_CURRENT: "current",
-    SOURCE_TAG_KEY_PREVIOUS: "previous",
-  };
-  assert.doesNotThrow(() => validateSecretCohort(core, { ...core }));
-  for (const edge of [
-    { ...core, SOURCE_TAG_KEY_CURRENT: "other" },
-    { ...core, SOURCE_TAG_KEY_PREVIOUS: "other" },
-  ])
-    assert.throws(
-      () => validateSecretCohort(core, edge),
-      /secret cohort is mismatched/u,
-    );
-  const duplicated = {
-    SOURCE_TAG_KEY_CURRENT: "same",
-    SOURCE_TAG_KEY_PREVIOUS: "same",
-  };
-  assert.throws(
-    () => validateSecretCohort(duplicated, duplicated),
-    /secret cohort is mismatched/u,
+test("orchestrator fences every mutation, no-op, final readback, and canary boundary", async () => {
+  const workers = ["core", "publisher", "rendezvous"];
+  const events = [];
+  const outcome = await orchestrateDelivery({
+    workers,
+    decision: "deploy",
+    fence: async () => events.push("fence"),
+    deploy: async (worker) => events.push(`deploy:${worker}`),
+    readback: async (worker) => events.push(`readback:${worker}`),
+    verifyFinal: async () => events.push("final"),
+    canaries: async () => events.push("canaries"),
+    completed: (worker) => events.push(`completed:${worker}`),
+  });
+  assert.equal(outcome, "deployed-and-read-back");
+  assert.deepEqual(events, [
+    "fence", "deploy:core", "fence", "readback:core", "completed:core",
+    "fence", "deploy:publisher", "fence", "readback:publisher", "completed:publisher",
+    "fence", "deploy:rendezvous", "fence", "readback:rendezvous", "completed:rendezvous",
+    "fence", "final", "canaries", "fence",
+  ]);
+
+  const noOpEvents = [];
+  assert.equal(
+    await orchestrateDelivery({
+      workers,
+      decision: "no-op",
+      fence: async () => noOpEvents.push("fence"),
+      deploy: async () => noOpEvents.push("unexpected-deploy"),
+      readback: async () => noOpEvents.push("unexpected-readback"),
+      verifyFinal: async () => noOpEvents.push("final"),
+      canaries: async () => noOpEvents.push("canaries"),
+    }),
+    "no-deployment-required",
   );
+  assert.deepEqual(noOpEvents, ["fence", "final", "canaries", "fence"]);
+});
+
+test("orchestrator exposes the exact safe partial prefix after every stage failure", async () => {
+  const workers = ["core", "publisher", "rendezvous"];
+  for (const failedRole of workers) {
+    const completed = [];
+    await assert.rejects(
+      orchestrateDelivery({
+        workers,
+        decision: "deploy",
+        fence: async () => {},
+        deploy: async (worker) => {
+          if (worker === failedRole) throw new Error("closed failure");
+        },
+        readback: async () => {},
+        verifyFinal: async () => {},
+        canaries: async () => {},
+        completed: (worker) => completed.push(worker),
+      }),
+      /closed failure/u,
+    );
+    assert.deepEqual(completed, workers.slice(0, workers.indexOf(failedRole)));
+  }
+});
+
+test("accepts only bounded protected Workers Builds documents", () => {
+  assert.equal(validateProtectedDocument("{}", "CONFIG"), "{}");
+  for (const value of [undefined, "", "x".repeat(5 * 1024 + 1), "bad\0value"])
+    assert.throws(
+      () => validateProtectedDocument(value, "CONFIG"),
+      /missing|limit|invalid byte/u,
+    );
+});
+
+test("materializes provider-shaped config values as private ephemeral files", async () => {
+  const variables = [
+    contract.protectedInputs.coreConfigVariable,
+    contract.protectedInputs.publisherConfigVariable,
+    contract.protectedInputs.rendezvousConfigVariable,
+  ];
+  const previous = variables.map((name) => process.env[name]);
+  variables.forEach((name, index) => {
+    process.env[name] = JSON.stringify(configs[index]);
+  });
+  let materialized;
+  try {
+    materialized = await materializeProtectedInputs(contract.protectedInputs);
+    for (const path of materialized.configPaths) {
+      assert.equal((await stat(path)).mode & 0o077, 0);
+      assert.equal(JSON.parse(await readFile(path, "utf8")).main.startsWith(root), true);
+    }
+  } finally {
+    if (materialized)
+      await rm(materialized.directory, { recursive: true, force: true });
+    variables.forEach((name, index) => {
+      if (previous[index] === undefined) delete process.env[name];
+      else process.env[name] = previous[index];
+    });
+  }
+});
+
+test("failure evidence never includes raw subprocess or protected input text", () => {
+  const secret = "/private/config account-id secret-value";
+  const record = deliveryFailureRecord(new Error(secret), {
+    buildUuid: "build-1",
+    sourceSha: "a".repeat(40),
+    deployableDigest: null,
+    failedRole: "core",
+    completedRoles: [],
+  });
+  assert.equal(record.reason, "unexpected-internal-error");
+  assert.equal(JSON.stringify(record).includes(secret), false);
 });

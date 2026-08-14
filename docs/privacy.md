@@ -47,8 +47,10 @@ Automatic `main` delivery emits only the public source SHA, Workers Builds UUID,
 closed outcome, role, and hashes of deployable/configuration inputs. Production
 account, database, bucket, namespace, version, rule, recovery, and secret
 coordinates remain in the owner-protected deployment record. The entrypoint
-validates secret-file keys but never logs or hashes secret values; Wrangler
-readback and canary bodies are suppressed, leaving only closed pass/fail
+validates runtime secret names through provider readback but never receives,
+logs, hashes, or uploads their values. Protected configuration documents exist
+only in owner-only temporary files that are removed on exit; raw provider
+responses and canary bodies are suppressed, leaving only closed pass/fail
 results. Build secrets are distinct from Worker runtime bindings and are never
 available to application requests.
 

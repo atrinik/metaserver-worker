@@ -1,8 +1,9 @@
 import { execFile } from "node:child_process";
 import { createHash } from "node:crypto";
-import { mkdtemp, readFile, readdir, realpath, rm, stat } from "node:fs/promises";
+import { chmod, mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, isAbsolute, relative, resolve } from "node:path";
+import { setTimeout as wait } from "node:timers/promises";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 
@@ -24,8 +25,27 @@ const stateKeys = [
   "analytics_engine_datasets",
 ];
 
+class DeliveryError extends Error {}
+
+const failureEvidence = {
+  buildUuid: null,
+  sourceSha: null,
+  deployableDigest: null,
+  failedRole: "preflight",
+  completedRoles: [],
+};
+
+export function deliveryFailureRecord(error, evidence) {
+  return {
+    outcome: "production-delivery-stopped",
+    reason:
+      error instanceof DeliveryError ? error.message : "unexpected-internal-error",
+    ...evidence,
+  };
+}
+
 function fail(message) {
-  throw new Error(message);
+  throw new DeliveryError(message);
 }
 
 function sorted(values) {
@@ -85,7 +105,7 @@ async function readJsonc(path) {
   try {
     return JSON.parse(stripJsonc(await readFile(path, "utf8")));
   } catch {
-    fail(`invalid JSONC configuration: ${path}`);
+    fail("invalid JSONC configuration");
   }
 }
 
@@ -135,6 +155,7 @@ export function validateContract(contract) {
       "validationCommand",
       "deployCommand",
       "reviewCommand",
+      "buildEnvironment",
       "productionCanaries",
       "toolchain",
       "source",
@@ -156,12 +177,17 @@ export function validateContract(contract) {
   )
     fail("Workers Builds production trigger drift");
   if (
-    contract.installCommand !== "npm ci" ||
+    contract.installCommand !==
+      "npm install --global --ignore-scripts npm@11.16.0 && npm ci" ||
     contract.validationCommand !== "npm run check" ||
     contract.deployCommand !== "npm run deploy:production" ||
     contract.reviewCommand !== "npm run deploy:production:dry-run"
   )
     fail("production command contract drift");
+  if (
+    !sameJson(contract.buildEnvironment, { SKIP_DEPENDENCY_INSTALL: "1" })
+  )
+    fail("Workers Builds bootstrap environment drift");
   const expectedCanaries = [
     {
       name: "classic-static-directory",
@@ -186,6 +212,30 @@ export function validateContract(contract) {
         "--base-url",
         "https://meta.atrinik.org",
         "--allow-production",
+        "--json",
+      ],
+    },
+    {
+      name: "publisher-service-binding",
+      command: [
+        "python3",
+        "scripts/dynamic_edge_canary.py",
+        "--role",
+        "publisher",
+        "--base-url",
+        "https://publish.meta.atrinik.org",
+        "--json",
+      ],
+    },
+    {
+      name: "rendezvous-service-binding",
+      command: [
+        "python3",
+        "scripts/dynamic_edge_canary.py",
+        "--role",
+        "rendezvous",
+        "--base-url",
+        "https://rendezvous.meta.atrinik.org",
         "--json",
       ],
     },
@@ -220,8 +270,7 @@ export function validateContract(contract) {
       coreConfigVariable: "ATRINIK_PRODUCTION_CORE_CONFIG",
       publisherConfigVariable: "ATRINIK_PRODUCTION_PUBLISHER_CONFIG",
       rendezvousConfigVariable: "ATRINIK_PRODUCTION_RENDEZVOUS_CONFIG",
-      coreSecretsVariable: "ATRINIK_PRODUCTION_CORE_SECRETS",
-      edgeSecretsVariable: "ATRINIK_PRODUCTION_EDGE_SECRETS",
+      buildsApiTokenVariable: "ATRINIK_WORKERS_BUILDS_API_TOKEN",
       controlPlaneGateVariable: "ATRINIK_PRODUCTION_CONTROL_PLANE_READY",
     })
   )
@@ -229,6 +278,8 @@ export function validateContract(contract) {
   if (
     !Array.isArray(contract.workers) ||
     contract.workers.length !== 3 ||
+    sha256Json(canonicalJson(contract.workers)) !==
+      "c7d2e3c88beb26ebebcc0c043a15d7d4ac741dd0a134aee49729f772270d79fd" ||
     JSON.stringify(contract.workers.map(({ name }) => name)) !==
       JSON.stringify(expectedWorkerNames) ||
     JSON.stringify(contract.workers.map(({ order }) => order)) !==
@@ -237,6 +288,21 @@ export function validateContract(contract) {
   )
     fail("serialized Worker topology drift");
   const invariants = contract.invariants;
+  assertExactKeys(
+    invariants,
+    [
+      "productionWorkersDev",
+      "productionPreviewUrls",
+      "migrationPolicy",
+      "controlPlanePolicy",
+      "deploymentOrder",
+      "deploymentMode",
+      "buildSerialization",
+      "noOp",
+      "recovery",
+    ],
+    "production invariants",
+  );
   if (
     invariants.productionWorkersDev !== false ||
     invariants.productionPreviewUrls !== false ||
@@ -337,6 +403,18 @@ export function validateTopology(contract, configs, { production = false } = {})
   }
 
   const [core, publisher, rendezvous] = configs;
+  for (const key of [
+    "SOURCE_TAG_KEY_CURRENT_ID",
+    "SOURCE_TAG_KEY_PREVIOUS_ID",
+  ]) {
+    if (
+      core.vars?.[key] !== publisher.vars?.[key] ||
+      core.vars?.[key] !== rendezvous.vars?.[key] ||
+      typeof core.vars?.[key] !== "string" ||
+      !core.vars[key]
+    )
+      fail("source-tag configuration epoch drift");
+  }
   if (
     !sameValues(names(core, "d1_databases"), ["DB"]) ||
     !sameValues(names(core, "r2_buckets"), [
@@ -377,11 +455,17 @@ export function validateTopology(contract, configs, { production = false } = {})
 }
 
 export function parseVersionMessage(message) {
-  const match = /^atrinik-delivery-v1 source=([0-9a-f]{40}) deploy=([0-9a-f]{64}) control=([0-9a-f]{64}) role=(core|publisher|rendezvous)$/u.exec(
+  const match = /^atrinik-delivery-v1 source=([0-9a-f]{40}) deploy=([0-9a-f]{64}) migration=([0-9a-f]{64}) control=([0-9a-f]{64}) role=(core|publisher|rendezvous)$/u.exec(
     message ?? "",
   );
   return match
-    ? { source: match[1], deploy: match[2], control: match[3], role: match[4] }
+    ? {
+        source: match[1],
+        deploy: match[2],
+        migration: match[3],
+        control: match[4],
+        role: match[5],
+      }
     : null;
 }
 
@@ -405,6 +489,12 @@ export function validateSourceCoordinates(coordinates) {
     fail("checkout HEAD does not match WORKERS_CI_COMMIT_SHA");
   if (coordinates.dirty) fail("production checkout is dirty");
   if (!coordinates.buildUuid) fail("WORKERS_CI_BUILD_UUID is missing");
+  if (
+    coordinates.overrideName !== expectedWorkerNames[0] ||
+    typeof coordinates.matchTag !== "string" ||
+    coordinates.matchTag.length === 0
+  )
+    fail("Workers Builds project identity is missing or unexpected");
   if (!/^[0-9a-f]{32}$/u.test(coordinates.accountId))
     fail("CLOUDFLARE_ACCOUNT_ID is missing or invalid");
   if (coordinates.currentMain !== coordinates.sourceSha)
@@ -417,42 +507,97 @@ export function validateRemoteMigrations(actual, expected) {
 }
 
 export function deliveryDecision(annotations, plan, sourceSha, controlGate) {
+  if (
+    annotations.some(
+      (value) => value && value.migration !== plan.migrationDigest,
+    )
+  )
+    fail("production migration content is divergent from the active record");
   const coherentNoOp = annotations.every(
     (value, index) =>
       value?.deploy === plan.deploy &&
+      value.migration === plan.migrationDigest &&
       value.control === plan.controls[index] &&
       value.role === ["core", "publisher", "rendezvous"][index],
   );
   const activeSources = new Set(annotations.map((value) => value?.source));
-  if (coherentNoOp && activeSources.size === 1) return "no-op";
+  const approved = controlGate === `approved:${sourceSha}`;
+  if (coherentNoOp && activeSources.size === 1 && controlGate === "routine")
+    return "no-op";
   const controlChanged = annotations.some(
     (value, index) => !value || value.control !== plan.controls[index],
   );
-  if (controlChanged && controlGate !== `approved:${sourceSha}`)
+  if (controlChanged && !approved)
     fail("separately authorized control-plane prerequisite is not verified");
-  if (!controlChanged && controlGate !== "routine")
+  if (!controlChanged && controlGate !== "routine" && !approved)
     fail("routine production gate is missing or ambiguous");
   return "deploy";
+}
+
+export function assertDeployableTopology(annotations, plan) {
+  const sources = new Set(annotations.map((value) => value?.source));
+  if (
+    sources.size !== 1 ||
+    !annotations.every(
+      (value, index) =>
+        value?.deploy === plan.deploy &&
+        value.migration === plan.migrationDigest &&
+        value.control === plan.controls[index] &&
+        value.role === ["core", "publisher", "rendezvous"][index],
+    )
+  )
+    fail("production topology is not one coherent deployable configuration");
+}
+
+export function assertCoherentTopology(annotations, plan, sourceSha) {
+  if (
+    !annotations.every(
+      (value, index) =>
+        value?.source === sourceSha &&
+        value.deploy === plan.deploy &&
+        value.migration === plan.migrationDigest &&
+        value.control === plan.controls[index] &&
+        value.role === ["core", "publisher", "rendezvous"][index],
+    )
+  )
+    fail("final production topology is not one coherent source and configuration");
 }
 
 export async function executeOrderedStages(workers, action) {
   for (const [index, worker] of workers.entries()) await action(worker, index);
 }
 
-export function validateSecretCohort(core, edge) {
-  if (
-    core.SOURCE_TAG_KEY_CURRENT !== edge.SOURCE_TAG_KEY_CURRENT ||
-    core.SOURCE_TAG_KEY_PREVIOUS !== edge.SOURCE_TAG_KEY_PREVIOUS ||
-    core.SOURCE_TAG_KEY_CURRENT === core.SOURCE_TAG_KEY_PREVIOUS
-  )
-    fail("protected source-tag secret cohort is mismatched");
+export async function orchestrateDelivery({
+  workers,
+  decision,
+  fence,
+  deploy,
+  readback,
+  verifyFinal,
+  canaries,
+  completed = () => {},
+}) {
+  if (decision === "deploy") {
+    await executeOrderedStages(workers, async (worker, index) => {
+      await fence();
+      await deploy(worker, index);
+      await fence();
+      await readback(worker, index);
+      completed(worker, index);
+    });
+  }
+  await fence();
+  await verifyFinal(decision);
+  await canaries();
+  await fence();
+  return decision === "deploy"
+    ? "deployed-and-read-back"
+    : "no-deployment-required";
 }
 
 function controlPlaneView(config) {
   return {
     name: config.name,
-    compatibility_date: config.compatibility_date,
-    compatibility_flags: config.compatibility_flags ?? [],
     workers_dev: config.workers_dev,
     preview_urls: config.preview_urls,
     d1_databases: config.d1_databases ?? [],
@@ -465,16 +610,45 @@ function controlPlaneView(config) {
     routes: config.routes ?? [],
     triggers: config.triggers ?? {},
     requiredSecrets: requiredSecrets(config),
+    gatedVariables: Object.fromEntries(
+      Object.entries(config.vars ?? {}).filter(([name]) =>
+        name.endsWith("_ENABLED") ||
+        name.endsWith("_ZONE_ID") ||
+        name === "SOURCE_TAG_KEY_CURRENT_ID" ||
+        name === "SOURCE_TAG_KEY_PREVIOUS_ID"
+      ),
+    ),
   };
 }
 
+function configurationDigest(config) {
+  const normalized = structuredClone(config);
+  if (typeof normalized.main === "string" && isAbsolute(normalized.main))
+    normalized.main = relative(root, normalized.main);
+  return sha256Json(canonicalJson(normalized));
+}
+
+export function sanitizedChildEnvironment(input) {
+  const environment = { ...input };
+  delete environment.WRANGLER_CI_OVERRIDE_NAME;
+  delete environment.WRANGLER_CI_MATCH_TAG;
+  return environment;
+}
+
 async function command(program, args, options = {}) {
-  return execFileAsync(program, args, {
-    cwd: root,
-    encoding: "utf8",
-    maxBuffer: 32 * 1024 * 1024,
-    ...options,
-  });
+  const { failureCode = "subprocess-execution-failed", ...execOptions } = options;
+  const environment = sanitizedChildEnvironment(process.env);
+  try {
+    return await execFileAsync(program, args, {
+      cwd: root,
+      encoding: "utf8",
+      maxBuffer: 32 * 1024 * 1024,
+      env: environment,
+      ...execOptions,
+    });
+  } catch {
+    fail(failureCode);
+  }
 }
 
 async function git(...args) {
@@ -499,6 +673,9 @@ async function assertToolchain(contract) {
       packageJson.packageManager === `npm@${contract.toolchain.npm}`,
     nodeEngine: packageJson.engines.node === contract.toolchain.node,
     npmEngine: packageJson.engines.npm === contract.toolchain.npm,
+    nodeVersionFile:
+      (await readFile(resolve(root, ".nvmrc"), "utf8")).trim() ===
+      contract.toolchain.node,
     wranglerDeclaration:
       packageJson.devDependencies.wrangler === contract.toolchain.wrangler,
     wranglerLock:
@@ -512,51 +689,58 @@ async function assertToolchain(contract) {
     fail(`installed or declared production toolchain drift: ${failed.join(", ")}`);
 }
 
-async function protectedPath(variable) {
-  const value = process.env[variable];
-  if (!value || !isAbsolute(value)) fail(`${variable} must be an absolute path`);
-  const path = await realpath(resolve(value));
-  const insideRepository = relative(root, path);
-  if (!insideRepository.startsWith("..") && !isAbsolute(insideRepository))
-    fail(`${variable} must resolve outside the repository`);
-  const metadata = await stat(path);
-  if (!metadata.isFile()) fail(`${variable} must name a regular file`);
-  if ((metadata.mode & 0o077) !== 0)
-    fail(`${variable} must not be accessible to group or other users`);
-  return path;
+export function validateProtectedDocument(value, variable) {
+  if (typeof value !== "string" || value.length === 0)
+    fail(`${variable} is missing`);
+  if (Buffer.byteLength(value, "utf8") > 5 * 1024)
+    fail(`${variable} exceeds the Workers Builds variable limit`);
+  if (value.includes("\0")) fail(`${variable} contains an invalid byte`);
+  return value;
 }
 
-async function secretValues(path) {
-  const content = await readFile(path, "utf8");
-  if (path.endsWith(".json")) {
-    const values = JSON.parse(content);
-    if (
-      !values ||
-      typeof values !== "object" ||
-      Array.isArray(values) ||
-      Object.values(values).some(
-        (value) =>
-          typeof value !== "string" ||
-          value.length === 0 ||
-          placeholderPattern.test(value),
-      )
-    )
-      fail("protected secrets file contains an invalid value");
-    return values;
+export async function materializeProtectedInputs(input) {
+  const directory = await mkdtemp(
+    resolve(tmpdir(), "atrinik-production-inputs-"),
+  );
+  await chmod(directory, 0o700);
+  const specifications = [
+    [input.coreConfigVariable, "core.jsonc"],
+    [input.publisherConfigVariable, "publisher.jsonc"],
+    [input.rendezvousConfigVariable, "rendezvous.jsonc"],
+  ];
+  try {
+    const paths = [];
+    for (const [variable, filename] of specifications) {
+      const path = resolve(directory, filename);
+      const document = validateProtectedDocument(process.env[variable], variable);
+      let config;
+      try {
+        config = JSON.parse(stripJsonc(document));
+      } catch {
+        fail(`${variable} contains invalid JSONC`);
+      }
+      if (typeof config.main !== "string" || isAbsolute(config.main))
+        fail(`${variable} must contain a repository-relative entrypoint`);
+      const entrypoint = resolve(root, config.main);
+      const entrypointFromRoot = relative(root, entrypoint);
+      if (entrypointFromRoot.startsWith("..") || isAbsolute(entrypointFromRoot))
+        fail(`${variable} entrypoint resolves outside the repository`);
+      config.main = entrypoint;
+      await writeFile(
+        path,
+        JSON.stringify(config),
+        { encoding: "utf8", mode: 0o600, flag: "wx" },
+      );
+      paths.push(path);
+    }
+    return {
+      directory,
+      configPaths: paths,
+    };
+  } catch (error) {
+    await rm(directory, { recursive: true, force: true });
+    throw error;
   }
-  const values = {};
-  for (const rawLine of content.split(/\r?\n/u)) {
-    const line = rawLine.trim();
-    if (!line || line.startsWith("#")) continue;
-    const separator = line.indexOf("=");
-    if (separator <= 0) fail("invalid protected secrets file");
-    const name = line.slice(0, separator).trim();
-    const value = line.slice(separator + 1);
-    if (!value || placeholderPattern.test(value) || name in values)
-      fail("protected secrets file contains an invalid value");
-    values[name] = value;
-  }
-  return values;
 }
 
 async function migrationLedger() {
@@ -604,8 +788,9 @@ async function bundleWorkers(configPaths) {
 async function buildPlan(contract, configPaths, configs, secretSets) {
   const migrations = await migrationLedger();
   const bundles = await bundleWorkers(configPaths);
-  const configurations = await Promise.all(configPaths.map(sha256File));
+  const configurations = configs.map(configurationDigest);
   const controls = configs.map((config) => sha256Json(controlPlaneView(config)));
+  const migrationDigest = sha256Json(migrations);
   const deploy = sha256Json({
     schemaVersion: contract.schemaVersion,
     provider: contract.provider,
@@ -627,18 +812,30 @@ async function buildPlan(contract, configPaths, configs, secretSets) {
     bundles,
     secretSets,
   });
-  return { deploy, controls, configurations, bundles, migrations };
+  return {
+    deploy,
+    controls,
+    configurations,
+    bundles,
+    migrations,
+    migrationDigest,
+  };
 }
 
 async function currentMainSha(contract) {
-  const response = await fetch(contract.source.currentMainUrl, {
-    headers: {
-      Accept: "application/vnd.github+json",
-      "User-Agent": "atrinik-metaserver-workers-builds",
-      "X-GitHub-Api-Version": "2022-11-28",
-    },
-    signal: AbortSignal.timeout(15_000),
-  });
+  let response;
+  try {
+    response = await fetch(contract.source.currentMainUrl, {
+      headers: {
+        Accept: "application/vnd.github+json",
+        "User-Agent": "atrinik-metaserver-workers-builds",
+        "X-GitHub-Api-Version": "2022-11-28",
+      },
+      signal: AbortSignal.timeout(15_000),
+    });
+  } catch {
+    fail("current-main readback request failed");
+  }
   if (!response.ok) fail(`current-main readback failed with HTTP ${response.status}`);
   const sha = (await response.json()).sha;
   if (!shaPattern.test(sha)) fail("current-main readback returned an invalid SHA");
@@ -660,22 +857,114 @@ async function wranglerJson(configPath, args) {
   return JSON.parse(stdout);
 }
 
-async function cloudflareResult(accountId, path) {
-  const token = process.env.CLOUDFLARE_API_TOKEN;
+async function cloudflareResult(
+  accountId,
+  path,
+  { method = "GET", token = process.env.CLOUDFLARE_API_TOKEN } = {},
+) {
   if (!token) fail("Workers Builds Cloudflare API token is missing");
-  const response = await fetch(
-    `https://api.cloudflare.com/client/v4/accounts/${accountId}${path}`,
-    {
-      headers: { Authorization: `Bearer ${token}` },
-      signal: AbortSignal.timeout(15_000),
-    },
-  );
+  let response;
+  try {
+    response = await fetch(
+      `https://api.cloudflare.com/client/v4/accounts/${accountId}${path}`,
+      {
+        method,
+        headers: { Authorization: `Bearer ${token}` },
+        signal: AbortSignal.timeout(15_000),
+      },
+    );
+  } catch {
+    fail("Cloudflare control-plane request failed");
+  }
   if (!response.ok)
     fail(`Cloudflare control-plane readback failed with HTTP ${response.status}`);
   const body = await response.json();
   if (body?.success !== true || !("result" in body))
     fail("Cloudflare control-plane readback returned an invalid result");
   return body.result;
+}
+
+function activeBuild(build) {
+  return ["queued", "initializing", "running"].includes(build.status);
+}
+
+export function selectBuildLeaseOwner(builds, sourceSha, triggerUuid) {
+  const eligible = builds
+    .filter(
+      (build) =>
+        activeBuild(build) &&
+        build.trigger?.trigger_uuid === triggerUuid &&
+        build.build_trigger_metadata?.branch === "main" &&
+        build.build_trigger_metadata?.commit_hash === sourceSha,
+    )
+    .sort((left, right) => {
+      const created = String(left.created_on).localeCompare(String(right.created_on));
+      return created || String(left.build_uuid).localeCompare(String(right.build_uuid));
+    });
+  if (eligible.length === 0) fail("no active eligible production build exists");
+  return eligible[0].build_uuid;
+}
+
+async function assertBuildLease(contract, sourceSha, buildUuid) {
+  const accountId = process.env.CLOUDFLARE_ACCOUNT_ID;
+  const token = validateProtectedDocument(
+    process.env[contract.protectedInputs.buildsApiTokenVariable],
+    contract.protectedInputs.buildsApiTokenVariable,
+  );
+  const self = await cloudflareResult(
+    accountId,
+    `/builds/builds/${encodeURIComponent(buildUuid)}`,
+    { token },
+  );
+  const triggerUuid = self.trigger?.trigger_uuid;
+  if (
+    self.build_uuid !== buildUuid ||
+    !activeBuild(self) ||
+    self.build_trigger_metadata?.branch !== "main" ||
+    self.build_trigger_metadata?.commit_hash !== sourceSha ||
+    self.build_trigger_metadata?.build_command !== contract.installCommand ||
+    self.build_trigger_metadata?.deploy_command !== contract.deployCommand ||
+    typeof triggerUuid !== "string" ||
+    !triggerUuid
+  )
+    fail("Workers Builds execution identity or command drift");
+  const builds = await cloudflareResult(
+    accountId,
+    `/builds/workers/${encodeURIComponent(process.env.WRANGLER_CI_MATCH_TAG)}/builds`,
+    { token },
+  );
+  if (!Array.isArray(builds)) fail("Workers Builds lease inventory is invalid");
+  if (selectBuildLeaseOwner(builds, sourceSha, triggerUuid) !== buildUuid)
+    fail("another exact-source build owns the production topology lease");
+  const competitors = builds.filter(
+    (build) =>
+      build.build_uuid !== buildUuid &&
+      activeBuild(build) &&
+      build.trigger?.trigger_uuid === triggerUuid &&
+      build.build_trigger_metadata?.branch === "main",
+  );
+  for (const build of competitors)
+    await cloudflareResult(
+      accountId,
+      `/builds/builds/${encodeURIComponent(build.build_uuid)}/cancel`,
+      { method: "PUT", token },
+    );
+  for (const build of competitors) {
+    let stopped = false;
+    for (let attempt = 0; attempt < 30; attempt += 1) {
+      const value = await cloudflareResult(
+        accountId,
+        `/builds/builds/${encodeURIComponent(build.build_uuid)}`,
+        { token },
+      );
+      if (!activeBuild(value)) {
+        stopped = true;
+        break;
+      }
+      await wait(1_000);
+    }
+    if (!stopped) fail("competing production build did not release the lease");
+  }
 }
 
 async function readLiveControlPlane(worker, accountId) {
@@ -764,24 +1053,50 @@ function validateRemoteBindings(worker, config, version) {
   }
 }
 
-function validateReadback(worker, config, active, expectedMessage = null) {
+export function validateRuntimeExports(worker, config, actual) {
+  const expected = config.exports ?? {};
+  const normalized = Object.fromEntries(
+    Object.entries(actual).map(([name, value]) => {
+      const entry = { ...value };
+      if (entry.state === "created") delete entry.state;
+      return [name, entry];
+    }),
+  );
+  if (!sameJson(normalized, expected))
+    fail(`${worker.role} live exports reconciliation drift`);
+}
+
+function validateReadback(
+  worker,
+  config,
+  active,
+  expectedMessage = null,
+  { exact = true } = {},
+) {
   const message = active.version.annotations?.["workers/message"];
   const parsed = parseVersionMessage(message);
   if (expectedMessage && message !== expectedMessage)
     fail(`${worker.role} version annotation does not match this deployment`);
   if (!sameValues(remoteBindingNames(active.version), configBindingNames(config)))
     fail(`${worker.role} remote binding inventory drift`);
-  validateRemoteBindings(worker, config, active.version);
+  if (exact) validateRemoteBindings(worker, config, active.version);
   const runtime = active.version.resources?.script_runtime ?? {};
   if (
-    runtime.compatibility_date !== config.compatibility_date ||
-    !sameValues(runtime.compatibility_flags ?? [], config.compatibility_flags ?? [])
+    exact &&
+    (runtime.compatibility_date !== config.compatibility_date ||
+      !sameValues(runtime.compatibility_flags ?? [], config.compatibility_flags ?? []))
   )
     fail(`${worker.role} remote runtime configuration drift`);
+  if (exact) validateRuntimeExports(worker, config, runtime.exports ?? {});
   return parsed;
 }
 
-export function validateLiveControlPlane(worker, config, live) {
+export function validateLiveControlPlane(
+  worker,
+  config,
+  live,
+  { exactRuntime = true } = {},
+) {
   const expectedRoutes = (config.routes ?? [])
     .filter(({ custom_domain: customDomain }) => customDomain !== true)
     .map(({ pattern }) => pattern);
@@ -808,10 +1123,11 @@ export function validateLiveControlPlane(worker, config, live) {
     fail(`${worker.role} live cron-trigger drift`);
   const script = live.serviceEnvironment?.script;
   if (
-    !script ||
-    script.compatibility_date !== config.compatibility_date ||
-    !sameValues(script.compatibility_flags ?? [], config.compatibility_flags ?? []) ||
-    !sameJson(script.observability, config.observability)
+    exactRuntime &&
+    (!script ||
+      script.compatibility_date !== config.compatibility_date ||
+      !sameValues(script.compatibility_flags ?? [], config.compatibility_flags ?? []) ||
+      !sameJson(script.observability, config.observability))
   )
     fail(`${worker.role} live runtime or observability drift`);
 }
@@ -839,15 +1155,13 @@ async function readRemoteMigrations(coreConfig) {
   return collectMigrationNames(result);
 }
 
-async function deployWorker(worker, configPath, secretsPath, sourceSha, plan) {
-  const message = `atrinik-delivery-v1 source=${sourceSha} deploy=${plan.deploy} control=${plan.controls[worker.order - 1]} role=${worker.role}`;
+async function deployWorker(worker, configPath, sourceSha, plan) {
+  const message = `atrinik-delivery-v1 source=${sourceSha} deploy=${plan.deploy} migration=${plan.migrationDigest} control=${plan.controls[worker.order - 1]} role=${worker.role}`;
   await command(resolve(root, "node_modules/.bin/wrangler"), [
     "deploy",
     "--strict",
     "--config",
     configPath,
-    "--secrets-file",
-    secretsPath,
     "--tag",
     sourceSha,
     "--message",
@@ -905,6 +1219,7 @@ async function main() {
         deploymentOrder: contract.invariants.deploymentOrder,
         productionCanaries: contract.productionCanaries.map(({ name }) => name),
         deployableDigest: plan.deploy,
+        migrationDigest: plan.migrationDigest,
         bundles: plan.bundles,
         migrations: plan.migrations.map(({ name, sha256 }) => ({ name, sha256 })),
       }),
@@ -914,6 +1229,8 @@ async function main() {
 
   const sourceSha = process.env.WORKERS_CI_COMMIT_SHA ?? "";
   const buildUuid = process.env.WORKERS_CI_BUILD_UUID ?? "";
+  failureEvidence.sourceSha = shaPattern.test(sourceSha) ? sourceSha : null;
+  failureEvidence.buildUuid = buildUuid || null;
   validateSourceCoordinates({
     workersCi: process.env.WORKERS_CI,
     branch: process.env.WORKERS_CI_BRANCH,
@@ -921,41 +1238,33 @@ async function main() {
     head: await git("rev-parse", "HEAD"),
     dirty: (await git("status", "--porcelain")) !== "",
     buildUuid,
+    overrideName: process.env.WRANGLER_CI_OVERRIDE_NAME,
+    matchTag: process.env.WRANGLER_CI_MATCH_TAG,
     accountId: process.env.CLOUDFLARE_ACCOUNT_ID ?? "",
     currentMain: await currentMainSha(contract),
   });
 
   const input = contract.protectedInputs;
-  const configPaths = await Promise.all([
-    protectedPath(input.coreConfigVariable),
-    protectedPath(input.publisherConfigVariable),
-    protectedPath(input.rendezvousConfigVariable),
-  ]);
-  const coreSecrets = await protectedPath(input.coreSecretsVariable);
-  const edgeSecrets = await protectedPath(input.edgeSecretsVariable);
+  const protectedInputs = await materializeProtectedInputs(input);
+  try {
+  const { configPaths } = protectedInputs;
   const configs = await Promise.all(configPaths.map(readJsonc));
   validateTopology(contract, configs, { production: true });
   for (const [index, config] of configs.entries()) {
     if (config.account_id !== process.env.CLOUDFLARE_ACCOUNT_ID)
       fail(`${contract.workers[index].role} account identity drift`);
   }
-  const coreSecretValues = await secretValues(coreSecrets);
-  const edgeSecretValues = await secretValues(edgeSecrets);
-  validateSecretCohort(coreSecretValues, edgeSecretValues);
-  const secretSets = [
-    sorted(Object.keys(coreSecretValues)),
-    sorted(Object.keys(edgeSecretValues)),
-    sorted(Object.keys(edgeSecretValues)),
-  ];
-  for (const [index, namesFound] of secretSets.entries()) {
-    if (!sameValues(namesFound, contract.workers[index].requiredSecrets))
-      fail(`${contract.workers[index].role} protected secret-name inventory drift`);
-  }
+  const secretSets = contract.workers.map(({ requiredSecrets }) =>
+    sorted(requiredSecrets),
+  );
 
   await command("npm", ["run", "check"]);
   if ((await git("status", "--porcelain")) !== "")
     fail("repository validation changed tracked or untracked input");
   const plan = await buildPlan(contract, configPaths, configs, secretSets);
+  failureEvidence.deployableDigest = plan.deploy;
+  await assertCurrentMain(contract, sourceSha);
+  await assertBuildLease(contract, sourceSha, buildUuid);
   const remoteMigrations = await readRemoteMigrations(configPaths[0]);
   validateRemoteMigrations(
     remoteMigrations,
@@ -963,17 +1272,19 @@ async function main() {
   );
   await assertCurrentMain(contract, sourceSha);
 
-  const active = [];
   const annotations = [];
   for (const [index, worker] of contract.workers.entries()) {
     const live = await readLiveControlPlane(
       worker,
       process.env.CLOUDFLARE_ACCOUNT_ID,
     );
-    validateLiveControlPlane(worker, configs[index], live);
+    validateLiveControlPlane(worker, configs[index], live, {
+      exactRuntime: false,
+    });
     const value = await readActive(configPaths[index]);
-    active.push(value);
-    annotations.push(validateReadback(worker, configs[index], value));
+    annotations.push(
+      validateReadback(worker, configs[index], value, null, { exact: false }),
+    );
   }
   const decision = deliveryDecision(
     annotations,
@@ -981,56 +1292,84 @@ async function main() {
     sourceSha,
     process.env[input.controlPlaneGateVariable] ?? "",
   );
-  if (decision === "no-op") {
-    await runProductionCanaries(contract);
-    console.log(
-      JSON.stringify({
-        outcome: "no-deployment-required",
-        buildUuid,
-        sourceSha,
-        deployableDigest: plan.deploy,
-        canaries: contract.productionCanaries.map(({ name }) => name),
-      }),
-    );
-    return;
-  }
-
-  const secretsPaths = [coreSecrets, edgeSecrets, edgeSecrets];
-  await executeOrderedStages(contract.workers, async (worker, index) => {
+  const expectedMessages = new Map();
+  const fence = async () => {
     await assertCurrentMain(contract, sourceSha);
-    const message = await deployWorker(
-      worker,
-      configPaths[index],
-      secretsPaths[index],
-      sourceSha,
-      plan,
-    );
-    await assertCurrentMain(contract, sourceSha);
-    const readback = await readActive(configPaths[index]);
-    validateReadback(worker, configs[index], readback, message);
-    const live = await readLiveControlPlane(
-      worker,
-      process.env.CLOUDFLARE_ACCOUNT_ID,
-    );
-    validateLiveControlPlane(worker, configs[index], live);
+    await assertBuildLease(contract, sourceSha, buildUuid);
+  };
+  const outcome = await orchestrateDelivery({
+    workers: contract.workers,
+    decision,
+    fence,
+    deploy: async (worker, index) => {
+      failureEvidence.failedRole = worker.role;
+      expectedMessages.set(
+        worker.role,
+        await deployWorker(worker, configPaths[index], sourceSha, plan),
+      );
+    },
+    readback: async (worker, index) => {
+      validateReadback(
+        worker,
+        configs[index],
+        await readActive(configPaths[index]),
+        expectedMessages.get(worker.role),
+      );
+      validateLiveControlPlane(
+        worker,
+        configs[index],
+        await readLiveControlPlane(worker, process.env.CLOUDFLARE_ACCOUNT_ID),
+      );
+    },
+    verifyFinal: async (finalDecision) => {
+      const finalAnnotations = [];
+      for (const [index, worker] of contract.workers.entries()) {
+        finalAnnotations.push(
+          validateReadback(
+            worker,
+            configs[index],
+            await readActive(configPaths[index]),
+          ),
+        );
+        validateLiveControlPlane(
+          worker,
+          configs[index],
+          await readLiveControlPlane(worker, process.env.CLOUDFLARE_ACCOUNT_ID),
+        );
+      }
+      if (finalDecision === "deploy")
+        assertCoherentTopology(finalAnnotations, plan, sourceSha);
+      else assertDeployableTopology(finalAnnotations, plan);
+    },
+    canaries: async () => {
+      failureEvidence.failedRole = "canaries";
+      await runProductionCanaries(contract);
+    },
+    completed: (worker) => failureEvidence.completedRoles.push(worker.role),
   });
-  await runProductionCanaries(contract);
   console.log(
     JSON.stringify({
-      outcome: "deployed-and-read-back",
+      outcome,
       buildUuid,
       sourceSha,
       deployableDigest: plan.deploy,
-      order: contract.invariants.deploymentOrder,
+      ...(decision === "deploy"
+        ? { order: contract.invariants.deploymentOrder }
+        : {}),
       canaries: contract.productionCanaries.map(({ name }) => name),
     }),
   );
+  } finally {
+    await rm(protectedInputs.directory, { recursive: true, force: true });
+  }
 }
 
 const invoked = process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url);
 if (invoked) {
   main().catch((error) => {
-    console.error(`production delivery stopped: ${error.message}`);
+    console.error(
+      JSON.stringify(deliveryFailureRecord(error, failureEvidence)),
+    );
     process.exitCode = 1;
   });
 }

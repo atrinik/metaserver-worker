@@ -30,11 +30,13 @@
   never rewrite, reorder, or reuse it. Add every schema transition as a new,
   ordered migration and test the complete populated-schema upgrade path.
 - `deployment/workers-builds-production.json` is the sole checked-in automatic
-  production-delivery contract. Workers Builds runs `npm ci` and then
-  `npm run deploy:production` for every accepted `main` push. Keep its exact
+  production-delivery contract. Workers Builds skips implicit installation,
+  selects the pinned npm, runs `npm ci`, and then `npm run deploy:production`
+  for every accepted `main` push. Keep its exact
   Node/npm/Wrangler pins, all-path trigger, protected-input names, migration
-  gate, no-op digest, current-main checks, strict core/publisher/rendezvous
-  order, readback, and bounded canaries synchronized with the implementation
+  gate, no-op digest, current-main/sole-build lease, strict
+  core/publisher/rendezvous order, coherent readback, and bounded static plus
+  Service Binding canaries synchronized with the implementation
   and runbook. `npm run deploy:production:dry-run` must retain zero remote
   mutation paths.
 - Treat `server_presence` plus the profile-discriminated `directory_entries`

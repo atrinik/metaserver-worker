@@ -1,5 +1,9 @@
 import { publisherEdgeConfiguration } from "./config";
 import type { DiagnosticRoute } from "./diagnostics";
+import {
+  deploymentHealthResponse,
+  isDeploymentHealthRequest,
+} from "./deployment-health";
 import { enforceCircuitBreaker } from "./http";
 import {
   actorAliases,
@@ -24,6 +28,12 @@ export default {
     let diagnosticRoute: DiagnosticRoute = "unclassified";
     try {
       const control = publisherEdgeConfiguration(env);
+      if (isDeploymentHealthRequest(request, control.authority)) {
+        return deploymentHealthResponse(
+          await env.COORDINATOR.deploymentHealth(),
+          "publisher",
+        );
+      }
       const route = classifyCanonicalPublisherRoute(
         routeInputFromRequest(request),
         control.authority,

@@ -7,10 +7,13 @@
   "automaticPush": true,
   "pathIncludes": [],
   "pathExcludes": [],
-  "installCommand": "npm ci",
+  "installCommand": "npm install --global --ignore-scripts npm@11.16.0 && npm ci",
   "validationCommand": "npm run check",
   "deployCommand": "npm run deploy:production",
   "reviewCommand": "npm run deploy:production:dry-run",
+  "buildEnvironment": {
+    "SKIP_DEPENDENCY_INSTALL": "1"
+  },
   "productionCanaries": [
     {
       "name": "classic-static-directory",
@@ -37,6 +40,30 @@
         "--allow-production",
         "--json"
       ]
+    },
+    {
+      "name": "publisher-service-binding",
+      "command": [
+        "python3",
+        "scripts/dynamic_edge_canary.py",
+        "--role",
+        "publisher",
+        "--base-url",
+        "https://publish.meta.atrinik.org",
+        "--json"
+      ]
+    },
+    {
+      "name": "rendezvous-service-binding",
+      "command": [
+        "python3",
+        "scripts/dynamic_edge_canary.py",
+        "--role",
+        "rendezvous",
+        "--base-url",
+        "https://rendezvous.meta.atrinik.org",
+        "--json"
+      ]
     }
   ],
   "toolchain": {
@@ -56,8 +83,7 @@
     "coreConfigVariable": "ATRINIK_PRODUCTION_CORE_CONFIG",
     "publisherConfigVariable": "ATRINIK_PRODUCTION_PUBLISHER_CONFIG",
     "rendezvousConfigVariable": "ATRINIK_PRODUCTION_RENDEZVOUS_CONFIG",
-    "coreSecretsVariable": "ATRINIK_PRODUCTION_CORE_SECRETS",
-    "edgeSecretsVariable": "ATRINIK_PRODUCTION_EDGE_SECRETS",
+    "buildsApiTokenVariable": "ATRINIK_WORKERS_BUILDS_API_TOKEN",
     "controlPlaneGateVariable": "ATRINIK_PRODUCTION_CONTROL_PLANE_READY"
   },
   "workers": [

@@ -1,5 +1,9 @@
 import { rendezvousEdgeConfiguration } from "./config";
 import type { DiagnosticRoute } from "./diagnostics";
+import {
+  deploymentHealthResponse,
+  isDeploymentHealthRequest,
+} from "./deployment-health";
 import { enforceCircuitBreaker, HttpError } from "./http";
 import {
   actorAliases,
@@ -24,6 +28,12 @@ export default {
     let diagnosticRoute: DiagnosticRoute = "unclassified";
     try {
       const control = rendezvousEdgeConfiguration(env);
+      if (isDeploymentHealthRequest(request, control.authority)) {
+        return deploymentHealthResponse(
+          await env.COORDINATOR.deploymentHealth(),
+          "rendezvous",
+        );
+      }
       const route = classifyCanonicalRendezvousRoute(
         routeInputFromRequest(request),
         control.authority,
