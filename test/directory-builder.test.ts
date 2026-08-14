@@ -11,7 +11,10 @@ import {
   readDirectoryArtifactHistory,
   readDirectoryArtifactPublication,
 } from "../src/directory-state";
-import { directoryAliasPrefix } from "../src/directory-builder";
+import {
+  assertNoClassicV1ProductionRollback,
+  directoryAliasPrefix,
+} from "../src/directory-builder";
 import type { DirectoryBuilder } from "../src/directory-builder";
 import worker from "../src/index";
 import { persistRendezvousPublication } from "../src/rendezvous-publication";
@@ -197,6 +200,44 @@ describe("static directory builder", () => {
         "index.xml",
         "manifest.json",
       ]);
+  });
+
+  it("never lets a later v4 configuration overwrite a v5 production alias", async () => {
+    await env.DIRECTORY_BUILDER.getByName("classic-v1").reconcile();
+    await env.DIRECTORY_BUILDER.getByName("classic-v2").reconcile();
+    for (const key of ["index.html", "index.json", "index.xml", "manifest.json"]) {
+      const source = await env.CLASSIC_DIRECTORY_PUBLIC.get(`canary-v5/${key}`);
+      if (source === null) {
+        throw new Error(`Missing v5 canary ${key}`);
+      }
+      await env.CLASSIC_DIRECTORY_PUBLIC.put(key, await source.arrayBuffer(), {
+        httpMetadata: source.httpMetadata,
+        customMetadata: source.customMetadata,
+      });
+    }
+    const before = await Promise.all(
+      ["index.html", "index.json", "index.xml", "manifest.json"].map(async (key) =>
+        new Uint8Array(await (await env.CLASSIC_DIRECTORY_PUBLIC.get(key))!
+          .arrayBuffer())
+      ),
+    );
+    await expect(assertNoClassicV1ProductionRollback(
+      env.CLASSIC_DIRECTORY_PUBLIC,
+      "classic-v1",
+      "",
+    )).rejects.toThrow(
+      "Classic directory protocol 5 cannot roll back to protocol 4",
+    );
+    const after = await Promise.all(
+      ["index.html", "index.json", "index.xml", "manifest.json"].map(async (key) =>
+        new Uint8Array(await (await env.CLASSIC_DIRECTORY_PUBLIC.get(key))!
+          .arrayBuffer())
+      ),
+    );
+    expect(after).toEqual(before);
+    expect(new TextDecoder().decode(after[1])).toContain(
+      '"schema":"atrinik-classic-directory-v5"',
+    );
   });
 
   it("selects disjoint aliases on both sides of the human cutover gate", () => {

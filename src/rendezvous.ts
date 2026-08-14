@@ -101,6 +101,9 @@ export async function openRendezvous(
   }
 
   if (role === "server") {
+    if (inviteProtocol !== (server.authorization_required === 1)) {
+      return fixedError("invalid_websocket_subprotocol");
+    }
     const authorization = request.headers.get("Authorization") ?? "";
     const match = /^Bearer ([0-9a-f]{64})$/i.exec(authorization);
     const token = match?.[1] ?? "";

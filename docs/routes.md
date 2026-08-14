@@ -147,12 +147,13 @@ not accepted for the access-code-protected flow.
 | public, open | admitted only while a server control is live | fixed `400`; open and access-code-protected modes cannot be mixed |
 | public, access-code-protected | fixed retryable `503` | admitted only while an invite-capable server control is live; access-code authorization is mandatory |
 
-An authenticated classic server control may always advertise invite-v1 support
-so one long-lived control can serve the listing after an operator policy
-change. The v2 listing's current `AccessCodeRequired` value, not a
-client-selected header, determines whether authorization is required. Retained
-v1 rooms continue to interpret only their frozen `PasswordRequired` policy and
-are never selected for a v2 identity.
+The server control must negotiate invite-v1 exactly when the current listing
+requires authorization; both missing and extra negotiation fail before the
+control can replace a working peer. Every policy publication rotates the
+generation/token and retires the prior control. The v2 listing's current
+`AccessCodeRequired` value, not a client-selected header, determines whether
+authorization is required. Retained v1 rooms continue to interpret only their
+frozen `PasswordRequired` policy and are never selected for a v2 identity.
 
 ### Classic access-code plumbing (invite-v1 wire)
 

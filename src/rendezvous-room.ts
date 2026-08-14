@@ -232,7 +232,9 @@ export class RendezvousRoom extends DurableObject<CoreEnv> {
     return this.serializeRoomOperation(async () => {
       try {
         await this.ensureInitialized();
-        await this.reconcileUpgradeGeneration(upgrade.generation);
+        if (!await this.reconcileUpgradeGeneration(upgrade.generation)) {
+          return roomError("room_unavailable");
+        }
         const policy = rendezvousPolicyConfiguration(this.env);
         const now = Date.now();
         this.expireClients(now);
@@ -372,13 +374,15 @@ export class RendezvousRoom extends DurableObject<CoreEnv> {
     return minimumNextPublishSequence(state.lastSequence);
   }
 
-  private async reconcileUpgradeGeneration(generation: string): Promise<void> {
-    if (this.currentGeneration === generation) {
-      return;
-    }
+  private async reconcileUpgradeGeneration(generation: string): Promise<boolean> {
     const serverId = this.ctx.id.name;
     if (serverId === undefined || !TOKEN_GENERATION.test(serverId)) {
-      return;
+      // Production rooms are always named with a verified Classic server ID.
+      // Descriptive names are reserved for isolated Durable Object tests,
+      // which intentionally exercise the room without coordinator-owned D1
+      // publication state.
+      return this.currentGeneration === null ||
+        this.currentGeneration === generation;
     }
     const v2Generation = await readPublishedGeneration(
       this.env.DB,
@@ -387,9 +391,20 @@ export class RendezvousRoom extends DurableObject<CoreEnv> {
     );
     if (v2Generation !== null) {
       await this.rotateTokenGeneration(v2Generation);
-      return;
+      return v2Generation === generation;
     }
-    await this.reconcilePublishedGeneration("classic-v1", serverId);
+    if (
+      await isClassicV1GloballyRetired(this.env.DB) ||
+      await isClassicV1ProfileRetired(this.env.DB, serverId)
+    ) {
+      await this.rotateTokenGeneration(null);
+      return false;
+    }
+    const v1Generation = await this.reconcilePublishedGeneration(
+      "classic-v1",
+      serverId,
+    );
+    return v1Generation === generation;
   }
 
   private async reconcilePublishedGeneration(

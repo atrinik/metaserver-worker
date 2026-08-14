@@ -26,6 +26,12 @@ beforeEach(async () => {
     env.DB.prepare("DELETE FROM directory_outbox"),
     env.DB.prepare("DELETE FROM publisher_nonces"),
     env.DB.prepare("DELETE FROM publisher_replay"),
+    env.DB.prepare("DELETE FROM classic_identity_modes"),
+    env.DB.prepare(
+      `UPDATE classic_receiver_mode
+          SET mode = 'classic-v1-accepting', activated_at = NULL
+        WHERE singleton = 1`,
+    ),
     env.DB.prepare(
       "UPDATE directory_revisions SET revision = 0, updated_at = 0",
     ),
@@ -265,6 +271,36 @@ describe("profile-scoped directory expiry", () => {
         { profile: "game-v1", revision: 1 },
       ],
     });
+  });
+
+  it("rejects a first v2 row that does not exceed the retained v1 high-water", async () => {
+    const serverId = "a".repeat(64);
+    const v1Base = publication(serverId, "classic-v1", "Retained v1", "1");
+    if (v1Base.directoryProfile !== "classic-v1") {
+      throw new Error("Classic v1 test publication has the wrong profile");
+    }
+    const v1 = {
+      ...v1Base,
+      publisherSequence: "10",
+    };
+    await expect(persistRendezvousPublication(env.DB, v1)).resolves
+      .toEqual({ accepted: true, visibleChanged: true });
+    const before = await snapshotDirectoryState();
+    const staleV2: InternalRendezvousPublication = {
+      ...v1,
+      directoryProfile: "classic-v2",
+      publisherSequence: "9",
+      publisherNonce: "2".repeat(32),
+      commitToken: "2".repeat(64),
+      expectedGeneration: v1.generation,
+      generation: "2".repeat(64),
+      tokenHash: "2".repeat(64),
+      directoryFingerprint: "2".repeat(64),
+      authorizationRequired: true,
+    };
+    await expect(persistRendezvousPublication(env.DB, staleV2)).resolves
+      .toEqual({ accepted: false, visibleChanged: false });
+    expect(await snapshotDirectoryState()).toEqual(before);
   });
 
   it("rolls back every Game publication mutation at the JSON aggregate ceiling", async () => {

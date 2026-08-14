@@ -82,7 +82,8 @@ cutover from the later global v1 receiver retirement.
    succeed once; all later lineage requests must return the fixed
    `publish_sequence_exhausted` response without mutation.
 4. Validate the isolated protocol-5 aliases with
-   `scripts/static_origin_canary.py --profile classic-v2`. Require exact v5
+   `scripts/static_origin_canary.py --profile classic-v2 --alias-prefix canary-v5`.
+   Require exact v5
    schema/protocol values, representation checksums, generation agreement,
    expiry, open/protected rendering, private absence, and no password or raw
    access-code material. Record bounded checksums and outcomes only.

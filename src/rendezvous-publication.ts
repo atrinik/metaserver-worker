@@ -137,6 +137,18 @@ async function persistSignedPublication(
           WHERE singleton = 1 AND mode = 'classic-v1-accepting'
        )`
     : "";
+  const classicInsertSequenceGuard = classic
+    ? `AND NOT EXISTS (
+         SELECT 1 FROM publisher_replay AS lineage
+          WHERE lineage.server_id = ?
+            AND lineage.profile IN ('classic-v1', 'classic-v2')
+            AND (
+              length(lineage.last_sequence) > length(?) OR
+              (length(lineage.last_sequence) = length(?) AND
+               lineage.last_sequence >= ?)
+            )
+       )`
+    : "";
 
   const persisted = await db.batch([
     db.prepare(
@@ -147,7 +159,7 @@ async function persistSignedPublication(
         WHERE NOT EXISTS (
           SELECT 1 FROM publisher_nonces
            WHERE server_id = ? AND ${lineageNoncePredicate} AND nonce = ?
-        ) ${v1RetirementGuard}
+        ) ${classicInsertSequenceGuard} ${v1RetirementGuard}
        ON CONFLICT(server_id, profile) DO UPDATE SET
          last_sequence = excluded.last_sequence,
          last_nonce = excluded.last_nonce,
@@ -185,6 +197,9 @@ async function persistSignedPublication(
       publication.serverId,
       ...(classic ? [] : [publication.directoryProfile]),
       nonce,
+      ...(classic
+        ? [publication.serverId, sequence, sequence, sequence]
+        : []),
       ...(publication.directoryProfile === "classic-v1"
         ? [publication.serverId]
         : []),

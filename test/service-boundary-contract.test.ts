@@ -212,6 +212,10 @@ describe("in-process service-boundary contract", () => {
       );
 
     const open = await publish("public-open-addressless");
+    expect((await rendezvousWorker.fetch(
+      request("server", open.rendezvousToken, true),
+      edge,
+    )).status).toBe(400);
     const openServer = await rendezvousWorker.fetch(
       request("server", open.rendezvousToken),
       edge,
@@ -223,6 +227,10 @@ describe("in-process service-boundary contract", () => {
     openClient.webSocket?.accept();
 
     const protectedPublication = await publish("public-protected-endpoint");
+    expect((await rendezvousWorker.fetch(
+      request("server", protectedPublication.rendezvousToken),
+      edge,
+    )).status).toBe(400);
     const protectedServer = await rendezvousWorker.fetch(
       request("server", protectedPublication.rendezvousToken, true),
       edge,

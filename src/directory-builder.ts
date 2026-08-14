@@ -410,6 +410,11 @@ export class DirectoryBuilder extends DurableObject<CoreEnv> {
 
     try {
       const ordered = aliasPublicationOrder(profile, objects);
+      await assertNoClassicV1ProductionRollback(
+        publicBucket,
+        profile,
+        aliasPrefix,
+      );
       for (const object of ordered) {
         await this.assertFresh(pending);
         await putPublicAlias(
@@ -1281,6 +1286,14 @@ async function putPublicAlias(
 ): Promise<void> {
   const httpMetadata = publicHttpMetadata(object, pending);
   const existing = await bucket.head(key);
+  if (
+    profile === "classic-v1" && !key.includes("/") &&
+    existing?.customMetadata?.profile === "classic-v2"
+  ) {
+    throw new DirectoryObjectConflictError(
+      "Classic directory protocol 5 cannot roll back to protocol 4",
+    );
+  }
   const existingGeneration = existing === null
     ? 0
     : observedGeneration(existing.customMetadata);
@@ -1329,6 +1342,28 @@ async function putPublicAlias(
     httpMetadata,
     "public",
   );
+}
+
+export async function assertNoClassicV1ProductionRollback(
+  bucket: R2Bucket,
+  profile: DirectoryProfile,
+  aliasPrefix: string,
+): Promise<void> {
+  if (profile !== "classic-v1" || aliasPrefix !== "") {
+    return;
+  }
+  const aliases = await Promise.all(
+    ["index.html", "index.json", "index.xml", "manifest.json"].map((key) =>
+      bucket.head(key)
+    ),
+  );
+  if (aliases.some((alias) =>
+    alias?.customMetadata?.profile === "classic-v2"
+  )) {
+    throw new DirectoryObjectConflictError(
+      "Classic directory protocol 5 cannot roll back to protocol 4",
+    );
+  }
 }
 
 function immutableHttpMetadata(object: RenderedObject): R2HTTPMetadata {
