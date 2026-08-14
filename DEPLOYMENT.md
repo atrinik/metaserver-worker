@@ -9,6 +9,101 @@ work is append-only. The core owns D1, R2, schedules, Analytics Engine,
 `RendezvousRoom`, and `DirectoryBuilder`. The publisher and rendezvous Workers
 are stateless public edges with one named Service Binding each.
 
+## Automatic protected-main delivery
+
+Routine delivery uses one Cloudflare Workers Builds connection to
+`atrinik/metaserver-worker`. Configure it exactly from
+`deployment/workers-builds-production.json`: repository root, production
+branch `main`, every push included with no watch-path exclusion, build command
+`npm ci`, deploy command `npm run deploy:production`, and the pinned
+Node/npm/Wrangler versions. An accepted pull-request merge into protected
+`main` is the routine authorization. Do not add another production branch,
+tag/release gate, GitHub environment approval, deploy hook, Actions deployment
+workflow/secret, or local Wrangler step. Semantic Release independently
+consumes the same accepted SHA and does not gate deployment.
+
+Cloudflare-owned build variables name three absolute, owner-protected JSONC
+configurations and two complete secret files outside the checkout:
+
+```text
+ATRINIK_PRODUCTION_CORE_CONFIG
+ATRINIK_PRODUCTION_PUBLISHER_CONFIG
+ATRINIK_PRODUCTION_RENDEZVOUS_CONFIG
+ATRINIK_PRODUCTION_CORE_SECRETS
+ATRINIK_PRODUCTION_EDGE_SECRETS
+```
+
+The build also supplies the intended `CLOUDFLARE_ACCOUNT_ID` and
+`ATRINIK_PRODUCTION_CONTROL_PLANE_READY`. Use `routine` only while the live
+control-plane digest is unchanged. After separately authorized
+migration/DNS/WAF/domain/route/trigger, secret-rotation, resource, or ownership
+work, use `approved:<exact-current-main-SHA>` for that retry only, then restore
+`routine`. Never print a protected file, identifier, secret value, recovery
+coordinate, or raw provider response. Build secrets are not runtime bindings;
+the latter come only from the complete protected secret files.
+The first provider connection also uses this exact-SHA gate because the live
+versions do not yet carry the repository delivery annotations; restore
+`routine` after all three annotated versions pass readback and canaries.
+
+The entrypoint performs this fail-closed sequence:
+
+1. Require Workers Builds on `main`, a build UUID, a clean `HEAD` equal to
+   `WORKERS_CI_COMMIT_SHA`, and the intended account.
+2. Run the complete repository check; validate all three protected configs,
+   exact Custom Domains, bindings, variables, secret names, unique rate
+   namespaces, disabled alternate URLs, observability, cron schedules, and the
+   ordered D1 ledger against live readback.
+3. Resolve all three strict dry-run bundles before mutation and hash them with
+   the configs, migrations, lockfile, commands, canaries, and contract.
+4. Read back one active 100% version per Worker. If the complete deployable
+   digest is already active, report `no-deployment-required`, run the bounded
+   canaries, and upload nothing, avoiding a Durable Object restart.
+5. Recheck current `main` before the first upload and before and after every
+   stage; deploy directly with `wrangler deploy --strict` in core, publisher,
+   rendezvous order.
+6. Record exact source, deployable, and control-plane digests plus role in each
+   version; verify its 100% activation, runtime, and binding readback before
+   continuing. Re-read the non-versioned routes, Custom Domains, subdomain,
+   schedules, runtime, and observability after each stage; then run the bounded
+   Classic and Game static-origin canaries.
+
+The routine identity needs read access to current Worker configuration and the
+D1 migration ledger plus exact deployment authority for these three Workers.
+It must not receive D1 migration, DNS, WAF, general account administration,
+secret-read, or destructive-resource authority.
+
+`npm run deploy:production:dry-run` validates the checked-in fixtures, resolves
+all bundles, and prints only safe digests and names. It never reads GitHub or
+Cloudflare and has no upload path. Non-production Workers Builds must use this
+command until the separate isolated-review design is merged; it cannot fall
+through to production because the production entrypoint requires `main`.
+
+### Pauses, retries, outages, and manual escape
+
+A pending/divergent migration, changed control plane, placeholder/missing
+input, wrong account, route/binding/secret drift, stale SHA, or failed
+validation/upload/readback/canary stops the build. The command never applies a
+migration or changes external control-plane state incidentally. Preserve the
+safest circuit state and private recovery evidence, perform only the separately
+authorized prerequisite from the same revision, verify it, and manually retry
+that exact SHA through Workers Builds. The retry must still be current `main`;
+never create an empty commit or deploy from a local checkout.
+
+After a partial deployment, record the read-back prefix and fix forward from
+exact current `main`; never roll back across exports or schema. During a
+provider outage, repository validation and Semantic Release remain independent
+and the Workers Build is retried only after readback is reliable. An emergency
+manual escape requires explicit incident authorization and the exact clean
+current-main tree, contract, protected inputs, strict order, readback, and
+canaries; record why Workers Builds was unavailable and restore it as the sole
+routine path.
+
+To disconnect, an organization owner disables the trigger, verifies no build
+or upload remains active, revokes the build token and metaserver repository
+selection without disturbing the website connection, and retains the last
+source/version/digest evidence privately. A disconnected repository has no
+automatic production path and fails closed.
+
 ## Prepare
 
 Use explicit protected targets for every Wrangler command; the checked-in
@@ -29,8 +124,9 @@ credential; the edge file supplies only the shared reviewed source-tag pair.
 Do not use sequential `secret put` operations or an incomplete file that would
 create an unreviewed intermediate version.
 
-1. Work from an exact reviewed release commit with a clean tree. Record the
-   commit, Wrangler version, account, zone, database, buckets, Durable Object
+1. For a separately authorized exceptional gate, work from the exact clean
+   current `main` commit selected by Workers Builds. Record the commit,
+   Wrangler version, account, zone, database, buckets, Durable Object
    namespaces, service names, routes/domains, active version IDs, configuration
    digests, secret names, and enabled edge-rule IDs in an owner-only private
    deployment record. Never record a secret value or actor key.

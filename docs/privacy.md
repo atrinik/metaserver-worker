@@ -41,6 +41,17 @@ Neither an unkeyed IP digest nor a raw IP is an acceptable durable actor key.
 IPv4 is enumerable, and a single cross-purpose pseudonym would unnecessarily
 make unrelated activity linkable.
 
+## Build and deployment evidence
+
+Automatic `main` delivery emits only the public source SHA, Workers Builds UUID,
+closed outcome, role, and hashes of deployable/configuration inputs. Production
+account, database, bucket, namespace, version, rule, recovery, and secret
+coordinates remain in the owner-protected deployment record. The entrypoint
+validates secret-file keys but never logs or hashes secret values; Wrangler
+readback and canary bodies are suppressed, leaving only closed pass/fail
+results. Build secrets are distinct from Worker runtime bindings and are never
+available to application requests.
+
 ## Source tags
 
 The Worker requires two 32-byte base64url secrets through encrypted bindings:

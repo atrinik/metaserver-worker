@@ -6,6 +6,14 @@ where the plan supports the required fields, a WAF rate-limiting rule in front
 of each canonical dynamic edge. This document is a reviewed operator
 specification; it does not authorize an automated deployment.
 
+The Workers Builds automatic-`main` entrypoint validates this boundary but does
+not own zone rules, DNS, Custom Domain attachment, triggers, or secret
+rotation. Drift fails before upload and requires a separately authorized
+operator correction followed by an exact-current-main provider retry. The
+protected production Wrangler files name only the two canonical dynamic
+Custom Domains; the core remains domainless, and all three retain
+`workers_dev: false` and `preview_urls: false`.
+
 Cloudflare documents the current [rate-limiting rule parameters][rate-params],
 [plan availability][rate-rules], and immutable [raw URI field][raw-uri]. Check
 those references and the target zone entitlement immediately before applying a

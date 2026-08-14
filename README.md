@@ -80,11 +80,12 @@ receives the launch code, rendezvous secret, or post-QUIC result.
 
 ## Development
 
-Use Node.js 20 or newer:
+Use the Node and npm versions pinned by `.nvmrc` and `packageManager`:
 
 ```sh
 npm ci
 npm run check
+npm run deploy:production:dry-run
 ```
 
 `npm run check` generates and verifies isolated core/publisher/rendezvous
@@ -92,6 +93,25 @@ Wrangler declarations, runs every TypeScript project, the local Workers runtime
 tests, the Python administrative tests, and one distinct Wrangler dry run per
 deployable. Generated declarations and `dist/` output are untracked and must
 not be edited.
+
+Every accepted push to protected `main` is the routine production
+authorization. Cloudflare Workers Builds installs with `npm ci` and invokes
+the one checked-in `npm run deploy:production` entrypoint; it does not wait for
+a tag, release, second branch, GitHub environment, workflow dispatch, deploy
+hook, or local operator command. The machine contract is
+[`deployment/workers-builds-production.json`](deployment/workers-builds-production.json).
+It validates protected production inputs, refuses migration/control-plane
+drift, resolves all bundles before mutation, returns a verified no-op for
+identical deployable input, rejects stale `main`, deploys directly and strictly
+in core/publisher/rendezvous order, reads back each exact 100% version, and runs
+bounded credential-free canaries.
+
+Production identifiers and secret values stay in Cloudflare-owned build
+inputs, never in Git or logs. Non-production branches use only the
+zero-mutation dry run until the separately reviewed isolated-review contract
+is enabled. See [DEPLOYMENT.md](DEPLOYMENT.md) for provider settings,
+exceptional pauses, exact-SHA retry, partial failure, outage, revocation, and
+manual escape procedures.
 
 After an operator has separately provisioned an isolated R2 custom domain and
 its reviewed edge rules, validate the public static contract with the

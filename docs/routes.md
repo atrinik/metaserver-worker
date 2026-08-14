@@ -26,7 +26,10 @@ publisher and rendezvous handlers are exposed:
 
 The checked-in Wrangler files deliberately declare no routes or Custom Domains
 and keep both dynamic circuits disabled; production attachment and enablement
-are separately reviewed Cloudflare state. Each
+come only from the protected production configurations validated by the
+automatic-main delivery contract. Routine delivery rejects any core domain,
+wrong caller domain, alternate route, or non-Custom-Domain route and does not
+itself create DNS/WAF/domain policy. Each
 edge rejects every other host/method/path/query/body shape, derives only the
 route-specific pseudonymous admission aliases, strips raw request-source and
 browser headers, and calls one named core Worker entrypoint. The core parses the

@@ -3,8 +3,9 @@
 - This repository owns the Cloudflare Worker bootstrap, QUIC rendezvous
   protocol, admin policy, D1 schema, and Durable Object coordination. Keep game
   server/client implementation in their standalone repositories.
-- Use Node.js 20 or newer and the lockfile. Run `npm ci` for a clean dependency
-  tree and `npm run check` before submitting.
+- Use the `.nvmrc` Node 24.18.1 and `packageManager` npm 11.16.0 pins with the
+  lockfile. Run `npm ci` for a clean dependency tree and `npm run check` before
+  submitting.
 - Preserve strict request-size, identity, address, ticket, certificate-hash,
   rate-limit, and expiry validation. Keep rendezvous state deterministic and
   bounded; test malformed and replayed input at the boundary.
@@ -28,6 +29,14 @@
 - Production state exists. `migrations/0001_initial.sql` is applied history:
   never rewrite, reorder, or reuse it. Add every schema transition as a new,
   ordered migration and test the complete populated-schema upgrade path.
+- `deployment/workers-builds-production.json` is the sole checked-in automatic
+  production-delivery contract. Workers Builds runs `npm ci` and then
+  `npm run deploy:production` for every accepted `main` push. Keep its exact
+  Node/npm/Wrangler pins, all-path trigger, protected-input names, migration
+  gate, no-op digest, current-main checks, strict core/publisher/rendezvous
+  order, readback, and bounded canaries synchronized with the implementation
+  and runbook. `npm run deploy:production:dry-run` must retain zero remote
+  mutation paths.
 - Treat `server_presence` plus the profile-discriminated `directory_entries`
   as authoritative, profile-scoped publication state. Presence retains only
   the accepted rendezvous verifier, generation, and last-seen time for both public and
@@ -84,7 +93,9 @@
   three dry-run configurations together.
 - Never deploy, run remote D1 migrations, reset ownership, or mutate Cloudflare
   resources merely to validate a change. Those external actions require
-  explicit authorization and reviewed production bindings.
+  explicit authorization and reviewed production bindings. The automatic
+  entrypoint is authorized only inside the configured Workers Builds `main`
+  trigger; local execution without `--dry-run` must fail before remote access.
 - Commits and pull-request titles use Conventional Commits. Every squash merge
   is released by semantic-release.
 - Preserve unrelated work and finish with `git diff --check`.
