@@ -642,8 +642,8 @@ export function validateTopology(contract, configs, { production = false } = {})
       fail("source-tag configuration epoch drift");
   }
   if (
-    !/^\d{4}-\d{2}-[a-z0-9]+$/u.test(core.vars.SOURCE_TAG_KEY_CURRENT_ID) ||
-    !/^\d{4}-\d{2}-[a-z0-9]+$/u.test(core.vars.SOURCE_TAG_KEY_PREVIOUS_ID) ||
+    !/^[A-Za-z0-9_-]{1,32}$/u.test(core.vars.SOURCE_TAG_KEY_CURRENT_ID) ||
+    !/^[A-Za-z0-9_-]{1,32}$/u.test(core.vars.SOURCE_TAG_KEY_PREVIOUS_ID) ||
     core.vars.SOURCE_TAG_KEY_CURRENT_ID === core.vars.SOURCE_TAG_KEY_PREVIOUS_ID
   ) fail("source-tag configuration epoch is invalid");
   if (
@@ -906,31 +906,11 @@ export async function orchestrateDelivery({
   }
 }
 
-function controlPlaneView(config) {
-  return {
-    name: config.name,
-    workers_dev: config.workers_dev,
-    preview_urls: config.preview_urls,
-    d1_databases: config.d1_databases ?? [],
-    r2_buckets: config.r2_buckets ?? [],
-    durable_objects: config.durable_objects ?? {},
-    exports: config.exports ?? {},
-    analytics_engine_datasets: config.analytics_engine_datasets ?? [],
-    ratelimits: config.ratelimits ?? [],
-    services: config.services ?? [],
-    routes: config.routes ?? [],
-    triggers: config.triggers ?? {},
-    requiredSecrets: requiredSecrets(config),
-    observability: config.observability,
-    gatedVariables: Object.fromEntries(
-      Object.entries(config.vars ?? {}).filter(([name]) =>
-        name.endsWith("_ENABLED") ||
-        name.endsWith("_ZONE_ID") ||
-        name === "SOURCE_TAG_KEY_CURRENT_ID" ||
-        name === "SOURCE_TAG_KEY_PREVIOUS_ID"
-      ),
-    ),
-  };
+export function controlPlaneView(config) {
+  const normalized = structuredClone(config);
+  if (typeof normalized.main === "string" && isAbsolute(normalized.main))
+    normalized.main = relative(root, normalized.main);
+  return canonicalJson(normalized);
 }
 
 function configurationDigest(config) {
@@ -1313,11 +1293,10 @@ export async function arbitrateBuildLease({
     if (await currentMain() !== sourceSha)
       fail("build SHA is superseded by current main");
   };
+  let cancellationAuthorized = false;
   for (let round = 0; round < rounds; round += 1) {
-    await proveCurrent();
     const builds = await listBuilds();
     if (!Array.isArray(builds)) fail("Workers Builds lease inventory is invalid");
-    await proveCurrent();
     const competitors = buildLeaseDecision(
       builds,
       sourceSha,
@@ -1328,14 +1307,24 @@ export async function arbitrateBuildLease({
       await proveCurrent();
       return;
     }
-    for (const build of competitors) {
+    if (
+      round > 0 &&
+      competitors.some(
+        (build) => build.build_trigger_metadata?.commit_hash !== sourceSha,
+      )
+    ) fail("production build lease changed during arbitration");
+    if (!cancellationAuthorized) {
+      // Prove direction only after observing competitors, then retain one final
+      // proof after convergence. The no-competitor path needs only the latter.
       await proveCurrent();
+      cancellationAuthorized = true;
+    }
+    for (const build of competitors) {
       await cancelBuild(build.build_uuid);
     }
     for (const build of competitors) {
       let stopped = false;
       for (let attempt = 0; attempt < polls; attempt += 1) {
-        await proveCurrent();
         if (!activeBuild(await readBuild(build.build_uuid))) {
           stopped = true;
           break;
@@ -1345,7 +1334,6 @@ export async function arbitrateBuildLease({
       if (!stopped) fail("competing production build did not release the lease");
     }
   }
-  await proveCurrent();
   const finalBuilds = await listBuilds();
   if (!Array.isArray(finalBuilds)) fail("Workers Builds lease inventory is invalid");
   if (buildLeaseDecision(
@@ -1829,15 +1817,12 @@ async function main() {
     stagedConfigs,
   );
   failureEvidence.deployableDigest = plan.deploy;
-  await assertCurrentMain(contract, sourceSha);
   await assertBuildLease(contract, sourceSha, buildUuid);
   const remoteMigrations = await readRemoteMigrations(configPaths[0]);
   validateRemoteMigrations(
     remoteMigrations,
     plan.migrations.map(({ name }) => name),
   );
-  await assertCurrentMain(contract, sourceSha);
-
   const annotations = [];
   for (const [index, worker] of contract.workers.entries()) {
     const live = await readLiveControlPlane(
@@ -1863,7 +1848,6 @@ async function main() {
   const expectedActiveMessages = new Map();
   let coreStaged = false;
   const fence = async () => {
-    await assertCurrentMain(contract, sourceSha);
     await assertBuildLease(contract, sourceSha, buildUuid);
   };
   const outcome = await orchestrateDelivery({

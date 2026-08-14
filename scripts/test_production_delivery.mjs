@@ -9,6 +9,7 @@ import {
   assertCoherentTopology,
   buildLeaseDecision,
   childEnvironment,
+  controlPlaneView,
   disabledCircuitConfiguration,
   deliveryFailureRecord,
   deliveryDecision,
@@ -428,12 +429,23 @@ test("requires runtime-valid and coherent protected policy values", () => {
       value[2].vars.SOURCE_TAG_KEY_PREVIOUS_ID =
         value[2].vars.SOURCE_TAG_KEY_CURRENT_ID;
     },
+    (value) => {
+      for (const config of value)
+        config.vars.SOURCE_TAG_KEY_CURRENT_ID = "a".repeat(33);
+    },
   ]) {
     assert.throws(
       () => validateTopology(contract, changedConfigs(mutate)),
       /production policy is invalid|production circuit authority drift|retry policy drift|configuration epoch is invalid/u,
     );
   }
+  const runtimeValidIds = changedConfigs((value) => {
+    for (const config of value) {
+      config.vars.SOURCE_TAG_KEY_CURRENT_ID = "Release_A-1";
+      config.vars.SOURCE_TAG_KEY_PREVIOUS_ID = "Release_A-0";
+    }
+  });
+  assert.doesNotThrow(() => validateTopology(contract, runtimeValidIds));
 });
 
 test("binds the cache purge zone to every live canonical domain", () => {
@@ -628,11 +640,15 @@ test("lease arbitration converges after cancellation and detects main advance", 
   ]);
   const cancelled = [];
   let lists = 0;
+  let currentMainProofs = 0;
   await arbitrateBuildLease({
     sourceSha: source,
     buildUuid: "owner",
     triggerUuid: "production",
-    currentMain: async () => source,
+    currentMain: async () => {
+      currentMainProofs += 1;
+      return source;
+    },
     listBuilds: async () => {
       lists += 1;
       if (lists === 2) states.set("retry", build("retry"));
@@ -647,22 +663,128 @@ test("lease arbitration converges after cancellation and detects main advance", 
   });
   assert.deepEqual(cancelled, ["stale", "retry"]);
   assert.equal(lists, 3);
+  assert.equal(currentMainProofs, 2);
+
+  let uncontestedProofs = 0;
+  await arbitrateBuildLease({
+    sourceSha: source,
+    buildUuid: "owner",
+    triggerUuid: "production",
+    currentMain: async () => {
+      uncontestedProofs += 1;
+      return source;
+    },
+    listBuilds: async () => [build("owner")],
+    cancelBuild: async () => {},
+    readBuild: async () => build("owner"),
+    pause: async () => {},
+  });
+  assert.equal(uncontestedProofs, 1);
 
   let mainProofs = 0;
+  const advanceStates = new Map([
+    ["owner", build("owner")],
+    ["stale", build("stale", other)],
+  ]);
   await assert.rejects(arbitrateBuildLease({
     sourceSha: source,
     buildUuid: "owner",
     triggerUuid: "production",
     currentMain: async () => {
       mainProofs += 1;
-      return mainProofs < 4 ? source : other;
+      return mainProofs === 1 ? source : other;
     },
-    listBuilds: async () => [build("owner"), build("stale", other)],
-    cancelBuild: async () => {},
-    readBuild: async () => build("stale", other),
+    listBuilds: async () => [...advanceStates.values()],
+    cancelBuild: async (uuid) => {
+      advanceStates.set(uuid, {
+        ...advanceStates.get(uuid),
+        status: "stopped",
+      });
+    },
+    readBuild: async (uuid) => advanceStates.get(uuid),
     pause: async () => {},
-    polls: 2,
   }), /superseded by current main/u);
+  assert.equal(mainProofs, 2);
+
+  let raceCancellations = 0;
+  await assert.rejects(arbitrateBuildLease({
+    sourceSha: source,
+    buildUuid: "owner",
+    triggerUuid: "production",
+    currentMain: async () => other,
+    listBuilds: async () => [build("owner"), build("new-main", other)],
+    cancelBuild: async () => { raceCancellations += 1; },
+    readBuild: async () => build("new-main", other),
+    pause: async () => {},
+  }), /superseded by current main/u);
+  assert.equal(raceCancellations, 0);
+
+  const changingStates = new Map([
+    ["owner", build("owner")],
+    ["old", build("old", other)],
+  ]);
+  let changingLists = 0;
+  const changingCancelled = [];
+  await assert.rejects(arbitrateBuildLease({
+    sourceSha: source,
+    buildUuid: "owner",
+    triggerUuid: "production",
+    currentMain: async () => source,
+    listBuilds: async () => {
+      changingLists += 1;
+      if (changingLists === 2)
+        changingStates.set("new", build("new", "c".repeat(40)));
+      return [...changingStates.values()];
+    },
+    cancelBuild: async (uuid) => {
+      changingCancelled.push(uuid);
+      changingStates.set(uuid, {
+        ...changingStates.get(uuid),
+        status: "stopped",
+      });
+    },
+    readBuild: async (uuid) => changingStates.get(uuid),
+    pause: async () => {},
+  }), /lease changed during arbitration/u);
+  assert.deepEqual(changingCancelled, ["old"]);
+});
+
+test("every protected configuration field is exact-SHA gated", () => {
+  const source = "a".repeat(40);
+  const digest = (value) => createHash("sha256")
+    .update(JSON.stringify(value)).digest("hex");
+  const baseControls = configs.map((config) => digest(controlPlaneView(config)));
+  const changed = changedConfigs((value) => {
+    value[0].vars.LISTING_TTL_SECONDS = "7200";
+    value[0].compatibility_date = "2026-08-13";
+  });
+  const changedControls = changed.map(
+    (config) => digest(controlPlaneView(config)),
+  );
+  const plan = {
+    deploy: "d".repeat(64),
+    migrationDigest: "e".repeat(64),
+    migrations: [{ name: "0001_initial.sql", sha256: "f".repeat(64) }],
+    controls: changedControls,
+    stagedControls: changedControls,
+  };
+  const annotations = contract.workers.map((worker, index) => ({
+    source,
+    deploy: "c".repeat(64),
+    migration: plan.migrationDigest,
+    migrationHorizon: 1,
+    control: baseControls[index],
+    role: worker.role,
+    phase: "active",
+  }));
+  assert.throws(
+    () => deliveryDecision(annotations, plan, source, "routine"),
+    /control-plane prerequisite is not verified/u,
+  );
+  assert.equal(
+    deliveryDecision(annotations, plan, source, `approved:${source}`),
+    "deploy",
+  );
 });
 
 test("no-op requires one coherent active topology and control drift needs exact approval", () => {

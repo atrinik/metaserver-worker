@@ -69,7 +69,9 @@ The entrypoint performs this fail-closed sequence:
    checks and public canaries receive a positive allowlist of non-secret process
    settings only; Wrangler additionally receives only deployment authentication
    and its private configuration path; the lease token remains in the parent
-   process. Materialize private configurations only after repository checks.
+   process. This allowlist prevents inheritance and accidental tool exposure;
+   trusted merged repository code remains in the same-UID build trust boundary.
+   Materialize private configurations only after repository checks.
 2. Run the complete repository check; then validate all three protected configs,
    bounded runtime policies, coherent circuit values, exact Custom Domains and
    their shared `atrinik.org` zone ID, bindings, variables, secret names, unique
