@@ -3,9 +3,12 @@ import { isCanonicalHostname } from "./hostname";
 import { HttpError } from "./http";
 
 export const CLASSIC_PUBLISH_SCHEMA = "atrinik-classic-publish-v1";
+export const CLASSIC_V2_PUBLISH_SCHEMA = "atrinik-classic-publish-v2";
 export const GAME_PUBLISH_SCHEMA = "atrinik-game-publish-v1";
 export const CLASSIC_PUBLISH_SIGNATURE_TAG =
   "atrinik-classic-publish-v1";
+export const CLASSIC_V2_PUBLISH_SIGNATURE_TAG =
+  "atrinik-classic-publish-v2";
 export const GAME_PUBLISH_SIGNATURE_TAG = "atrinik-game-publish-v1";
 export const PUBLISH_CONTENT_TYPE = "application/json";
 export const PUBLISH_SIGNATURE_LABEL = "atrinik";
@@ -50,6 +53,28 @@ export interface ClassicPublishPayload {
 
 export interface AuthenticatedClassicPublish {
   readonly payload: ClassicPublishPayload;
+  readonly sequence: string;
+  readonly nonce: string;
+  readonly nonceExpiresAt: number;
+  readonly certificateDer: Uint8Array;
+}
+
+export interface ClassicV2PublishPayload {
+  readonly schema: typeof CLASSIC_V2_PUBLISH_SCHEMA;
+  readonly serverId: string;
+  readonly certificate: string;
+  readonly name: string;
+  readonly playersCount: number;
+  readonly version: string;
+  readonly textComment: string;
+  readonly public: boolean;
+  readonly accessCodeRequired: boolean;
+  readonly hostname?: string;
+  readonly port?: number;
+}
+
+export interface AuthenticatedClassicV2Publish {
+  readonly payload: ClassicV2PublishPayload;
   readonly sequence: string;
   readonly nonce: string;
   readonly nonceExpiresAt: number;
@@ -108,6 +133,26 @@ export async function authenticateClassicPublish(
     now,
     CLASSIC_PUBLISH_SIGNATURE_TAG,
     `/v1/classic/servers/${serverId}/publish`,
+    payload,
+  );
+}
+
+export async function authenticateClassicV2Publish(
+  request: Request,
+  body: Uint8Array,
+  serverId: string,
+  authority: string,
+  now: number,
+): Promise<AuthenticatedClassicV2Publish> {
+  const payload = parseClassicV2PublishPayload(body);
+  return authenticateSignedPublish(
+    request,
+    body,
+    serverId,
+    authority,
+    now,
+    CLASSIC_V2_PUBLISH_SIGNATURE_TAG,
+    `/v2/classic/servers/${serverId}/publish`,
     payload,
   );
 }
@@ -352,6 +397,28 @@ function parseSignature(value: string): Uint8Array {
 }
 
 function parseClassicPublishPayload(body: Uint8Array): ClassicPublishPayload {
+  return parseClassicPayload(
+    body,
+    CLASSIC_PUBLISH_SCHEMA,
+    "passwordRequired",
+  ) as ClassicPublishPayload;
+}
+
+function parseClassicV2PublishPayload(
+  body: Uint8Array,
+): ClassicV2PublishPayload {
+  return parseClassicPayload(
+    body,
+    CLASSIC_V2_PUBLISH_SCHEMA,
+    "accessCodeRequired",
+  ) as ClassicV2PublishPayload;
+}
+
+function parseClassicPayload(
+  body: Uint8Array,
+  schema: typeof CLASSIC_PUBLISH_SCHEMA | typeof CLASSIC_V2_PUBLISH_SCHEMA,
+  policyKey: "passwordRequired" | "accessCodeRequired",
+): ClassicPublishPayload | ClassicV2PublishPayload {
   let raw: string;
   let parsed: unknown;
   try {
@@ -372,7 +439,7 @@ function parseClassicPublishPayload(body: Uint8Array): ClassicPublishPayload {
     "version",
     "textComment",
     "public",
-    "passwordRequired",
+    policyKey,
   ] as const;
   const hasHostname = Object.hasOwn(parsed, "hostname");
   const hasPort = Object.hasOwn(parsed, "port");
@@ -383,7 +450,7 @@ function parseClassicPublishPayload(body: Uint8Array): ClassicPublishPayload {
     hasHostname !== hasPort ||
     Object.keys(parsed).length !== expectedKeys.length ||
     !expectedKeys.every((key) => Object.hasOwn(parsed, key)) ||
-    parsed.schema !== CLASSIC_PUBLISH_SCHEMA ||
+    parsed.schema !== schema ||
     typeof parsed.serverId !== "string" ||
     !SERVER_ID.test(parsed.serverId) ||
     typeof parsed.certificate !== "string" ||
@@ -393,15 +460,14 @@ function parseClassicPublishPayload(body: Uint8Array): ClassicPublishPayload {
     !isDirectoryText(parsed.version, 32, false) ||
     !isDirectoryText(parsed.textComment, 256, true) ||
     typeof parsed.public !== "boolean" ||
-    typeof parsed.passwordRequired !== "boolean" ||
+    typeof parsed[policyKey] !== "boolean" ||
     (hasHostname && !isCanonicalHostname(parsed.hostname)) ||
     (hasPort && !validUnsignedInteger(parsed.port, 65_535, 1))
   ) {
     throw new HttpError("bad_request");
   }
 
-  const payload: ClassicPublishPayload = {
-    schema: CLASSIC_PUBLISH_SCHEMA,
+  const common = {
     serverId: parsed.serverId,
     certificate: parsed.certificate,
     name: parsed.name,
@@ -409,7 +475,25 @@ function parseClassicPublishPayload(body: Uint8Array): ClassicPublishPayload {
     version: parsed.version,
     textComment: parsed.textComment,
     public: parsed.public,
-    passwordRequired: parsed.passwordRequired,
+  } as const;
+  if (policyKey === "passwordRequired") {
+    const payload: ClassicPublishPayload = {
+      schema: CLASSIC_PUBLISH_SCHEMA,
+      ...common,
+      passwordRequired: parsed.passwordRequired as boolean,
+      ...(hasHostname
+        ? { hostname: parsed.hostname as string, port: parsed.port as number }
+        : {}),
+    };
+    if (JSON.stringify(payload) !== raw) {
+      throw new HttpError("bad_request");
+    }
+    return Object.freeze(payload);
+  }
+  const payload: ClassicV2PublishPayload = {
+    schema: CLASSIC_V2_PUBLISH_SCHEMA,
+    ...common,
+    accessCodeRequired: parsed.accessCodeRequired as boolean,
     ...(hasHostname
       ? { hostname: parsed.hostname as string, port: parsed.port as number }
       : {}),

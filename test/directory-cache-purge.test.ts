@@ -20,6 +20,24 @@ describe("directory cache purge", () => {
     expect(fetcher).toHaveBeenCalledTimes(1);
   });
 
+  it("purges Classic v2 canary aliases from only the Classic origin", async () => {
+    const fetcher = vi.fn().mockResolvedValue(success({ id: "b".repeat(32) }));
+    await purgeDirectoryAliases(
+      ENVIRONMENT,
+      "classic-v2",
+      fetcher,
+      "canary-v5/",
+    );
+    const [, init] = fetcher.mock.calls[0] as [string, RequestInit];
+    expect(JSON.parse(String(init.body))).toEqual({
+      files: [
+        "https://classic.meta.atrinik.org/canary-v5/index.html",
+        "https://classic.meta.atrinik.org/canary-v5/index.json",
+        "https://classic.meta.atrinik.org/canary-v5/index.xml",
+      ],
+    });
+  });
+
   it.each([
     ["HTTP rejection", success({ id: "b".repeat(32) }, 500)],
     ["unsuccessful envelope", response({

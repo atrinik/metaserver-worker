@@ -13,6 +13,7 @@ import { publisherServiceRequest } from "../src/internal-service";
 import { sha256Hex } from "../src/protocol";
 import publisherFixture from "./fixtures/metaserver-publisher-v1.json";
 import gamePublisherFixture from "./fixtures/metaserver-game-publisher-v1.json";
+import classicV2Fixture from "./fixtures/metaserver-classic-publisher-v2.json";
 
 interface SignedVector {
   readonly body: string;
@@ -53,6 +54,64 @@ function publishRequest(vector: SignedVector): Request {
       "Content-Type": publisherFixture.content_type,
       "Signature": vector.signature_header,
       "Signature-Input": vector.signature_input,
+    },
+    body: vector.body,
+  });
+}
+
+function classicV2PublishRequest(
+  vector: SignedVector & { readonly path: string },
+): Request {
+  return new Request(`https://${classicV2Fixture.authority}${vector.path}`, {
+    method: "POST",
+    headers: {
+      "Atrinik-Publish-Sequence": vector.sequence,
+      "Atrinik-Server-ID": classicV2Fixture.server_id,
+      "CF-Connecting-IP": "192.0.2.82",
+      "Content-Digest": vector.content_digest,
+      "Content-Type": classicV2Fixture.content_type,
+      Signature: vector.signature_header,
+      "Signature-Input": vector.signature_input,
+    },
+    body: vector.body,
+  });
+}
+
+interface MigrationEnvelope {
+  readonly body: string;
+  readonly created: number;
+  readonly name: string;
+  readonly server_id: string;
+  readonly signature_base: string;
+  readonly signature_base64: string;
+}
+
+function migrationPublishRequest(vector: MigrationEnvelope): Request {
+  const values = new Map<string, string>();
+  for (const line of vector.signature_base.split("\n")) {
+    const separator = line.indexOf(": ");
+    if (separator < 1) {
+      throw new Error("Migration signature base is malformed");
+    }
+    values.set(line.slice(1, separator - 1), line.slice(separator + 2));
+  }
+  const required = (name: string): string => {
+    const value = values.get(name);
+    if (value === undefined) {
+      throw new Error(`Migration signature base omits ${name}`);
+    }
+    return value;
+  };
+  return new Request(`https://${required("@authority")}${required("@path")}`, {
+    method: required("@method"),
+    headers: {
+      "Atrinik-Publish-Sequence": required("atrinik-publish-sequence"),
+      "Atrinik-Server-ID": required("atrinik-server-id"),
+      "CF-Connecting-IP": "192.0.2.83",
+      "Content-Digest": required("content-digest"),
+      "Content-Type": required("content-type"),
+      Signature: `atrinik=:${vector.signature_base64}:`,
+      "Signature-Input": `atrinik=${required("@signature-params")}`,
     },
     body: vector.body,
   });
@@ -140,6 +199,23 @@ async function storedPublication(): Promise<StoredSignedPublication | null> {
   ).bind(publisherFixture.server_id).first<StoredSignedPublication>();
 }
 
+async function snapshotSignedState(): Promise<unknown> {
+  return Promise.all([
+    "publisher_replay",
+    "publisher_nonces",
+    "server_presence",
+    "directory_entries",
+    "directory_revisions",
+    "directory_outbox",
+    "classic_identity_modes",
+    "classic_receiver_mode",
+  ].map(async (table) => ({
+    table,
+    rows: (await env.DB.prepare(`SELECT * FROM ${table} ORDER BY 1, 2, 3`)
+      .all()).results,
+  })));
+}
+
 beforeEach(async () => {
   const stub = env.RENDEZVOUS.getByName(publisherFixture.server_id);
   await runInDurableObject(stub, async (_instance, state) => {
@@ -164,6 +240,12 @@ beforeEach(async () => {
     env.DB.prepare("DELETE FROM server_presence"),
     env.DB.prepare("DELETE FROM server_denials"),
     env.DB.prepare("DELETE FROM request_budgets"),
+    env.DB.prepare("DELETE FROM classic_identity_modes"),
+    env.DB.prepare(
+      `UPDATE classic_receiver_mode
+          SET mode = 'classic-v1-accepting', activated_at = NULL
+        WHERE singleton = 1`,
+    ),
     env.DB.prepare(
       "UPDATE directory_revisions SET revision = 0, updated_at = 0",
     ),
@@ -489,6 +571,217 @@ describe("classic signed publisher", () => {
       `SELECT COUNT(*) AS count FROM publisher_nonces
         WHERE server_id = ? AND profile = 'classic-v1'`,
     ).bind(publisherFixture.server_id).first<number>("count")).toBe(4);
+  });
+});
+
+describe("Classic v2 signed publication migration", () => {
+  it("leaves the complete v1 state unchanged when the v2 upgrade cannot commit", async () => {
+    const envelope = (name: string) =>
+      classicV2Fixture.migration.signed_envelopes.find(
+        (vector) => vector.name === name,
+      );
+    const v1 = envelope("v1-100");
+    const upgrade = envelope("v2-101-upgrade");
+    if (v1 === undefined || upgrade === undefined) {
+      throw new Error("Protocol fixture omits migration publications");
+    }
+    vi.spyOn(Date, "now").mockReturnValue(v1.created * 1_000);
+    expect((await callWorker(
+      migrationPublishRequest(v1),
+      testEnvironment(),
+    )).status).toBe(200);
+    const before = await snapshotSignedState();
+    const stub = env.RENDEZVOUS.getByName(upgrade.server_id);
+    type PublicationPersister = (
+      db: D1Database,
+      publication: unknown,
+    ) => Promise<{ readonly accepted: boolean; readonly visibleChanged: boolean }>;
+    let original: PublicationPersister | null = null;
+    await runInDurableObject(stub, (instance) => {
+      original = Reflect.get(instance, "publicationPersister") as
+        PublicationPersister;
+      Reflect.set(instance, "publicationPersister", async () => {
+        throw new Error("Injected v2 migration commit failure");
+      });
+    });
+    try {
+      vi.spyOn(Date, "now").mockReturnValue(upgrade.created * 1_000);
+      expect((await callWorker(
+        migrationPublishRequest(upgrade),
+        testEnvironment(),
+      )).status).toBe(500);
+      expect(await snapshotSignedState()).toEqual(before);
+    } finally {
+      if (original !== null) {
+        await runInDurableObject(stub, (instance) => {
+          Reflect.set(instance, "publicationPersister", original);
+        });
+      }
+    }
+  });
+
+  it("atomically upgrades one identity onto the shared replay lineage", async () => {
+    const workerEnv = testEnvironment();
+    const envelope = (name: string) =>
+      classicV2Fixture.migration.signed_envelopes.find(
+        (vector) => vector.name === name,
+      );
+    const v1 = envelope("v1-100");
+    const upgrade = envelope("v2-101-upgrade");
+    const retiredV1 = envelope("v1-102-post-upgrade");
+    const nextV2 = envelope("v2-102-next");
+    if (
+      v1 === undefined || upgrade === undefined ||
+      retiredV1 === undefined || nextV2 === undefined
+    ) {
+      throw new Error("Protocol fixture omits migration publications");
+    }
+    vi.spyOn(Date, "now").mockReturnValue(v1.created * 1_000);
+    expect((await callWorker(migrationPublishRequest(v1), workerEnv)).status)
+      .toBe(200);
+
+    vi.spyOn(Date, "now").mockReturnValue(upgrade.created * 1_000);
+    const upgraded = await callWorker(
+      migrationPublishRequest(upgrade),
+      workerEnv,
+    );
+    expect(upgraded.status).toBe(200);
+    expect(await env.DB.prepare(
+      `SELECT mode FROM classic_identity_modes WHERE server_id = ?`,
+    ).bind(upgrade.server_id).first<string>("mode")).toBe("v2-only");
+    expect(await env.DB.prepare(
+      `SELECT COUNT(*) AS count FROM server_presence
+        WHERE server_id = ? AND profile = 'classic-v1'`,
+    ).bind(upgrade.server_id).first<number>("count")).toBe(0);
+    expect(await env.DB.prepare(
+      `SELECT entries.access_code_required, entries.password_required,
+              replay.last_sequence
+         FROM directory_entries AS entries
+         JOIN publisher_replay AS replay
+           ON replay.server_id = entries.server_id
+          AND replay.profile = entries.profile
+        WHERE entries.server_id = ? AND entries.profile = 'classic-v2'`,
+    ).bind(upgrade.server_id).first()).toMatchObject({
+      access_code_required: 1,
+      password_required: null,
+      last_sequence: upgrade.sequence,
+    });
+
+    vi.spyOn(Date, "now").mockReturnValue(retiredV1.created * 1_000);
+    const retired = await callWorker(
+      migrationPublishRequest(retiredV1),
+      workerEnv,
+    );
+    expect(retired.status).toBe(410);
+    expect(retired.headers.get("Cache-Control")).toBe("no-store");
+    expect(await retired.json()).toEqual({
+      error: { code: "profile_retired" },
+    });
+
+    vi.spyOn(Date, "now").mockReturnValue(upgrade.created * 1_000);
+    const replay = await callWorker(
+      migrationPublishRequest(upgrade),
+      workerEnv,
+    );
+    expect(replay.status).toBe(409);
+    expect(await replay.json()).toEqual({
+      error: {
+        code: "publish_replay",
+        minimumNextSequence: nextV2.sequence,
+      },
+    });
+
+    vi.spyOn(Date, "now").mockReturnValue(nextV2.created * 1_000);
+    const advanced = await callWorker(
+      migrationPublishRequest(nextV2),
+      workerEnv,
+    );
+    expect(advanced.status).toBe(200);
+    expect(await env.DB.prepare(
+      `SELECT last_sequence FROM publisher_replay
+        WHERE server_id = ? AND profile = 'classic-v2'`,
+    ).bind(upgrade.server_id).first<string>("last_sequence"))
+      .toBe(nextV2.sequence);
+  });
+
+  it("returns the fixed global retirement response without consuming v1 state", async () => {
+    const workerEnv = testEnvironment();
+    const accepted = await callWorker(publishRequest(initialVector()), workerEnv);
+    expect(accepted.status).toBe(200);
+    await env.DB.prepare(
+      `UPDATE classic_receiver_mode
+          SET mode = 'classic-v1-retired', activated_at = ?
+        WHERE singleton = 1 AND mode = 'classic-v1-accepting'`,
+    ).bind(publisherFixture.created).run();
+    const before = await snapshotSignedState();
+
+    const retired = await callWorker(
+      publishRequest(publisherFixture.heartbeat),
+      workerEnv,
+    );
+    expect(retired.status).toBe(410);
+    expect(await retired.text()).toBe(
+      '{"error":{"code":"profile_retired"}}',
+    );
+    expect(await snapshotSignedState()).toEqual(before);
+  });
+
+  it("rejects globally retired v1 before pulling the request body", async () => {
+    await env.DB.prepare(
+      `UPDATE classic_receiver_mode
+          SET mode = 'classic-v1-retired', activated_at = ?
+        WHERE singleton = 1 AND mode = 'classic-v1-accepting'`,
+    ).bind(publisherFixture.created).run();
+    const internal = publisherServiceRequest(publishRequest(initialVector()));
+    const context = createExecutionContext();
+    const response = await handlePublisherCoordinatorRequest(
+      internal,
+      testEnvironment(),
+      context,
+    );
+    await waitOnExecutionContext(context);
+    expect(response.status).toBe(410);
+    expect(await response.text()).toBe(
+      '{"error":{"code":"profile_retired"}}',
+    );
+    expect(internal.bodyUsed).toBe(false);
+  });
+
+  it("accepts uint64 max once and then returns exhaustion without a minimum", async () => {
+    const workerEnv = testEnvironment();
+    const envelope = (name: string) =>
+      classicV2Fixture.migration.signed_envelopes.find(
+        (vector) => vector.name === name,
+      );
+    const maximumMinusOne = envelope("v2-max-minus-one");
+    const maximum = envelope("v2-max");
+    const exhausted = envelope("v2-max-exhausted");
+    if (
+      maximumMinusOne === undefined || maximum === undefined ||
+      exhausted === undefined
+    ) {
+      throw new Error("Protocol fixture omits maximum sequence vectors");
+    }
+    for (const vector of [maximumMinusOne, maximum]) {
+      vi.spyOn(Date, "now").mockReturnValue(vector.created * 1_000);
+      const response = await callWorker(
+        migrationPublishRequest(vector),
+        workerEnv,
+      );
+      expect(response.status).toBe(200);
+    }
+    const before = await snapshotSignedState();
+    vi.spyOn(Date, "now").mockReturnValue(exhausted.created * 1_000);
+    const response = await callWorker(
+      migrationPublishRequest(exhausted),
+      workerEnv,
+    );
+    expect(response.status).toBe(409);
+    expect(response.headers.get("Cache-Control")).toBe("no-store");
+    expect(await response.json()).toEqual({
+      error: { code: "publish_sequence_exhausted" },
+    });
+    expect(await snapshotSignedState()).toEqual(before);
   });
 });
 

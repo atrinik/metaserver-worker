@@ -53,20 +53,26 @@ class Clock:
 
 class FakeOrigin:
     def __init__(self, profile: str) -> None:
-        json_name = (
-            "classic-directory-v4/index.json"
-            if profile == "classic-v1"
-            else "game-directory-v1/canonical.json"
-        )
-        xml_name = (
-            "classic-directory-v4/index.xml"
-            if profile == "classic-v1"
-            else "game-directory-v1/projection.xml"
-        )
+        if profile == "classic-v1":
+            json_name = "classic-directory-v4/index.json"
+            xml_name = "classic-directory-v4/index.xml"
+            html_name = None
+        elif profile == "classic-v2":
+            json_name = "classic-directory-v5/index.json"
+            xml_name = "classic-directory-v5/index.xml"
+            html_name = "classic-directory-v5/index.html"
+        else:
+            json_name = "game-directory-v1/canonical.json"
+            xml_name = "game-directory-v1/projection.xml"
+            html_name = None
         json_body = fixture(json_name)
         self.profile = profile
         self.bodies: dict[str, list[bytes]] = {
-            "/index.html": [html_fixture(profile, json_body)],
+            "/index.html": [
+                fixture(html_name)
+                if html_name is not None
+                else html_fixture(profile, json_body)
+            ],
             "/index.json": [json_body],
             "/index.xml": [fixture(xml_name)],
         }
@@ -156,7 +162,7 @@ class StaticOriginCanaryTests(unittest.TestCase):
         )
 
     def test_accepts_exact_game_and_classic_static_origins(self) -> None:
-        for profile in ("classic-v1", "game-v1"):
+        for profile in ("classic-v1", "classic-v2", "game-v1"):
             with self.subTest(profile=profile):
                 fake = FakeOrigin(profile)
                 result = self.verify(profile, fake)
@@ -373,6 +379,15 @@ class StaticOriginCanaryTests(unittest.TestCase):
             canary.base_origin("https://xn--bcher-kva.example.org", False)[1],
             "xn--bcher-kva.example.org",
         )
+        self.assertEqual(canary.alias_prefix("classic-v2", "canary-v5"),
+                         "/canary-v5")
+        self.assertEqual(canary.alias_prefix("classic-v2", ""), "")
+        for profile, prefix in (("classic-v1", "canary-v5"),
+                                ("game-v1", "canary-v5"),
+                                ("classic-v2", "precutover-v4")):
+            with self.subTest(profile=profile, prefix=prefix), \
+                    self.assertRaises(ValueError):
+                canary.alias_prefix(profile, prefix)
 
     def test_json_decoder_rejects_duplicate_keys_and_noncanonical_bytes(self) -> None:
         body = fixture("game-directory-v1/canonical.json")

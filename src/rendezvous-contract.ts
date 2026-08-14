@@ -14,22 +14,28 @@ import type { RendezvousRole } from "./routes";
  * rolling deployment, either version therefore fails closed instead of
  * silently entering the legacy broadcast implementation.
  */
-export const INTERNAL_RENDEZVOUS_URL = "https://rendezvous.internal/v2";
+export const INTERNAL_RENDEZVOUS_URL = "https://rendezvous.internal/v3";
 export const INTERNAL_RENDEZVOUS_PUBLISH_URL =
-  "https://rendezvous.internal/v2/publish";
+  "https://rendezvous.internal/v3/publish";
 export const INTERNAL_DIRECTORY_CHANGED_HEADER =
   "X-Atrinik-Directory-Changed";
 export const INTERNAL_RENDEZVOUS_ROLE_HEADER =
-  "X-Atrinik-Rendezvous-V2-Role";
+  "X-Atrinik-Rendezvous-V3-Role";
 export const INTERNAL_RENDEZVOUS_PROTOCOL_HEADER =
-  "X-Atrinik-Rendezvous-V2-Protocol";
+  "X-Atrinik-Rendezvous-V3-Protocol";
 export const INTERNAL_RENDEZVOUS_AUTHORIZATION_HEADER =
-  "X-Atrinik-Rendezvous-V2-Authorization";
+  "X-Atrinik-Rendezvous-V3-Authorization";
 export const INTERNAL_RENDEZVOUS_GENERATION_HEADER =
-  "X-Atrinik-Rendezvous-V2-Generation";
+  "X-Atrinik-Rendezvous-V3-Generation";
 export const LEGACY_INTERNAL_RENDEZVOUS_ROLE_HEADER = "X-Atrinik-Role";
 export const LEGACY_INTERNAL_RENDEZVOUS_V1_ROLE_HEADER =
   "X-Atrinik-Rendezvous-V1-Role";
+const LEGACY_INTERNAL_RENDEZVOUS_V2_HEADERS = Object.freeze([
+  "X-Atrinik-Rendezvous-V2-Role",
+  "X-Atrinik-Rendezvous-V2-Protocol",
+  "X-Atrinik-Rendezvous-V2-Authorization",
+  "X-Atrinik-Rendezvous-V2-Generation",
+] as const);
 
 // Public update fields can contain control characters which JSON.stringify()
 // expands to six-byte escapes. The strict field maxima fit below this fixed
@@ -251,12 +257,19 @@ interface InternalPublicationBase {
   readonly quicHost: string;
   readonly quicPort: number;
   readonly quicCertSha256: string;
-  readonly passwordRequired: boolean;
+  readonly authorizationRequired: boolean;
   readonly directoryFingerprint: string;
 }
 
 export interface InternalClassicPublication extends InternalPublicationBase {
   readonly directoryProfile: "classic-v1";
+  readonly playersCount: number;
+  readonly version: string;
+  readonly textComment: string;
+}
+
+export interface InternalClassicV2Publication extends InternalPublicationBase {
+  readonly directoryProfile: "classic-v2";
   readonly playersCount: number;
   readonly version: string;
   readonly textComment: string;
@@ -277,6 +290,7 @@ export interface InternalGamePublication extends InternalPublicationBase {
 
 export type InternalRendezvousPublication =
   | InternalClassicPublication
+  | InternalClassicV2Publication
   | InternalGamePublication;
 
 const INTERNAL_PUBLICATION_BASE_KEYS = [
@@ -296,7 +310,7 @@ const INTERNAL_PUBLICATION_BASE_KEYS = [
   "quicHost",
   "quicPort",
   "quicCertSha256",
-  "passwordRequired",
+  "authorizationRequired",
   "directoryFingerprint",
 ] as const;
 
@@ -337,6 +351,9 @@ export function validateInternalRendezvousUpgrade(
     request.headers.get("Upgrade") !== "websocket" ||
     request.headers.has(LEGACY_INTERNAL_RENDEZVOUS_ROLE_HEADER) ||
     request.headers.has(LEGACY_INTERNAL_RENDEZVOUS_V1_ROLE_HEADER) ||
+    LEGACY_INTERNAL_RENDEZVOUS_V2_HEADERS.some((name) =>
+      request.headers.has(name)
+    ) ||
     FORBIDDEN_BODY_HEADERS.some((name) => request.headers.has(name))
   ) {
     return null;
@@ -390,6 +407,9 @@ export async function validateInternalRendezvousPublication(
     request.headers.has(INTERNAL_RENDEZVOUS_GENERATION_HEADER) ||
     request.headers.has(LEGACY_INTERNAL_RENDEZVOUS_ROLE_HEADER) ||
     request.headers.has(LEGACY_INTERNAL_RENDEZVOUS_V1_ROLE_HEADER) ||
+    LEGACY_INTERNAL_RENDEZVOUS_V2_HEADERS.some((name) =>
+      request.headers.has(name)
+    ) ||
     request.headers.has("Content-Encoding") ||
     request.headers.has("Transfer-Encoding")
   ) {
@@ -415,6 +435,7 @@ export async function validateInternalRendezvousPublication(
     typeof parsed.serverId !== "string" ||
     !HEX_64.test(parsed.serverId) ||
     (parsed.directoryProfile !== "classic-v1" &&
+      parsed.directoryProfile !== "classic-v2" &&
       parsed.directoryProfile !== "game-v1") ||
     !isPublisherReplayMetadata(parsed) ||
     typeof parsed.commitToken !== "string" ||
@@ -434,7 +455,7 @@ export async function validateInternalRendezvousPublication(
     !isCanonicalPublicationEndpoint(parsed.quicHost, parsed.quicPort) ||
     typeof parsed.quicCertSha256 !== "string" ||
     parsed.quicCertSha256 !== parsed.serverId ||
-    typeof parsed.passwordRequired !== "boolean" ||
+    typeof parsed.authorizationRequired !== "boolean" ||
     typeof parsed.directoryFingerprint !== "string" ||
     !HEX_64.test(parsed.directoryFingerprint)
   ) {
@@ -457,11 +478,14 @@ export async function validateInternalRendezvousPublication(
     quicHost: parsed.quicHost,
     quicPort: parsed.quicPort,
     quicCertSha256: parsed.quicCertSha256,
-    passwordRequired: parsed.passwordRequired,
+    authorizationRequired: parsed.authorizationRequired,
     directoryFingerprint: parsed.directoryFingerprint,
   } as const;
 
-  if (parsed.directoryProfile === "classic-v1") {
+  if (
+    parsed.directoryProfile === "classic-v1" ||
+    parsed.directoryProfile === "classic-v2"
+  ) {
     if (
       !hasExactKeys(parsed, INTERNAL_CLASSIC_PUBLICATION_KEYS) ||
       !isBoundedInteger(parsed.playersCount, 0, 4_294_967_295) ||
@@ -472,7 +496,7 @@ export async function validateInternalRendezvousPublication(
     }
     return {
       ...common,
-      directoryProfile: "classic-v1",
+      directoryProfile: parsed.directoryProfile,
       playersCount: parsed.playersCount,
       version: parsed.version,
       textComment: parsed.textComment,

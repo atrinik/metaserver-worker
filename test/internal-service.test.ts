@@ -259,6 +259,23 @@ describe("internal service boundary", () => {
     expect(await replay.text()).toBe(replayBody);
     expect(replay.headers.has("CF-Worker-Status")).toBe(false);
 
+    for (const [status, body] of [
+      [409, '{"error":{"code":"publish_sequence_exhausted"}}'],
+      [410, '{"error":{"code":"profile_retired"}}'],
+    ] as const) {
+      const validatedError = await validatePublisherServiceResponse(
+        new Response(body, {
+          status,
+          headers: {
+            ...SAFE_DYNAMIC_HEADERS,
+            "Content-Type": "application/json",
+          },
+        }),
+      );
+      expect(validatedError.status).toBe(status);
+      expect(await validatedError.text()).toBe(body);
+    }
+
     for (const response of [
       new Response(null, { status: 302, headers: {
         "Cache-Control": "no-store",

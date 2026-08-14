@@ -4,7 +4,7 @@ import {
   runDurableObjectAlarm,
   runInDurableObject,
 } from "cloudflare:test";
-import { describe, expect, it, vi } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import { sha256Hex } from "../src/protocol";
 import { RendezvousRoom } from "../src/rendezvous";
@@ -14,6 +14,7 @@ import type {
   RendezvousTerminalOutcome,
   RendezvousTerminalSummary,
 } from "../src/rendezvous-metrics";
+
 import {
   INTERNAL_DIRECTORY_CHANGED_HEADER,
   INTERNAL_RENDEZVOUS_AUTHORIZATION_HEADER,
@@ -26,6 +27,14 @@ import {
   RENDEZVOUS_ROLLING_WINDOW_MS,
 } from "../src/rendezvous-contract";
 import { CLASSIC_RENDEZVOUS_INVITE_SUBPROTOCOL } from "../src/routes";
+
+beforeEach(async () => {
+  await env.DB.prepare(
+    `UPDATE classic_receiver_mode
+        SET mode = 'classic-v1-accepting', activated_at = NULL
+      WHERE singleton = 1`,
+  ).run();
+});
 
 const EVENT_TIMEOUT_MS = 2_000;
 const PROTOCOL_CLOSE = {
@@ -134,10 +143,10 @@ function generationPublicationRequest(
   serverId: string,
   expectedGeneration: string,
   generation: string,
-  directoryProfile: "classic-v1" | "game-v1" = "classic-v1",
+  directoryProfile: "classic-v1" | "classic-v2" | "game-v1" = "classic-v1",
 ): Request {
   const publisherSequence = BigInt(`0x${generation.slice(0, 16)}`).toString();
-  const profileFields = directoryProfile === "classic-v1"
+  const profileFields = directoryProfile !== "game-v1"
     ? {
         playersCount: 0,
         version: "4.0.0",
@@ -175,7 +184,7 @@ function generationPublicationRequest(
       quicHost: "",
       quicPort: 1,
       quicCertSha256: serverId,
-      passwordRequired: true,
+      authorizationRequired: true,
       directoryFingerprint: "c".repeat(64),
     }),
   });
@@ -940,6 +949,58 @@ describe("RendezvousRoom HTTP and admission boundary", () => {
     ));
     expect(heartbeat.status).toBe(204);
     expect(heartbeat.headers.get(INTERNAL_DIRECTORY_CHANGED_HEADER)).toBe("0");
+  });
+
+  it("rejects a stale forwarded upgrade after global v1 retirement", async () => {
+    const serverId = ticket(40_002);
+    const generation = "4".repeat(64);
+    await seedPublishedGeneration(serverId, generation);
+    const staleUpgrade = roomRequest("server", {
+      headers: { [INTERNAL_RENDEZVOUS_GENERATION_HEADER]: generation },
+    });
+    await env.DB.batch([
+      env.DB.prepare(
+        `UPDATE classic_receiver_mode
+            SET mode = 'classic-v1-retired', activated_at = 2000000000
+          WHERE singleton = 1`,
+      ),
+      env.DB.prepare(
+        `DELETE FROM server_presence
+          WHERE profile = 'classic-v1' AND server_id = ?`,
+      ).bind(serverId),
+    ]);
+    const stub = env.RENDEZVOUS.getByName(serverId);
+    await expectFixedError(
+      await stub.fetch(staleUpgrade),
+      503,
+      "Rendezvous room unavailable\n",
+      "60",
+    );
+    await runInDurableObject(stub, (_instance, state) => {
+      expect(state.getWebSockets()).toHaveLength(0);
+    });
+  });
+
+  it("rejects a stale forwarded upgrade after v1 presence disappears", async () => {
+    const serverId = ticket(40_003);
+    const generation = "5".repeat(64);
+    await seedPublishedGeneration(serverId, generation);
+    await env.DB.prepare(
+      `DELETE FROM server_presence
+        WHERE profile = 'classic-v1' AND server_id = ?`,
+    ).bind(serverId).run();
+    const stub = env.RENDEZVOUS.getByName(serverId);
+    await expectFixedError(
+      await stub.fetch(roomRequest("server", {
+        headers: { [INTERNAL_RENDEZVOUS_GENERATION_HEADER]: generation },
+      })),
+      503,
+      "Rendezvous room unavailable\n",
+      "60",
+    );
+    await runInDurableObject(stub, (_instance, state) => {
+      expect(state.getWebSockets()).toHaveLength(0);
+    });
   });
 });
 

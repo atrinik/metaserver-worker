@@ -6,9 +6,9 @@ the version carried inside a directory representation or game protocol.
 ## Retired surface
 
 Classic v5.9.0 is the minimum supported release. The former CGI and public
-`/v2` API has no Worker handler, redirect, fallback, or supported rollback.
+legacy generic `/v2` API has no Worker handler, redirect, fallback, or supported rollback.
 Exact negative probes are blocked at the edge before invocation. The private
-Service Binding URL `https://rendezvous.internal/v2` is a separate versioned
+Service Binding URL `https://rendezvous.internal/v3` is a separate versioned
 capability and is not public routing.
 
 ## Canonical services
@@ -20,6 +20,7 @@ publisher and rendezvous handlers are exposed:
 | --- | --- | --- | --- |
 | `publish.meta.atrinik.org` | `POST` | `/v1/servers/{server-id}/publish` | exact Game Protocol 1 signed publisher envelope, body required and at most 4,096 bytes; independently circuit-disabled by `GAME_PUBLISH_ENABLED` until rollout |
 | `publish.meta.atrinik.org` | `POST` | `/v1/classic/servers/{server-id}/publish` | exact `application/json`, no query or content encoding, body required and at most 4,096 bytes |
+| `publish.meta.atrinik.org` | `POST` | `/v2/classic/servers/{server-id}/publish` | exact Classic v2 schema/tag with mandatory `accessCodeRequired`; otherwise the same bounded transport envelope |
 | `rendezvous.meta.atrinik.org` | `GET` WebSocket | `/v1/servers/{server-id}?role=client\|server` | no body or content headers; exactly one `role` query |
 | `rendezvous.meta.atrinik.org` | `GET` WebSocket | `/v1/classic/servers/{server-id}?role=client\|server` | no body or content headers; exactly one `role` query |
 
@@ -40,11 +41,13 @@ route classifier does not parse or authenticate them.
 
 ### Signed publishers
 
-The classic and Game endpoints implement `atrinik-classic-publish-v1` and
-`atrinik-game-publish-v1` from the protocol repository. Each profile has an
+The endpoints implement `atrinik-classic-publish-v1`,
+`atrinik-classic-publish-v2`, and `atrinik-game-publish-v1` from the protocol
+repository. Classic v1/v2 have distinct route/schema/tag/signature domains but
+share one replay lineage per identity; Game remains independent. Each profile has an
 exact canonical JSON schema, signature tag, path, replay ledger, daily budget,
 presence row, public row shape, and serialized publication-room identity. A
-valid signature or sequence from one profile is unusable in the other. Both
+valid signature from one profile is unusable in another. All
 require an RFC 9530 `Content-Digest` and an `ecdsa-p256-sha256` HTTP message signature
 made by the private P-256 key paired with the exact DER certificate whose
 SHA-256 fingerprint is `server-id`. The covered components, their order,
@@ -64,6 +67,16 @@ rotates the rendezvous generation but does not advance the visible directory
 revision. A visible field change or public/private transition advances it
 exactly once.
 
+An accepted uint64-maximum sequence succeeds normally. The lineage is then
+exhausted: every later attempt returns exact 409
+`publish_sequence_exhausted` with no `minimumNextSequence` and no mutation.
+The first accepted v2 request must exceed the v1 high-water mark and atomically
+retires the identity's v1 listing, presence, and generation before installing
+the body-derived v2 state and irreversible v2-only marker. Later authenticated
+v1 requests receive fixed 410 `profile_retired`. After the separately
+authorized global gate, the v1 route returns that same 410 before inspecting
+the body, signature, identity, sequence, or nonce.
+
 Successful responses contain the new server-role rendezvous token and use
 `Cache-Control: no-store`. Replay responses are also `no-store`. Clients
 must not follow redirects for a signed publish because authority and path are
@@ -81,8 +94,10 @@ Classic production is attached only through its reviewed static custom domain;
 Game remains unattached until its independent rollout. Game JSON/XML
 follow the protocol-owned `atrinik-directory-v1` version 2 fixtures, keep body
 SHA-256 independent from the public origin validator, and accept non-empty
-state only through the signed Game publisher. Classic JSON/XML follow
-[classic directory protocol 4](classic-directory-v4.md). Every new or changed
+state only through the signed Game publisher. Classic v1 JSON/XML follow
+[classic directory protocol 4](classic-directory-v4.md); Classic v2
+JSON/XML/HTML follow [protocol 5](classic-directory-v5.md) and use only
+`accessCodeRequired`, `AccessCodeRequired`, and open/protected wording. Every new or changed
 static attachment must prove exact GET/HEAD/path/query handling, R2's opaque strong
 ETag, alias-upload `Last-Modified`, CSP/nosniff/CORS, plaintext same-path
 redirect rules, direct R2 HTTPS root `404`, cache expiry, public-to-private and
@@ -103,8 +118,10 @@ interrupted convergence repairs before either authority is attached.
 The Worker never fills an address from the HTTPS request source. Signed
 publication can opt into a canonical DNS hostname
 and UDP port; only that explicit pair may produce `Address` and `Port`. A
-present endpoint is public even when `PasswordRequired` is true; the password
-remains an in-game authentication step and does not conceal routing metadata.
+present endpoint is public under either policy. Retained v1
+`PasswordRequired` remains an in-game authentication step. V2
+`AccessCodeRequired` selects open versus invite-proof authorization and never
+imports a password field or raw access code into Worker state.
 
 ## Rendezvous signaling semantics
 
@@ -117,64 +134,62 @@ authorized tickets from the previous generation before the new token becomes
 usable. The per-server room serializes that complete generation/token/listing
 commit. Concurrent updates carry the D1 generation they observed; only the
 first matching precondition can commit, so a delayed writer cannot regress the
-room or listing to an unusable token. A password-protected listing fails client
-rendezvous closed with a fixed retryable `503` unless both the client and
+room or listing to an unusable token. An access-code-protected v2 listing fails
+client rendezvous closed with a fixed retryable `503` unless both the client and
 current server control negotiate exactly
 `atrinik-classic-rendezvous-invite-v1`. The selected subprotocol is echoed in
 the `101` response; missing, alternate, whitespace-, or comma-joined values are
-not accepted for the protected flow.
+not accepted for the access-code-protected flow.
 
-| Listing policy | Client without invite subprotocol | Client with invite subprotocol |
+| V2 listing policy | Client without invite subprotocol | Client with invite subprotocol |
 | --- | --- | --- |
-| private/absent, either password mode | fixed `404`; no room admission | fixed `404`; the invite is not a discovery grant |
-| public, passwordless | admitted only while a server control is live | fixed `400`; protected and passwordless modes cannot be mixed |
-| public, password-protected | fixed retryable `503` | admitted only while an invite-capable server control is live; authorization is mandatory |
+| private/absent, either access policy | fixed `404`; no room admission | fixed `404`; the access code is not a discovery grant |
+| public, open | admitted only while a server control is live | fixed `400`; open and access-code-protected modes cannot be mixed |
+| public, access-code-protected | fixed retryable `503` | admitted only while an invite-capable server control is live; access-code authorization is mandatory |
 
-An authenticated classic server control may always advertise invite-v1 support
-so one long-lived control can serve the listing after an operator policy
-change. The listing's current `PasswordRequired` value, not a client-selected
-header, determines whether authorization is required.
+The server control must negotiate invite-v1 exactly when the current listing
+requires authorization; both missing and extra negotiation fail before the
+control can replace a working peer. Every policy publication rotates the
+generation/token and retires the prior control. The v2 listing's current
+`AccessCodeRequired` value, not a client-selected header, determines whether
+authorization is required. Retained v1 rooms continue to interpret only their
+frozen `PasswordRequired` policy and are never selected for a v2 identity.
 
-### Classic invite-v1 contract
+### Classic access-code plumbing (invite-v1 wire)
 
-An invite capability has the exact canonical form
-`atrinik-invite-v1.<server-id>.<invite-id>.<secret>.<expiry>`. The server ID is
-64 lowercase hexadecimal characters, the random invite ID is 32 lowercase
-hexadecimal characters (128 bits), and the random secret is 64 lowercase
-hexadecimal characters (256 bits). Expiry is a nonzero unsigned 64-bit Unix
-timestamp in canonical decimal with no leading zero. A capability is valid
-only for the exact embedded server identity, while `expiry > now`, and while
-expiry is no more than seven days in the future. Peers apply no implicit clock
-skew allowance.
+The public wire name remains exactly
+`atrinik-classic-rendezvous-invite-v1`; it is internal plumbing for the
+`atrinik-access-v1` launch-code scope, not a standalone credential method. The
+Classic peers extract the server ID, 128-bit access ID, 256-bit rendezvous
+secret, and nonzero unsigned-64 expiry from the complete launch code. The
+Worker sees only the existing bounded proof frames and never receives or
+parses the launch code or its raw fields.
 
-The proof is HMAC-SHA-256 with the 32-byte invite secret over this exact binary
+The proof is HMAC-SHA-256 with the 32-byte rendezvous secret over this exact binary
 transcript, in order:
 
 1. ASCII `atrinik-classic-rendezvous-invite-v1` followed by one NUL byte;
 2. the decoded 32-byte server ID;
 3. the decoded 32-byte ticket;
-4. the decoded 16-byte invite ID;
+4. the decoded 16-byte access ID;
 5. the 32-byte random server challenge; and
 6. expiry encoded as an unsigned 64-bit big-endian integer.
 
-One capability may authorize multiple fresh attempts until expiry; every proof
-is nevertheless unique to its single-use ticket and fresh challenge. The
-classic server owns capability creation, storage, expiry, and revocation. It
-keeps one mode-`0600` capability file, creates a replacement valid for at most
-seven days when none exists, and revokes/rotates it when the operator removes
-that file and restarts. Clients receive the capability out of band, hold it
-only for the attempted connection, and cleanse it afterward. It must never be
-placed in a URL, query string, command line, log, directory representation, or
-Worker request.
+One access code may authorize multiple fresh attempts until expiry; every proof
+is nevertheless unique to its single-use ticket and fresh challenge. Launch
+code creation, secure storage, expiry, revocation, and handoff belong to
+Classic. No standalone raw invite file/share lifecycle is supported, and no
+launch-code field may be placed in a URL, query string, command line, log,
+directory representation, or Worker request.
 
-An accepted passwordless client sends one fresh client-generated ticket in its
-only `client_candidate`. A protected client sends the ticket in a canonical
+An accepted open client sends one fresh client-generated ticket in its only
+`client_candidate`. An access-code-protected client sends the ticket in a canonical
 `auth_init`, receives one `auth_challenge`, returns one `auth_proof`, and waits
 for one `auth_result`. The authenticated current server-control socket is the
 only authority that can advance the exact ticket with `authorized: true`; a
 false result is terminal and no candidate frame is accepted before a true
-result. The invite secret and proof interpretation remain entirely in classic
-peers, and the post-QUIC game join password remains independent. The room binds
+result. The rendezvous secret, proof interpretation, and post-QUIC access-code
+capability remain entirely in Classic peers. The room binds
 the ticket to the originating socket, rejects replay or cross-socket use, and
 routes at most 12 matching
 `server_candidate` messages and one `complete` only to that socket. Completion
@@ -195,7 +210,7 @@ client attachment until that 15-second deadline. The server attachment keeps
 random per-connection IDs, opening/expiry times, its SHA-256 routing digest,
 and bounded counters for the live attempt. After becoming terminal, the client
 attachment also keeps the closed outcome enum and a bounded teardown-attempt
-counter. On the first passwordless candidate or protected `auth_init`, the room
+counter. On the first open candidate or access-code-protected `auth_init`, the room
 atomically claims two purpose-separated HMAC replay aliases in the already
 reserved admission row. Those opaque aliases—not
 a raw ticket, unkeyed SHA-256 routing digest, connection ID, or candidate

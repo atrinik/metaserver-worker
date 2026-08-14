@@ -56,10 +56,11 @@ function canonicalError(input: RouteInput): HttpError {
 }
 
 describe("canonical dynamic route grammar", () => {
-  it("classifies both generation-specific publisher paths", () => {
+  it("classifies all generation-specific publisher paths", () => {
     expect(classifyCanonicalRoute(publisherInput())).toEqual({
       kind: "publish",
       generation: "game-protocol-1",
+      publisherProfile: "game-v1",
       serverId: SERVER_ID,
       authority: PUBLISH_AUTHORITY,
       maximumBodyBytes: 4_096,
@@ -72,6 +73,17 @@ describe("canonical dynamic route grammar", () => {
     ))).toEqual({
       kind: "publish",
       generation: "classic",
+      publisherProfile: "classic-v1",
+      serverId: SERVER_ID,
+      authority: PUBLISH_AUTHORITY,
+      maximumBodyBytes: PUBLISH_MAX_BODY_BYTES,
+    });
+    expect(classifyCanonicalRoute(publisherInput(
+      `/v2/classic/servers/${SERVER_ID}/publish`,
+    ))).toEqual({
+      kind: "publish",
+      generation: "classic",
+      publisherProfile: "classic-v2",
       serverId: SERVER_ID,
       authority: PUBLISH_AUTHORITY,
       maximumBodyBytes: PUBLISH_MAX_BODY_BYTES,
@@ -165,6 +177,21 @@ describe("canonical dynamic route grammar", () => {
         `/v1/servers/${id}?role=client`,
       )).code).toBe("invalid_server_id");
     }
+  });
+
+  it("keeps the Classic v2 route exact and rejects aliases", () => {
+    for (const path of [
+      `/v2/classic/servers/${SERVER_ID}/publish/`,
+      `/v2/classics/servers/${SERVER_ID}/publish`,
+      `/v2/classic/server/${SERVER_ID}/publish`,
+      `/v2/servers/${SERVER_ID}/publish`,
+      `/v1/classic-v2/servers/${SERVER_ID}/publish`,
+    ]) {
+      expect(canonicalError(publisherInput(path)).code).toBe("not_found");
+    }
+    expect(canonicalError(publisherInput(
+      `/v2/%63lassic/servers/${SERVER_ID}/publish`,
+    )).code).toBe("invalid_target");
   });
 
   it("keeps publisher methods, queries, and service paths exact", () => {

@@ -56,6 +56,72 @@ create an unreviewed intermediate version.
 5. Confirm `meta.atrinik.org` is unattached while Game rollout is disabled.
    Its eventual origin is the static Game R2 bucket, never the core Worker.
 
+## Stage Classic v2 and directory protocol 5
+
+This rollout is forward-only. It keeps Classic v1 and directory protocol 4
+available while protocol 5 is reviewed, then separates production alias
+cutover from the later global v1 receiver retirement.
+
+1. Disable both publisher circuits and schedules. Record a private D1 Time
+   Travel bookmark, the applied-migration ledger, schema digest, and aggregate
+   counts for both Classic profiles. Apply `0010_classic_access_code.sql` once.
+   Require `PRAGMA foreign_key_check` to be empty, all v1 and Game rows to be
+   unchanged, and the new Classic lineage/mode tables and v2 constraints to
+   match the reviewed migration proof. Do not export row values.
+2. Deploy the state-owning core at 100%, then activate only the exact
+   prevalidated publisher and rendezvous callers. Read back versions, bindings,
+   configuration, and circuits after every activation. Keep
+   `CLASSIC_DIRECTORY_CUTOVER_MODE=v4-production`; this makes v1 protocol 4 the
+   production root aliases and isolates v2 protocol 5 under `canary-v5/`.
+3. Re-enable the v2 publisher path and use released protocol vectors to prove
+   positive publication, replay rejection in both version directions, shared
+   v1/v2 sequence and nonce history, public/private transition behavior, and
+   open/protected rendezvous policy. A protected v2 publication carries only
+   `accessCodeRequired`; no access code or v1 password field may reach D1, R2,
+   rendezvous state, a response, or a log. Accepting the maximum sequence must
+   succeed once; all later lineage requests must return the fixed
+   `publish_sequence_exhausted` response without mutation.
+4. Validate the isolated protocol-5 aliases with
+   `scripts/static_origin_canary.py --profile classic-v2 --alias-prefix canary-v5`.
+   Require exact v5
+   schema/protocol values, representation checksums, generation agreement,
+   expiry, open/protected rendering, private absence, and no password or raw
+   access-code material. Record bounded checksums and outcomes only.
+5. Obtain explicit human acceptance of the v5 canaries. Then make a separately
+   reviewed configuration change to `v5-production`, deploy provider first and
+   callers second, and prove root `index.*` now carries v5 while any v4
+   reconciliation is isolated under `precutover-v4/`. This gate is not driven
+   by time, traffic, or a successful publish and must never be switched back.
+6. Before global v1 retirement, exclude new v1 admission at the deployment
+   barrier and allow already admitted commits and active v1 controls to finish
+   normally. Wait strictly longer than the 15-second control/session bound plus
+   deployment propagation, and require zero remaining v1 controls. A commit
+   admitted before exclusion receives its normal committed response and
+   consumes sequence/nonce; a new excluded request receives the fixed 410
+   before its body is read and consumes nothing.
+7. Generate the one-way retirement transaction with the exact command shown
+   below, review the SQL, and apply it once. It atomically publishes the durable
+   retired marker, removes v1 presence/listing, advances v1 directory
+   revision/outbox when needed, and retains the shared replay/nonce lineage.
+   Require all v2 state to remain byte-for-byte unchanged. Reapplying is an
+   idempotent no-op; there is no command that reopens v1.
+
+   ```sh
+   python3 scripts/admin_sql.py retire-classic-v1 \
+     --confirm human-accepted-v5-canaries-and-cutover
+   ```
+
+8. Reconcile and verify the v1 tombstone and production v5 aliases. Prove every
+   later v1 request receives exact non-consuming `410 profile_retired` before
+   body inspection, while v2 publication, listing, and rendezvous continue.
+   Retain only the reviewed gate decision, versions, migration/bookmark
+   metadata, aggregate counts, checksums, and fixed response outcomes.
+
+Failure before the v5 alias or retirement commit rolls back to the last durable
+pre-gate state. Failure after either commit rolls forward with the same mode;
+never restore protocol 4 to production, clear lineage state, remove the retired
+marker, or deploy schema-incompatible code.
+
 ## Drain the replay namespace
 
 The runtime-retirement bridge changes rendezvous replay-tag namespace from the
@@ -187,7 +253,8 @@ bookmark does not authorize restoring retired APIs or active legacy state.
    visible directory-generation update and on-demand cache invalidation.
 3. Enable rendezvous on the core and edge only after the replay drain and exact
    cohort readback. Run server-control authentication, token rotation, a
-   passwordless friend join, and a protected invite join. Verify normal
+   retained-v1 open/password-protected joins and v2 open/access-code-protected
+   joins. Verify normal
    `normal -> firing -> normal` operational alert behavior only through its
    separately reviewed observability procedure.
 4. Probe every retired target on `meta`, Classic static, publisher, and
@@ -272,9 +339,12 @@ bounded, and redacted; they are not traffic accounting.
 
 Generate canonical identity reset or server-ID denial SQL with
 `scripts/admin_sql.py`, review it, and apply it only with explicit authorization.
-The supported commands are `reset-identity`, `deny-add`, and `deny-remove`; each
-accepts one exact 64-lowercase-hex server identity (uppercase operator input is
-normalized before SQL is emitted). Wildcards, addresses, and CIDRs are rejected.
+The identity-scoped commands are `reset-identity`, `deny-add`, and
+`deny-remove`; each accepts one exact 64-lowercase-hex server identity
+(uppercase operator input is normalized before SQL is emitted). The separate
+`retire-classic-v1` command accepts only the fixed human-gate confirmation in
+the staged rollout above and has no inverse. Wildcards, addresses, and CIDRs
+are rejected.
 Do not use administrative SQL to restore retired routes or clear ordinary
 rendezvous cooldowns.
 

@@ -1,0 +1,1963 @@
+{
+  "authority": "publish.meta.atrinik.org",
+  "certificate_der_base64": "MIIBWDCB/6ADAgECAgEhMAoGCCqGSM49BAMCMCUxIzAhBgNVBAMTGkF0cmluaWsgQ2xhc3NpYyB2MiBmaXh0dXJlMB4XDTI2MDEwMTAwMDAwMFoXDTM2MDEwMTAwMDAwMFowJTEjMCEGA1UEAxMaQXRyaW5payBDbGFzc2ljIHYyIGZpeHR1cmUwWTATBgcqhkjOPQIBBggqhkjOPQMBBwNCAATo4QRR45SdaF7zpESDJmLYTpGJbLuZIR6lYm+D0tiFS4Okj0gskkrVPr5FeHGblhLvUTv1C+GLO08g10p0EmPRoyAwHjAOBgNVHQ8BAf8EBAMCB4AwDAYDVR0TAQH/BAIwADAKBggqhkjOPQQDAgNIADBFAiEAhVxthqGABVxAG0Kqlh0AGWQk74HoNqfr4493srgNBsQCICx9jMsucb8mRVNO1O4E2i2nN6IdtCb6cMNDa/4Y8neZ",
+  "content_type": "application/json",
+  "cross_profile_replay": [
+    {
+      "body": "{\"schema\":\"atrinik-classic-publish-v1\",\"serverId\":\"51f341b3c529d7186d2981afd2d8519c6c15eaced3f0291acdfb408f5cba746b\",\"certificate\":\"MIIBRzCB76ADAgECAgEBMAoGCCqGSM49BAMCMCQxIjAgBgNVBAMTGUF0cmluaWsgcHVibGlzaGVyIGZpeHR1cmUwHhcNMjYwMTAxMDAwMDAwWhcNMzYwMTAxMDAwMDAwWjAkMSIwIAYDVQQDExlBdHJpbmlrIHB1Ymxpc2hlciBmaXh0dXJlMFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAEPQd9J89i9RHBKxJbWY3LVTOACf0pjFZgJTnCMy6BlQ27hfl0xwZf5LkuREpxVbe0xh6ydj5V00OY5Sh5myB4pqMSMBAwDgYDVR0PAQH/BAQDAgeAMAoGCCqGSM49BAMCA0cAMEQCIAbaCO4YENW0H67c1Gj292fvPwTwvwsQ8F5ObWMOv0wyAiArIt0mJkn917HvWQw8HrBVOCyXfGfocde6yjbjwSUcEA==\",\"name\":\"Atrinik Classic\",\"playersCount\":3,\"version\":\"5.7.0\",\"textComment\":\"Fixture\",\"public\":true,\"passwordRequired\":true}",
+      "certificate_der_base64": "MIIBRzCB76ADAgECAgEBMAoGCCqGSM49BAMCMCQxIjAgBgNVBAMTGUF0cmluaWsgcHVibGlzaGVyIGZpeHR1cmUwHhcNMjYwMTAxMDAwMDAwWhcNMzYwMTAxMDAwMDAwWjAkMSIwIAYDVQQDExlBdHJpbmlrIHB1Ymxpc2hlciBmaXh0dXJlMFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAEPQd9J89i9RHBKxJbWY3LVTOACf0pjFZgJTnCMy6BlQ27hfl0xwZf5LkuREpxVbe0xh6ydj5V00OY5Sh5myB4pqMSMBAwDgYDVR0PAQH/BAQDAgeAMAoGCCqGSM49BAMCA0cAMEQCIAbaCO4YENW0H67c1Gj292fvPwTwvwsQ8F5ObWMOv0wyAiArIt0mJkn917HvWQw8HrBVOCyXfGfocde6yjbjwSUcEA==",
+      "name": "v1-at-v2",
+      "server_id": "51f341b3c529d7186d2981afd2d8519c6c15eaced3f0291acdfb408f5cba746b",
+      "signature_base64": "ec3TLCXjfy0FCqNAL/cdtrWSRj2ktJ2v81L7yuzgpw270zFhROANO0rUQ5y0hU5NSOfVai2chQlbNY9zHEffIw==",
+      "source_profile": "classic-v1",
+      "source_signature_base": "\"@method\": POST\n\"@authority\": publish.meta.atrinik.org\n\"@path\": /v1/classic/servers/51f341b3c529d7186d2981afd2d8519c6c15eaced3f0291acdfb408f5cba746b/publish\n\"content-digest\": sha-256=:7r1sfMoSYvvgYGEEOEHGcIKysWU8LtvUcNxXBdd/hyw=:\n\"content-type\": application/json\n\"atrinik-server-id\": 51f341b3c529d7186d2981afd2d8519c6c15eaced3f0291acdfb408f5cba746b\n\"atrinik-publish-sequence\": 18446744073709551610\n\"@signature-params\": (\"@method\" \"@authority\" \"@path\" \"content-digest\" \"content-type\" \"atrinik-server-id\" \"atrinik-publish-sequence\");created=1800000000;expires=1800000300;nonce=\"000102030405060708090a0b0c0d0e0f\";alg=\"ecdsa-p256-sha256\";keyid=\"51f341b3c529d7186d2981afd2d8519c6c15eaced3f0291acdfb408f5cba746b\";tag=\"atrinik-classic-publish-v1\"",
+      "target_body_error": "unsupported_schema",
+      "target_profile": "classic-v2",
+      "target_signature_base": "\"@method\": POST\n\"@authority\": publish.meta.atrinik.org\n\"@path\": /v2/classic/servers/51f341b3c529d7186d2981afd2d8519c6c15eaced3f0291acdfb408f5cba746b/publish\n\"content-digest\": sha-256=:7r1sfMoSYvvgYGEEOEHGcIKysWU8LtvUcNxXBdd/hyw=:\n\"content-type\": application/json\n\"atrinik-server-id\": 51f341b3c529d7186d2981afd2d8519c6c15eaced3f0291acdfb408f5cba746b\n\"atrinik-publish-sequence\": 18446744073709551610\n\"@signature-params\": (\"@method\" \"@authority\" \"@path\" \"content-digest\" \"content-type\" \"atrinik-server-id\" \"atrinik-publish-sequence\");created=1800000000;expires=1800000300;nonce=\"000102030405060708090a0b0c0d0e0f\";alg=\"ecdsa-p256-sha256\";keyid=\"51f341b3c529d7186d2981afd2d8519c6c15eaced3f0291acdfb408f5cba746b\";tag=\"atrinik-classic-publish-v2\"",
+      "target_signature_error": "invalid_signature"
+    },
+    {
+      "body": "{\"schema\":\"atrinik-classic-publish-v2\",\"serverId\":\"13e46c3b910727029646ba5db7ee5930080f832af4d9e29f70cf781250a23809\",\"certificate\":\"MIIBWDCB/6ADAgECAgEhMAoGCCqGSM49BAMCMCUxIzAhBgNVBAMTGkF0cmluaWsgQ2xhc3NpYyB2MiBmaXh0dXJlMB4XDTI2MDEwMTAwMDAwMFoXDTM2MDEwMTAwMDAwMFowJTEjMCEGA1UEAxMaQXRyaW5payBDbGFzc2ljIHYyIGZpeHR1cmUwWTATBgcqhkjOPQIBBggqhkjOPQMBBwNCAATo4QRR45SdaF7zpESDJmLYTpGJbLuZIR6lYm+D0tiFS4Okj0gskkrVPr5FeHGblhLvUTv1C+GLO08g10p0EmPRoyAwHjAOBgNVHQ8BAf8EBAMCB4AwDAYDVR0TAQH/BAIwADAKBggqhkjOPQQDAgNIADBFAiEAhVxthqGABVxAG0Kqlh0AGWQk74HoNqfr4493srgNBsQCICx9jMsucb8mRVNO1O4E2i2nN6IdtCb6cMNDa/4Y8neZ\",\"name\":\"Atrinik Classic\",\"playersCount\":4,\"version\":\"6.0.0\",\"textComment\":\"Access-code fixture Ω\",\"public\":true,\"accessCodeRequired\":true,\"hostname\":\"play.example.org\",\"port\":13327}",
+      "certificate_der_base64": "MIIBWDCB/6ADAgECAgEhMAoGCCqGSM49BAMCMCUxIzAhBgNVBAMTGkF0cmluaWsgQ2xhc3NpYyB2MiBmaXh0dXJlMB4XDTI2MDEwMTAwMDAwMFoXDTM2MDEwMTAwMDAwMFowJTEjMCEGA1UEAxMaQXRyaW5payBDbGFzc2ljIHYyIGZpeHR1cmUwWTATBgcqhkjOPQIBBggqhkjOPQMBBwNCAATo4QRR45SdaF7zpESDJmLYTpGJbLuZIR6lYm+D0tiFS4Okj0gskkrVPr5FeHGblhLvUTv1C+GLO08g10p0EmPRoyAwHjAOBgNVHQ8BAf8EBAMCB4AwDAYDVR0TAQH/BAIwADAKBggqhkjOPQQDAgNIADBFAiEAhVxthqGABVxAG0Kqlh0AGWQk74HoNqfr4493srgNBsQCICx9jMsucb8mRVNO1O4E2i2nN6IdtCb6cMNDa/4Y8neZ",
+      "name": "v2-at-v1",
+      "server_id": "13e46c3b910727029646ba5db7ee5930080f832af4d9e29f70cf781250a23809",
+      "signature_base64": "1gJXC5zSAoE9ngEtAC/rIwPdt9+YbW2YwlrLwi9Sj6U9XZdsmTpIMR2/2ASzKuD/P1PusayPzzeVnsj0VFKRIw==",
+      "source_profile": "classic-v2",
+      "source_signature_base": "\"@method\": POST\n\"@authority\": publish.meta.atrinik.org\n\"@path\": /v2/classic/servers/13e46c3b910727029646ba5db7ee5930080f832af4d9e29f70cf781250a23809/publish\n\"content-digest\": sha-256=:mBfPpgnbQXGzCdNpaUZtEgJiceUliM4rByayVG5G9VM=:\n\"content-type\": application/json\n\"atrinik-server-id\": 13e46c3b910727029646ba5db7ee5930080f832af4d9e29f70cf781250a23809\n\"atrinik-publish-sequence\": 102\n\"@signature-params\": (\"@method\" \"@authority\" \"@path\" \"content-digest\" \"content-type\" \"atrinik-server-id\" \"atrinik-publish-sequence\");created=1800000600;expires=1800000900;nonce=\"303132333435363738393a3b3c3d3e3f\";alg=\"ecdsa-p256-sha256\";keyid=\"13e46c3b910727029646ba5db7ee5930080f832af4d9e29f70cf781250a23809\";tag=\"atrinik-classic-publish-v2\"",
+      "target_body_error": "unsupported_schema",
+      "target_profile": "classic-v1",
+      "target_signature_base": "\"@method\": POST\n\"@authority\": publish.meta.atrinik.org\n\"@path\": /v1/classic/servers/13e46c3b910727029646ba5db7ee5930080f832af4d9e29f70cf781250a23809/publish\n\"content-digest\": sha-256=:mBfPpgnbQXGzCdNpaUZtEgJiceUliM4rByayVG5G9VM=:\n\"content-type\": application/json\n\"atrinik-server-id\": 13e46c3b910727029646ba5db7ee5930080f832af4d9e29f70cf781250a23809\n\"atrinik-publish-sequence\": 102\n\"@signature-params\": (\"@method\" \"@authority\" \"@path\" \"content-digest\" \"content-type\" \"atrinik-server-id\" \"atrinik-publish-sequence\");created=1800000600;expires=1800000900;nonce=\"303132333435363738393a3b3c3d3e3f\";alg=\"ecdsa-p256-sha256\";keyid=\"13e46c3b910727029646ba5db7ee5930080f832af4d9e29f70cf781250a23809\";tag=\"atrinik-classic-publish-v1\"",
+      "target_signature_error": "invalid_signature"
+    }
+  ],
+  "fixture_version": 1,
+  "global_v1_retirement": {
+    "activation": {
+      "kind": "authorized-operator-transaction",
+      "prerequisite": "human-accepted-v5-canaries-and-one-way-alias-cutover"
+    },
+    "before": {
+      "identities": [
+        {
+          "access_code_required": false,
+          "authenticated_presence": true,
+          "controls_active": true,
+          "high_water_sequence": "100",
+          "last_accepted_envelope": "v1-100",
+          "mode": "classic-v1",
+          "pending_authorizations": 2,
+          "public_listing": true,
+          "published_body_sha256": "",
+          "rendezvous": "not-found",
+          "rendezvous_generation_present": true,
+          "retained_nonces": [
+            "000102030405060708090a0b0c0d0e0f"
+          ],
+          "server_id": "c57c33b5b8f51d80a8d5d24faa155f4b1839f446d8bdc66884e9bd355bb5a694",
+          "tickets": 3,
+          "v2_usable": false
+        },
+        {
+          "access_code_required": true,
+          "authenticated_presence": true,
+          "controls_active": true,
+          "high_water_sequence": "102",
+          "last_accepted_envelope": "positive/public-protected-endpoint",
+          "mode": "classic-v2-only",
+          "pending_authorizations": 1,
+          "public_listing": true,
+          "published_body_sha256": "9817cfa609db4171b309d36969466d12026271e52588ce2b0726b2546e46f553",
+          "rendezvous": "proof-required",
+          "rendezvous_generation_present": true,
+          "retained_nonces": [
+            "303132333435363738393a3b3c3d3e3f"
+          ],
+          "server_id": "13e46c3b910727029646ba5db7ee5930080f832af4d9e29f70cf781250a23809",
+          "tickets": 1,
+          "v2_usable": true
+        }
+      ],
+      "in_flight_v1_commits": 0,
+      "mode": "classic-v1-accepting",
+      "pending_authorizations": 2,
+      "tickets": 3,
+      "v1_authenticated_presences": 1,
+      "v1_controls": 1,
+      "v1_listings": 1,
+      "v1_rendezvous_generations": 1,
+      "v2_state_unchanged": true
+    },
+    "concurrent_activation": {
+      "admitted_envelope": "v1-102-post-upgrade",
+      "admitted_result": {
+        "body": "{\"status\":\"ok\",\"rendezvousToken\":\"{64-lower-hex}\"}",
+        "http_status": 200,
+        "sequence_or_nonce_consumed": true
+      },
+      "behavior": "exclude-new-v1-and-drain-before-retirement-commit",
+      "excluded_result": {
+        "body": "{\"error\":{\"code\":\"profile_retired\"}}",
+        "http_status": 410,
+        "sequence_or_nonce_consumed": false
+      },
+      "expected_after": {
+        "identities": [
+          {
+            "access_code_required": false,
+            "authenticated_presence": false,
+            "controls_active": false,
+            "high_water_sequence": "102",
+            "last_accepted_envelope": "v1-102-post-upgrade",
+            "mode": "classic-v1-retired",
+            "pending_authorizations": 0,
+            "public_listing": false,
+            "published_body_sha256": "",
+            "rendezvous": "not-found",
+            "rendezvous_generation_present": false,
+            "retained_nonces": [
+              "000102030405060708090a0b0c0d0e0f",
+              "404142434445464748494a4b4c4d4e4f"
+            ],
+            "server_id": "c57c33b5b8f51d80a8d5d24faa155f4b1839f446d8bdc66884e9bd355bb5a694",
+            "tickets": 0,
+            "v2_usable": false
+          },
+          {
+            "access_code_required": true,
+            "authenticated_presence": true,
+            "controls_active": true,
+            "high_water_sequence": "102",
+            "last_accepted_envelope": "positive/public-protected-endpoint",
+            "mode": "classic-v2-only",
+            "pending_authorizations": 1,
+            "public_listing": true,
+            "published_body_sha256": "9817cfa609db4171b309d36969466d12026271e52588ce2b0726b2546e46f553",
+            "rendezvous": "proof-required",
+            "rendezvous_generation_present": true,
+            "retained_nonces": [
+              "303132333435363738393a3b3c3d3e3f"
+            ],
+            "server_id": "13e46c3b910727029646ba5db7ee5930080f832af4d9e29f70cf781250a23809",
+            "tickets": 1,
+            "v2_usable": true
+          }
+        ],
+        "in_flight_v1_commits": 0,
+        "mode": "classic-v1-retired",
+        "pending_authorizations": 0,
+        "rollback_allowed": false,
+        "tickets": 0,
+        "v1_authenticated_presences": 0,
+        "v1_controls": 0,
+        "v1_listings": 0,
+        "v1_rendezvous_generations": 0,
+        "v2_state_unchanged": true
+      },
+      "starting_in_flight_v1_commits": 1
+    },
+    "expected_after": {
+      "identities": [
+        {
+          "access_code_required": false,
+          "authenticated_presence": false,
+          "controls_active": false,
+          "high_water_sequence": "100",
+          "last_accepted_envelope": "v1-100",
+          "mode": "classic-v1-retired",
+          "pending_authorizations": 0,
+          "public_listing": false,
+          "published_body_sha256": "",
+          "rendezvous": "not-found",
+          "rendezvous_generation_present": false,
+          "retained_nonces": [
+            "000102030405060708090a0b0c0d0e0f"
+          ],
+          "server_id": "c57c33b5b8f51d80a8d5d24faa155f4b1839f446d8bdc66884e9bd355bb5a694",
+          "tickets": 0,
+          "v2_usable": false
+        },
+        {
+          "access_code_required": true,
+          "authenticated_presence": true,
+          "controls_active": true,
+          "high_water_sequence": "102",
+          "last_accepted_envelope": "positive/public-protected-endpoint",
+          "mode": "classic-v2-only",
+          "pending_authorizations": 1,
+          "public_listing": true,
+          "published_body_sha256": "9817cfa609db4171b309d36969466d12026271e52588ce2b0726b2546e46f553",
+          "rendezvous": "proof-required",
+          "rendezvous_generation_present": true,
+          "retained_nonces": [
+            "303132333435363738393a3b3c3d3e3f"
+          ],
+          "server_id": "13e46c3b910727029646ba5db7ee5930080f832af4d9e29f70cf781250a23809",
+          "tickets": 1,
+          "v2_usable": true
+        }
+      ],
+      "in_flight_v1_commits": 0,
+      "mode": "classic-v1-retired",
+      "pending_authorizations": 0,
+      "rollback_allowed": false,
+      "tickets": 0,
+      "v1_authenticated_presences": 0,
+      "v1_controls": 0,
+      "v1_listings": 0,
+      "v1_rendezvous_generations": 0,
+      "v2_state_unchanged": true
+    },
+    "failure_transitions": [
+      {
+        "durable_retired_mode": false,
+        "expected_recovered_state": {
+          "identities": [
+            {
+              "access_code_required": false,
+              "authenticated_presence": true,
+              "controls_active": true,
+              "high_water_sequence": "100",
+              "last_accepted_envelope": "v1-100",
+              "mode": "classic-v1",
+              "pending_authorizations": 2,
+              "public_listing": true,
+              "published_body_sha256": "",
+              "rendezvous": "not-found",
+              "rendezvous_generation_present": true,
+              "retained_nonces": [
+                "000102030405060708090a0b0c0d0e0f"
+              ],
+              "server_id": "c57c33b5b8f51d80a8d5d24faa155f4b1839f446d8bdc66884e9bd355bb5a694",
+              "tickets": 3,
+              "v2_usable": false
+            },
+            {
+              "access_code_required": true,
+              "authenticated_presence": true,
+              "controls_active": true,
+              "high_water_sequence": "102",
+              "last_accepted_envelope": "positive/public-protected-endpoint",
+              "mode": "classic-v2-only",
+              "pending_authorizations": 1,
+              "public_listing": true,
+              "published_body_sha256": "9817cfa609db4171b309d36969466d12026271e52588ce2b0726b2546e46f553",
+              "rendezvous": "proof-required",
+              "rendezvous_generation_present": true,
+              "retained_nonces": [
+                "303132333435363738393a3b3c3d3e3f"
+              ],
+              "server_id": "13e46c3b910727029646ba5db7ee5930080f832af4d9e29f70cf781250a23809",
+              "tickets": 1,
+              "v2_usable": true
+            }
+          ],
+          "in_flight_v1_commits": 0,
+          "mode": "classic-v1-accepting",
+          "pending_authorizations": 2,
+          "tickets": 3,
+          "v1_authenticated_presences": 1,
+          "v1_controls": 1,
+          "v1_listings": 1,
+          "v1_rendezvous_generations": 1,
+          "v2_state_unchanged": true
+        },
+        "failure_phase": "after-drain-before-durable-retired-mode",
+        "name": "crash-before-retired-mode",
+        "partial_state": {
+          "identities": [
+            {
+              "access_code_required": false,
+              "authenticated_presence": true,
+              "controls_active": true,
+              "high_water_sequence": "100",
+              "last_accepted_envelope": "v1-100",
+              "mode": "classic-v1",
+              "pending_authorizations": 2,
+              "public_listing": true,
+              "published_body_sha256": "",
+              "rendezvous": "not-found",
+              "rendezvous_generation_present": true,
+              "retained_nonces": [
+                "000102030405060708090a0b0c0d0e0f"
+              ],
+              "server_id": "c57c33b5b8f51d80a8d5d24faa155f4b1839f446d8bdc66884e9bd355bb5a694",
+              "tickets": 3,
+              "v2_usable": false
+            },
+            {
+              "access_code_required": true,
+              "authenticated_presence": true,
+              "controls_active": true,
+              "high_water_sequence": "102",
+              "last_accepted_envelope": "positive/public-protected-endpoint",
+              "mode": "classic-v2-only",
+              "pending_authorizations": 1,
+              "public_listing": true,
+              "published_body_sha256": "9817cfa609db4171b309d36969466d12026271e52588ce2b0726b2546e46f553",
+              "rendezvous": "proof-required",
+              "rendezvous_generation_present": true,
+              "retained_nonces": [
+                "303132333435363738393a3b3c3d3e3f"
+              ],
+              "server_id": "13e46c3b910727029646ba5db7ee5930080f832af4d9e29f70cf781250a23809",
+              "tickets": 1,
+              "v2_usable": true
+            }
+          ],
+          "in_flight_v1_commits": 0,
+          "mode": "classic-v1-accepting",
+          "pending_authorizations": 2,
+          "tickets": 3,
+          "v1_authenticated_presences": 1,
+          "v1_controls": 1,
+          "v1_listings": 1,
+          "v1_rendezvous_generations": 1,
+          "v2_state_unchanged": true
+        }
+      },
+      {
+        "durable_retired_mode": true,
+        "expected_recovered_state": {
+          "identities": [
+            {
+              "access_code_required": false,
+              "authenticated_presence": false,
+              "controls_active": false,
+              "high_water_sequence": "100",
+              "last_accepted_envelope": "v1-100",
+              "mode": "classic-v1-retired",
+              "pending_authorizations": 0,
+              "public_listing": false,
+              "published_body_sha256": "",
+              "rendezvous": "not-found",
+              "rendezvous_generation_present": false,
+              "retained_nonces": [
+                "000102030405060708090a0b0c0d0e0f"
+              ],
+              "server_id": "c57c33b5b8f51d80a8d5d24faa155f4b1839f446d8bdc66884e9bd355bb5a694",
+              "tickets": 0,
+              "v2_usable": false
+            },
+            {
+              "access_code_required": true,
+              "authenticated_presence": true,
+              "controls_active": true,
+              "high_water_sequence": "102",
+              "last_accepted_envelope": "positive/public-protected-endpoint",
+              "mode": "classic-v2-only",
+              "pending_authorizations": 1,
+              "public_listing": true,
+              "published_body_sha256": "9817cfa609db4171b309d36969466d12026271e52588ce2b0726b2546e46f553",
+              "rendezvous": "proof-required",
+              "rendezvous_generation_present": true,
+              "retained_nonces": [
+                "303132333435363738393a3b3c3d3e3f"
+              ],
+              "server_id": "13e46c3b910727029646ba5db7ee5930080f832af4d9e29f70cf781250a23809",
+              "tickets": 1,
+              "v2_usable": true
+            }
+          ],
+          "in_flight_v1_commits": 0,
+          "mode": "classic-v1-retired",
+          "pending_authorizations": 0,
+          "rollback_allowed": false,
+          "tickets": 0,
+          "v1_authenticated_presences": 0,
+          "v1_controls": 0,
+          "v1_listings": 0,
+          "v1_rendezvous_generations": 0,
+          "v2_state_unchanged": true
+        },
+        "failure_phase": "after-durable-retired-mode-before-tombstones-complete",
+        "name": "crash-after-retired-mode",
+        "partial_state": {
+          "identities": [
+            {
+              "access_code_required": false,
+              "authenticated_presence": true,
+              "controls_active": true,
+              "high_water_sequence": "100",
+              "last_accepted_envelope": "v1-100",
+              "mode": "classic-v1",
+              "pending_authorizations": 2,
+              "public_listing": true,
+              "published_body_sha256": "",
+              "rendezvous": "not-found",
+              "rendezvous_generation_present": true,
+              "retained_nonces": [
+                "000102030405060708090a0b0c0d0e0f"
+              ],
+              "server_id": "c57c33b5b8f51d80a8d5d24faa155f4b1839f446d8bdc66884e9bd355bb5a694",
+              "tickets": 3,
+              "v2_usable": false
+            },
+            {
+              "access_code_required": true,
+              "authenticated_presence": true,
+              "controls_active": true,
+              "high_water_sequence": "102",
+              "last_accepted_envelope": "positive/public-protected-endpoint",
+              "mode": "classic-v2-only",
+              "pending_authorizations": 1,
+              "public_listing": true,
+              "published_body_sha256": "9817cfa609db4171b309d36969466d12026271e52588ce2b0726b2546e46f553",
+              "rendezvous": "proof-required",
+              "rendezvous_generation_present": true,
+              "retained_nonces": [
+                "303132333435363738393a3b3c3d3e3f"
+              ],
+              "server_id": "13e46c3b910727029646ba5db7ee5930080f832af4d9e29f70cf781250a23809",
+              "tickets": 1,
+              "v2_usable": true
+            }
+          ],
+          "in_flight_v1_commits": 0,
+          "mode": "classic-v1-retired",
+          "pending_authorizations": 2,
+          "rollback_allowed": false,
+          "tickets": 3,
+          "v1_authenticated_presences": 1,
+          "v1_controls": 1,
+          "v1_listings": 1,
+          "v1_rendezvous_generations": 1,
+          "v2_state_unchanged": true
+        }
+      }
+    ],
+    "rejected_publish": {
+      "body": "{\"error\":{\"code\":\"profile_retired\"}}",
+      "cache_control": "no-store",
+      "http_status": 410,
+      "inspection": "none",
+      "minimum_next_sequence": "",
+      "profile": "classic-v1",
+      "sequence_or_nonce_consumed": false
+    }
+  },
+  "maximum_bounds": {
+    "body_bytes": 4096,
+    "certificate_der_bytes": 2048,
+    "hostname_bytes": 253,
+    "name_utf8_bytes": 80,
+    "players_count": 4294967295,
+    "port": 65535,
+    "text_comment_utf8_bytes": 256,
+    "version_utf8_bytes": 32
+  },
+  "method": "POST",
+  "migration": {
+    "cases": [
+      {
+        "before": {
+          "high_water_sequence": "100",
+          "last_accepted_envelope": "v1-100",
+          "mode": "classic-v1",
+          "pending_authorizations": 2,
+          "retained_nonces": [
+            "000102030405060708090a0b0c0d0e0f"
+          ],
+          "server_id": "c57c33b5b8f51d80a8d5d24faa155f4b1839f446d8bdc66884e9bd355bb5a694",
+          "tickets": 3,
+          "unaffected_identity": {
+            "access_code_required": true,
+            "authenticated_presence": true,
+            "controls_active": true,
+            "high_water_sequence": "102",
+            "last_accepted_envelope": "positive/public-protected-endpoint",
+            "mode": "classic-v2-only",
+            "pending_authorizations": 1,
+            "public_listing": true,
+            "published_body_sha256": "9817cfa609db4171b309d36969466d12026271e52588ce2b0726b2546e46f553",
+            "rendezvous": "proof-required",
+            "rendezvous_generation_present": true,
+            "retained_nonces": [
+              "303132333435363738393a3b3c3d3e3f"
+            ],
+            "server_id": "13e46c3b910727029646ba5db7ee5930080f832af4d9e29f70cf781250a23809",
+            "tickets": 1,
+            "v2_usable": true
+          },
+          "v1_authenticated_presence": true,
+          "v1_controls_active": true,
+          "v1_listing_present": true,
+          "v1_rendezvous_generation_present": true,
+          "v2_access_code_required": false,
+          "v2_authenticated_presence": false,
+          "v2_controls_active": false,
+          "v2_public_listing": false,
+          "v2_published_body_sha256": "",
+          "v2_published_envelope": "",
+          "v2_rendezvous": "not-found",
+          "v2_usable": false
+        },
+        "expected": {
+          "accepted": false,
+          "error": "publish_replay",
+          "minimum_next_sequence": "101",
+          "state": {
+            "high_water_sequence": "100",
+            "last_accepted_envelope": "v1-100",
+            "mode": "classic-v1",
+            "pending_authorizations": 2,
+            "retained_nonces": [
+              "000102030405060708090a0b0c0d0e0f"
+            ],
+            "server_id": "c57c33b5b8f51d80a8d5d24faa155f4b1839f446d8bdc66884e9bd355bb5a694",
+            "tickets": 3,
+            "unaffected_identity": {
+              "access_code_required": true,
+              "authenticated_presence": true,
+              "controls_active": true,
+              "high_water_sequence": "102",
+              "last_accepted_envelope": "positive/public-protected-endpoint",
+              "mode": "classic-v2-only",
+              "pending_authorizations": 1,
+              "public_listing": true,
+              "published_body_sha256": "9817cfa609db4171b309d36969466d12026271e52588ce2b0726b2546e46f553",
+              "rendezvous": "proof-required",
+              "rendezvous_generation_present": true,
+              "retained_nonces": [
+                "303132333435363738393a3b3c3d3e3f"
+              ],
+              "server_id": "13e46c3b910727029646ba5db7ee5930080f832af4d9e29f70cf781250a23809",
+              "tickets": 1,
+              "v2_usable": true
+            },
+            "v1_authenticated_presence": true,
+            "v1_controls_active": true,
+            "v1_listing_present": true,
+            "v1_rendezvous_generation_present": true,
+            "v2_access_code_required": false,
+            "v2_authenticated_presence": false,
+            "v2_controls_active": false,
+            "v2_public_listing": false,
+            "v2_published_body_sha256": "",
+            "v2_published_envelope": "",
+            "v2_rendezvous": "not-found",
+            "v2_usable": false
+          }
+        },
+        "name": "equal-v2-sequence",
+        "request": {
+          "nonce": "202122232425262728292a2b2c2d2e2f",
+          "profile": "classic-v2",
+          "sequence": "100",
+          "server_id": "c57c33b5b8f51d80a8d5d24faa155f4b1839f446d8bdc66884e9bd355bb5a694",
+          "signed_envelope": "v2-100-equal"
+        }
+      },
+      {
+        "before": {
+          "high_water_sequence": "100",
+          "last_accepted_envelope": "v1-100",
+          "mode": "classic-v1",
+          "pending_authorizations": 2,
+          "retained_nonces": [
+            "000102030405060708090a0b0c0d0e0f"
+          ],
+          "server_id": "c57c33b5b8f51d80a8d5d24faa155f4b1839f446d8bdc66884e9bd355bb5a694",
+          "tickets": 3,
+          "unaffected_identity": {
+            "access_code_required": true,
+            "authenticated_presence": true,
+            "controls_active": true,
+            "high_water_sequence": "102",
+            "last_accepted_envelope": "positive/public-protected-endpoint",
+            "mode": "classic-v2-only",
+            "pending_authorizations": 1,
+            "public_listing": true,
+            "published_body_sha256": "9817cfa609db4171b309d36969466d12026271e52588ce2b0726b2546e46f553",
+            "rendezvous": "proof-required",
+            "rendezvous_generation_present": true,
+            "retained_nonces": [
+              "303132333435363738393a3b3c3d3e3f"
+            ],
+            "server_id": "13e46c3b910727029646ba5db7ee5930080f832af4d9e29f70cf781250a23809",
+            "tickets": 1,
+            "v2_usable": true
+          },
+          "v1_authenticated_presence": true,
+          "v1_controls_active": true,
+          "v1_listing_present": true,
+          "v1_rendezvous_generation_present": true,
+          "v2_access_code_required": false,
+          "v2_authenticated_presence": false,
+          "v2_controls_active": false,
+          "v2_public_listing": false,
+          "v2_published_body_sha256": "",
+          "v2_published_envelope": "",
+          "v2_rendezvous": "not-found",
+          "v2_usable": false
+        },
+        "expected": {
+          "accepted": false,
+          "error": "publish_replay",
+          "minimum_next_sequence": "101",
+          "state": {
+            "high_water_sequence": "100",
+            "last_accepted_envelope": "v1-100",
+            "mode": "classic-v1",
+            "pending_authorizations": 2,
+            "retained_nonces": [
+              "000102030405060708090a0b0c0d0e0f"
+            ],
+            "server_id": "c57c33b5b8f51d80a8d5d24faa155f4b1839f446d8bdc66884e9bd355bb5a694",
+            "tickets": 3,
+            "unaffected_identity": {
+              "access_code_required": true,
+              "authenticated_presence": true,
+              "controls_active": true,
+              "high_water_sequence": "102",
+              "last_accepted_envelope": "positive/public-protected-endpoint",
+              "mode": "classic-v2-only",
+              "pending_authorizations": 1,
+              "public_listing": true,
+              "published_body_sha256": "9817cfa609db4171b309d36969466d12026271e52588ce2b0726b2546e46f553",
+              "rendezvous": "proof-required",
+              "rendezvous_generation_present": true,
+              "retained_nonces": [
+                "303132333435363738393a3b3c3d3e3f"
+              ],
+              "server_id": "13e46c3b910727029646ba5db7ee5930080f832af4d9e29f70cf781250a23809",
+              "tickets": 1,
+              "v2_usable": true
+            },
+            "v1_authenticated_presence": true,
+            "v1_controls_active": true,
+            "v1_listing_present": true,
+            "v1_rendezvous_generation_present": true,
+            "v2_access_code_required": false,
+            "v2_authenticated_presence": false,
+            "v2_controls_active": false,
+            "v2_public_listing": false,
+            "v2_published_body_sha256": "",
+            "v2_published_envelope": "",
+            "v2_rendezvous": "not-found",
+            "v2_usable": false
+          }
+        },
+        "name": "stale-v2-sequence",
+        "request": {
+          "nonce": "303132333435363738393a3b3c3d3e3f",
+          "profile": "classic-v2",
+          "sequence": "99",
+          "server_id": "c57c33b5b8f51d80a8d5d24faa155f4b1839f446d8bdc66884e9bd355bb5a694",
+          "signed_envelope": "v2-99-stale"
+        }
+      },
+      {
+        "before": {
+          "high_water_sequence": "100",
+          "last_accepted_envelope": "v1-100",
+          "mode": "classic-v1",
+          "pending_authorizations": 2,
+          "retained_nonces": [
+            "000102030405060708090a0b0c0d0e0f"
+          ],
+          "server_id": "c57c33b5b8f51d80a8d5d24faa155f4b1839f446d8bdc66884e9bd355bb5a694",
+          "tickets": 3,
+          "unaffected_identity": {
+            "access_code_required": true,
+            "authenticated_presence": true,
+            "controls_active": true,
+            "high_water_sequence": "102",
+            "last_accepted_envelope": "positive/public-protected-endpoint",
+            "mode": "classic-v2-only",
+            "pending_authorizations": 1,
+            "public_listing": true,
+            "published_body_sha256": "9817cfa609db4171b309d36969466d12026271e52588ce2b0726b2546e46f553",
+            "rendezvous": "proof-required",
+            "rendezvous_generation_present": true,
+            "retained_nonces": [
+              "303132333435363738393a3b3c3d3e3f"
+            ],
+            "server_id": "13e46c3b910727029646ba5db7ee5930080f832af4d9e29f70cf781250a23809",
+            "tickets": 1,
+            "v2_usable": true
+          },
+          "v1_authenticated_presence": true,
+          "v1_controls_active": true,
+          "v1_listing_present": true,
+          "v1_rendezvous_generation_present": true,
+          "v2_access_code_required": false,
+          "v2_authenticated_presence": false,
+          "v2_controls_active": false,
+          "v2_public_listing": false,
+          "v2_published_body_sha256": "",
+          "v2_published_envelope": "",
+          "v2_rendezvous": "not-found",
+          "v2_usable": false
+        },
+        "expected": {
+          "accepted": false,
+          "error": "publish_replay",
+          "minimum_next_sequence": "101",
+          "state": {
+            "high_water_sequence": "100",
+            "last_accepted_envelope": "v1-100",
+            "mode": "classic-v1",
+            "pending_authorizations": 2,
+            "retained_nonces": [
+              "000102030405060708090a0b0c0d0e0f"
+            ],
+            "server_id": "c57c33b5b8f51d80a8d5d24faa155f4b1839f446d8bdc66884e9bd355bb5a694",
+            "tickets": 3,
+            "unaffected_identity": {
+              "access_code_required": true,
+              "authenticated_presence": true,
+              "controls_active": true,
+              "high_water_sequence": "102",
+              "last_accepted_envelope": "positive/public-protected-endpoint",
+              "mode": "classic-v2-only",
+              "pending_authorizations": 1,
+              "public_listing": true,
+              "published_body_sha256": "9817cfa609db4171b309d36969466d12026271e52588ce2b0726b2546e46f553",
+              "rendezvous": "proof-required",
+              "rendezvous_generation_present": true,
+              "retained_nonces": [
+                "303132333435363738393a3b3c3d3e3f"
+              ],
+              "server_id": "13e46c3b910727029646ba5db7ee5930080f832af4d9e29f70cf781250a23809",
+              "tickets": 1,
+              "v2_usable": true
+            },
+            "v1_authenticated_presence": true,
+            "v1_controls_active": true,
+            "v1_listing_present": true,
+            "v1_rendezvous_generation_present": true,
+            "v2_access_code_required": false,
+            "v2_authenticated_presence": false,
+            "v2_controls_active": false,
+            "v2_public_listing": false,
+            "v2_published_body_sha256": "",
+            "v2_published_envelope": "",
+            "v2_rendezvous": "not-found",
+            "v2_usable": false
+          }
+        },
+        "name": "retained-v1-nonce-at-v2",
+        "request": {
+          "nonce": "000102030405060708090a0b0c0d0e0f",
+          "profile": "classic-v2",
+          "sequence": "101",
+          "server_id": "c57c33b5b8f51d80a8d5d24faa155f4b1839f446d8bdc66884e9bd355bb5a694",
+          "signed_envelope": "v2-101-retained"
+        }
+      },
+      {
+        "before": {
+          "high_water_sequence": "100",
+          "last_accepted_envelope": "v1-100",
+          "mode": "classic-v1",
+          "pending_authorizations": 2,
+          "retained_nonces": [
+            "000102030405060708090a0b0c0d0e0f"
+          ],
+          "server_id": "c57c33b5b8f51d80a8d5d24faa155f4b1839f446d8bdc66884e9bd355bb5a694",
+          "tickets": 3,
+          "unaffected_identity": {
+            "access_code_required": true,
+            "authenticated_presence": true,
+            "controls_active": true,
+            "high_water_sequence": "102",
+            "last_accepted_envelope": "positive/public-protected-endpoint",
+            "mode": "classic-v2-only",
+            "pending_authorizations": 1,
+            "public_listing": true,
+            "published_body_sha256": "9817cfa609db4171b309d36969466d12026271e52588ce2b0726b2546e46f553",
+            "rendezvous": "proof-required",
+            "rendezvous_generation_present": true,
+            "retained_nonces": [
+              "303132333435363738393a3b3c3d3e3f"
+            ],
+            "server_id": "13e46c3b910727029646ba5db7ee5930080f832af4d9e29f70cf781250a23809",
+            "tickets": 1,
+            "v2_usable": true
+          },
+          "v1_authenticated_presence": true,
+          "v1_controls_active": true,
+          "v1_listing_present": true,
+          "v1_rendezvous_generation_present": true,
+          "v2_access_code_required": false,
+          "v2_authenticated_presence": false,
+          "v2_controls_active": false,
+          "v2_public_listing": false,
+          "v2_published_body_sha256": "",
+          "v2_published_envelope": "",
+          "v2_rendezvous": "not-found",
+          "v2_usable": false
+        },
+        "expected": {
+          "accepted": true,
+          "minimum_next_sequence": "102",
+          "state": {
+            "high_water_sequence": "101",
+            "last_accepted_envelope": "v2-101-upgrade",
+            "mode": "classic-v2-only",
+            "pending_authorizations": 0,
+            "retained_nonces": [
+              "000102030405060708090a0b0c0d0e0f",
+              "101112131415161718191a1b1c1d1e1f"
+            ],
+            "server_id": "c57c33b5b8f51d80a8d5d24faa155f4b1839f446d8bdc66884e9bd355bb5a694",
+            "tickets": 0,
+            "unaffected_identity": {
+              "access_code_required": true,
+              "authenticated_presence": true,
+              "controls_active": true,
+              "high_water_sequence": "102",
+              "last_accepted_envelope": "positive/public-protected-endpoint",
+              "mode": "classic-v2-only",
+              "pending_authorizations": 1,
+              "public_listing": true,
+              "published_body_sha256": "9817cfa609db4171b309d36969466d12026271e52588ce2b0726b2546e46f553",
+              "rendezvous": "proof-required",
+              "rendezvous_generation_present": true,
+              "retained_nonces": [
+                "303132333435363738393a3b3c3d3e3f"
+              ],
+              "server_id": "13e46c3b910727029646ba5db7ee5930080f832af4d9e29f70cf781250a23809",
+              "tickets": 1,
+              "v2_usable": true
+            },
+            "v1_authenticated_presence": false,
+            "v1_controls_active": false,
+            "v1_listing_present": false,
+            "v1_rendezvous_generation_present": false,
+            "v2_access_code_required": true,
+            "v2_authenticated_presence": true,
+            "v2_controls_active": true,
+            "v2_public_listing": true,
+            "v2_published_body_sha256": "135ce67cb66f6ab9cf98202bdedb7e125cbb128581df982e311bc462c9fd40fb",
+            "v2_published_envelope": "v2-101-upgrade",
+            "v2_rendezvous": "proof-required",
+            "v2_usable": true
+          }
+        },
+        "name": "higher-v2-upgrade",
+        "request": {
+          "nonce": "101112131415161718191a1b1c1d1e1f",
+          "profile": "classic-v2",
+          "sequence": "101",
+          "server_id": "c57c33b5b8f51d80a8d5d24faa155f4b1839f446d8bdc66884e9bd355bb5a694",
+          "signed_envelope": "v2-101-upgrade"
+        }
+      },
+      {
+        "before": {
+          "high_water_sequence": "101",
+          "last_accepted_envelope": "v2-101-upgrade",
+          "mode": "classic-v2-only",
+          "pending_authorizations": 0,
+          "retained_nonces": [
+            "000102030405060708090a0b0c0d0e0f",
+            "101112131415161718191a1b1c1d1e1f"
+          ],
+          "server_id": "c57c33b5b8f51d80a8d5d24faa155f4b1839f446d8bdc66884e9bd355bb5a694",
+          "tickets": 0,
+          "unaffected_identity": {
+            "access_code_required": true,
+            "authenticated_presence": true,
+            "controls_active": true,
+            "high_water_sequence": "102",
+            "last_accepted_envelope": "positive/public-protected-endpoint",
+            "mode": "classic-v2-only",
+            "pending_authorizations": 1,
+            "public_listing": true,
+            "published_body_sha256": "9817cfa609db4171b309d36969466d12026271e52588ce2b0726b2546e46f553",
+            "rendezvous": "proof-required",
+            "rendezvous_generation_present": true,
+            "retained_nonces": [
+              "303132333435363738393a3b3c3d3e3f"
+            ],
+            "server_id": "13e46c3b910727029646ba5db7ee5930080f832af4d9e29f70cf781250a23809",
+            "tickets": 1,
+            "v2_usable": true
+          },
+          "v1_authenticated_presence": false,
+          "v1_controls_active": false,
+          "v1_listing_present": false,
+          "v1_rendezvous_generation_present": false,
+          "v2_access_code_required": true,
+          "v2_authenticated_presence": true,
+          "v2_controls_active": true,
+          "v2_public_listing": true,
+          "v2_published_body_sha256": "135ce67cb66f6ab9cf98202bdedb7e125cbb128581df982e311bc462c9fd40fb",
+          "v2_published_envelope": "v2-101-upgrade",
+          "v2_rendezvous": "proof-required",
+          "v2_usable": true
+        },
+        "expected": {
+          "accepted": false,
+          "error": "profile_retired",
+          "minimum_next_sequence": "",
+          "state": {
+            "high_water_sequence": "101",
+            "last_accepted_envelope": "v2-101-upgrade",
+            "mode": "classic-v2-only",
+            "pending_authorizations": 0,
+            "retained_nonces": [
+              "000102030405060708090a0b0c0d0e0f",
+              "101112131415161718191a1b1c1d1e1f"
+            ],
+            "server_id": "c57c33b5b8f51d80a8d5d24faa155f4b1839f446d8bdc66884e9bd355bb5a694",
+            "tickets": 0,
+            "unaffected_identity": {
+              "access_code_required": true,
+              "authenticated_presence": true,
+              "controls_active": true,
+              "high_water_sequence": "102",
+              "last_accepted_envelope": "positive/public-protected-endpoint",
+              "mode": "classic-v2-only",
+              "pending_authorizations": 1,
+              "public_listing": true,
+              "published_body_sha256": "9817cfa609db4171b309d36969466d12026271e52588ce2b0726b2546e46f553",
+              "rendezvous": "proof-required",
+              "rendezvous_generation_present": true,
+              "retained_nonces": [
+                "303132333435363738393a3b3c3d3e3f"
+              ],
+              "server_id": "13e46c3b910727029646ba5db7ee5930080f832af4d9e29f70cf781250a23809",
+              "tickets": 1,
+              "v2_usable": true
+            },
+            "v1_authenticated_presence": false,
+            "v1_controls_active": false,
+            "v1_listing_present": false,
+            "v1_rendezvous_generation_present": false,
+            "v2_access_code_required": true,
+            "v2_authenticated_presence": true,
+            "v2_controls_active": true,
+            "v2_public_listing": true,
+            "v2_published_body_sha256": "135ce67cb66f6ab9cf98202bdedb7e125cbb128581df982e311bc462c9fd40fb",
+            "v2_published_envelope": "v2-101-upgrade",
+            "v2_rendezvous": "proof-required",
+            "v2_usable": true
+          }
+        },
+        "name": "post-upgrade-v1",
+        "request": {
+          "nonce": "404142434445464748494a4b4c4d4e4f",
+          "profile": "classic-v1",
+          "sequence": "102",
+          "server_id": "c57c33b5b8f51d80a8d5d24faa155f4b1839f446d8bdc66884e9bd355bb5a694",
+          "signed_envelope": "v1-102-post-upgrade"
+        }
+      },
+      {
+        "before": {
+          "high_water_sequence": "101",
+          "last_accepted_envelope": "v2-101-upgrade",
+          "mode": "classic-v2-only",
+          "pending_authorizations": 0,
+          "retained_nonces": [
+            "000102030405060708090a0b0c0d0e0f",
+            "101112131415161718191a1b1c1d1e1f"
+          ],
+          "server_id": "c57c33b5b8f51d80a8d5d24faa155f4b1839f446d8bdc66884e9bd355bb5a694",
+          "tickets": 0,
+          "unaffected_identity": {
+            "access_code_required": true,
+            "authenticated_presence": true,
+            "controls_active": true,
+            "high_water_sequence": "102",
+            "last_accepted_envelope": "positive/public-protected-endpoint",
+            "mode": "classic-v2-only",
+            "pending_authorizations": 1,
+            "public_listing": true,
+            "published_body_sha256": "9817cfa609db4171b309d36969466d12026271e52588ce2b0726b2546e46f553",
+            "rendezvous": "proof-required",
+            "rendezvous_generation_present": true,
+            "retained_nonces": [
+              "303132333435363738393a3b3c3d3e3f"
+            ],
+            "server_id": "13e46c3b910727029646ba5db7ee5930080f832af4d9e29f70cf781250a23809",
+            "tickets": 1,
+            "v2_usable": true
+          },
+          "v1_authenticated_presence": false,
+          "v1_controls_active": false,
+          "v1_listing_present": false,
+          "v1_rendezvous_generation_present": false,
+          "v2_access_code_required": true,
+          "v2_authenticated_presence": true,
+          "v2_controls_active": true,
+          "v2_public_listing": true,
+          "v2_published_body_sha256": "135ce67cb66f6ab9cf98202bdedb7e125cbb128581df982e311bc462c9fd40fb",
+          "v2_published_envelope": "v2-101-upgrade",
+          "v2_rendezvous": "proof-required",
+          "v2_usable": true
+        },
+        "expected": {
+          "accepted": true,
+          "minimum_next_sequence": "103",
+          "state": {
+            "high_water_sequence": "102",
+            "last_accepted_envelope": "v2-102-next",
+            "mode": "classic-v2-only",
+            "pending_authorizations": 0,
+            "retained_nonces": [
+              "000102030405060708090a0b0c0d0e0f",
+              "101112131415161718191a1b1c1d1e1f",
+              "505152535455565758595a5b5c5d5e5f"
+            ],
+            "server_id": "c57c33b5b8f51d80a8d5d24faa155f4b1839f446d8bdc66884e9bd355bb5a694",
+            "tickets": 0,
+            "unaffected_identity": {
+              "access_code_required": true,
+              "authenticated_presence": true,
+              "controls_active": true,
+              "high_water_sequence": "102",
+              "last_accepted_envelope": "positive/public-protected-endpoint",
+              "mode": "classic-v2-only",
+              "pending_authorizations": 1,
+              "public_listing": true,
+              "published_body_sha256": "9817cfa609db4171b309d36969466d12026271e52588ce2b0726b2546e46f553",
+              "rendezvous": "proof-required",
+              "rendezvous_generation_present": true,
+              "retained_nonces": [
+                "303132333435363738393a3b3c3d3e3f"
+              ],
+              "server_id": "13e46c3b910727029646ba5db7ee5930080f832af4d9e29f70cf781250a23809",
+              "tickets": 1,
+              "v2_usable": true
+            },
+            "v1_authenticated_presence": false,
+            "v1_controls_active": false,
+            "v1_listing_present": false,
+            "v1_rendezvous_generation_present": false,
+            "v2_access_code_required": true,
+            "v2_authenticated_presence": true,
+            "v2_controls_active": true,
+            "v2_public_listing": true,
+            "v2_published_body_sha256": "135ce67cb66f6ab9cf98202bdedb7e125cbb128581df982e311bc462c9fd40fb",
+            "v2_published_envelope": "v2-102-next",
+            "v2_rendezvous": "proof-required",
+            "v2_usable": true
+          }
+        },
+        "name": "next-v2",
+        "request": {
+          "nonce": "505152535455565758595a5b5c5d5e5f",
+          "profile": "classic-v2",
+          "sequence": "102",
+          "server_id": "c57c33b5b8f51d80a8d5d24faa155f4b1839f446d8bdc66884e9bd355bb5a694",
+          "signed_envelope": "v2-102-next"
+        }
+      },
+      {
+        "before": {
+          "high_water_sequence": "18446744073709551614",
+          "last_accepted_envelope": "v2-max-minus-one",
+          "mode": "classic-v2-only",
+          "pending_authorizations": 0,
+          "retained_nonces": [
+            "000102030405060708090a0b0c0d0e0f",
+            "808182838485868788898a8b8c8d8e8f"
+          ],
+          "server_id": "c57c33b5b8f51d80a8d5d24faa155f4b1839f446d8bdc66884e9bd355bb5a694",
+          "tickets": 0,
+          "unaffected_identity": {
+            "access_code_required": true,
+            "authenticated_presence": true,
+            "controls_active": true,
+            "high_water_sequence": "102",
+            "last_accepted_envelope": "positive/public-protected-endpoint",
+            "mode": "classic-v2-only",
+            "pending_authorizations": 1,
+            "public_listing": true,
+            "published_body_sha256": "9817cfa609db4171b309d36969466d12026271e52588ce2b0726b2546e46f553",
+            "rendezvous": "proof-required",
+            "rendezvous_generation_present": true,
+            "retained_nonces": [
+              "303132333435363738393a3b3c3d3e3f"
+            ],
+            "server_id": "13e46c3b910727029646ba5db7ee5930080f832af4d9e29f70cf781250a23809",
+            "tickets": 1,
+            "v2_usable": true
+          },
+          "v1_authenticated_presence": false,
+          "v1_controls_active": false,
+          "v1_listing_present": false,
+          "v1_rendezvous_generation_present": false,
+          "v2_access_code_required": true,
+          "v2_authenticated_presence": true,
+          "v2_controls_active": true,
+          "v2_public_listing": true,
+          "v2_published_body_sha256": "135ce67cb66f6ab9cf98202bdedb7e125cbb128581df982e311bc462c9fd40fb",
+          "v2_published_envelope": "v2-max-minus-one",
+          "v2_rendezvous": "proof-required",
+          "v2_usable": true
+        },
+        "expected": {
+          "accepted": true,
+          "minimum_next_sequence": "",
+          "state": {
+            "high_water_sequence": "18446744073709551615",
+            "last_accepted_envelope": "v2-max",
+            "mode": "classic-v2-only",
+            "pending_authorizations": 0,
+            "retained_nonces": [
+              "000102030405060708090a0b0c0d0e0f",
+              "808182838485868788898a8b8c8d8e8f",
+              "606162636465666768696a6b6c6d6e6f"
+            ],
+            "server_id": "c57c33b5b8f51d80a8d5d24faa155f4b1839f446d8bdc66884e9bd355bb5a694",
+            "tickets": 0,
+            "unaffected_identity": {
+              "access_code_required": true,
+              "authenticated_presence": true,
+              "controls_active": true,
+              "high_water_sequence": "102",
+              "last_accepted_envelope": "positive/public-protected-endpoint",
+              "mode": "classic-v2-only",
+              "pending_authorizations": 1,
+              "public_listing": true,
+              "published_body_sha256": "9817cfa609db4171b309d36969466d12026271e52588ce2b0726b2546e46f553",
+              "rendezvous": "proof-required",
+              "rendezvous_generation_present": true,
+              "retained_nonces": [
+                "303132333435363738393a3b3c3d3e3f"
+              ],
+              "server_id": "13e46c3b910727029646ba5db7ee5930080f832af4d9e29f70cf781250a23809",
+              "tickets": 1,
+              "v2_usable": true
+            },
+            "v1_authenticated_presence": false,
+            "v1_controls_active": false,
+            "v1_listing_present": false,
+            "v1_rendezvous_generation_present": false,
+            "v2_access_code_required": true,
+            "v2_authenticated_presence": true,
+            "v2_controls_active": true,
+            "v2_public_listing": true,
+            "v2_published_body_sha256": "135ce67cb66f6ab9cf98202bdedb7e125cbb128581df982e311bc462c9fd40fb",
+            "v2_published_envelope": "v2-max",
+            "v2_rendezvous": "proof-required",
+            "v2_usable": true
+          }
+        },
+        "name": "maximum-v2-sequence",
+        "request": {
+          "nonce": "606162636465666768696a6b6c6d6e6f",
+          "profile": "classic-v2",
+          "sequence": "18446744073709551615",
+          "server_id": "c57c33b5b8f51d80a8d5d24faa155f4b1839f446d8bdc66884e9bd355bb5a694",
+          "signed_envelope": "v2-max"
+        }
+      },
+      {
+        "before": {
+          "high_water_sequence": "18446744073709551615",
+          "last_accepted_envelope": "v2-max",
+          "mode": "classic-v2-only",
+          "pending_authorizations": 0,
+          "retained_nonces": [
+            "000102030405060708090a0b0c0d0e0f",
+            "808182838485868788898a8b8c8d8e8f",
+            "606162636465666768696a6b6c6d6e6f"
+          ],
+          "server_id": "c57c33b5b8f51d80a8d5d24faa155f4b1839f446d8bdc66884e9bd355bb5a694",
+          "tickets": 0,
+          "unaffected_identity": {
+            "access_code_required": true,
+            "authenticated_presence": true,
+            "controls_active": true,
+            "high_water_sequence": "102",
+            "last_accepted_envelope": "positive/public-protected-endpoint",
+            "mode": "classic-v2-only",
+            "pending_authorizations": 1,
+            "public_listing": true,
+            "published_body_sha256": "9817cfa609db4171b309d36969466d12026271e52588ce2b0726b2546e46f553",
+            "rendezvous": "proof-required",
+            "rendezvous_generation_present": true,
+            "retained_nonces": [
+              "303132333435363738393a3b3c3d3e3f"
+            ],
+            "server_id": "13e46c3b910727029646ba5db7ee5930080f832af4d9e29f70cf781250a23809",
+            "tickets": 1,
+            "v2_usable": true
+          },
+          "v1_authenticated_presence": false,
+          "v1_controls_active": false,
+          "v1_listing_present": false,
+          "v1_rendezvous_generation_present": false,
+          "v2_access_code_required": true,
+          "v2_authenticated_presence": true,
+          "v2_controls_active": true,
+          "v2_public_listing": true,
+          "v2_published_body_sha256": "135ce67cb66f6ab9cf98202bdedb7e125cbb128581df982e311bc462c9fd40fb",
+          "v2_published_envelope": "v2-max",
+          "v2_rendezvous": "proof-required",
+          "v2_usable": true
+        },
+        "expected": {
+          "accepted": false,
+          "error": "publish_sequence_exhausted",
+          "minimum_next_sequence": "",
+          "state": {
+            "high_water_sequence": "18446744073709551615",
+            "last_accepted_envelope": "v2-max",
+            "mode": "classic-v2-only",
+            "pending_authorizations": 0,
+            "retained_nonces": [
+              "000102030405060708090a0b0c0d0e0f",
+              "808182838485868788898a8b8c8d8e8f",
+              "606162636465666768696a6b6c6d6e6f"
+            ],
+            "server_id": "c57c33b5b8f51d80a8d5d24faa155f4b1839f446d8bdc66884e9bd355bb5a694",
+            "tickets": 0,
+            "unaffected_identity": {
+              "access_code_required": true,
+              "authenticated_presence": true,
+              "controls_active": true,
+              "high_water_sequence": "102",
+              "last_accepted_envelope": "positive/public-protected-endpoint",
+              "mode": "classic-v2-only",
+              "pending_authorizations": 1,
+              "public_listing": true,
+              "published_body_sha256": "9817cfa609db4171b309d36969466d12026271e52588ce2b0726b2546e46f553",
+              "rendezvous": "proof-required",
+              "rendezvous_generation_present": true,
+              "retained_nonces": [
+                "303132333435363738393a3b3c3d3e3f"
+              ],
+              "server_id": "13e46c3b910727029646ba5db7ee5930080f832af4d9e29f70cf781250a23809",
+              "tickets": 1,
+              "v2_usable": true
+            },
+            "v1_authenticated_presence": false,
+            "v1_controls_active": false,
+            "v1_listing_present": false,
+            "v1_rendezvous_generation_present": false,
+            "v2_access_code_required": true,
+            "v2_authenticated_presence": true,
+            "v2_controls_active": true,
+            "v2_public_listing": true,
+            "v2_published_body_sha256": "135ce67cb66f6ab9cf98202bdedb7e125cbb128581df982e311bc462c9fd40fb",
+            "v2_published_envelope": "v2-max",
+            "v2_rendezvous": "proof-required",
+            "v2_usable": true
+          }
+        },
+        "name": "exhausted-lineage",
+        "request": {
+          "nonce": "707172737475767778797a7b7c7d7e7f",
+          "profile": "classic-v2",
+          "sequence": "18446744073709551615",
+          "server_id": "c57c33b5b8f51d80a8d5d24faa155f4b1839f446d8bdc66884e9bd355bb5a694",
+          "signed_envelope": "v2-max-exhausted"
+        }
+      }
+    ],
+    "cross_identity_rejection": {
+      "expected": {
+        "accepted": false,
+        "error": "identity_mismatch",
+        "minimum_next_sequence": "",
+        "state": {
+          "high_water_sequence": "100",
+          "last_accepted_envelope": "v1-100",
+          "mode": "classic-v1",
+          "pending_authorizations": 2,
+          "retained_nonces": [
+            "000102030405060708090a0b0c0d0e0f"
+          ],
+          "server_id": "c57c33b5b8f51d80a8d5d24faa155f4b1839f446d8bdc66884e9bd355bb5a694",
+          "tickets": 3,
+          "unaffected_identity": {
+            "access_code_required": true,
+            "authenticated_presence": true,
+            "controls_active": true,
+            "high_water_sequence": "102",
+            "last_accepted_envelope": "positive/public-protected-endpoint",
+            "mode": "classic-v2-only",
+            "pending_authorizations": 1,
+            "public_listing": true,
+            "published_body_sha256": "9817cfa609db4171b309d36969466d12026271e52588ce2b0726b2546e46f553",
+            "rendezvous": "proof-required",
+            "rendezvous_generation_present": true,
+            "retained_nonces": [
+              "303132333435363738393a3b3c3d3e3f"
+            ],
+            "server_id": "13e46c3b910727029646ba5db7ee5930080f832af4d9e29f70cf781250a23809",
+            "tickets": 1,
+            "v2_usable": true
+          },
+          "v1_authenticated_presence": true,
+          "v1_controls_active": true,
+          "v1_listing_present": true,
+          "v1_rendezvous_generation_present": true,
+          "v2_access_code_required": false,
+          "v2_authenticated_presence": false,
+          "v2_controls_active": false,
+          "v2_public_listing": false,
+          "v2_published_body_sha256": "",
+          "v2_published_envelope": "",
+          "v2_rendezvous": "not-found",
+          "v2_usable": false
+        }
+      },
+      "request_envelope": "positive/public-protected-endpoint",
+      "target_case": "higher-v2-upgrade"
+    },
+    "failure_transitions": [
+      {
+        "case": "higher-v2-upgrade",
+        "durable_upgrade_marker": false,
+        "expected_recovered_state": {
+          "high_water_sequence": "100",
+          "last_accepted_envelope": "v1-100",
+          "mode": "classic-v1",
+          "pending_authorizations": 2,
+          "retained_nonces": [
+            "000102030405060708090a0b0c0d0e0f"
+          ],
+          "server_id": "c57c33b5b8f51d80a8d5d24faa155f4b1839f446d8bdc66884e9bd355bb5a694",
+          "tickets": 3,
+          "unaffected_identity": {
+            "access_code_required": true,
+            "authenticated_presence": true,
+            "controls_active": true,
+            "high_water_sequence": "102",
+            "last_accepted_envelope": "positive/public-protected-endpoint",
+            "mode": "classic-v2-only",
+            "pending_authorizations": 1,
+            "public_listing": true,
+            "published_body_sha256": "9817cfa609db4171b309d36969466d12026271e52588ce2b0726b2546e46f553",
+            "rendezvous": "proof-required",
+            "rendezvous_generation_present": true,
+            "retained_nonces": [
+              "303132333435363738393a3b3c3d3e3f"
+            ],
+            "server_id": "13e46c3b910727029646ba5db7ee5930080f832af4d9e29f70cf781250a23809",
+            "tickets": 1,
+            "v2_usable": true
+          },
+          "v1_authenticated_presence": true,
+          "v1_controls_active": true,
+          "v1_listing_present": true,
+          "v1_rendezvous_generation_present": true,
+          "v2_access_code_required": false,
+          "v2_authenticated_presence": false,
+          "v2_controls_active": false,
+          "v2_public_listing": false,
+          "v2_published_body_sha256": "",
+          "v2_published_envelope": "",
+          "v2_rendezvous": "not-found",
+          "v2_usable": false
+        },
+        "failure_phase": "before-durable-v2-only-marker",
+        "name": "crash-before-upgrade-marker",
+        "partial_state": {
+          "high_water_sequence": "100",
+          "last_accepted_envelope": "v1-100",
+          "mode": "classic-v1",
+          "pending_authorizations": 2,
+          "retained_nonces": [
+            "000102030405060708090a0b0c0d0e0f"
+          ],
+          "server_id": "c57c33b5b8f51d80a8d5d24faa155f4b1839f446d8bdc66884e9bd355bb5a694",
+          "tickets": 3,
+          "unaffected_identity": {
+            "access_code_required": true,
+            "authenticated_presence": true,
+            "controls_active": true,
+            "high_water_sequence": "102",
+            "last_accepted_envelope": "positive/public-protected-endpoint",
+            "mode": "classic-v2-only",
+            "pending_authorizations": 1,
+            "public_listing": true,
+            "published_body_sha256": "9817cfa609db4171b309d36969466d12026271e52588ce2b0726b2546e46f553",
+            "rendezvous": "proof-required",
+            "rendezvous_generation_present": true,
+            "retained_nonces": [
+              "303132333435363738393a3b3c3d3e3f"
+            ],
+            "server_id": "13e46c3b910727029646ba5db7ee5930080f832af4d9e29f70cf781250a23809",
+            "tickets": 1,
+            "v2_usable": true
+          },
+          "v1_authenticated_presence": true,
+          "v1_controls_active": true,
+          "v1_listing_present": true,
+          "v1_rendezvous_generation_present": true,
+          "v2_access_code_required": false,
+          "v2_authenticated_presence": false,
+          "v2_controls_active": false,
+          "v2_public_listing": false,
+          "v2_published_body_sha256": "",
+          "v2_published_envelope": "",
+          "v2_rendezvous": "not-found",
+          "v2_usable": false
+        }
+      },
+      {
+        "case": "higher-v2-upgrade",
+        "durable_upgrade_marker": true,
+        "expected_recovered_state": {
+          "high_water_sequence": "101",
+          "last_accepted_envelope": "v2-101-upgrade",
+          "mode": "classic-v2-only",
+          "pending_authorizations": 0,
+          "retained_nonces": [
+            "000102030405060708090a0b0c0d0e0f",
+            "101112131415161718191a1b1c1d1e1f"
+          ],
+          "server_id": "c57c33b5b8f51d80a8d5d24faa155f4b1839f446d8bdc66884e9bd355bb5a694",
+          "tickets": 0,
+          "unaffected_identity": {
+            "access_code_required": true,
+            "authenticated_presence": true,
+            "controls_active": true,
+            "high_water_sequence": "102",
+            "last_accepted_envelope": "positive/public-protected-endpoint",
+            "mode": "classic-v2-only",
+            "pending_authorizations": 1,
+            "public_listing": true,
+            "published_body_sha256": "9817cfa609db4171b309d36969466d12026271e52588ce2b0726b2546e46f553",
+            "rendezvous": "proof-required",
+            "rendezvous_generation_present": true,
+            "retained_nonces": [
+              "303132333435363738393a3b3c3d3e3f"
+            ],
+            "server_id": "13e46c3b910727029646ba5db7ee5930080f832af4d9e29f70cf781250a23809",
+            "tickets": 1,
+            "v2_usable": true
+          },
+          "v1_authenticated_presence": false,
+          "v1_controls_active": false,
+          "v1_listing_present": false,
+          "v1_rendezvous_generation_present": false,
+          "v2_access_code_required": true,
+          "v2_authenticated_presence": true,
+          "v2_controls_active": true,
+          "v2_public_listing": true,
+          "v2_published_body_sha256": "135ce67cb66f6ab9cf98202bdedb7e125cbb128581df982e311bc462c9fd40fb",
+          "v2_published_envelope": "v2-101-upgrade",
+          "v2_rendezvous": "proof-required",
+          "v2_usable": true
+        },
+        "failure_phase": "after-durable-v2-only-marker-before-retirement-complete",
+        "name": "crash-after-upgrade-marker",
+        "partial_state": {
+          "high_water_sequence": "101",
+          "last_accepted_envelope": "v2-101-upgrade",
+          "mode": "classic-v2-only",
+          "pending_authorizations": 2,
+          "retained_nonces": [
+            "000102030405060708090a0b0c0d0e0f",
+            "101112131415161718191a1b1c1d1e1f"
+          ],
+          "server_id": "c57c33b5b8f51d80a8d5d24faa155f4b1839f446d8bdc66884e9bd355bb5a694",
+          "tickets": 3,
+          "unaffected_identity": {
+            "access_code_required": true,
+            "authenticated_presence": true,
+            "controls_active": true,
+            "high_water_sequence": "102",
+            "last_accepted_envelope": "positive/public-protected-endpoint",
+            "mode": "classic-v2-only",
+            "pending_authorizations": 1,
+            "public_listing": true,
+            "published_body_sha256": "9817cfa609db4171b309d36969466d12026271e52588ce2b0726b2546e46f553",
+            "rendezvous": "proof-required",
+            "rendezvous_generation_present": true,
+            "retained_nonces": [
+              "303132333435363738393a3b3c3d3e3f"
+            ],
+            "server_id": "13e46c3b910727029646ba5db7ee5930080f832af4d9e29f70cf781250a23809",
+            "tickets": 1,
+            "v2_usable": true
+          },
+          "v1_authenticated_presence": true,
+          "v1_controls_active": true,
+          "v1_listing_present": true,
+          "v1_rendezvous_generation_present": true,
+          "v2_access_code_required": true,
+          "v2_authenticated_presence": true,
+          "v2_controls_active": true,
+          "v2_public_listing": true,
+          "v2_published_body_sha256": "135ce67cb66f6ab9cf98202bdedb7e125cbb128581df982e311bc462c9fd40fb",
+          "v2_published_envelope": "v2-101-upgrade",
+          "v2_rendezvous": "proof-required",
+          "v2_usable": true
+        }
+      }
+    ],
+    "signed_envelopes": [
+      {
+        "body": "{\"schema\":\"atrinik-classic-publish-v1\",\"serverId\":\"c57c33b5b8f51d80a8d5d24faa155f4b1839f446d8bdc66884e9bd355bb5a694\",\"certificate\":\"MIIBaDCCAQ2gAwIBAgIBMzAKBggqhkjOPQQDAjAsMSowKAYDVQQDEyFBdHJpbmlrIENsYXNzaWMgbWlncmF0aW9uIGZpeHR1cmUwHhcNMjYwMTAxMDAwMDAwWhcNMzYwMTAxMDAwMDAwWjAsMSowKAYDVQQDEyFBdHJpbmlrIENsYXNzaWMgbWlncmF0aW9uIGZpeHR1cmUwWTATBgcqhkjOPQIBBggqhkjOPQMBBwNCAASdHSoxBxTmtbzveWyVCcQUjKZqUisbeBnYwcWR0TjMn3LMfS47HJ6XnarpQ25S+fAvyBDaomXo5qjRDnxo+gERoyAwHjAOBgNVHQ8BAf8EBAMCB4AwDAYDVR0TAQH/BAIwADAKBggqhkjOPQQDAgNJADBGAiEAnuMDu7OIBtQosjPz+jDB0b9Yx30iLXQ6EjZbvi8Wqg4CIQD2AMmack+XPebEAAeArm367WPD2M7DvKz9fNskOV1/ww==\",\"name\":\"Atrinik Migration\",\"playersCount\":2,\"version\":\"5.7.0\",\"textComment\":\"Migration fixture\",\"public\":true,\"passwordRequired\":true}",
+        "certificate_der_base64": "MIIBaDCCAQ2gAwIBAgIBMzAKBggqhkjOPQQDAjAsMSowKAYDVQQDEyFBdHJpbmlrIENsYXNzaWMgbWlncmF0aW9uIGZpeHR1cmUwHhcNMjYwMTAxMDAwMDAwWhcNMzYwMTAxMDAwMDAwWjAsMSowKAYDVQQDEyFBdHJpbmlrIENsYXNzaWMgbWlncmF0aW9uIGZpeHR1cmUwWTATBgcqhkjOPQIBBggqhkjOPQMBBwNCAASdHSoxBxTmtbzveWyVCcQUjKZqUisbeBnYwcWR0TjMn3LMfS47HJ6XnarpQ25S+fAvyBDaomXo5qjRDnxo+gERoyAwHjAOBgNVHQ8BAf8EBAMCB4AwDAYDVR0TAQH/BAIwADAKBggqhkjOPQQDAgNJADBGAiEAnuMDu7OIBtQosjPz+jDB0b9Yx30iLXQ6EjZbvi8Wqg4CIQD2AMmack+XPebEAAeArm367WPD2M7DvKz9fNskOV1/ww==",
+        "created": 1800010000,
+        "name": "v1-100",
+        "nonce": "000102030405060708090a0b0c0d0e0f",
+        "profile": "classic-v1",
+        "sequence": "100",
+        "server_id": "c57c33b5b8f51d80a8d5d24faa155f4b1839f446d8bdc66884e9bd355bb5a694",
+        "signature_base": "\"@method\": POST\n\"@authority\": publish.meta.atrinik.org\n\"@path\": /v1/classic/servers/c57c33b5b8f51d80a8d5d24faa155f4b1839f446d8bdc66884e9bd355bb5a694/publish\n\"content-digest\": sha-256=:a9IqOwLcZpB4+s5JSwMVl0ShdqPDdsrQbKCXGpPOlDk=:\n\"content-type\": application/json\n\"atrinik-server-id\": c57c33b5b8f51d80a8d5d24faa155f4b1839f446d8bdc66884e9bd355bb5a694\n\"atrinik-publish-sequence\": 100\n\"@signature-params\": (\"@method\" \"@authority\" \"@path\" \"content-digest\" \"content-type\" \"atrinik-server-id\" \"atrinik-publish-sequence\");created=1800010000;expires=1800010300;nonce=\"000102030405060708090a0b0c0d0e0f\";alg=\"ecdsa-p256-sha256\";keyid=\"c57c33b5b8f51d80a8d5d24faa155f4b1839f446d8bdc66884e9bd355bb5a694\";tag=\"atrinik-classic-publish-v1\"",
+        "signature_base64": "0EFzV/tMHx6QgYiUsVCRglIbBQBNNhhGvyEtE3sAY+qGMq3/JS5vmjWs+nGZgX4W3ShU/kb2XemPTXtGXN3bOA=="
+      },
+      {
+        "body": "{\"schema\":\"atrinik-classic-publish-v2\",\"serverId\":\"c57c33b5b8f51d80a8d5d24faa155f4b1839f446d8bdc66884e9bd355bb5a694\",\"certificate\":\"MIIBaDCCAQ2gAwIBAgIBMzAKBggqhkjOPQQDAjAsMSowKAYDVQQDEyFBdHJpbmlrIENsYXNzaWMgbWlncmF0aW9uIGZpeHR1cmUwHhcNMjYwMTAxMDAwMDAwWhcNMzYwMTAxMDAwMDAwWjAsMSowKAYDVQQDEyFBdHJpbmlrIENsYXNzaWMgbWlncmF0aW9uIGZpeHR1cmUwWTATBgcqhkjOPQIBBggqhkjOPQMBBwNCAASdHSoxBxTmtbzveWyVCcQUjKZqUisbeBnYwcWR0TjMn3LMfS47HJ6XnarpQ25S+fAvyBDaomXo5qjRDnxo+gERoyAwHjAOBgNVHQ8BAf8EBAMCB4AwDAYDVR0TAQH/BAIwADAKBggqhkjOPQQDAgNJADBGAiEAnuMDu7OIBtQosjPz+jDB0b9Yx30iLXQ6EjZbvi8Wqg4CIQD2AMmack+XPebEAAeArm367WPD2M7DvKz9fNskOV1/ww==\",\"name\":\"Atrinik Migration\",\"playersCount\":2,\"version\":\"6.0.0\",\"textComment\":\"Migration fixture\",\"public\":true,\"accessCodeRequired\":true}",
+        "certificate_der_base64": "MIIBaDCCAQ2gAwIBAgIBMzAKBggqhkjOPQQDAjAsMSowKAYDVQQDEyFBdHJpbmlrIENsYXNzaWMgbWlncmF0aW9uIGZpeHR1cmUwHhcNMjYwMTAxMDAwMDAwWhcNMzYwMTAxMDAwMDAwWjAsMSowKAYDVQQDEyFBdHJpbmlrIENsYXNzaWMgbWlncmF0aW9uIGZpeHR1cmUwWTATBgcqhkjOPQIBBggqhkjOPQMBBwNCAASdHSoxBxTmtbzveWyVCcQUjKZqUisbeBnYwcWR0TjMn3LMfS47HJ6XnarpQ25S+fAvyBDaomXo5qjRDnxo+gERoyAwHjAOBgNVHQ8BAf8EBAMCB4AwDAYDVR0TAQH/BAIwADAKBggqhkjOPQQDAgNJADBGAiEAnuMDu7OIBtQosjPz+jDB0b9Yx30iLXQ6EjZbvi8Wqg4CIQD2AMmack+XPebEAAeArm367WPD2M7DvKz9fNskOV1/ww==",
+        "created": 1800010600,
+        "name": "v2-100-equal",
+        "nonce": "202122232425262728292a2b2c2d2e2f",
+        "profile": "classic-v2",
+        "sequence": "100",
+        "server_id": "c57c33b5b8f51d80a8d5d24faa155f4b1839f446d8bdc66884e9bd355bb5a694",
+        "signature_base": "\"@method\": POST\n\"@authority\": publish.meta.atrinik.org\n\"@path\": /v2/classic/servers/c57c33b5b8f51d80a8d5d24faa155f4b1839f446d8bdc66884e9bd355bb5a694/publish\n\"content-digest\": sha-256=:E1zmfLZvarnPmCAr3tt+Ely7EoWB35guMRvEYsn9QPs=:\n\"content-type\": application/json\n\"atrinik-server-id\": c57c33b5b8f51d80a8d5d24faa155f4b1839f446d8bdc66884e9bd355bb5a694\n\"atrinik-publish-sequence\": 100\n\"@signature-params\": (\"@method\" \"@authority\" \"@path\" \"content-digest\" \"content-type\" \"atrinik-server-id\" \"atrinik-publish-sequence\");created=1800010600;expires=1800010900;nonce=\"202122232425262728292a2b2c2d2e2f\";alg=\"ecdsa-p256-sha256\";keyid=\"c57c33b5b8f51d80a8d5d24faa155f4b1839f446d8bdc66884e9bd355bb5a694\";tag=\"atrinik-classic-publish-v2\"",
+        "signature_base64": "AfmtT0x1DpHafVX2IOkQsrCzpZn2yJ2eUbZTB0OU1uCgexR0X5YsAEiB9Qk29Ae6lhGrSfmehexIjN26T9JJMA=="
+      },
+      {
+        "body": "{\"schema\":\"atrinik-classic-publish-v2\",\"serverId\":\"c57c33b5b8f51d80a8d5d24faa155f4b1839f446d8bdc66884e9bd355bb5a694\",\"certificate\":\"MIIBaDCCAQ2gAwIBAgIBMzAKBggqhkjOPQQDAjAsMSowKAYDVQQDEyFBdHJpbmlrIENsYXNzaWMgbWlncmF0aW9uIGZpeHR1cmUwHhcNMjYwMTAxMDAwMDAwWhcNMzYwMTAxMDAwMDAwWjAsMSowKAYDVQQDEyFBdHJpbmlrIENsYXNzaWMgbWlncmF0aW9uIGZpeHR1cmUwWTATBgcqhkjOPQIBBggqhkjOPQMBBwNCAASdHSoxBxTmtbzveWyVCcQUjKZqUisbeBnYwcWR0TjMn3LMfS47HJ6XnarpQ25S+fAvyBDaomXo5qjRDnxo+gERoyAwHjAOBgNVHQ8BAf8EBAMCB4AwDAYDVR0TAQH/BAIwADAKBggqhkjOPQQDAgNJADBGAiEAnuMDu7OIBtQosjPz+jDB0b9Yx30iLXQ6EjZbvi8Wqg4CIQD2AMmack+XPebEAAeArm367WPD2M7DvKz9fNskOV1/ww==\",\"name\":\"Atrinik Migration\",\"playersCount\":2,\"version\":\"6.0.0\",\"textComment\":\"Migration fixture\",\"public\":true,\"accessCodeRequired\":true}",
+        "certificate_der_base64": "MIIBaDCCAQ2gAwIBAgIBMzAKBggqhkjOPQQDAjAsMSowKAYDVQQDEyFBdHJpbmlrIENsYXNzaWMgbWlncmF0aW9uIGZpeHR1cmUwHhcNMjYwMTAxMDAwMDAwWhcNMzYwMTAxMDAwMDAwWjAsMSowKAYDVQQDEyFBdHJpbmlrIENsYXNzaWMgbWlncmF0aW9uIGZpeHR1cmUwWTATBgcqhkjOPQIBBggqhkjOPQMBBwNCAASdHSoxBxTmtbzveWyVCcQUjKZqUisbeBnYwcWR0TjMn3LMfS47HJ6XnarpQ25S+fAvyBDaomXo5qjRDnxo+gERoyAwHjAOBgNVHQ8BAf8EBAMCB4AwDAYDVR0TAQH/BAIwADAKBggqhkjOPQQDAgNJADBGAiEAnuMDu7OIBtQosjPz+jDB0b9Yx30iLXQ6EjZbvi8Wqg4CIQD2AMmack+XPebEAAeArm367WPD2M7DvKz9fNskOV1/ww==",
+        "created": 1800011200,
+        "name": "v2-99-stale",
+        "nonce": "303132333435363738393a3b3c3d3e3f",
+        "profile": "classic-v2",
+        "sequence": "99",
+        "server_id": "c57c33b5b8f51d80a8d5d24faa155f4b1839f446d8bdc66884e9bd355bb5a694",
+        "signature_base": "\"@method\": POST\n\"@authority\": publish.meta.atrinik.org\n\"@path\": /v2/classic/servers/c57c33b5b8f51d80a8d5d24faa155f4b1839f446d8bdc66884e9bd355bb5a694/publish\n\"content-digest\": sha-256=:E1zmfLZvarnPmCAr3tt+Ely7EoWB35guMRvEYsn9QPs=:\n\"content-type\": application/json\n\"atrinik-server-id\": c57c33b5b8f51d80a8d5d24faa155f4b1839f446d8bdc66884e9bd355bb5a694\n\"atrinik-publish-sequence\": 99\n\"@signature-params\": (\"@method\" \"@authority\" \"@path\" \"content-digest\" \"content-type\" \"atrinik-server-id\" \"atrinik-publish-sequence\");created=1800011200;expires=1800011500;nonce=\"303132333435363738393a3b3c3d3e3f\";alg=\"ecdsa-p256-sha256\";keyid=\"c57c33b5b8f51d80a8d5d24faa155f4b1839f446d8bdc66884e9bd355bb5a694\";tag=\"atrinik-classic-publish-v2\"",
+        "signature_base64": "IX4OhPkSwhsZiM41+FUlNv/gbajIxe07mYYXmK7spwqootCFdbYn0S4Plv1cSKpgvt4MehKQ06E1Ol6S52bhwg=="
+      },
+      {
+        "body": "{\"schema\":\"atrinik-classic-publish-v2\",\"serverId\":\"c57c33b5b8f51d80a8d5d24faa155f4b1839f446d8bdc66884e9bd355bb5a694\",\"certificate\":\"MIIBaDCCAQ2gAwIBAgIBMzAKBggqhkjOPQQDAjAsMSowKAYDVQQDEyFBdHJpbmlrIENsYXNzaWMgbWlncmF0aW9uIGZpeHR1cmUwHhcNMjYwMTAxMDAwMDAwWhcNMzYwMTAxMDAwMDAwWjAsMSowKAYDVQQDEyFBdHJpbmlrIENsYXNzaWMgbWlncmF0aW9uIGZpeHR1cmUwWTATBgcqhkjOPQIBBggqhkjOPQMBBwNCAASdHSoxBxTmtbzveWyVCcQUjKZqUisbeBnYwcWR0TjMn3LMfS47HJ6XnarpQ25S+fAvyBDaomXo5qjRDnxo+gERoyAwHjAOBgNVHQ8BAf8EBAMCB4AwDAYDVR0TAQH/BAIwADAKBggqhkjOPQQDAgNJADBGAiEAnuMDu7OIBtQosjPz+jDB0b9Yx30iLXQ6EjZbvi8Wqg4CIQD2AMmack+XPebEAAeArm367WPD2M7DvKz9fNskOV1/ww==\",\"name\":\"Atrinik Migration\",\"playersCount\":2,\"version\":\"6.0.0\",\"textComment\":\"Migration fixture\",\"public\":true,\"accessCodeRequired\":true}",
+        "certificate_der_base64": "MIIBaDCCAQ2gAwIBAgIBMzAKBggqhkjOPQQDAjAsMSowKAYDVQQDEyFBdHJpbmlrIENsYXNzaWMgbWlncmF0aW9uIGZpeHR1cmUwHhcNMjYwMTAxMDAwMDAwWhcNMzYwMTAxMDAwMDAwWjAsMSowKAYDVQQDEyFBdHJpbmlrIENsYXNzaWMgbWlncmF0aW9uIGZpeHR1cmUwWTATBgcqhkjOPQIBBggqhkjOPQMBBwNCAASdHSoxBxTmtbzveWyVCcQUjKZqUisbeBnYwcWR0TjMn3LMfS47HJ6XnarpQ25S+fAvyBDaomXo5qjRDnxo+gERoyAwHjAOBgNVHQ8BAf8EBAMCB4AwDAYDVR0TAQH/BAIwADAKBggqhkjOPQQDAgNJADBGAiEAnuMDu7OIBtQosjPz+jDB0b9Yx30iLXQ6EjZbvi8Wqg4CIQD2AMmack+XPebEAAeArm367WPD2M7DvKz9fNskOV1/ww==",
+        "created": 1800011800,
+        "name": "v2-101-retained",
+        "nonce": "000102030405060708090a0b0c0d0e0f",
+        "profile": "classic-v2",
+        "sequence": "101",
+        "server_id": "c57c33b5b8f51d80a8d5d24faa155f4b1839f446d8bdc66884e9bd355bb5a694",
+        "signature_base": "\"@method\": POST\n\"@authority\": publish.meta.atrinik.org\n\"@path\": /v2/classic/servers/c57c33b5b8f51d80a8d5d24faa155f4b1839f446d8bdc66884e9bd355bb5a694/publish\n\"content-digest\": sha-256=:E1zmfLZvarnPmCAr3tt+Ely7EoWB35guMRvEYsn9QPs=:\n\"content-type\": application/json\n\"atrinik-server-id\": c57c33b5b8f51d80a8d5d24faa155f4b1839f446d8bdc66884e9bd355bb5a694\n\"atrinik-publish-sequence\": 101\n\"@signature-params\": (\"@method\" \"@authority\" \"@path\" \"content-digest\" \"content-type\" \"atrinik-server-id\" \"atrinik-publish-sequence\");created=1800011800;expires=1800012100;nonce=\"000102030405060708090a0b0c0d0e0f\";alg=\"ecdsa-p256-sha256\";keyid=\"c57c33b5b8f51d80a8d5d24faa155f4b1839f446d8bdc66884e9bd355bb5a694\";tag=\"atrinik-classic-publish-v2\"",
+        "signature_base64": "CmbyfZpY5MWLyFyma9wr+jd+gxrIvHVCb+d6vP7MSaDSWBuBrcZAYNKUX4InL03S4lK7Ts+A0KyYrGpZdK+tKA=="
+      },
+      {
+        "body": "{\"schema\":\"atrinik-classic-publish-v2\",\"serverId\":\"c57c33b5b8f51d80a8d5d24faa155f4b1839f446d8bdc66884e9bd355bb5a694\",\"certificate\":\"MIIBaDCCAQ2gAwIBAgIBMzAKBggqhkjOPQQDAjAsMSowKAYDVQQDEyFBdHJpbmlrIENsYXNzaWMgbWlncmF0aW9uIGZpeHR1cmUwHhcNMjYwMTAxMDAwMDAwWhcNMzYwMTAxMDAwMDAwWjAsMSowKAYDVQQDEyFBdHJpbmlrIENsYXNzaWMgbWlncmF0aW9uIGZpeHR1cmUwWTATBgcqhkjOPQIBBggqhkjOPQMBBwNCAASdHSoxBxTmtbzveWyVCcQUjKZqUisbeBnYwcWR0TjMn3LMfS47HJ6XnarpQ25S+fAvyBDaomXo5qjRDnxo+gERoyAwHjAOBgNVHQ8BAf8EBAMCB4AwDAYDVR0TAQH/BAIwADAKBggqhkjOPQQDAgNJADBGAiEAnuMDu7OIBtQosjPz+jDB0b9Yx30iLXQ6EjZbvi8Wqg4CIQD2AMmack+XPebEAAeArm367WPD2M7DvKz9fNskOV1/ww==\",\"name\":\"Atrinik Migration\",\"playersCount\":2,\"version\":\"6.0.0\",\"textComment\":\"Migration fixture\",\"public\":true,\"accessCodeRequired\":true}",
+        "certificate_der_base64": "MIIBaDCCAQ2gAwIBAgIBMzAKBggqhkjOPQQDAjAsMSowKAYDVQQDEyFBdHJpbmlrIENsYXNzaWMgbWlncmF0aW9uIGZpeHR1cmUwHhcNMjYwMTAxMDAwMDAwWhcNMzYwMTAxMDAwMDAwWjAsMSowKAYDVQQDEyFBdHJpbmlrIENsYXNzaWMgbWlncmF0aW9uIGZpeHR1cmUwWTATBgcqhkjOPQIBBggqhkjOPQMBBwNCAASdHSoxBxTmtbzveWyVCcQUjKZqUisbeBnYwcWR0TjMn3LMfS47HJ6XnarpQ25S+fAvyBDaomXo5qjRDnxo+gERoyAwHjAOBgNVHQ8BAf8EBAMCB4AwDAYDVR0TAQH/BAIwADAKBggqhkjOPQQDAgNJADBGAiEAnuMDu7OIBtQosjPz+jDB0b9Yx30iLXQ6EjZbvi8Wqg4CIQD2AMmack+XPebEAAeArm367WPD2M7DvKz9fNskOV1/ww==",
+        "created": 1800012400,
+        "name": "v2-101-upgrade",
+        "nonce": "101112131415161718191a1b1c1d1e1f",
+        "profile": "classic-v2",
+        "sequence": "101",
+        "server_id": "c57c33b5b8f51d80a8d5d24faa155f4b1839f446d8bdc66884e9bd355bb5a694",
+        "signature_base": "\"@method\": POST\n\"@authority\": publish.meta.atrinik.org\n\"@path\": /v2/classic/servers/c57c33b5b8f51d80a8d5d24faa155f4b1839f446d8bdc66884e9bd355bb5a694/publish\n\"content-digest\": sha-256=:E1zmfLZvarnPmCAr3tt+Ely7EoWB35guMRvEYsn9QPs=:\n\"content-type\": application/json\n\"atrinik-server-id\": c57c33b5b8f51d80a8d5d24faa155f4b1839f446d8bdc66884e9bd355bb5a694\n\"atrinik-publish-sequence\": 101\n\"@signature-params\": (\"@method\" \"@authority\" \"@path\" \"content-digest\" \"content-type\" \"atrinik-server-id\" \"atrinik-publish-sequence\");created=1800012400;expires=1800012700;nonce=\"101112131415161718191a1b1c1d1e1f\";alg=\"ecdsa-p256-sha256\";keyid=\"c57c33b5b8f51d80a8d5d24faa155f4b1839f446d8bdc66884e9bd355bb5a694\";tag=\"atrinik-classic-publish-v2\"",
+        "signature_base64": "DvJ6a7maylYHWton2oIUsIvdENpypX1sRRLj1ObEjwccRwl+cMFta1zdNMBpk5/1BjizbMHS3ECj2vZ17/EZgg=="
+      },
+      {
+        "body": "{\"schema\":\"atrinik-classic-publish-v1\",\"serverId\":\"c57c33b5b8f51d80a8d5d24faa155f4b1839f446d8bdc66884e9bd355bb5a694\",\"certificate\":\"MIIBaDCCAQ2gAwIBAgIBMzAKBggqhkjOPQQDAjAsMSowKAYDVQQDEyFBdHJpbmlrIENsYXNzaWMgbWlncmF0aW9uIGZpeHR1cmUwHhcNMjYwMTAxMDAwMDAwWhcNMzYwMTAxMDAwMDAwWjAsMSowKAYDVQQDEyFBdHJpbmlrIENsYXNzaWMgbWlncmF0aW9uIGZpeHR1cmUwWTATBgcqhkjOPQIBBggqhkjOPQMBBwNCAASdHSoxBxTmtbzveWyVCcQUjKZqUisbeBnYwcWR0TjMn3LMfS47HJ6XnarpQ25S+fAvyBDaomXo5qjRDnxo+gERoyAwHjAOBgNVHQ8BAf8EBAMCB4AwDAYDVR0TAQH/BAIwADAKBggqhkjOPQQDAgNJADBGAiEAnuMDu7OIBtQosjPz+jDB0b9Yx30iLXQ6EjZbvi8Wqg4CIQD2AMmack+XPebEAAeArm367WPD2M7DvKz9fNskOV1/ww==\",\"name\":\"Atrinik Migration\",\"playersCount\":2,\"version\":\"5.7.0\",\"textComment\":\"Migration fixture\",\"public\":true,\"passwordRequired\":true}",
+        "certificate_der_base64": "MIIBaDCCAQ2gAwIBAgIBMzAKBggqhkjOPQQDAjAsMSowKAYDVQQDEyFBdHJpbmlrIENsYXNzaWMgbWlncmF0aW9uIGZpeHR1cmUwHhcNMjYwMTAxMDAwMDAwWhcNMzYwMTAxMDAwMDAwWjAsMSowKAYDVQQDEyFBdHJpbmlrIENsYXNzaWMgbWlncmF0aW9uIGZpeHR1cmUwWTATBgcqhkjOPQIBBggqhkjOPQMBBwNCAASdHSoxBxTmtbzveWyVCcQUjKZqUisbeBnYwcWR0TjMn3LMfS47HJ6XnarpQ25S+fAvyBDaomXo5qjRDnxo+gERoyAwHjAOBgNVHQ8BAf8EBAMCB4AwDAYDVR0TAQH/BAIwADAKBggqhkjOPQQDAgNJADBGAiEAnuMDu7OIBtQosjPz+jDB0b9Yx30iLXQ6EjZbvi8Wqg4CIQD2AMmack+XPebEAAeArm367WPD2M7DvKz9fNskOV1/ww==",
+        "created": 1800013000,
+        "name": "v1-102-post-upgrade",
+        "nonce": "404142434445464748494a4b4c4d4e4f",
+        "profile": "classic-v1",
+        "sequence": "102",
+        "server_id": "c57c33b5b8f51d80a8d5d24faa155f4b1839f446d8bdc66884e9bd355bb5a694",
+        "signature_base": "\"@method\": POST\n\"@authority\": publish.meta.atrinik.org\n\"@path\": /v1/classic/servers/c57c33b5b8f51d80a8d5d24faa155f4b1839f446d8bdc66884e9bd355bb5a694/publish\n\"content-digest\": sha-256=:a9IqOwLcZpB4+s5JSwMVl0ShdqPDdsrQbKCXGpPOlDk=:\n\"content-type\": application/json\n\"atrinik-server-id\": c57c33b5b8f51d80a8d5d24faa155f4b1839f446d8bdc66884e9bd355bb5a694\n\"atrinik-publish-sequence\": 102\n\"@signature-params\": (\"@method\" \"@authority\" \"@path\" \"content-digest\" \"content-type\" \"atrinik-server-id\" \"atrinik-publish-sequence\");created=1800013000;expires=1800013300;nonce=\"404142434445464748494a4b4c4d4e4f\";alg=\"ecdsa-p256-sha256\";keyid=\"c57c33b5b8f51d80a8d5d24faa155f4b1839f446d8bdc66884e9bd355bb5a694\";tag=\"atrinik-classic-publish-v1\"",
+        "signature_base64": "Q6yzOweCXNUPyZr6J4BEuP1DYgcJytmpHOmHyoYwX81eS8FODcTndZjCr4/3U8NAD5LBwN0VJdJuRQhHUuzylw=="
+      },
+      {
+        "body": "{\"schema\":\"atrinik-classic-publish-v2\",\"serverId\":\"c57c33b5b8f51d80a8d5d24faa155f4b1839f446d8bdc66884e9bd355bb5a694\",\"certificate\":\"MIIBaDCCAQ2gAwIBAgIBMzAKBggqhkjOPQQDAjAsMSowKAYDVQQDEyFBdHJpbmlrIENsYXNzaWMgbWlncmF0aW9uIGZpeHR1cmUwHhcNMjYwMTAxMDAwMDAwWhcNMzYwMTAxMDAwMDAwWjAsMSowKAYDVQQDEyFBdHJpbmlrIENsYXNzaWMgbWlncmF0aW9uIGZpeHR1cmUwWTATBgcqhkjOPQIBBggqhkjOPQMBBwNCAASdHSoxBxTmtbzveWyVCcQUjKZqUisbeBnYwcWR0TjMn3LMfS47HJ6XnarpQ25S+fAvyBDaomXo5qjRDnxo+gERoyAwHjAOBgNVHQ8BAf8EBAMCB4AwDAYDVR0TAQH/BAIwADAKBggqhkjOPQQDAgNJADBGAiEAnuMDu7OIBtQosjPz+jDB0b9Yx30iLXQ6EjZbvi8Wqg4CIQD2AMmack+XPebEAAeArm367WPD2M7DvKz9fNskOV1/ww==\",\"name\":\"Atrinik Migration\",\"playersCount\":2,\"version\":\"6.0.0\",\"textComment\":\"Migration fixture\",\"public\":true,\"accessCodeRequired\":true}",
+        "certificate_der_base64": "MIIBaDCCAQ2gAwIBAgIBMzAKBggqhkjOPQQDAjAsMSowKAYDVQQDEyFBdHJpbmlrIENsYXNzaWMgbWlncmF0aW9uIGZpeHR1cmUwHhcNMjYwMTAxMDAwMDAwWhcNMzYwMTAxMDAwMDAwWjAsMSowKAYDVQQDEyFBdHJpbmlrIENsYXNzaWMgbWlncmF0aW9uIGZpeHR1cmUwWTATBgcqhkjOPQIBBggqhkjOPQMBBwNCAASdHSoxBxTmtbzveWyVCcQUjKZqUisbeBnYwcWR0TjMn3LMfS47HJ6XnarpQ25S+fAvyBDaomXo5qjRDnxo+gERoyAwHjAOBgNVHQ8BAf8EBAMCB4AwDAYDVR0TAQH/BAIwADAKBggqhkjOPQQDAgNJADBGAiEAnuMDu7OIBtQosjPz+jDB0b9Yx30iLXQ6EjZbvi8Wqg4CIQD2AMmack+XPebEAAeArm367WPD2M7DvKz9fNskOV1/ww==",
+        "created": 1800013600,
+        "name": "v2-102-next",
+        "nonce": "505152535455565758595a5b5c5d5e5f",
+        "profile": "classic-v2",
+        "sequence": "102",
+        "server_id": "c57c33b5b8f51d80a8d5d24faa155f4b1839f446d8bdc66884e9bd355bb5a694",
+        "signature_base": "\"@method\": POST\n\"@authority\": publish.meta.atrinik.org\n\"@path\": /v2/classic/servers/c57c33b5b8f51d80a8d5d24faa155f4b1839f446d8bdc66884e9bd355bb5a694/publish\n\"content-digest\": sha-256=:E1zmfLZvarnPmCAr3tt+Ely7EoWB35guMRvEYsn9QPs=:\n\"content-type\": application/json\n\"atrinik-server-id\": c57c33b5b8f51d80a8d5d24faa155f4b1839f446d8bdc66884e9bd355bb5a694\n\"atrinik-publish-sequence\": 102\n\"@signature-params\": (\"@method\" \"@authority\" \"@path\" \"content-digest\" \"content-type\" \"atrinik-server-id\" \"atrinik-publish-sequence\");created=1800013600;expires=1800013900;nonce=\"505152535455565758595a5b5c5d5e5f\";alg=\"ecdsa-p256-sha256\";keyid=\"c57c33b5b8f51d80a8d5d24faa155f4b1839f446d8bdc66884e9bd355bb5a694\";tag=\"atrinik-classic-publish-v2\"",
+        "signature_base64": "lzLHfNYGTVb5PsfYwvVmQoA4hSepm/lcs07cCQRAxgR6imnaI2xc+vECTfHlqR9RRJGIfXN2k8Sze+D7lpAJLQ=="
+      },
+      {
+        "body": "{\"schema\":\"atrinik-classic-publish-v2\",\"serverId\":\"c57c33b5b8f51d80a8d5d24faa155f4b1839f446d8bdc66884e9bd355bb5a694\",\"certificate\":\"MIIBaDCCAQ2gAwIBAgIBMzAKBggqhkjOPQQDAjAsMSowKAYDVQQDEyFBdHJpbmlrIENsYXNzaWMgbWlncmF0aW9uIGZpeHR1cmUwHhcNMjYwMTAxMDAwMDAwWhcNMzYwMTAxMDAwMDAwWjAsMSowKAYDVQQDEyFBdHJpbmlrIENsYXNzaWMgbWlncmF0aW9uIGZpeHR1cmUwWTATBgcqhkjOPQIBBggqhkjOPQMBBwNCAASdHSoxBxTmtbzveWyVCcQUjKZqUisbeBnYwcWR0TjMn3LMfS47HJ6XnarpQ25S+fAvyBDaomXo5qjRDnxo+gERoyAwHjAOBgNVHQ8BAf8EBAMCB4AwDAYDVR0TAQH/BAIwADAKBggqhkjOPQQDAgNJADBGAiEAnuMDu7OIBtQosjPz+jDB0b9Yx30iLXQ6EjZbvi8Wqg4CIQD2AMmack+XPebEAAeArm367WPD2M7DvKz9fNskOV1/ww==\",\"name\":\"Atrinik Migration\",\"playersCount\":2,\"version\":\"6.0.0\",\"textComment\":\"Migration fixture\",\"public\":true,\"accessCodeRequired\":true}",
+        "certificate_der_base64": "MIIBaDCCAQ2gAwIBAgIBMzAKBggqhkjOPQQDAjAsMSowKAYDVQQDEyFBdHJpbmlrIENsYXNzaWMgbWlncmF0aW9uIGZpeHR1cmUwHhcNMjYwMTAxMDAwMDAwWhcNMzYwMTAxMDAwMDAwWjAsMSowKAYDVQQDEyFBdHJpbmlrIENsYXNzaWMgbWlncmF0aW9uIGZpeHR1cmUwWTATBgcqhkjOPQIBBggqhkjOPQMBBwNCAASdHSoxBxTmtbzveWyVCcQUjKZqUisbeBnYwcWR0TjMn3LMfS47HJ6XnarpQ25S+fAvyBDaomXo5qjRDnxo+gERoyAwHjAOBgNVHQ8BAf8EBAMCB4AwDAYDVR0TAQH/BAIwADAKBggqhkjOPQQDAgNJADBGAiEAnuMDu7OIBtQosjPz+jDB0b9Yx30iLXQ6EjZbvi8Wqg4CIQD2AMmack+XPebEAAeArm367WPD2M7DvKz9fNskOV1/ww==",
+        "created": 1800014200,
+        "name": "v2-max-minus-one",
+        "nonce": "808182838485868788898a8b8c8d8e8f",
+        "profile": "classic-v2",
+        "sequence": "18446744073709551614",
+        "server_id": "c57c33b5b8f51d80a8d5d24faa155f4b1839f446d8bdc66884e9bd355bb5a694",
+        "signature_base": "\"@method\": POST\n\"@authority\": publish.meta.atrinik.org\n\"@path\": /v2/classic/servers/c57c33b5b8f51d80a8d5d24faa155f4b1839f446d8bdc66884e9bd355bb5a694/publish\n\"content-digest\": sha-256=:E1zmfLZvarnPmCAr3tt+Ely7EoWB35guMRvEYsn9QPs=:\n\"content-type\": application/json\n\"atrinik-server-id\": c57c33b5b8f51d80a8d5d24faa155f4b1839f446d8bdc66884e9bd355bb5a694\n\"atrinik-publish-sequence\": 18446744073709551614\n\"@signature-params\": (\"@method\" \"@authority\" \"@path\" \"content-digest\" \"content-type\" \"atrinik-server-id\" \"atrinik-publish-sequence\");created=1800014200;expires=1800014500;nonce=\"808182838485868788898a8b8c8d8e8f\";alg=\"ecdsa-p256-sha256\";keyid=\"c57c33b5b8f51d80a8d5d24faa155f4b1839f446d8bdc66884e9bd355bb5a694\";tag=\"atrinik-classic-publish-v2\"",
+        "signature_base64": "HoJR3M3Bsv5axtfTKXm91K6HKfy1oJDWBZ4u2OggYZy4/WMLN0lqJmoWPftUR4yIDvGwaK4H2ba2czNoKbkYXw=="
+      },
+      {
+        "body": "{\"schema\":\"atrinik-classic-publish-v2\",\"serverId\":\"c57c33b5b8f51d80a8d5d24faa155f4b1839f446d8bdc66884e9bd355bb5a694\",\"certificate\":\"MIIBaDCCAQ2gAwIBAgIBMzAKBggqhkjOPQQDAjAsMSowKAYDVQQDEyFBdHJpbmlrIENsYXNzaWMgbWlncmF0aW9uIGZpeHR1cmUwHhcNMjYwMTAxMDAwMDAwWhcNMzYwMTAxMDAwMDAwWjAsMSowKAYDVQQDEyFBdHJpbmlrIENsYXNzaWMgbWlncmF0aW9uIGZpeHR1cmUwWTATBgcqhkjOPQIBBggqhkjOPQMBBwNCAASdHSoxBxTmtbzveWyVCcQUjKZqUisbeBnYwcWR0TjMn3LMfS47HJ6XnarpQ25S+fAvyBDaomXo5qjRDnxo+gERoyAwHjAOBgNVHQ8BAf8EBAMCB4AwDAYDVR0TAQH/BAIwADAKBggqhkjOPQQDAgNJADBGAiEAnuMDu7OIBtQosjPz+jDB0b9Yx30iLXQ6EjZbvi8Wqg4CIQD2AMmack+XPebEAAeArm367WPD2M7DvKz9fNskOV1/ww==\",\"name\":\"Atrinik Migration\",\"playersCount\":2,\"version\":\"6.0.0\",\"textComment\":\"Migration fixture\",\"public\":true,\"accessCodeRequired\":true}",
+        "certificate_der_base64": "MIIBaDCCAQ2gAwIBAgIBMzAKBggqhkjOPQQDAjAsMSowKAYDVQQDEyFBdHJpbmlrIENsYXNzaWMgbWlncmF0aW9uIGZpeHR1cmUwHhcNMjYwMTAxMDAwMDAwWhcNMzYwMTAxMDAwMDAwWjAsMSowKAYDVQQDEyFBdHJpbmlrIENsYXNzaWMgbWlncmF0aW9uIGZpeHR1cmUwWTATBgcqhkjOPQIBBggqhkjOPQMBBwNCAASdHSoxBxTmtbzveWyVCcQUjKZqUisbeBnYwcWR0TjMn3LMfS47HJ6XnarpQ25S+fAvyBDaomXo5qjRDnxo+gERoyAwHjAOBgNVHQ8BAf8EBAMCB4AwDAYDVR0TAQH/BAIwADAKBggqhkjOPQQDAgNJADBGAiEAnuMDu7OIBtQosjPz+jDB0b9Yx30iLXQ6EjZbvi8Wqg4CIQD2AMmack+XPebEAAeArm367WPD2M7DvKz9fNskOV1/ww==",
+        "created": 1800014800,
+        "name": "v2-max",
+        "nonce": "606162636465666768696a6b6c6d6e6f",
+        "profile": "classic-v2",
+        "sequence": "18446744073709551615",
+        "server_id": "c57c33b5b8f51d80a8d5d24faa155f4b1839f446d8bdc66884e9bd355bb5a694",
+        "signature_base": "\"@method\": POST\n\"@authority\": publish.meta.atrinik.org\n\"@path\": /v2/classic/servers/c57c33b5b8f51d80a8d5d24faa155f4b1839f446d8bdc66884e9bd355bb5a694/publish\n\"content-digest\": sha-256=:E1zmfLZvarnPmCAr3tt+Ely7EoWB35guMRvEYsn9QPs=:\n\"content-type\": application/json\n\"atrinik-server-id\": c57c33b5b8f51d80a8d5d24faa155f4b1839f446d8bdc66884e9bd355bb5a694\n\"atrinik-publish-sequence\": 18446744073709551615\n\"@signature-params\": (\"@method\" \"@authority\" \"@path\" \"content-digest\" \"content-type\" \"atrinik-server-id\" \"atrinik-publish-sequence\");created=1800014800;expires=1800015100;nonce=\"606162636465666768696a6b6c6d6e6f\";alg=\"ecdsa-p256-sha256\";keyid=\"c57c33b5b8f51d80a8d5d24faa155f4b1839f446d8bdc66884e9bd355bb5a694\";tag=\"atrinik-classic-publish-v2\"",
+        "signature_base64": "HtpMq/nB16y1UakfeHlE3RYAr/K/IQAgqxV6k726HROVkYYOs1hztqDKInZVzie5RF/rhyr+iluluM/Ps5vVDA=="
+      },
+      {
+        "body": "{\"schema\":\"atrinik-classic-publish-v2\",\"serverId\":\"c57c33b5b8f51d80a8d5d24faa155f4b1839f446d8bdc66884e9bd355bb5a694\",\"certificate\":\"MIIBaDCCAQ2gAwIBAgIBMzAKBggqhkjOPQQDAjAsMSowKAYDVQQDEyFBdHJpbmlrIENsYXNzaWMgbWlncmF0aW9uIGZpeHR1cmUwHhcNMjYwMTAxMDAwMDAwWhcNMzYwMTAxMDAwMDAwWjAsMSowKAYDVQQDEyFBdHJpbmlrIENsYXNzaWMgbWlncmF0aW9uIGZpeHR1cmUwWTATBgcqhkjOPQIBBggqhkjOPQMBBwNCAASdHSoxBxTmtbzveWyVCcQUjKZqUisbeBnYwcWR0TjMn3LMfS47HJ6XnarpQ25S+fAvyBDaomXo5qjRDnxo+gERoyAwHjAOBgNVHQ8BAf8EBAMCB4AwDAYDVR0TAQH/BAIwADAKBggqhkjOPQQDAgNJADBGAiEAnuMDu7OIBtQosjPz+jDB0b9Yx30iLXQ6EjZbvi8Wqg4CIQD2AMmack+XPebEAAeArm367WPD2M7DvKz9fNskOV1/ww==\",\"name\":\"Atrinik Migration\",\"playersCount\":2,\"version\":\"6.0.0\",\"textComment\":\"Migration fixture\",\"public\":true,\"accessCodeRequired\":true}",
+        "certificate_der_base64": "MIIBaDCCAQ2gAwIBAgIBMzAKBggqhkjOPQQDAjAsMSowKAYDVQQDEyFBdHJpbmlrIENsYXNzaWMgbWlncmF0aW9uIGZpeHR1cmUwHhcNMjYwMTAxMDAwMDAwWhcNMzYwMTAxMDAwMDAwWjAsMSowKAYDVQQDEyFBdHJpbmlrIENsYXNzaWMgbWlncmF0aW9uIGZpeHR1cmUwWTATBgcqhkjOPQIBBggqhkjOPQMBBwNCAASdHSoxBxTmtbzveWyVCcQUjKZqUisbeBnYwcWR0TjMn3LMfS47HJ6XnarpQ25S+fAvyBDaomXo5qjRDnxo+gERoyAwHjAOBgNVHQ8BAf8EBAMCB4AwDAYDVR0TAQH/BAIwADAKBggqhkjOPQQDAgNJADBGAiEAnuMDu7OIBtQosjPz+jDB0b9Yx30iLXQ6EjZbvi8Wqg4CIQD2AMmack+XPebEAAeArm367WPD2M7DvKz9fNskOV1/ww==",
+        "created": 1800015400,
+        "name": "v2-max-exhausted",
+        "nonce": "707172737475767778797a7b7c7d7e7f",
+        "profile": "classic-v2",
+        "sequence": "18446744073709551615",
+        "server_id": "c57c33b5b8f51d80a8d5d24faa155f4b1839f446d8bdc66884e9bd355bb5a694",
+        "signature_base": "\"@method\": POST\n\"@authority\": publish.meta.atrinik.org\n\"@path\": /v2/classic/servers/c57c33b5b8f51d80a8d5d24faa155f4b1839f446d8bdc66884e9bd355bb5a694/publish\n\"content-digest\": sha-256=:E1zmfLZvarnPmCAr3tt+Ely7EoWB35guMRvEYsn9QPs=:\n\"content-type\": application/json\n\"atrinik-server-id\": c57c33b5b8f51d80a8d5d24faa155f4b1839f446d8bdc66884e9bd355bb5a694\n\"atrinik-publish-sequence\": 18446744073709551615\n\"@signature-params\": (\"@method\" \"@authority\" \"@path\" \"content-digest\" \"content-type\" \"atrinik-server-id\" \"atrinik-publish-sequence\");created=1800015400;expires=1800015700;nonce=\"707172737475767778797a7b7c7d7e7f\";alg=\"ecdsa-p256-sha256\";keyid=\"c57c33b5b8f51d80a8d5d24faa155f4b1839f446d8bdc66884e9bd355bb5a694\";tag=\"atrinik-classic-publish-v2\"",
+        "signature_base64": "GkAkdYQPTQV/hPA5NAfsQxUYnfx6KLvaO9yD/Jpp8BVn+cTJ3wehuxsbUl/20IyduB3TWUMv0w5P0P7ZgqiTuA=="
+      }
+    ]
+  },
+  "negative": [
+    {
+      "body": "{\"schema\":\"atrinik-classic-publish-v1\",\"serverId\":\"13e46c3b910727029646ba5db7ee5930080f832af4d9e29f70cf781250a23809\",\"certificate\":\"MIIBWDCB/6ADAgECAgEhMAoGCCqGSM49BAMCMCUxIzAhBgNVBAMTGkF0cmluaWsgQ2xhc3NpYyB2MiBmaXh0dXJlMB4XDTI2MDEwMTAwMDAwMFoXDTM2MDEwMTAwMDAwMFowJTEjMCEGA1UEAxMaQXRyaW5payBDbGFzc2ljIHYyIGZpeHR1cmUwWTATBgcqhkjOPQIBBggqhkjOPQMBBwNCAATo4QRR45SdaF7zpESDJmLYTpGJbLuZIR6lYm+D0tiFS4Okj0gskkrVPr5FeHGblhLvUTv1C+GLO08g10p0EmPRoyAwHjAOBgNVHQ8BAf8EBAMCB4AwDAYDVR0TAQH/BAIwADAKBggqhkjOPQQDAgNIADBFAiEAhVxthqGABVxAG0Kqlh0AGWQk74HoNqfr4493srgNBsQCICx9jMsucb8mRVNO1O4E2i2nN6IdtCb6cMNDa/4Y8neZ\",\"name\":\"Atrinik Classic\",\"playersCount\":4,\"version\":\"6.0.0\",\"textComment\":\"Access-code fixture Ω\",\"public\":true,\"accessCodeRequired\":true,\"hostname\":\"play.example.org\",\"port\":13327}",
+      "error": "unsupported_schema",
+      "name": "v1-schema"
+    },
+    {
+      "body": "{\"schema\":\"atrinik-classic-publish-v2\",\"serverId\":\"13e46c3b910727029646ba5db7ee5930080f832af4d9e29f70cf781250a23809\",\"certificate\":\"MIIBWDCB/6ADAgECAgEhMAoGCCqGSM49BAMCMCUxIzAhBgNVBAMTGkF0cmluaWsgQ2xhc3NpYyB2MiBmaXh0dXJlMB4XDTI2MDEwMTAwMDAwMFoXDTM2MDEwMTAwMDAwMFowJTEjMCEGA1UEAxMaQXRyaW5payBDbGFzc2ljIHYyIGZpeHR1cmUwWTATBgcqhkjOPQIBBggqhkjOPQMBBwNCAATo4QRR45SdaF7zpESDJmLYTpGJbLuZIR6lYm+D0tiFS4Okj0gskkrVPr5FeHGblhLvUTv1C+GLO08g10p0EmPRoyAwHjAOBgNVHQ8BAf8EBAMCB4AwDAYDVR0TAQH/BAIwADAKBggqhkjOPQQDAgNIADBFAiEAhVxthqGABVxAG0Kqlh0AGWQk74HoNqfr4493srgNBsQCICx9jMsucb8mRVNO1O4E2i2nN6IdtCb6cMNDa/4Y8neZ\",\"name\":\"Atrinik Classic\",\"playersCount\":4,\"version\":\"6.0.0\",\"textComment\":\"Access-code fixture Ω\",\"public\":true,\"passwordRequired\":true,\"hostname\":\"play.example.org\",\"port\":13327}",
+      "error": "noncanonical_json",
+      "name": "legacy-password-field"
+    },
+    {
+      "body": "{\"schema\":\"atrinik-classic-publish-v2\",\"serverId\":\"13e46c3b910727029646ba5db7ee5930080f832af4d9e29f70cf781250a23809\",\"certificate\":\"MIIBWDCB/6ADAgECAgEhMAoGCCqGSM49BAMCMCUxIzAhBgNVBAMTGkF0cmluaWsgQ2xhc3NpYyB2MiBmaXh0dXJlMB4XDTI2MDEwMTAwMDAwMFoXDTM2MDEwMTAwMDAwMFowJTEjMCEGA1UEAxMaQXRyaW5payBDbGFzc2ljIHYyIGZpeHR1cmUwWTATBgcqhkjOPQIBBggqhkjOPQMBBwNCAATo4QRR45SdaF7zpESDJmLYTpGJbLuZIR6lYm+D0tiFS4Okj0gskkrVPr5FeHGblhLvUTv1C+GLO08g10p0EmPRoyAwHjAOBgNVHQ8BAf8EBAMCB4AwDAYDVR0TAQH/BAIwADAKBggqhkjOPQQDAgNIADBFAiEAhVxthqGABVxAG0Kqlh0AGWQk74HoNqfr4493srgNBsQCICx9jMsucb8mRVNO1O4E2i2nN6IdtCb6cMNDa/4Y8neZ\",\"playersCount\":4,\"name\":\"Atrinik Classic\",\"version\":\"6.0.0\",\"textComment\":\"Access-code fixture Ω\",\"public\":true,\"accessCodeRequired\":true,\"hostname\":\"play.example.org\",\"port\":13327}",
+      "error": "noncanonical_json",
+      "name": "wrong-key-order"
+    },
+    {
+      "body": "{ \"schema\":\"atrinik-classic-publish-v2\",\"serverId\":\"13e46c3b910727029646ba5db7ee5930080f832af4d9e29f70cf781250a23809\",\"certificate\":\"MIIBWDCB/6ADAgECAgEhMAoGCCqGSM49BAMCMCUxIzAhBgNVBAMTGkF0cmluaWsgQ2xhc3NpYyB2MiBmaXh0dXJlMB4XDTI2MDEwMTAwMDAwMFoXDTM2MDEwMTAwMDAwMFowJTEjMCEGA1UEAxMaQXRyaW5payBDbGFzc2ljIHYyIGZpeHR1cmUwWTATBgcqhkjOPQIBBggqhkjOPQMBBwNCAATo4QRR45SdaF7zpESDJmLYTpGJbLuZIR6lYm+D0tiFS4Okj0gskkrVPr5FeHGblhLvUTv1C+GLO08g10p0EmPRoyAwHjAOBgNVHQ8BAf8EBAMCB4AwDAYDVR0TAQH/BAIwADAKBggqhkjOPQQDAgNIADBFAiEAhVxthqGABVxAG0Kqlh0AGWQk74HoNqfr4493srgNBsQCICx9jMsucb8mRVNO1O4E2i2nN6IdtCb6cMNDa/4Y8neZ\",\"name\":\"Atrinik Classic\",\"playersCount\":4,\"version\":\"6.0.0\",\"textComment\":\"Access-code fixture Ω\",\"public\":true,\"accessCodeRequired\":true,\"hostname\":\"play.example.org\",\"port\":13327}",
+      "error": "noncanonical_json",
+      "name": "whitespace"
+    },
+    {
+      "body": "{\"schema\":\"atrinik-classic-publish-v2\",\"serverId\":\"13e46c3b910727029646ba5db7ee5930080f832af4d9e29f70cf781250a23809\",\"certificate\":\"MIIBWDCB/6ADAgECAgEhMAoGCCqGSM49BAMCMCUxIzAhBgNVBAMTGkF0cmluaWsgQ2xhc3NpYyB2MiBmaXh0dXJlMB4XDTI2MDEwMTAwMDAwMFoXDTM2MDEwMTAwMDAwMFowJTEjMCEGA1UEAxMaQXRyaW5payBDbGFzc2ljIHYyIGZpeHR1cmUwWTATBgcqhkjOPQIBBggqhkjOPQMBBwNCAATo4QRR45SdaF7zpESDJmLYTpGJbLuZIR6lYm+D0tiFS4Okj0gskkrVPr5FeHGblhLvUTv1C+GLO08g10p0EmPRoyAwHjAOBgNVHQ8BAf8EBAMCB4AwDAYDVR0TAQH/BAIwADAKBggqhkjOPQQDAgNIADBFAiEAhVxthqGABVxAG0Kqlh0AGWQk74HoNqfr4493srgNBsQCICx9jMsucb8mRVNO1O4E2i2nN6IdtCb6cMNDa/4Y8neZ\",\"name\":\"Atrinik Classic\",\"playersCount\":4,\"version\":\"6.0.0\",\"textComment\":\"Access-code fixture Ω\",\"public\":true,\"public\":true,\"accessCodeRequired\":true,\"hostname\":\"play.example.org\",\"port\":13327}",
+      "error": "noncanonical_json",
+      "name": "duplicate-field"
+    },
+    {
+      "body": "{\"schema\":\"atrinik-classic-publish-v2\",\"serverId\":\"13e46c3b910727029646ba5db7ee5930080f832af4d9e29f70cf781250a23809\",\"certificate\":\"MIIBWDCB/6ADAgECAgEhMAoGCCqGSM49BAMCMCUxIzAhBgNVBAMTGkF0cmluaWsgQ2xhc3NpYyB2MiBmaXh0dXJlMB4XDTI2MDEwMTAwMDAwMFoXDTM2MDEwMTAwMDAwMFowJTEjMCEGA1UEAxMaQXRyaW5payBDbGFzc2ljIHYyIGZpeHR1cmUwWTATBgcqhkjOPQIBBggqhkjOPQMBBwNCAATo4QRR45SdaF7zpESDJmLYTpGJbLuZIR6lYm+D0tiFS4Okj0gskkrVPr5FeHGblhLvUTv1C+GLO08g10p0EmPRoyAwHjAOBgNVHQ8BAf8EBAMCB4AwDAYDVR0TAQH/BAIwADAKBggqhkjOPQQDAgNIADBFAiEAhVxthqGABVxAG0Kqlh0AGWQk74HoNqfr4493srgNBsQCICx9jMsucb8mRVNO1O4E2i2nN6IdtCb6cMNDa/4Y8neZ\",\"name\":\"Atrinik Classic\",\"playersCount\":4,\"version\":\"6.0.0\",\"textComment\":\"Access-code fixture Ω\",\"public\":true,\"accessCodeRequired\":true,\"hostname\":\"play.example.org\",\"port\":13327,\"extra\":true}",
+      "error": "noncanonical_json",
+      "name": "unknown-field"
+    },
+    {
+      "body": "{\"schema\":\"atrinik-classic-publish-v2\",\"serverId\":\"13e46c3b910727029646ba5db7ee5930080f832af4d9e29f70cf781250a23809\",\"certificate\":\"MIIBWDCB/6ADAgECAgEhMAoGCCqGSM49BAMCMCUxIzAhBgNVBAMTGkF0cmluaWsgQ2xhc3NpYyB2MiBmaXh0dXJlMB4XDTI2MDEwMTAwMDAwMFoXDTM2MDEwMTAwMDAwMFowJTEjMCEGA1UEAxMaQXRyaW5payBDbGFzc2ljIHYyIGZpeHR1cmUwWTATBgcqhkjOPQIBBggqhkjOPQMBBwNCAATo4QRR45SdaF7zpESDJmLYTpGJbLuZIR6lYm+D0tiFS4Okj0gskkrVPr5FeHGblhLvUTv1C+GLO08g10p0EmPRoyAwHjAOBgNVHQ8BAf8EBAMCB4AwDAYDVR0TAQH/BAIwADAKBggqhkjOPQQDAgNIADBFAiEAhVxthqGABVxAG0Kqlh0AGWQk74HoNqfr4493srgNBsQCICx9jMsucb8mRVNO1O4E2i2nN6IdtCb6cMNDa/4Y8neZ\",\"name\":\"Atrinik Classic\",\"playersCount\":4,\"version\":\"6.0.0\",\"textComment\":\"Access-code fixture Ω\",\"public\":true,\"accessCodeRequired\":\"true\",\"hostname\":\"play.example.org\",\"port\":13327}",
+      "error": "invalid_json",
+      "name": "malformed-boolean"
+    },
+    {
+      "body": "{\"schema\":\"atrinik-classic-publish-v2\",\"serverId\":\"13e46c3b910727029646ba5db7ee5930080f832af4d9e29f70cf781250a23809\",\"certificate\":\"MIIBWDCB/6ADAgECAgEhMAoGCCqGSM49BAMCMCUxIzAhBgNVBAMTGkF0cmluaWsgQ2xhc3NpYyB2MiBmaXh0dXJlMB4XDTI2MDEwMTAwMDAwMFoXDTM2MDEwMTAwMDAwMFowJTEjMCEGA1UEAxMaQXRyaW5payBDbGFzc2ljIHYyIGZpeHR1cmUwWTATBgcqhkjOPQIBBggqhkjOPQMBBwNCAATo4QRR45SdaF7zpESDJmLYTpGJbLuZIR6lYm+D0tiFS4Okj0gskkrVPr5FeHGblhLvUTv1C+GLO08g10p0EmPRoyAwHjAOBgNVHQ8BAf8EBAMCB4AwDAYDVR0TAQH/BAIwADAKBggqhkjOPQQDAgNIADBFAiEAhVxthqGABVxAG0Kqlh0AGWQk74HoNqfr4493srgNBsQCICx9jMsucb8mRVNO1O4E2i2nN6IdtCb6cMNDa/4Y8neZ\",\"name\":\"Atrinik Classic\",\"playersCount\":4,\"version\":\"6.0.0\",\"textComment\":\"Access-code fixture Ω\",\"public\":true,\"hostname\":\"play.example.org\",\"port\":13327}",
+      "error": "noncanonical_json",
+      "name": "missing-policy"
+    },
+    {
+      "body": "{\"schema\":\"atrinik-classic-publish-v2\",\"serverId\":\"13e46c3b910727029646ba5db7ee5930080f832af4d9e29f70cf781250a23809\",\"certificate\":\"MIIBWDCB/6ADAgECAgEhMAoGCCqGSM49BAMCMCUxIzAhBgNVBAMTGkF0cmluaWsgQ2xhc3NpYyB2MiBmaXh0dXJlMB4XDTI2MDEwMTAwMDAwMFoXDTM2MDEwMTAwMDAwMFowJTEjMCEGA1UEAxMaQXRyaW5payBDbGFzc2ljIHYyIGZpeHR1cmUwWTATBgcqhkjOPQIBBggqhkjOPQMBBwNCAATo4QRR45SdaF7zpESDJmLYTpGJbLuZIR6lYm+D0tiFS4Okj0gskkrVPr5FeHGblhLvUTv1C+GLO08g10p0EmPRoyAwHjAOBgNVHQ8BAf8EBAMCB4AwDAYDVR0TAQH/BAIwADAKBggqhkjOPQQDAgNIADBFAiEAhVxthqGABVxAG0Kqlh0AGWQk74HoNqfr4493srgNBsQCICx9jMsucb8mRVNO1O4E2i2nN6IdtCb6cMNDa/4Y8neZ\",\"name\":\"Atrinik Classic\",\"playersCount\":4,\"version\":\"6.0.0\",\"textComment\":\"Access-code fixture Ω\",\"public\":true,\"accessCodeRequired\":true,\"hostname\":\"play.example.org\"}",
+      "error": "invalid_endpoint",
+      "name": "hostname-without-port"
+    },
+    {
+      "body": "{\"schema\":\"atrinik-classic-publish-v2\",\"serverId\":\"13e46c3b910727029646ba5db7ee5930080f832af4d9e29f70cf781250a23809\",\"certificate\":\"MIIBWDCB/6ADAgECAgEhMAoGCCqGSM49BAMCMCUxIzAhBgNVBAMTGkF0cmluaWsgQ2xhc3NpYyB2MiBmaXh0dXJlMB4XDTI2MDEwMTAwMDAwMFoXDTM2MDEwMTAwMDAwMFowJTEjMCEGA1UEAxMaQXRyaW5payBDbGFzc2ljIHYyIGZpeHR1cmUwWTATBgcqhkjOPQIBBggqhkjOPQMBBwNCAATo4QRR45SdaF7zpESDJmLYTpGJbLuZIR6lYm+D0tiFS4Okj0gskkrVPr5FeHGblhLvUTv1C+GLO08g10p0EmPRoyAwHjAOBgNVHQ8BAf8EBAMCB4AwDAYDVR0TAQH/BAIwADAKBggqhkjOPQQDAgNIADBFAiEAhVxthqGABVxAG0Kqlh0AGWQk74HoNqfr4493srgNBsQCICx9jMsucb8mRVNO1O4E2i2nN6IdtCb6cMNDa/4Y8neZ\",\"name\":\"Atrinik Classic\",\"playersCount\":4,\"version\":\"6.0.0\",\"textComment\":\"Access-code fixture Ω\",\"public\":true,\"accessCodeRequired\":true,\"port\":13327}",
+      "error": "invalid_endpoint",
+      "name": "port-without-hostname"
+    },
+    {
+      "body": "{\"schema\":\"atrinik-classic-publish-v2\",\"serverId\":\"13E46C3B910727029646BA5DB7EE5930080F832AF4D9E29F70CF781250A23809\",\"certificate\":\"MIIBWDCB/6ADAgECAgEhMAoGCCqGSM49BAMCMCUxIzAhBgNVBAMTGkF0cmluaWsgQ2xhc3NpYyB2MiBmaXh0dXJlMB4XDTI2MDEwMTAwMDAwMFoXDTM2MDEwMTAwMDAwMFowJTEjMCEGA1UEAxMaQXRyaW5payBDbGFzc2ljIHYyIGZpeHR1cmUwWTATBgcqhkjOPQIBBggqhkjOPQMBBwNCAATo4QRR45SdaF7zpESDJmLYTpGJbLuZIR6lYm+D0tiFS4Okj0gskkrVPr5FeHGblhLvUTv1C+GLO08g10p0EmPRoyAwHjAOBgNVHQ8BAf8EBAMCB4AwDAYDVR0TAQH/BAIwADAKBggqhkjOPQQDAgNIADBFAiEAhVxthqGABVxAG0Kqlh0AGWQk74HoNqfr4493srgNBsQCICx9jMsucb8mRVNO1O4E2i2nN6IdtCb6cMNDa/4Y8neZ\",\"name\":\"Atrinik Classic\",\"playersCount\":4,\"version\":\"6.0.0\",\"textComment\":\"Access-code fixture Ω\",\"public\":true,\"accessCodeRequired\":true,\"hostname\":\"play.example.org\",\"port\":13327}",
+      "error": "invalid_identity",
+      "name": "uppercase-server-id"
+    },
+    {
+      "body": "{\"schema\":\"atrinik-classic-publish-v2\",\"serverId\":\"13e46c3b910727029646ba5db7ee5930080f832af4d9e29f70cf781250a23809\",\"certificate\":\"MIIBWDCB/6ADAgECAgEhMAoGCCqGSM49BAMCMCUxIzAhBgNVBAMTGkF0cmluaWsgQ2xhc3NpYyB2MiBmaXh0dXJlMB4XDTI2MDEwMTAwMDAwMFoXDTM2MDEwMTAwMDAwMFowJTEjMCEGA1UEAxMaQXRyaW5payBDbGFzc2ljIHYyIGZpeHR1cmUwWTATBgcqhkjOPQIBBggqhkjOPQMBBwNCAATo4QRR45SdaF7zpESDJmLYTpGJbLuZIR6lYm+D0tiFS4Okj0gskkrVPr5FeHGblhLvUTv1C+GLO08g10p0EmPRoyAwHjAOBgNVHQ8BAf8EBAMCB4AwDAYDVR0TAQH/BAIwADAKBggqhkjOPQQDAgNIADBFAiEAhVxthqGABVxAG0Kqlh0AGWQk74HoNqfr4493srgNBsQCICx9jMsucb8mRVNO1O4E2i2nN6IdtCb6cMNDa/4Y8neZ=\",\"name\":\"Atrinik Classic\",\"playersCount\":4,\"version\":\"6.0.0\",\"textComment\":\"Access-code fixture Ω\",\"public\":true,\"accessCodeRequired\":true,\"hostname\":\"play.example.org\",\"port\":13327}",
+      "error": "invalid_certificate",
+      "name": "noncanonical-certificate"
+    },
+    {
+      "body": "{\"schema\":\"atrinik-classic-publish-v2\",\"serverId\":\"13e46c3b910727029646ba5db7ee5930080f832af4d9e29f70cf781250a23809\",\"certificate\":\"MIIBWDCB/6ADAgECAgEhMAoGCCqGSM49BAMCMCUxIzAhBgNVBAMTGkF0cmluaWsgQ2xhc3NpYyB2MiBmaXh0dXJlMB4XDTI2MDEwMTAwMDAwMFoXDTM2MDEwMTAwMDAwMFowJTEjMCEGA1UEAxMaQXRyaW5payBDbGFzc2ljIHYyIGZpeHR1cmUwWTATBgcqhkjOPQIBBggqhkjOPQMBBwNCAATo4QRR45SdaF7zpESDJmLYTpGJbLuZIR6lYm+D0tiFS4Okj0gskkrVPr5FeHGblhLvUTv1C+GLO08g10p0EmPRoyAwHjAOBgNVHQ8BAf8EBAMCB4AwDAYDVR0TAQH/BAIwADAKBggqhkjOPQQDAgNIADBFAiEAhVxthqGABVxAG0Kqlh0AGWQk74HoNqfr4493srgNBsQCICx9jMsucb8mRVNO1O4E2i2nN6IdtCb6cMNDa/4Y8neZ\",\"name\":\"Atrinik Classic\",\"playersCount\":4294967296,\"version\":\"6.0.0\",\"textComment\":\"Access-code fixture Ω\",\"public\":true,\"accessCodeRequired\":true,\"hostname\":\"play.example.org\",\"port\":13327}",
+      "error": "invalid_players",
+      "name": "players-overflow"
+    },
+    {
+      "body": "{\"schema\":\"atrinik-classic-publish-v2\",\"serverId\":\"13e46c3b910727029646ba5db7ee5930080f832af4d9e29f70cf781250a23809\",\"certificate\":\"MIIBWDCB/6ADAgECAgEhMAoGCCqGSM49BAMCMCUxIzAhBgNVBAMTGkF0cmluaWsgQ2xhc3NpYyB2MiBmaXh0dXJlMB4XDTI2MDEwMTAwMDAwMFoXDTM2MDEwMTAwMDAwMFowJTEjMCEGA1UEAxMaQXRyaW5payBDbGFzc2ljIHYyIGZpeHR1cmUwWTATBgcqhkjOPQIBBggqhkjOPQMBBwNCAATo4QRR45SdaF7zpESDJmLYTpGJbLuZIR6lYm+D0tiFS4Okj0gskkrVPr5FeHGblhLvUTv1C+GLO08g10p0EmPRoyAwHjAOBgNVHQ8BAf8EBAMCB4AwDAYDVR0TAQH/BAIwADAKBggqhkjOPQQDAgNIADBFAiEAhVxthqGABVxAG0Kqlh0AGWQk74HoNqfr4493srgNBsQCICx9jMsucb8mRVNO1O4E2i2nN6IdtCb6cMNDa/4Y8neZ\",\"name\":\"Atrinik Classic\",\"playersCount\":4,\"version\":\"6.0.0\",\"textComment\":\"Access-code fixture Ω\",\"public\":true,\"accessCodeRequired\":true,\"hostname\":\"192.0.2.1\",\"port\":13327}",
+      "error": "invalid_endpoint",
+      "name": "numeric-hostname"
+    },
+    {
+      "body": "{\"schema\":\"atrinik-classic-publish-v2\",\"serverId\":\"13e46c3b910727029646ba5db7ee5930080f832af4d9e29f70cf781250a23809\",\"certificate\":\"MIIBWDCB/6ADAgECAgEhMAoGCCqGSM49BAMCMCUxIzAhBgNVBAMTGkF0cmluaWsgQ2xhc3NpYyB2MiBmaXh0dXJlMB4XDTI2MDEwMTAwMDAwMFoXDTM2MDEwMTAwMDAwMFowJTEjMCEGA1UEAxMaQXRyaW5payBDbGFzc2ljIHYyIGZpeHR1cmUwWTATBgcqhkjOPQIBBggqhkjOPQMBBwNCAATo4QRR45SdaF7zpESDJmLYTpGJbLuZIR6lYm+D0tiFS4Okj0gskkrVPr5FeHGblhLvUTv1C+GLO08g10p0EmPRoyAwHjAOBgNVHQ8BAf8EBAMCB4AwDAYDVR0TAQH/BAIwADAKBggqhkjOPQQDAgNIADBFAiEAhVxthqGABVxAG0Kqlh0AGWQk74HoNqfr4493srgNBsQCICx9jMsucb8mRVNO1O4E2i2nN6IdtCb6cMNDa/4Y8neZ\",\"name\":\"Atrinik Classic\",\"playersCount\":4,\"version\":\"6.0.0\",\"textComment\":\"Access-code fixture Ω\",\"public\":true,\"accessCodeRequired\":true,\"hostname\":\"Play.example.org\",\"port\":13327}",
+      "error": "invalid_endpoint",
+      "name": "uppercase-hostname"
+    },
+    {
+      "body": "{\"schema\":\"atrinik-classic-publish-v2\",\"serverId\":\"13e46c3b910727029646ba5db7ee5930080f832af4d9e29f70cf781250a23809\",\"certificate\":\"MIIBWDCB/6ADAgECAgEhMAoGCCqGSM49BAMCMCUxIzAhBgNVBAMTGkF0cmluaWsgQ2xhc3NpYyB2MiBmaXh0dXJlMB4XDTI2MDEwMTAwMDAwMFoXDTM2MDEwMTAwMDAwMFowJTEjMCEGA1UEAxMaQXRyaW5payBDbGFzc2ljIHYyIGZpeHR1cmUwWTATBgcqhkjOPQIBBggqhkjOPQMBBwNCAATo4QRR45SdaF7zpESDJmLYTpGJbLuZIR6lYm+D0tiFS4Okj0gskkrVPr5FeHGblhLvUTv1C+GLO08g10p0EmPRoyAwHjAOBgNVHQ8BAf8EBAMCB4AwDAYDVR0TAQH/BAIwADAKBggqhkjOPQQDAgNIADBFAiEAhVxthqGABVxAG0Kqlh0AGWQk74HoNqfr4493srgNBsQCICx9jMsucb8mRVNO1O4E2i2nN6IdtCb6cMNDa/4Y8neZ\",\"name\":\"Atrinik Classic\",\"playersCount\":4,\"version\":\"6.0.0\",\"textComment\":\"bad\\nvalue\",\"public\":true,\"accessCodeRequired\":true,\"hostname\":\"play.example.org\",\"port\":13327}",
+      "error": "invalid_text",
+      "name": "control-text"
+    },
+    {
+      "body": "{\"schema\":\"atrinik-classic-publish-v2\",\"serverId\":\"13e46c3b910727029646ba5db7ee5930080f832af4d9e29f70cf781250a23809\",\"certificate\":\"MIIBWDCB/6ADAgECAgEhMAoGCCqGSM49BAMCMCUxIzAhBgNVBAMTGkF0cmluaWsgQ2xhc3NpYyB2MiBmaXh0dXJlMB4XDTI2MDEwMTAwMDAwMFoXDTM2MDEwMTAwMDAwMFowJTEjMCEGA1UEAxMaQXRyaW5payBDbGFzc2ljIHYyIGZpeHR1cmUwWTATBgcqhkjOPQIBBggqhkjOPQMBBwNCAATo4QRR45SdaF7zpESDJmLYTpGJbLuZIR6lYm+D0tiFS4Okj0gskkrVPr5FeHGblhLvUTv1C+GLO08g10p0EmPRoyAwHjAOBgNVHQ8BAf8EBAMCB4AwDAYDVR0TAQH/BAIwADAKBggqhkjOPQQDAgNIADBFAiEAhVxthqGABVxAG0Kqlh0AGWQk74HoNqfr4493srgNBsQCICx9jMsucb8mRVNO1O4E2i2nN6IdtCb6cMNDa/4Y8neZ\",\"name\":\"Atrinik Classic\",\"playersCount\":4,\"version\":\"6.0.0\",\"textComment\":\"Access-code fixture Ω\",\"public\":true,\"accessCodeRequired\":true,\"hostname\":\"play.example.org\",\"port\":13327}{}",
+      "error": "noncanonical_json",
+      "name": "trailing-input"
+    },
+    {
+      "body": "{\"schema\":\"atrinik-classic-publish-v2\",\"serverId\":\"13e46c3b910727029646ba5db7ee5930080f832af4d9e29f70cf781250a23809\",\"certificate\":\"MIIBWDCB/6ADAgECAgEhMAoGCCqGSM49BAMCMCUxIzAhBgNVBAMTGkF0cmluaWsgQ2xhc3NpYyB2MiBmaXh0dXJlMB4XDTI2MDEwMTAwMDAwMFoXDTM2MDEwMTAwMDAwMFowJTEjMCEGA1UEAxMaQXRyaW5payBDbGFzc2ljIHYyIGZpeHR1cmUwWTATBgcqhkjOPQIBBggqhkjOPQMBBwNCAATo4QRR45SdaF7zpESDJmLYTpGJbLuZIR6lYm+D0tiFS4Okj0gskkrVPr5FeHGblhLvUTv1C+GLO08g10p0EmPRoyAwHjAOBgNVHQ8BAf8EBAMCB4AwDAYDVR0TAQH/BAIwADAKBggqhkjOPQQDAgNIADBFAiEAhVxthqGABVxAG0Kqlh0AGWQk74HoNqfr4493srgNBsQCICx9jMsucb8mRVNO1O4E2i2nN6IdtCb6cMNDa/4Y8neZ\",\"name\":\"Atrinik Classic\",\"playersCount\":4,\"version\":\"6.0.0\",\"textComment\":\"Access-code fixture Ω\",\"public\":true,\"accessCodeRequired\":true,\"endpoint\":{\"hostname\":\"play.example.org\",\"port\":13327}}",
+      "error": "noncanonical_json",
+      "name": "endpoint-alias"
+    }
+  ],
+  "positive": [
+    {
+      "body": "{\"schema\":\"atrinik-classic-publish-v2\",\"serverId\":\"13e46c3b910727029646ba5db7ee5930080f832af4d9e29f70cf781250a23809\",\"certificate\":\"MIIBWDCB/6ADAgECAgEhMAoGCCqGSM49BAMCMCUxIzAhBgNVBAMTGkF0cmluaWsgQ2xhc3NpYyB2MiBmaXh0dXJlMB4XDTI2MDEwMTAwMDAwMFoXDTM2MDEwMTAwMDAwMFowJTEjMCEGA1UEAxMaQXRyaW5payBDbGFzc2ljIHYyIGZpeHR1cmUwWTATBgcqhkjOPQIBBggqhkjOPQMBBwNCAATo4QRR45SdaF7zpESDJmLYTpGJbLuZIR6lYm+D0tiFS4Okj0gskkrVPr5FeHGblhLvUTv1C+GLO08g10p0EmPRoyAwHjAOBgNVHQ8BAf8EBAMCB4AwDAYDVR0TAQH/BAIwADAKBggqhkjOPQQDAgNIADBFAiEAhVxthqGABVxAG0Kqlh0AGWQk74HoNqfr4493srgNBsQCICx9jMsucb8mRVNO1O4E2i2nN6IdtCb6cMNDa/4Y8neZ\",\"name\":\"Atrinik Classic\",\"playersCount\":3,\"version\":\"6.0.0\",\"textComment\":\"Access-code fixture Ω\",\"public\":true,\"accessCodeRequired\":false}",
+      "content_digest": "sha-256=:Gr86A+BT7xYperp9yC1Dpg2+AJf20bcontFR6hMJvxY=:",
+      "created": 1800000000,
+      "expected_state": {
+        "authenticated_presence": true,
+        "private_server_control_retained": false,
+        "public_authorization_active": false,
+        "public_fields_retained": true,
+        "public_listing": true,
+        "rendezvous": "unauthenticated"
+      },
+      "expires": 1800000300,
+      "name": "public-open-addressless",
+      "nonce": "202122232425262728292a2b2c2d2e2f",
+      "path": "/v2/classic/servers/13e46c3b910727029646ba5db7ee5930080f832af4d9e29f70cf781250a23809/publish",
+      "sequence": "101",
+      "signature_base": "\"@method\": POST\n\"@authority\": publish.meta.atrinik.org\n\"@path\": /v2/classic/servers/13e46c3b910727029646ba5db7ee5930080f832af4d9e29f70cf781250a23809/publish\n\"content-digest\": sha-256=:Gr86A+BT7xYperp9yC1Dpg2+AJf20bcontFR6hMJvxY=:\n\"content-type\": application/json\n\"atrinik-server-id\": 13e46c3b910727029646ba5db7ee5930080f832af4d9e29f70cf781250a23809\n\"atrinik-publish-sequence\": 101\n\"@signature-params\": (\"@method\" \"@authority\" \"@path\" \"content-digest\" \"content-type\" \"atrinik-server-id\" \"atrinik-publish-sequence\");created=1800000000;expires=1800000300;nonce=\"202122232425262728292a2b2c2d2e2f\";alg=\"ecdsa-p256-sha256\";keyid=\"13e46c3b910727029646ba5db7ee5930080f832af4d9e29f70cf781250a23809\";tag=\"atrinik-classic-publish-v2\"",
+      "signature_base64": "hn4Vp7Yk9oAcsT/ZJa3JjtPNPkojidIirbvpkugwnUncptdh7TMSkOBesO2BNR2UhWvirP798Nz1YLopF7tHOw==",
+      "signature_header": "atrinik=:hn4Vp7Yk9oAcsT/ZJa3JjtPNPkojidIirbvpkugwnUncptdh7TMSkOBesO2BNR2UhWvirP798Nz1YLopF7tHOw==:",
+      "signature_input": "atrinik=(\"@method\" \"@authority\" \"@path\" \"content-digest\" \"content-type\" \"atrinik-server-id\" \"atrinik-publish-sequence\");created=1800000000;expires=1800000300;nonce=\"202122232425262728292a2b2c2d2e2f\";alg=\"ecdsa-p256-sha256\";keyid=\"13e46c3b910727029646ba5db7ee5930080f832af4d9e29f70cf781250a23809\";tag=\"atrinik-classic-publish-v2\""
+    },
+    {
+      "body": "{\"schema\":\"atrinik-classic-publish-v2\",\"serverId\":\"13e46c3b910727029646ba5db7ee5930080f832af4d9e29f70cf781250a23809\",\"certificate\":\"MIIBWDCB/6ADAgECAgEhMAoGCCqGSM49BAMCMCUxIzAhBgNVBAMTGkF0cmluaWsgQ2xhc3NpYyB2MiBmaXh0dXJlMB4XDTI2MDEwMTAwMDAwMFoXDTM2MDEwMTAwMDAwMFowJTEjMCEGA1UEAxMaQXRyaW5payBDbGFzc2ljIHYyIGZpeHR1cmUwWTATBgcqhkjOPQIBBggqhkjOPQMBBwNCAATo4QRR45SdaF7zpESDJmLYTpGJbLuZIR6lYm+D0tiFS4Okj0gskkrVPr5FeHGblhLvUTv1C+GLO08g10p0EmPRoyAwHjAOBgNVHQ8BAf8EBAMCB4AwDAYDVR0TAQH/BAIwADAKBggqhkjOPQQDAgNIADBFAiEAhVxthqGABVxAG0Kqlh0AGWQk74HoNqfr4493srgNBsQCICx9jMsucb8mRVNO1O4E2i2nN6IdtCb6cMNDa/4Y8neZ\",\"name\":\"Atrinik Classic\",\"playersCount\":4,\"version\":\"6.0.0\",\"textComment\":\"Access-code fixture Ω\",\"public\":true,\"accessCodeRequired\":true,\"hostname\":\"play.example.org\",\"port\":13327}",
+      "content_digest": "sha-256=:mBfPpgnbQXGzCdNpaUZtEgJiceUliM4rByayVG5G9VM=:",
+      "created": 1800000600,
+      "expected_state": {
+        "authenticated_presence": true,
+        "private_server_control_retained": false,
+        "public_authorization_active": true,
+        "public_fields_retained": true,
+        "public_listing": true,
+        "rendezvous": "proof-required"
+      },
+      "expires": 1800000900,
+      "name": "public-protected-endpoint",
+      "nonce": "303132333435363738393a3b3c3d3e3f",
+      "path": "/v2/classic/servers/13e46c3b910727029646ba5db7ee5930080f832af4d9e29f70cf781250a23809/publish",
+      "sequence": "102",
+      "signature_base": "\"@method\": POST\n\"@authority\": publish.meta.atrinik.org\n\"@path\": /v2/classic/servers/13e46c3b910727029646ba5db7ee5930080f832af4d9e29f70cf781250a23809/publish\n\"content-digest\": sha-256=:mBfPpgnbQXGzCdNpaUZtEgJiceUliM4rByayVG5G9VM=:\n\"content-type\": application/json\n\"atrinik-server-id\": 13e46c3b910727029646ba5db7ee5930080f832af4d9e29f70cf781250a23809\n\"atrinik-publish-sequence\": 102\n\"@signature-params\": (\"@method\" \"@authority\" \"@path\" \"content-digest\" \"content-type\" \"atrinik-server-id\" \"atrinik-publish-sequence\");created=1800000600;expires=1800000900;nonce=\"303132333435363738393a3b3c3d3e3f\";alg=\"ecdsa-p256-sha256\";keyid=\"13e46c3b910727029646ba5db7ee5930080f832af4d9e29f70cf781250a23809\";tag=\"atrinik-classic-publish-v2\"",
+      "signature_base64": "1gJXC5zSAoE9ngEtAC/rIwPdt9+YbW2YwlrLwi9Sj6U9XZdsmTpIMR2/2ASzKuD/P1PusayPzzeVnsj0VFKRIw==",
+      "signature_header": "atrinik=:1gJXC5zSAoE9ngEtAC/rIwPdt9+YbW2YwlrLwi9Sj6U9XZdsmTpIMR2/2ASzKuD/P1PusayPzzeVnsj0VFKRIw==:",
+      "signature_input": "atrinik=(\"@method\" \"@authority\" \"@path\" \"content-digest\" \"content-type\" \"atrinik-server-id\" \"atrinik-publish-sequence\");created=1800000600;expires=1800000900;nonce=\"303132333435363738393a3b3c3d3e3f\";alg=\"ecdsa-p256-sha256\";keyid=\"13e46c3b910727029646ba5db7ee5930080f832af4d9e29f70cf781250a23809\";tag=\"atrinik-classic-publish-v2\""
+    },
+    {
+      "body": "{\"schema\":\"atrinik-classic-publish-v2\",\"serverId\":\"13e46c3b910727029646ba5db7ee5930080f832af4d9e29f70cf781250a23809\",\"certificate\":\"MIIBWDCB/6ADAgECAgEhMAoGCCqGSM49BAMCMCUxIzAhBgNVBAMTGkF0cmluaWsgQ2xhc3NpYyB2MiBmaXh0dXJlMB4XDTI2MDEwMTAwMDAwMFoXDTM2MDEwMTAwMDAwMFowJTEjMCEGA1UEAxMaQXRyaW5payBDbGFzc2ljIHYyIGZpeHR1cmUwWTATBgcqhkjOPQIBBggqhkjOPQMBBwNCAATo4QRR45SdaF7zpESDJmLYTpGJbLuZIR6lYm+D0tiFS4Okj0gskkrVPr5FeHGblhLvUTv1C+GLO08g10p0EmPRoyAwHjAOBgNVHQ8BAf8EBAMCB4AwDAYDVR0TAQH/BAIwADAKBggqhkjOPQQDAgNIADBFAiEAhVxthqGABVxAG0Kqlh0AGWQk74HoNqfr4493srgNBsQCICx9jMsucb8mRVNO1O4E2i2nN6IdtCb6cMNDa/4Y8neZ\",\"name\":\"Atrinik Classic\",\"playersCount\":5,\"version\":\"6.0.0\",\"textComment\":\"Access-code fixture Ω\",\"public\":false,\"accessCodeRequired\":false,\"hostname\":\"private.example.org\",\"port\":13328}",
+      "content_digest": "sha-256=:vDE4NdX7UjFFd8FvQAw6DJRGcWwkSlDVPQeoJ6WFF4c=:",
+      "created": 1800001200,
+      "expected_state": {
+        "authenticated_presence": true,
+        "private_server_control_retained": true,
+        "public_authorization_active": false,
+        "public_fields_retained": false,
+        "public_listing": false,
+        "rendezvous": "not-found"
+      },
+      "expires": 1800001500,
+      "name": "private-open-endpoint",
+      "nonce": "404142434445464748494a4b4c4d4e4f",
+      "path": "/v2/classic/servers/13e46c3b910727029646ba5db7ee5930080f832af4d9e29f70cf781250a23809/publish",
+      "sequence": "103",
+      "signature_base": "\"@method\": POST\n\"@authority\": publish.meta.atrinik.org\n\"@path\": /v2/classic/servers/13e46c3b910727029646ba5db7ee5930080f832af4d9e29f70cf781250a23809/publish\n\"content-digest\": sha-256=:vDE4NdX7UjFFd8FvQAw6DJRGcWwkSlDVPQeoJ6WFF4c=:\n\"content-type\": application/json\n\"atrinik-server-id\": 13e46c3b910727029646ba5db7ee5930080f832af4d9e29f70cf781250a23809\n\"atrinik-publish-sequence\": 103\n\"@signature-params\": (\"@method\" \"@authority\" \"@path\" \"content-digest\" \"content-type\" \"atrinik-server-id\" \"atrinik-publish-sequence\");created=1800001200;expires=1800001500;nonce=\"404142434445464748494a4b4c4d4e4f\";alg=\"ecdsa-p256-sha256\";keyid=\"13e46c3b910727029646ba5db7ee5930080f832af4d9e29f70cf781250a23809\";tag=\"atrinik-classic-publish-v2\"",
+      "signature_base64": "iqRbY+IrGsqLmv33cE2lxOd0cE3dRT70ER5I1W/R+0pqFzpITv4iYu5e0Zpu1GllDo1dRBx3btHG0qFiC/gaEA==",
+      "signature_header": "atrinik=:iqRbY+IrGsqLmv33cE2lxOd0cE3dRT70ER5I1W/R+0pqFzpITv4iYu5e0Zpu1GllDo1dRBx3btHG0qFiC/gaEA==:",
+      "signature_input": "atrinik=(\"@method\" \"@authority\" \"@path\" \"content-digest\" \"content-type\" \"atrinik-server-id\" \"atrinik-publish-sequence\");created=1800001200;expires=1800001500;nonce=\"404142434445464748494a4b4c4d4e4f\";alg=\"ecdsa-p256-sha256\";keyid=\"13e46c3b910727029646ba5db7ee5930080f832af4d9e29f70cf781250a23809\";tag=\"atrinik-classic-publish-v2\""
+    },
+    {
+      "body": "{\"schema\":\"atrinik-classic-publish-v2\",\"serverId\":\"13e46c3b910727029646ba5db7ee5930080f832af4d9e29f70cf781250a23809\",\"certificate\":\"MIIBWDCB/6ADAgECAgEhMAoGCCqGSM49BAMCMCUxIzAhBgNVBAMTGkF0cmluaWsgQ2xhc3NpYyB2MiBmaXh0dXJlMB4XDTI2MDEwMTAwMDAwMFoXDTM2MDEwMTAwMDAwMFowJTEjMCEGA1UEAxMaQXRyaW5payBDbGFzc2ljIHYyIGZpeHR1cmUwWTATBgcqhkjOPQIBBggqhkjOPQMBBwNCAATo4QRR45SdaF7zpESDJmLYTpGJbLuZIR6lYm+D0tiFS4Okj0gskkrVPr5FeHGblhLvUTv1C+GLO08g10p0EmPRoyAwHjAOBgNVHQ8BAf8EBAMCB4AwDAYDVR0TAQH/BAIwADAKBggqhkjOPQQDAgNIADBFAiEAhVxthqGABVxAG0Kqlh0AGWQk74HoNqfr4493srgNBsQCICx9jMsucb8mRVNO1O4E2i2nN6IdtCb6cMNDa/4Y8neZ\",\"name\":\"Atrinik Classic\",\"playersCount\":6,\"version\":\"6.0.0\",\"textComment\":\"Access-code fixture Ω\",\"public\":false,\"accessCodeRequired\":true}",
+      "content_digest": "sha-256=:s56rYrOnUoGOi8+rE1WX6ztHKCHd7r9kmt8S5DX6uco=:",
+      "created": 1800001800,
+      "expected_state": {
+        "authenticated_presence": true,
+        "private_server_control_retained": true,
+        "public_authorization_active": false,
+        "public_fields_retained": false,
+        "public_listing": false,
+        "rendezvous": "not-found"
+      },
+      "expires": 1800002100,
+      "name": "private-protected-addressless",
+      "nonce": "505152535455565758595a5b5c5d5e5f",
+      "path": "/v2/classic/servers/13e46c3b910727029646ba5db7ee5930080f832af4d9e29f70cf781250a23809/publish",
+      "sequence": "104",
+      "signature_base": "\"@method\": POST\n\"@authority\": publish.meta.atrinik.org\n\"@path\": /v2/classic/servers/13e46c3b910727029646ba5db7ee5930080f832af4d9e29f70cf781250a23809/publish\n\"content-digest\": sha-256=:s56rYrOnUoGOi8+rE1WX6ztHKCHd7r9kmt8S5DX6uco=:\n\"content-type\": application/json\n\"atrinik-server-id\": 13e46c3b910727029646ba5db7ee5930080f832af4d9e29f70cf781250a23809\n\"atrinik-publish-sequence\": 104\n\"@signature-params\": (\"@method\" \"@authority\" \"@path\" \"content-digest\" \"content-type\" \"atrinik-server-id\" \"atrinik-publish-sequence\");created=1800001800;expires=1800002100;nonce=\"505152535455565758595a5b5c5d5e5f\";alg=\"ecdsa-p256-sha256\";keyid=\"13e46c3b910727029646ba5db7ee5930080f832af4d9e29f70cf781250a23809\";tag=\"atrinik-classic-publish-v2\"",
+      "signature_base64": "09ZOuTpd+zu1VRmV+Hs12jYGF4bVyxbCgLfNJR0PjsZyDA5bMni8P+4Ni/pYqMs261lxZe43J3iJSiseBxs4ng==",
+      "signature_header": "atrinik=:09ZOuTpd+zu1VRmV+Hs12jYGF4bVyxbCgLfNJR0PjsZyDA5bMni8P+4Ni/pYqMs261lxZe43J3iJSiseBxs4ng==:",
+      "signature_input": "atrinik=(\"@method\" \"@authority\" \"@path\" \"content-digest\" \"content-type\" \"atrinik-server-id\" \"atrinik-publish-sequence\");created=1800001800;expires=1800002100;nonce=\"505152535455565758595a5b5c5d5e5f\";alg=\"ecdsa-p256-sha256\";keyid=\"13e46c3b910727029646ba5db7ee5930080f832af4d9e29f70cf781250a23809\";tag=\"atrinik-classic-publish-v2\""
+    }
+  ],
+  "profile": "classic-v2",
+  "server_id": "13e46c3b910727029646ba5db7ee5930080f832af4d9e29f70cf781250a23809",
+  "signature_negative": [
+    {
+      "body": "{\"schema\":\"atrinik-classic-publish-v2\",\"serverId\":\"13e46c3b910727029646ba5db7ee5930080f832af4d9e29f70cf781250a23809\",\"certificate\":\"MIIBWDCB/6ADAgECAgEhMAoGCCqGSM49BAMCMCUxIzAhBgNVBAMTGkF0cmluaWsgQ2xhc3NpYyB2MiBmaXh0dXJlMB4XDTI2MDEwMTAwMDAwMFoXDTM2MDEwMTAwMDAwMFowJTEjMCEGA1UEAxMaQXRyaW5payBDbGFzc2ljIHYyIGZpeHR1cmUwWTATBgcqhkjOPQIBBggqhkjOPQMBBwNCAATo4QRR45SdaF7zpESDJmLYTpGJbLuZIR6lYm+D0tiFS4Okj0gskkrVPr5FeHGblhLvUTv1C+GLO08g10p0EmPRoyAwHjAOBgNVHQ8BAf8EBAMCB4AwDAYDVR0TAQH/BAIwADAKBggqhkjOPQQDAgNIADBFAiEAhVxthqGABVxAG0Kqlh0AGWQk74HoNqfr4493srgNBsQCICx9jMsucb8mRVNO1O4E2i2nN6IdtCb6cMNDa/4Y8neZ\",\"name\":\"Atrinik Classic mutated\",\"playersCount\":4,\"version\":\"6.0.0\",\"textComment\":\"Access-code fixture Ω\",\"public\":true,\"accessCodeRequired\":true,\"hostname\":\"play.example.org\",\"port\":13327}",
+      "certificate_der_base64": "MIIBWDCB/6ADAgECAgEhMAoGCCqGSM49BAMCMCUxIzAhBgNVBAMTGkF0cmluaWsgQ2xhc3NpYyB2MiBmaXh0dXJlMB4XDTI2MDEwMTAwMDAwMFoXDTM2MDEwMTAwMDAwMFowJTEjMCEGA1UEAxMaQXRyaW5payBDbGFzc2ljIHYyIGZpeHR1cmUwWTATBgcqhkjOPQIBBggqhkjOPQMBBwNCAATo4QRR45SdaF7zpESDJmLYTpGJbLuZIR6lYm+D0tiFS4Okj0gskkrVPr5FeHGblhLvUTv1C+GLO08g10p0EmPRoyAwHjAOBgNVHQ8BAf8EBAMCB4AwDAYDVR0TAQH/BAIwADAKBggqhkjOPQQDAgNIADBFAiEAhVxthqGABVxAG0Kqlh0AGWQk74HoNqfr4493srgNBsQCICx9jMsucb8mRVNO1O4E2i2nN6IdtCb6cMNDa/4Y8neZ",
+      "error": "invalid_signature",
+      "failure_class": "body_content_digest",
+      "name": "body-content-digest",
+      "positive": "public-protected-endpoint",
+      "server_id": "13e46c3b910727029646ba5db7ee5930080f832af4d9e29f70cf781250a23809",
+      "signature_base": "\"@method\": POST\n\"@authority\": publish.meta.atrinik.org\n\"@path\": /v2/classic/servers/13e46c3b910727029646ba5db7ee5930080f832af4d9e29f70cf781250a23809/publish\n\"content-digest\": sha-256=:wzSGCMNyq+fY+HvqHsUwSM+VBpBskOYmciOfTpyIGl0=:\n\"content-type\": application/json\n\"atrinik-server-id\": 13e46c3b910727029646ba5db7ee5930080f832af4d9e29f70cf781250a23809\n\"atrinik-publish-sequence\": 102\n\"@signature-params\": (\"@method\" \"@authority\" \"@path\" \"content-digest\" \"content-type\" \"atrinik-server-id\" \"atrinik-publish-sequence\");created=1800000600;expires=1800000900;nonce=\"303132333435363738393a3b3c3d3e3f\";alg=\"ecdsa-p256-sha256\";keyid=\"13e46c3b910727029646ba5db7ee5930080f832af4d9e29f70cf781250a23809\";tag=\"atrinik-classic-publish-v2\"",
+      "signature_base64": "1gJXC5zSAoE9ngEtAC/rIwPdt9+YbW2YwlrLwi9Sj6U9XZdsmTpIMR2/2ASzKuD/P1PusayPzzeVnsj0VFKRIw=="
+    },
+    {
+      "body": "{\"schema\":\"atrinik-classic-publish-v2\",\"serverId\":\"13e46c3b910727029646ba5db7ee5930080f832af4d9e29f70cf781250a23809\",\"certificate\":\"MIIBWDCB/6ADAgECAgEhMAoGCCqGSM49BAMCMCUxIzAhBgNVBAMTGkF0cmluaWsgQ2xhc3NpYyB2MiBmaXh0dXJlMB4XDTI2MDEwMTAwMDAwMFoXDTM2MDEwMTAwMDAwMFowJTEjMCEGA1UEAxMaQXRyaW5payBDbGFzc2ljIHYyIGZpeHR1cmUwWTATBgcqhkjOPQIBBggqhkjOPQMBBwNCAATo4QRR45SdaF7zpESDJmLYTpGJbLuZIR6lYm+D0tiFS4Okj0gskkrVPr5FeHGblhLvUTv1C+GLO08g10p0EmPRoyAwHjAOBgNVHQ8BAf8EBAMCB4AwDAYDVR0TAQH/BAIwADAKBggqhkjOPQQDAgNIADBFAiEAhVxthqGABVxAG0Kqlh0AGWQk74HoNqfr4493srgNBsQCICx9jMsucb8mRVNO1O4E2i2nN6IdtCb6cMNDa/4Y8neZ\",\"name\":\"Atrinik Classic\",\"playersCount\":4,\"version\":\"6.0.0\",\"textComment\":\"Access-code fixture Ω\",\"public\":true,\"accessCodeRequired\":true,\"hostname\":\"play.example.org\",\"port\":13327}",
+      "certificate_der_base64": "MIIBWDCB/6ADAgECAgEhMAoGCCqGSM49BAMCMCUxIzAhBgNVBAMTGkF0cmluaWsgQ2xhc3NpYyB2MiBmaXh0dXJlMB4XDTI2MDEwMTAwMDAwMFoXDTM2MDEwMTAwMDAwMFowJTEjMCEGA1UEAxMaQXRyaW5payBDbGFzc2ljIHYyIGZpeHR1cmUwWTATBgcqhkjOPQIBBggqhkjOPQMBBwNCAATo4QRR45SdaF7zpESDJmLYTpGJbLuZIR6lYm+D0tiFS4Okj0gskkrVPr5FeHGblhLvUTv1C+GLO08g10p0EmPRoyAwHjAOBgNVHQ8BAf8EBAMCB4AwDAYDVR0TAQH/BAIwADAKBggqhkjOPQQDAgNIADBFAiEAhVxthqGABVxAG0Kqlh0AGWQk74HoNqfr4493srgNBsQCICx9jMsucb8mRVNO1O4E2i2nN6IdtCb6cMNDa/4Y8neZ",
+      "error": "invalid_signature",
+      "failure_class": "authority",
+      "name": "authority",
+      "positive": "public-protected-endpoint",
+      "server_id": "13e46c3b910727029646ba5db7ee5930080f832af4d9e29f70cf781250a23809",
+      "signature_base": "\"@method\": POST\n\"@authority\": canary.publish.meta.atrinik.org\n\"@path\": /v2/classic/servers/13e46c3b910727029646ba5db7ee5930080f832af4d9e29f70cf781250a23809/publish\n\"content-digest\": sha-256=:mBfPpgnbQXGzCdNpaUZtEgJiceUliM4rByayVG5G9VM=:\n\"content-type\": application/json\n\"atrinik-server-id\": 13e46c3b910727029646ba5db7ee5930080f832af4d9e29f70cf781250a23809\n\"atrinik-publish-sequence\": 102\n\"@signature-params\": (\"@method\" \"@authority\" \"@path\" \"content-digest\" \"content-type\" \"atrinik-server-id\" \"atrinik-publish-sequence\");created=1800000600;expires=1800000900;nonce=\"303132333435363738393a3b3c3d3e3f\";alg=\"ecdsa-p256-sha256\";keyid=\"13e46c3b910727029646ba5db7ee5930080f832af4d9e29f70cf781250a23809\";tag=\"atrinik-classic-publish-v2\"",
+      "signature_base64": "1gJXC5zSAoE9ngEtAC/rIwPdt9+YbW2YwlrLwi9Sj6U9XZdsmTpIMR2/2ASzKuD/P1PusayPzzeVnsj0VFKRIw=="
+    },
+    {
+      "body": "{\"schema\":\"atrinik-classic-publish-v2\",\"serverId\":\"13e46c3b910727029646ba5db7ee5930080f832af4d9e29f70cf781250a23809\",\"certificate\":\"MIIBWDCB/6ADAgECAgEhMAoGCCqGSM49BAMCMCUxIzAhBgNVBAMTGkF0cmluaWsgQ2xhc3NpYyB2MiBmaXh0dXJlMB4XDTI2MDEwMTAwMDAwMFoXDTM2MDEwMTAwMDAwMFowJTEjMCEGA1UEAxMaQXRyaW5payBDbGFzc2ljIHYyIGZpeHR1cmUwWTATBgcqhkjOPQIBBggqhkjOPQMBBwNCAATo4QRR45SdaF7zpESDJmLYTpGJbLuZIR6lYm+D0tiFS4Okj0gskkrVPr5FeHGblhLvUTv1C+GLO08g10p0EmPRoyAwHjAOBgNVHQ8BAf8EBAMCB4AwDAYDVR0TAQH/BAIwADAKBggqhkjOPQQDAgNIADBFAiEAhVxthqGABVxAG0Kqlh0AGWQk74HoNqfr4493srgNBsQCICx9jMsucb8mRVNO1O4E2i2nN6IdtCb6cMNDa/4Y8neZ\",\"name\":\"Atrinik Classic\",\"playersCount\":4,\"version\":\"6.0.0\",\"textComment\":\"Access-code fixture Ω\",\"public\":true,\"accessCodeRequired\":true,\"hostname\":\"play.example.org\",\"port\":13327}",
+      "certificate_der_base64": "MIIBWDCB/6ADAgECAgEhMAoGCCqGSM49BAMCMCUxIzAhBgNVBAMTGkF0cmluaWsgQ2xhc3NpYyB2MiBmaXh0dXJlMB4XDTI2MDEwMTAwMDAwMFoXDTM2MDEwMTAwMDAwMFowJTEjMCEGA1UEAxMaQXRyaW5payBDbGFzc2ljIHYyIGZpeHR1cmUwWTATBgcqhkjOPQIBBggqhkjOPQMBBwNCAATo4QRR45SdaF7zpESDJmLYTpGJbLuZIR6lYm+D0tiFS4Okj0gskkrVPr5FeHGblhLvUTv1C+GLO08g10p0EmPRoyAwHjAOBgNVHQ8BAf8EBAMCB4AwDAYDVR0TAQH/BAIwADAKBggqhkjOPQQDAgNIADBFAiEAhVxthqGABVxAG0Kqlh0AGWQk74HoNqfr4493srgNBsQCICx9jMsucb8mRVNO1O4E2i2nN6IdtCb6cMNDa/4Y8neZ",
+      "error": "invalid_signature",
+      "failure_class": "sequence",
+      "name": "sequence",
+      "positive": "public-protected-endpoint",
+      "server_id": "13e46c3b910727029646ba5db7ee5930080f832af4d9e29f70cf781250a23809",
+      "signature_base": "\"@method\": POST\n\"@authority\": publish.meta.atrinik.org\n\"@path\": /v2/classic/servers/13e46c3b910727029646ba5db7ee5930080f832af4d9e29f70cf781250a23809/publish\n\"content-digest\": sha-256=:mBfPpgnbQXGzCdNpaUZtEgJiceUliM4rByayVG5G9VM=:\n\"content-type\": application/json\n\"atrinik-server-id\": 13e46c3b910727029646ba5db7ee5930080f832af4d9e29f70cf781250a23809\n\"atrinik-publish-sequence\": 7\n\"@signature-params\": (\"@method\" \"@authority\" \"@path\" \"content-digest\" \"content-type\" \"atrinik-server-id\" \"atrinik-publish-sequence\");created=1800000600;expires=1800000900;nonce=\"303132333435363738393a3b3c3d3e3f\";alg=\"ecdsa-p256-sha256\";keyid=\"13e46c3b910727029646ba5db7ee5930080f832af4d9e29f70cf781250a23809\";tag=\"atrinik-classic-publish-v2\"",
+      "signature_base64": "1gJXC5zSAoE9ngEtAC/rIwPdt9+YbW2YwlrLwi9Sj6U9XZdsmTpIMR2/2ASzKuD/P1PusayPzzeVnsj0VFKRIw=="
+    },
+    {
+      "body": "{\"schema\":\"atrinik-classic-publish-v2\",\"serverId\":\"13e46c3b910727029646ba5db7ee5930080f832af4d9e29f70cf781250a23809\",\"certificate\":\"MIIBWDCB/6ADAgECAgEhMAoGCCqGSM49BAMCMCUxIzAhBgNVBAMTGkF0cmluaWsgQ2xhc3NpYyB2MiBmaXh0dXJlMB4XDTI2MDEwMTAwMDAwMFoXDTM2MDEwMTAwMDAwMFowJTEjMCEGA1UEAxMaQXRyaW5payBDbGFzc2ljIHYyIGZpeHR1cmUwWTATBgcqhkjOPQIBBggqhkjOPQMBBwNCAATo4QRR45SdaF7zpESDJmLYTpGJbLuZIR6lYm+D0tiFS4Okj0gskkrVPr5FeHGblhLvUTv1C+GLO08g10p0EmPRoyAwHjAOBgNVHQ8BAf8EBAMCB4AwDAYDVR0TAQH/BAIwADAKBggqhkjOPQQDAgNIADBFAiEAhVxthqGABVxAG0Kqlh0AGWQk74HoNqfr4493srgNBsQCICx9jMsucb8mRVNO1O4E2i2nN6IdtCb6cMNDa/4Y8neZ\",\"name\":\"Atrinik Classic\",\"playersCount\":4,\"version\":\"6.0.0\",\"textComment\":\"Access-code fixture Ω\",\"public\":true,\"accessCodeRequired\":true,\"hostname\":\"play.example.org\",\"port\":13327}",
+      "certificate_der_base64": "MIIBWDCB/6ADAgECAgEhMAoGCCqGSM49BAMCMCUxIzAhBgNVBAMTGkF0cmluaWsgQ2xhc3NpYyB2MiBmaXh0dXJlMB4XDTI2MDEwMTAwMDAwMFoXDTM2MDEwMTAwMDAwMFowJTEjMCEGA1UEAxMaQXRyaW5payBDbGFzc2ljIHYyIGZpeHR1cmUwWTATBgcqhkjOPQIBBggqhkjOPQMBBwNCAATo4QRR45SdaF7zpESDJmLYTpGJbLuZIR6lYm+D0tiFS4Okj0gskkrVPr5FeHGblhLvUTv1C+GLO08g10p0EmPRoyAwHjAOBgNVHQ8BAf8EBAMCB4AwDAYDVR0TAQH/BAIwADAKBggqhkjOPQQDAgNIADBFAiEAhVxthqGABVxAG0Kqlh0AGWQk74HoNqfr4493srgNBsQCICx9jMsucb8mRVNO1O4E2i2nN6IdtCb6cMNDa/4Y8neZ",
+      "error": "invalid_signature",
+      "failure_class": "route_tag_domain",
+      "name": "v2-signature-at-v1",
+      "positive": "public-protected-endpoint",
+      "server_id": "13e46c3b910727029646ba5db7ee5930080f832af4d9e29f70cf781250a23809",
+      "signature_base": "\"@method\": POST\n\"@authority\": publish.meta.atrinik.org\n\"@path\": /v1/classic/servers/13e46c3b910727029646ba5db7ee5930080f832af4d9e29f70cf781250a23809/publish\n\"content-digest\": sha-256=:mBfPpgnbQXGzCdNpaUZtEgJiceUliM4rByayVG5G9VM=:\n\"content-type\": application/json\n\"atrinik-server-id\": 13e46c3b910727029646ba5db7ee5930080f832af4d9e29f70cf781250a23809\n\"atrinik-publish-sequence\": 102\n\"@signature-params\": (\"@method\" \"@authority\" \"@path\" \"content-digest\" \"content-type\" \"atrinik-server-id\" \"atrinik-publish-sequence\");created=1800000600;expires=1800000900;nonce=\"303132333435363738393a3b3c3d3e3f\";alg=\"ecdsa-p256-sha256\";keyid=\"13e46c3b910727029646ba5db7ee5930080f832af4d9e29f70cf781250a23809\";tag=\"atrinik-classic-publish-v1\"",
+      "signature_base64": "1gJXC5zSAoE9ngEtAC/rIwPdt9+YbW2YwlrLwi9Sj6U9XZdsmTpIMR2/2ASzKuD/P1PusayPzzeVnsj0VFKRIw=="
+    },
+    {
+      "body": "{\"schema\":\"atrinik-classic-publish-v2\",\"serverId\":\"13e46c3b910727029646ba5db7ee5930080f832af4d9e29f70cf781250a23809\",\"certificate\":\"MIIBWDCB/6ADAgECAgEhMAoGCCqGSM49BAMCMCUxIzAhBgNVBAMTGkF0cmluaWsgQ2xhc3NpYyB2MiBmaXh0dXJlMB4XDTI2MDEwMTAwMDAwMFoXDTM2MDEwMTAwMDAwMFowJTEjMCEGA1UEAxMaQXRyaW5payBDbGFzc2ljIHYyIGZpeHR1cmUwWTATBgcqhkjOPQIBBggqhkjOPQMBBwNCAATo4QRR45SdaF7zpESDJmLYTpGJbLuZIR6lYm+D0tiFS4Okj0gskkrVPr5FeHGblhLvUTv1C+GLO08g10p0EmPRoyAwHjAOBgNVHQ8BAf8EBAMCB4AwDAYDVR0TAQH/BAIwADAKBggqhkjOPQQDAgNIADBFAiEAhVxthqGABVxAG0Kqlh0AGWQk74HoNqfr4493srgNBsQCICx9jMsucb8mRVNO1O4E2i2nN6IdtCb6cMNDa/4Y8neZ\",\"name\":\"Atrinik Classic\",\"playersCount\":4,\"version\":\"6.0.0\",\"textComment\":\"Access-code fixture Ω\",\"public\":true,\"accessCodeRequired\":true,\"hostname\":\"play.example.org\",\"port\":13327}",
+      "certificate_der_base64": "MIIBWDCB/6ADAgECAgEhMAoGCCqGSM49BAMCMCUxIzAhBgNVBAMTGkF0cmluaWsgQ2xhc3NpYyB2MiBmaXh0dXJlMB4XDTI2MDEwMTAwMDAwMFoXDTM2MDEwMTAwMDAwMFowJTEjMCEGA1UEAxMaQXRyaW5payBDbGFzc2ljIHYyIGZpeHR1cmUwWTATBgcqhkjOPQIBBggqhkjOPQMBBwNCAATo4QRR45SdaF7zpESDJmLYTpGJbLuZIR6lYm+D0tiFS4Okj0gskkrVPr5FeHGblhLvUTv1C+GLO08g10p0EmPRoyAwHjAOBgNVHQ8BAf8EBAMCB4AwDAYDVR0TAQH/BAIwADAKBggqhkjOPQQDAgNIADBFAiEAhVxthqGABVxAG0Kqlh0AGWQk74HoNqfr4493srgNBsQCICx9jMsucb8mRVNO1O4E2i2nN6IdtCb6cMNDa/4Y8neZ",
+      "error": "invalid_signature",
+      "failure_class": "route_tag_domain",
+      "name": "v2-signature-at-game",
+      "positive": "public-protected-endpoint",
+      "server_id": "13e46c3b910727029646ba5db7ee5930080f832af4d9e29f70cf781250a23809",
+      "signature_base": "\"@method\": POST\n\"@authority\": publish.meta.atrinik.org\n\"@path\": /v1/servers/13e46c3b910727029646ba5db7ee5930080f832af4d9e29f70cf781250a23809/publish\n\"content-digest\": sha-256=:mBfPpgnbQXGzCdNpaUZtEgJiceUliM4rByayVG5G9VM=:\n\"content-type\": application/json\n\"atrinik-server-id\": 13e46c3b910727029646ba5db7ee5930080f832af4d9e29f70cf781250a23809\n\"atrinik-publish-sequence\": 102\n\"@signature-params\": (\"@method\" \"@authority\" \"@path\" \"content-digest\" \"content-type\" \"atrinik-server-id\" \"atrinik-publish-sequence\");created=1800000600;expires=1800000900;nonce=\"303132333435363738393a3b3c3d3e3f\";alg=\"ecdsa-p256-sha256\";keyid=\"13e46c3b910727029646ba5db7ee5930080f832af4d9e29f70cf781250a23809\";tag=\"atrinik-game-publish-v1\"",
+      "signature_base64": "1gJXC5zSAoE9ngEtAC/rIwPdt9+YbW2YwlrLwi9Sj6U9XZdsmTpIMR2/2ASzKuD/P1PusayPzzeVnsj0VFKRIw=="
+    },
+    {
+      "body": "{\"schema\":\"atrinik-classic-publish-v2\",\"serverId\":\"13e46c3b910727029646ba5db7ee5930080f832af4d9e29f70cf781250a23809\",\"certificate\":\"MIIBWDCB/6ADAgECAgEhMAoGCCqGSM49BAMCMCUxIzAhBgNVBAMTGkF0cmluaWsgQ2xhc3NpYyB2MiBmaXh0dXJlMB4XDTI2MDEwMTAwMDAwMFoXDTM2MDEwMTAwMDAwMFowJTEjMCEGA1UEAxMaQXRyaW5payBDbGFzc2ljIHYyIGZpeHR1cmUwWTATBgcqhkjOPQIBBggqhkjOPQMBBwNCAATo4QRR45SdaF7zpESDJmLYTpGJbLuZIR6lYm+D0tiFS4Okj0gskkrVPr5FeHGblhLvUTv1C+GLO08g10p0EmPRoyAwHjAOBgNVHQ8BAf8EBAMCB4AwDAYDVR0TAQH/BAIwADAKBggqhkjOPQQDAgNIADBFAiEAhVxthqGABVxAG0Kqlh0AGWQk74HoNqfr4493srgNBsQCICx9jMsucb8mRVNO1O4E2i2nN6IdtCb6cMNDa/4Y8neZ\",\"name\":\"Atrinik Classic\",\"playersCount\":4,\"version\":\"6.0.0\",\"textComment\":\"Access-code fixture Ω\",\"public\":true,\"accessCodeRequired\":true,\"hostname\":\"play.example.org\",\"port\":13327}",
+      "certificate_der_base64": "MIIBWDCB/6ADAgECAgEhMAoGCCqGSM49BAMCMCUxIzAhBgNVBAMTGkF0cmluaWsgQ2xhc3NpYyB2MiBmaXh0dXJlMB4XDTI2MDEwMTAwMDAwMFoXDTM2MDEwMTAwMDAwMFowJTEjMCEGA1UEAxMaQXRyaW5payBDbGFzc2ljIHYyIGZpeHR1cmUwWTATBgcqhkjOPQIBBggqhkjOPQMBBwNCAATo4QRR45SdaF7zpESDJmLYTpGJbLuZIR6lYm+D0tiFS4Okj0gskkrVPr5FeHGblhLvUTv1C+GLO08g10p0EmPRoyAwHjAOBgNVHQ8BAf8EBAMCB4AwDAYDVR0TAQH/BAIwADAKBggqhkjOPQQDAgNIADBFAiEAhVxthqGABVxAG0Kqlh0AGWQk74HoNqfr4493srgNBsQCICx9jMsucb8mRVNO1O4E2i2nN6IdtCb6cMNDa/4Y8neZ",
+      "error": "invalid_signature",
+      "failure_class": "route",
+      "name": "wrong-v2-route",
+      "positive": "public-protected-endpoint",
+      "server_id": "13e46c3b910727029646ba5db7ee5930080f832af4d9e29f70cf781250a23809",
+      "signature_base": "\"@method\": POST\n\"@authority\": publish.meta.atrinik.org\n\"@path\": /v2/classic/server/13e46c3b910727029646ba5db7ee5930080f832af4d9e29f70cf781250a23809/publish\n\"content-digest\": sha-256=:mBfPpgnbQXGzCdNpaUZtEgJiceUliM4rByayVG5G9VM=:\n\"content-type\": application/json\n\"atrinik-server-id\": 13e46c3b910727029646ba5db7ee5930080f832af4d9e29f70cf781250a23809\n\"atrinik-publish-sequence\": 102\n\"@signature-params\": (\"@method\" \"@authority\" \"@path\" \"content-digest\" \"content-type\" \"atrinik-server-id\" \"atrinik-publish-sequence\");created=1800000600;expires=1800000900;nonce=\"303132333435363738393a3b3c3d3e3f\";alg=\"ecdsa-p256-sha256\";keyid=\"13e46c3b910727029646ba5db7ee5930080f832af4d9e29f70cf781250a23809\";tag=\"atrinik-classic-publish-v2\"",
+      "signature_base64": "1gJXC5zSAoE9ngEtAC/rIwPdt9+YbW2YwlrLwi9Sj6U9XZdsmTpIMR2/2ASzKuD/P1PusayPzzeVnsj0VFKRIw=="
+    },
+    {
+      "body": "{\"schema\":\"atrinik-classic-publish-v2\",\"serverId\":\"13e46c3b910727029646ba5db7ee5930080f832af4d9e29f70cf781250a23809\",\"certificate\":\"MIIBWDCB/6ADAgECAgEhMAoGCCqGSM49BAMCMCUxIzAhBgNVBAMTGkF0cmluaWsgQ2xhc3NpYyB2MiBmaXh0dXJlMB4XDTI2MDEwMTAwMDAwMFoXDTM2MDEwMTAwMDAwMFowJTEjMCEGA1UEAxMaQXRyaW5payBDbGFzc2ljIHYyIGZpeHR1cmUwWTATBgcqhkjOPQIBBggqhkjOPQMBBwNCAATo4QRR45SdaF7zpESDJmLYTpGJbLuZIR6lYm+D0tiFS4Okj0gskkrVPr5FeHGblhLvUTv1C+GLO08g10p0EmPRoyAwHjAOBgNVHQ8BAf8EBAMCB4AwDAYDVR0TAQH/BAIwADAKBggqhkjOPQQDAgNIADBFAiEAhVxthqGABVxAG0Kqlh0AGWQk74HoNqfr4493srgNBsQCICx9jMsucb8mRVNO1O4E2i2nN6IdtCb6cMNDa/4Y8neZ\",\"name\":\"Atrinik Classic\",\"playersCount\":4,\"version\":\"6.0.0\",\"textComment\":\"Access-code fixture Ω\",\"public\":true,\"accessCodeRequired\":true,\"hostname\":\"play.example.org\",\"port\":13327}",
+      "certificate_der_base64": "MIIBWDCB/6ADAgECAgEhMAoGCCqGSM49BAMCMCUxIzAhBgNVBAMTGkF0cmluaWsgQ2xhc3NpYyB2MiBmaXh0dXJlMB4XDTI2MDEwMTAwMDAwMFoXDTM2MDEwMTAwMDAwMFowJTEjMCEGA1UEAxMaQXRyaW5payBDbGFzc2ljIHYyIGZpeHR1cmUwWTATBgcqhkjOPQIBBggqhkjOPQMBBwNCAATo4QRR45SdaF7zpESDJmLYTpGJbLuZIR6lYm+D0tiFS4Okj0gskkrVPr5FeHGblhLvUTv1C+GLO08g10p0EmPRoyAwHjAOBgNVHQ8BAf8EBAMCB4AwDAYDVR0TAQH/BAIwADAKBggqhkjOPQQDAgNIADBFAiEAhVxthqGABVxAG0Kqlh0AGWQk74HoNqfr4493srgNBsQCICx9jMsucb8mRVNO1O4E2i2nN6IdtCb6cMNDa/4Y8neZ",
+      "error": "invalid_signature",
+      "failure_class": "tag",
+      "name": "wrong-v2-tag",
+      "positive": "public-protected-endpoint",
+      "server_id": "13e46c3b910727029646ba5db7ee5930080f832af4d9e29f70cf781250a23809",
+      "signature_base": "\"@method\": POST\n\"@authority\": publish.meta.atrinik.org\n\"@path\": /v2/classic/servers/13e46c3b910727029646ba5db7ee5930080f832af4d9e29f70cf781250a23809/publish\n\"content-digest\": sha-256=:mBfPpgnbQXGzCdNpaUZtEgJiceUliM4rByayVG5G9VM=:\n\"content-type\": application/json\n\"atrinik-server-id\": 13e46c3b910727029646ba5db7ee5930080f832af4d9e29f70cf781250a23809\n\"atrinik-publish-sequence\": 102\n\"@signature-params\": (\"@method\" \"@authority\" \"@path\" \"content-digest\" \"content-type\" \"atrinik-server-id\" \"atrinik-publish-sequence\");created=1800000600;expires=1800000900;nonce=\"303132333435363738393a3b3c3d3e3f\";alg=\"ecdsa-p256-sha256\";keyid=\"13e46c3b910727029646ba5db7ee5930080f832af4d9e29f70cf781250a23809\";tag=\"atrinik-classic-publish-v3\"",
+      "signature_base64": "1gJXC5zSAoE9ngEtAC/rIwPdt9+YbW2YwlrLwi9Sj6U9XZdsmTpIMR2/2ASzKuD/P1PusayPzzeVnsj0VFKRIw=="
+    },
+    {
+      "body": "{\"schema\":\"atrinik-classic-publish-v2\",\"serverId\":\"13e46c3b910727029646ba5db7ee5930080f832af4d9e29f70cf781250a23809\",\"certificate\":\"MIIBWDCB/6ADAgECAgEhMAoGCCqGSM49BAMCMCUxIzAhBgNVBAMTGkF0cmluaWsgQ2xhc3NpYyB2MiBmaXh0dXJlMB4XDTI2MDEwMTAwMDAwMFoXDTM2MDEwMTAwMDAwMFowJTEjMCEGA1UEAxMaQXRyaW5payBDbGFzc2ljIHYyIGZpeHR1cmUwWTATBgcqhkjOPQIBBggqhkjOPQMBBwNCAATo4QRR45SdaF7zpESDJmLYTpGJbLuZIR6lYm+D0tiFS4Okj0gskkrVPr5FeHGblhLvUTv1C+GLO08g10p0EmPRoyAwHjAOBgNVHQ8BAf8EBAMCB4AwDAYDVR0TAQH/BAIwADAKBggqhkjOPQQDAgNIADBFAiEAhVxthqGABVxAG0Kqlh0AGWQk74HoNqfr4493srgNBsQCICx9jMsucb8mRVNO1O4E2i2nN6IdtCb6cMNDa/4Y8neZ\",\"name\":\"Atrinik Classic\",\"playersCount\":4,\"version\":\"6.0.0\",\"textComment\":\"Access-code fixture Ω\",\"public\":true,\"accessCodeRequired\":true,\"hostname\":\"play.example.org\",\"port\":13327}",
+      "certificate_der_base64": "MIIBWDCB/6ADAgECAgEhMAoGCCqGSM49BAMCMCUxIzAhBgNVBAMTGkF0cmluaWsgQ2xhc3NpYyB2MiBmaXh0dXJlMB4XDTI2MDEwMTAwMDAwMFoXDTM2MDEwMTAwMDAwMFowJTEjMCEGA1UEAxMaQXRyaW5payBDbGFzc2ljIHYyIGZpeHR1cmUwWTATBgcqhkjOPQIBBggqhkjOPQMBBwNCAATo4QRR45SdaF7zpESDJmLYTpGJbLuZIR6lYm+D0tiFS4Okj0gskkrVPr5FeHGblhLvUTv1C+GLO08g10p0EmPRoyAwHjAOBgNVHQ8BAf8EBAMCB4AwDAYDVR0TAQH/BAIwADAKBggqhkjOPQQDAgNIADBFAiEAhVxthqGABVxAG0Kqlh0AGWQk74HoNqfr4493srgNBsQCICx9jMsucb8mRVNO1O4E2i2nN6IdtCb6cMNDa/4Y8neZ",
+      "error": "invalid_signature",
+      "failure_class": "signed_server_id",
+      "name": "signed-server-id-disagreement",
+      "positive": "public-protected-endpoint",
+      "server_id": "13e46c3b910727029646ba5db7ee5930080f832af4d9e29f70cf781250a23809",
+      "signature_base": "\"@method\": POST\n\"@authority\": publish.meta.atrinik.org\n\"@path\": /v2/classic/servers/13e46c3b910727029646ba5db7ee5930080f832af4d9e29f70cf781250a23809/publish\n\"content-digest\": sha-256=:mBfPpgnbQXGzCdNpaUZtEgJiceUliM4rByayVG5G9VM=:\n\"content-type\": application/json\n\"atrinik-server-id\": 03e46c3b910727029646ba5db7ee5930080f832af4d9e29f70cf781250a23809\n\"atrinik-publish-sequence\": 102\n\"@signature-params\": (\"@method\" \"@authority\" \"@path\" \"content-digest\" \"content-type\" \"atrinik-server-id\" \"atrinik-publish-sequence\");created=1800000600;expires=1800000900;nonce=\"303132333435363738393a3b3c3d3e3f\";alg=\"ecdsa-p256-sha256\";keyid=\"13e46c3b910727029646ba5db7ee5930080f832af4d9e29f70cf781250a23809\";tag=\"atrinik-classic-publish-v2\"",
+      "signature_base64": "1gJXC5zSAoE9ngEtAC/rIwPdt9+YbW2YwlrLwi9Sj6U9XZdsmTpIMR2/2ASzKuD/P1PusayPzzeVnsj0VFKRIw=="
+    },
+    {
+      "body": "{\"schema\":\"atrinik-classic-publish-v2\",\"serverId\":\"13e46c3b910727029646ba5db7ee5930080f832af4d9e29f70cf781250a23809\",\"certificate\":\"MIIBWDCB/6ADAgECAgEhMAoGCCqGSM49BAMCMCUxIzAhBgNVBAMTGkF0cmluaWsgQ2xhc3NpYyB2MiBmaXh0dXJlMB4XDTI2MDEwMTAwMDAwMFoXDTM2MDEwMTAwMDAwMFowJTEjMCEGA1UEAxMaQXRyaW5payBDbGFzc2ljIHYyIGZpeHR1cmUwWTATBgcqhkjOPQIBBggqhkjOPQMBBwNCAATo4QRR45SdaF7zpESDJmLYTpGJbLuZIR6lYm+D0tiFS4Okj0gskkrVPr5FeHGblhLvUTv1C+GLO08g10p0EmPRoyAwHjAOBgNVHQ8BAf8EBAMCB4AwDAYDVR0TAQH/BAIwADAKBggqhkjOPQQDAgNIADBFAiEAhVxthqGABVxAG0Kqlh0AGWQk74HoNqfr4493srgNBsQCICx9jMsucb8mRVNO1O4E2i2nN6IdtCb6cMNDa/4Y8neZ\",\"name\":\"Atrinik Classic\",\"playersCount\":4,\"version\":\"6.0.0\",\"textComment\":\"Access-code fixture Ω\",\"public\":true,\"accessCodeRequired\":true,\"hostname\":\"play.example.org\",\"port\":13327}",
+      "certificate_der_base64": "MIIBWDCB/6ADAgECAgEhMAoGCCqGSM49BAMCMCUxIzAhBgNVBAMTGkF0cmluaWsgQ2xhc3NpYyB2MiBmaXh0dXJlMB4XDTI2MDEwMTAwMDAwMFoXDTM2MDEwMTAwMDAwMFowJTEjMCEGA1UEAxMaQXRyaW5payBDbGFzc2ljIHYyIGZpeHR1cmUwWTATBgcqhkjOPQIBBggqhkjOPQMBBwNCAATo4QRR45SdaF7zpESDJmLYTpGJbLuZIR6lYm+D0tiFS4Okj0gskkrVPr5FeHGblhLvUTv1C+GLO08g10p0EmPRoyAwHjAOBgNVHQ8BAf8EBAMCB4AwDAYDVR0TAQH/BAIwADAKBggqhkjOPQQDAgNIADBFAiEAhVxthqGABVxAG0Kqlh0AGWQk74HoNqfr4493srgNBsQCICx9jMsucb8mRVNO1O4E2i2nN6IdtCb6cMNDa/4Y8neZ",
+      "error": "invalid_signature",
+      "failure_class": "keyid",
+      "name": "keyid-disagreement",
+      "positive": "public-protected-endpoint",
+      "server_id": "13e46c3b910727029646ba5db7ee5930080f832af4d9e29f70cf781250a23809",
+      "signature_base": "\"@method\": POST\n\"@authority\": publish.meta.atrinik.org\n\"@path\": /v2/classic/servers/13e46c3b910727029646ba5db7ee5930080f832af4d9e29f70cf781250a23809/publish\n\"content-digest\": sha-256=:mBfPpgnbQXGzCdNpaUZtEgJiceUliM4rByayVG5G9VM=:\n\"content-type\": application/json\n\"atrinik-server-id\": 13e46c3b910727029646ba5db7ee5930080f832af4d9e29f70cf781250a23809\n\"atrinik-publish-sequence\": 102\n\"@signature-params\": (\"@method\" \"@authority\" \"@path\" \"content-digest\" \"content-type\" \"atrinik-server-id\" \"atrinik-publish-sequence\");created=1800000600;expires=1800000900;nonce=\"303132333435363738393a3b3c3d3e3f\";alg=\"ecdsa-p256-sha256\";keyid=\"03e46c3b910727029646ba5db7ee5930080f832af4d9e29f70cf781250a23809\";tag=\"atrinik-classic-publish-v2\"",
+      "signature_base64": "1gJXC5zSAoE9ngEtAC/rIwPdt9+YbW2YwlrLwi9Sj6U9XZdsmTpIMR2/2ASzKuD/P1PusayPzzeVnsj0VFKRIw=="
+    },
+    {
+      "body": "{\"schema\":\"atrinik-classic-publish-v2\",\"serverId\":\"13e46c3b910727029646ba5db7ee5930080f832af4d9e29f70cf781250a23809\",\"certificate\":\"MIIBWDCB/6ADAgECAgEhMAoGCCqGSM49BAMCMCUxIzAhBgNVBAMTGkF0cmluaWsgQ2xhc3NpYyB2MiBmaXh0dXJlMB4XDTI2MDEwMTAwMDAwMFoXDTM2MDEwMTAwMDAwMFowJTEjMCEGA1UEAxMaQXRyaW5payBDbGFzc2ljIHYyIGZpeHR1cmUwWTATBgcqhkjOPQIBBggqhkjOPQMBBwNCAATo4QRR45SdaF7zpESDJmLYTpGJbLuZIR6lYm+D0tiFS4Okj0gskkrVPr5FeHGblhLvUTv1C+GLO08g10p0EmPRoyAwHjAOBgNVHQ8BAf8EBAMCB4AwDAYDVR0TAQH/BAIwADAKBggqhkjOPQQDAgNIADBFAiEAhVxthqGABVxAG0Kqlh0AGWQk74HoNqfr4493srgNBsQCICx9jMsucb8mRVNO1O4E2i2nN6IdtCb6cMNDa/4Y8neZ\",\"name\":\"Atrinik Classic\",\"playersCount\":4,\"version\":\"6.0.0\",\"textComment\":\"Access-code fixture Ω\",\"public\":true,\"accessCodeRequired\":true,\"hostname\":\"play.example.org\",\"port\":13327}",
+      "certificate_der_base64": "MIIBWDCB/6ADAgECAgEhMAoGCCqGSM49BAMCMCUxIzAhBgNVBAMTGkF0cmluaWsgQ2xhc3NpYyB2MiBmaXh0dXJlMB4XDTI2MDEwMTAwMDAwMFoXDTM2MDEwMTAwMDAwMFowJTEjMCEGA1UEAxMaQXRyaW5payBDbGFzc2ljIHYyIGZpeHR1cmUwWTATBgcqhkjOPQIBBggqhkjOPQMBBwNCAATo4QRR45SdaF7zpESDJmLYTpGJbLuZIR6lYm+D0tiFS4Okj0gskkrVPr5FeHGblhLvUTv1C+GLO08g10p0EmPRoyAwHjAOBgNVHQ8BAf8EBAMCB4AwDAYDVR0TAQH/BAIwADAKBggqhkjOPQQDAgNIADBFAiEAhVxthqGABVxAG0Kqlh0AGWQk74HoNqfr4493srgNBsQCICx9jMsucb8mRVNO1O4E2i2nN6IdtCb6cMNDa/4Y8neZ",
+      "error": "invalid_identity",
+      "failure_class": "certificate_fingerprint",
+      "name": "certificate-fingerprint-mismatch",
+      "positive": "public-protected-endpoint",
+      "server_id": "03e46c3b910727029646ba5db7ee5930080f832af4d9e29f70cf781250a23809",
+      "signature_base": "\"@method\": POST\n\"@authority\": publish.meta.atrinik.org\n\"@path\": /v2/classic/servers/13e46c3b910727029646ba5db7ee5930080f832af4d9e29f70cf781250a23809/publish\n\"content-digest\": sha-256=:mBfPpgnbQXGzCdNpaUZtEgJiceUliM4rByayVG5G9VM=:\n\"content-type\": application/json\n\"atrinik-server-id\": 13e46c3b910727029646ba5db7ee5930080f832af4d9e29f70cf781250a23809\n\"atrinik-publish-sequence\": 102\n\"@signature-params\": (\"@method\" \"@authority\" \"@path\" \"content-digest\" \"content-type\" \"atrinik-server-id\" \"atrinik-publish-sequence\");created=1800000600;expires=1800000900;nonce=\"303132333435363738393a3b3c3d3e3f\";alg=\"ecdsa-p256-sha256\";keyid=\"13e46c3b910727029646ba5db7ee5930080f832af4d9e29f70cf781250a23809\";tag=\"atrinik-classic-publish-v2\"",
+      "signature_base64": "1gJXC5zSAoE9ngEtAC/rIwPdt9+YbW2YwlrLwi9Sj6U9XZdsmTpIMR2/2ASzKuD/P1PusayPzzeVnsj0VFKRIw=="
+    },
+    {
+      "body": "{\"schema\":\"atrinik-classic-publish-v2\",\"serverId\":\"13e46c3b910727029646ba5db7ee5930080f832af4d9e29f70cf781250a23809\",\"certificate\":\"MIIBWDCB/6ADAgECAgEhMAoGCCqGSM49BAMCMCUxIzAhBgNVBAMTGkF0cmluaWsgQ2xhc3NpYyB2MiBmaXh0dXJlMB4XDTI2MDEwMTAwMDAwMFoXDTM2MDEwMTAwMDAwMFowJTEjMCEGA1UEAxMaQXRyaW5payBDbGFzc2ljIHYyIGZpeHR1cmUwWTATBgcqhkjOPQIBBggqhkjOPQMBBwNCAATo4QRR45SdaF7zpESDJmLYTpGJbLuZIR6lYm+D0tiFS4Okj0gskkrVPr5FeHGblhLvUTv1C+GLO08g10p0EmPRoyAwHjAOBgNVHQ8BAf8EBAMCB4AwDAYDVR0TAQH/BAIwADAKBggqhkjOPQQDAgNIADBFAiEAhVxthqGABVxAG0Kqlh0AGWQk74HoNqfr4493srgNBsQCICx9jMsucb8mRVNO1O4E2i2nN6IdtCb6cMNDa/4Y8neZ\",\"name\":\"Atrinik Classic\",\"playersCount\":4,\"version\":\"6.0.0\",\"textComment\":\"Access-code fixture Ω\",\"public\":true,\"accessCodeRequired\":true,\"hostname\":\"play.example.org\",\"port\":13327}",
+      "certificate_der_base64": "bm90IGEgY2VydGlmaWNhdGU=",
+      "error": "invalid_identity",
+      "failure_class": "certificate_der",
+      "name": "malformed-certificate",
+      "positive": "public-protected-endpoint",
+      "server_id": "47209c9b7af839de69e9a9cd625e9182c1ad63dae79ed88a2dd680fe34218620",
+      "signature_base": "\"@method\": POST\n\"@authority\": publish.meta.atrinik.org\n\"@path\": /v2/classic/servers/13e46c3b910727029646ba5db7ee5930080f832af4d9e29f70cf781250a23809/publish\n\"content-digest\": sha-256=:mBfPpgnbQXGzCdNpaUZtEgJiceUliM4rByayVG5G9VM=:\n\"content-type\": application/json\n\"atrinik-server-id\": 13e46c3b910727029646ba5db7ee5930080f832af4d9e29f70cf781250a23809\n\"atrinik-publish-sequence\": 102\n\"@signature-params\": (\"@method\" \"@authority\" \"@path\" \"content-digest\" \"content-type\" \"atrinik-server-id\" \"atrinik-publish-sequence\");created=1800000600;expires=1800000900;nonce=\"303132333435363738393a3b3c3d3e3f\";alg=\"ecdsa-p256-sha256\";keyid=\"13e46c3b910727029646ba5db7ee5930080f832af4d9e29f70cf781250a23809\";tag=\"atrinik-classic-publish-v2\"",
+      "signature_base64": "1gJXC5zSAoE9ngEtAC/rIwPdt9+YbW2YwlrLwi9Sj6U9XZdsmTpIMR2/2ASzKuD/P1PusayPzzeVnsj0VFKRIw=="
+    },
+    {
+      "body": "{\"schema\":\"atrinik-classic-publish-v2\",\"serverId\":\"13e46c3b910727029646ba5db7ee5930080f832af4d9e29f70cf781250a23809\",\"certificate\":\"MIIBWDCB/6ADAgECAgEhMAoGCCqGSM49BAMCMCUxIzAhBgNVBAMTGkF0cmluaWsgQ2xhc3NpYyB2MiBmaXh0dXJlMB4XDTI2MDEwMTAwMDAwMFoXDTM2MDEwMTAwMDAwMFowJTEjMCEGA1UEAxMaQXRyaW5payBDbGFzc2ljIHYyIGZpeHR1cmUwWTATBgcqhkjOPQIBBggqhkjOPQMBBwNCAATo4QRR45SdaF7zpESDJmLYTpGJbLuZIR6lYm+D0tiFS4Okj0gskkrVPr5FeHGblhLvUTv1C+GLO08g10p0EmPRoyAwHjAOBgNVHQ8BAf8EBAMCB4AwDAYDVR0TAQH/BAIwADAKBggqhkjOPQQDAgNIADBFAiEAhVxthqGABVxAG0Kqlh0AGWQk74HoNqfr4493srgNBsQCICx9jMsucb8mRVNO1O4E2i2nN6IdtCb6cMNDa/4Y8neZ\",\"name\":\"Atrinik Classic\",\"playersCount\":4,\"version\":\"6.0.0\",\"textComment\":\"Access-code fixture Ω\",\"public\":true,\"accessCodeRequired\":true,\"hostname\":\"play.example.org\",\"port\":13327}",
+      "certificate_der_base64": "MIIB0zCCAVigAwIBAgIUYD79hLD6PhdnB+ntqGm9joG8RgYwCgYIKoZIzj0EAwIwIDEeMBwGA1UEAwwVQXRyaW5pay1QMzg0LW5lZ2F0aXZlMB4XDTI2MDgxNDAyNTI0N1oXDTM2MDgxMTAyNTI0N1owIDEeMBwGA1UEAwwVQXRyaW5pay1QMzg0LW5lZ2F0aXZlMHYwEAYHKoZIzj0CAQYFK4EEACIDYgAEpkpDP1nwTmqDj1KvqCrULFkMSmv6Tar3SZRws9qrIY1fsGNHTSg36PYZL8RGYvJztpsnyBy+5t9Eff3cVEbWnwhzs78s0+REt4kuKlhYF/YYBK5P/bknu4SWZODHhTslo1MwUTAdBgNVHQ4EFgQUOVhnWI5Z9Ur56JzdIdTr4feKmXMwHwYDVR0jBBgwFoAUOVhnWI5Z9Ur56JzdIdTr4feKmXMwDwYDVR0TAQH/BAUwAwEB/zAKBggqhkjOPQQDAgNpADBmAjEAipJlthtoBzM6gVuIcrGoV72h5MdmefJIi4WMutcSyMHSBS6Xmx1YE3UpeUnEJ9K9AjEAulPPnUMBZ+EmCfTzVGBXqiT66fmoO56+UO5FOVvwar2WwBJuPXAL5BIMFACiXGv3",
+      "error": "invalid_identity",
+      "failure_class": "certificate_key_type",
+      "name": "non-p256-certificate",
+      "positive": "public-protected-endpoint",
+      "server_id": "42f63fc7bf6955c441bb8d9f00fec3f38cd3f0afd179d59754fd2618766edfee",
+      "signature_base": "\"@method\": POST\n\"@authority\": publish.meta.atrinik.org\n\"@path\": /v2/classic/servers/13e46c3b910727029646ba5db7ee5930080f832af4d9e29f70cf781250a23809/publish\n\"content-digest\": sha-256=:mBfPpgnbQXGzCdNpaUZtEgJiceUliM4rByayVG5G9VM=:\n\"content-type\": application/json\n\"atrinik-server-id\": 13e46c3b910727029646ba5db7ee5930080f832af4d9e29f70cf781250a23809\n\"atrinik-publish-sequence\": 102\n\"@signature-params\": (\"@method\" \"@authority\" \"@path\" \"content-digest\" \"content-type\" \"atrinik-server-id\" \"atrinik-publish-sequence\");created=1800000600;expires=1800000900;nonce=\"303132333435363738393a3b3c3d3e3f\";alg=\"ecdsa-p256-sha256\";keyid=\"13e46c3b910727029646ba5db7ee5930080f832af4d9e29f70cf781250a23809\";tag=\"atrinik-classic-publish-v2\"",
+      "signature_base64": "1gJXC5zSAoE9ngEtAC/rIwPdt9+YbW2YwlrLwi9Sj6U9XZdsmTpIMR2/2ASzKuD/P1PusayPzzeVnsj0VFKRIw=="
+    },
+    {
+      "body": "{\"schema\":\"atrinik-classic-publish-v2\",\"serverId\":\"13e46c3b910727029646ba5db7ee5930080f832af4d9e29f70cf781250a23809\",\"certificate\":\"MIIBWDCB/6ADAgECAgEhMAoGCCqGSM49BAMCMCUxIzAhBgNVBAMTGkF0cmluaWsgQ2xhc3NpYyB2MiBmaXh0dXJlMB4XDTI2MDEwMTAwMDAwMFoXDTM2MDEwMTAwMDAwMFowJTEjMCEGA1UEAxMaQXRyaW5payBDbGFzc2ljIHYyIGZpeHR1cmUwWTATBgcqhkjOPQIBBggqhkjOPQMBBwNCAATo4QRR45SdaF7zpESDJmLYTpGJbLuZIR6lYm+D0tiFS4Okj0gskkrVPr5FeHGblhLvUTv1C+GLO08g10p0EmPRoyAwHjAOBgNVHQ8BAf8EBAMCB4AwDAYDVR0TAQH/BAIwADAKBggqhkjOPQQDAgNIADBFAiEAhVxthqGABVxAG0Kqlh0AGWQk74HoNqfr4493srgNBsQCICx9jMsucb8mRVNO1O4E2i2nN6IdtCb6cMNDa/4Y8neZ\",\"name\":\"Atrinik Classic\",\"playersCount\":4,\"version\":\"6.0.0\",\"textComment\":\"Access-code fixture Ω\",\"public\":true,\"accessCodeRequired\":true,\"hostname\":\"play.example.org\",\"port\":13327}",
+      "certificate_der_base64": "MIIBWDCB/6ADAgECAgEhMAoGCCqGSM49BAMCMCUxIzAhBgNVBAMTGkF0cmluaWsgQ2xhc3NpYyB2MiBmaXh0dXJlMB4XDTI2MDEwMTAwMDAwMFoXDTM2MDEwMTAwMDAwMFowJTEjMCEGA1UEAxMaQXRyaW5payBDbGFzc2ljIHYyIGZpeHR1cmUwWTATBgcqhkjOPQIBBggqhkjOPQMBBwNCAATo4QRR45SdaF7zpESDJmLYTpGJbLuZIR6lYm+D0tiFS4Okj0gskkrVPr5FeHGblhLvUTv1C+GLO08g10p0EmPRoyAwHjAOBgNVHQ8BAf8EBAMCB4AwDAYDVR0TAQH/BAIwADAKBggqhkjOPQQDAgNIADBFAiEAhVxthqGABVxAG0Kqlh0AGWQk74HoNqfr4493srgNBsQCICx9jMsucb8mRVNO1O4E2i2nN6IdtCb6cMNDa/4Y8neZ",
+      "error": "invalid_identity",
+      "failure_class": "signature_length",
+      "name": "malformed-p1363-length",
+      "positive": "public-protected-endpoint",
+      "server_id": "13e46c3b910727029646ba5db7ee5930080f832af4d9e29f70cf781250a23809",
+      "signature_base": "\"@method\": POST\n\"@authority\": publish.meta.atrinik.org\n\"@path\": /v2/classic/servers/13e46c3b910727029646ba5db7ee5930080f832af4d9e29f70cf781250a23809/publish\n\"content-digest\": sha-256=:mBfPpgnbQXGzCdNpaUZtEgJiceUliM4rByayVG5G9VM=:\n\"content-type\": application/json\n\"atrinik-server-id\": 13e46c3b910727029646ba5db7ee5930080f832af4d9e29f70cf781250a23809\n\"atrinik-publish-sequence\": 102\n\"@signature-params\": (\"@method\" \"@authority\" \"@path\" \"content-digest\" \"content-type\" \"atrinik-server-id\" \"atrinik-publish-sequence\");created=1800000600;expires=1800000900;nonce=\"303132333435363738393a3b3c3d3e3f\";alg=\"ecdsa-p256-sha256\";keyid=\"13e46c3b910727029646ba5db7ee5930080f832af4d9e29f70cf781250a23809\";tag=\"atrinik-classic-publish-v2\"",
+      "signature_base64": "1gJXC5zSAoE9ngEtAC/rIwPdt9+YbW2YwlrLwi9Sj6U9XZdsmTpIMR2/2ASzKuD/P1PusayPzzeVnsj0VFKR"
+    },
+    {
+      "body": "{\"schema\":\"atrinik-classic-publish-v2\",\"serverId\":\"13e46c3b910727029646ba5db7ee5930080f832af4d9e29f70cf781250a23809\",\"certificate\":\"MIIBWDCB/6ADAgECAgEhMAoGCCqGSM49BAMCMCUxIzAhBgNVBAMTGkF0cmluaWsgQ2xhc3NpYyB2MiBmaXh0dXJlMB4XDTI2MDEwMTAwMDAwMFoXDTM2MDEwMTAwMDAwMFowJTEjMCEGA1UEAxMaQXRyaW5payBDbGFzc2ljIHYyIGZpeHR1cmUwWTATBgcqhkjOPQIBBggqhkjOPQMBBwNCAATo4QRR45SdaF7zpESDJmLYTpGJbLuZIR6lYm+D0tiFS4Okj0gskkrVPr5FeHGblhLvUTv1C+GLO08g10p0EmPRoyAwHjAOBgNVHQ8BAf8EBAMCB4AwDAYDVR0TAQH/BAIwADAKBggqhkjOPQQDAgNIADBFAiEAhVxthqGABVxAG0Kqlh0AGWQk74HoNqfr4493srgNBsQCICx9jMsucb8mRVNO1O4E2i2nN6IdtCb6cMNDa/4Y8neZ\",\"name\":\"Atrinik Classic\",\"playersCount\":4,\"version\":\"6.0.0\",\"textComment\":\"Access-code fixture Ω\",\"public\":true,\"accessCodeRequired\":true,\"hostname\":\"play.example.org\",\"port\":13327}",
+      "certificate_der_base64": "MIIBWDCB/6ADAgECAgEhMAoGCCqGSM49BAMCMCUxIzAhBgNVBAMTGkF0cmluaWsgQ2xhc3NpYyB2MiBmaXh0dXJlMB4XDTI2MDEwMTAwMDAwMFoXDTM2MDEwMTAwMDAwMFowJTEjMCEGA1UEAxMaQXRyaW5payBDbGFzc2ljIHYyIGZpeHR1cmUwWTATBgcqhkjOPQIBBggqhkjOPQMBBwNCAATo4QRR45SdaF7zpESDJmLYTpGJbLuZIR6lYm+D0tiFS4Okj0gskkrVPr5FeHGblhLvUTv1C+GLO08g10p0EmPRoyAwHjAOBgNVHQ8BAf8EBAMCB4AwDAYDVR0TAQH/BAIwADAKBggqhkjOPQQDAgNIADBFAiEAhVxthqGABVxAG0Kqlh0AGWQk74HoNqfr4493srgNBsQCICx9jMsucb8mRVNO1O4E2i2nN6IdtCb6cMNDa/4Y8neZ",
+      "error": "invalid_signature",
+      "failure_class": "signature_coordinate",
+      "name": "zero-p1363-coordinate",
+      "positive": "public-protected-endpoint",
+      "server_id": "13e46c3b910727029646ba5db7ee5930080f832af4d9e29f70cf781250a23809",
+      "signature_base": "\"@method\": POST\n\"@authority\": publish.meta.atrinik.org\n\"@path\": /v2/classic/servers/13e46c3b910727029646ba5db7ee5930080f832af4d9e29f70cf781250a23809/publish\n\"content-digest\": sha-256=:mBfPpgnbQXGzCdNpaUZtEgJiceUliM4rByayVG5G9VM=:\n\"content-type\": application/json\n\"atrinik-server-id\": 13e46c3b910727029646ba5db7ee5930080f832af4d9e29f70cf781250a23809\n\"atrinik-publish-sequence\": 102\n\"@signature-params\": (\"@method\" \"@authority\" \"@path\" \"content-digest\" \"content-type\" \"atrinik-server-id\" \"atrinik-publish-sequence\");created=1800000600;expires=1800000900;nonce=\"303132333435363738393a3b3c3d3e3f\";alg=\"ecdsa-p256-sha256\";keyid=\"13e46c3b910727029646ba5db7ee5930080f832af4d9e29f70cf781250a23809\";tag=\"atrinik-classic-publish-v2\"",
+      "signature_base64": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=="
+    },
+    {
+      "body": "{\"schema\":\"atrinik-classic-publish-v2\",\"serverId\":\"13e46c3b910727029646ba5db7ee5930080f832af4d9e29f70cf781250a23809\",\"certificate\":\"MIIBWDCB/6ADAgECAgEhMAoGCCqGSM49BAMCMCUxIzAhBgNVBAMTGkF0cmluaWsgQ2xhc3NpYyB2MiBmaXh0dXJlMB4XDTI2MDEwMTAwMDAwMFoXDTM2MDEwMTAwMDAwMFowJTEjMCEGA1UEAxMaQXRyaW5payBDbGFzc2ljIHYyIGZpeHR1cmUwWTATBgcqhkjOPQIBBggqhkjOPQMBBwNCAATo4QRR45SdaF7zpESDJmLYTpGJbLuZIR6lYm+D0tiFS4Okj0gskkrVPr5FeHGblhLvUTv1C+GLO08g10p0EmPRoyAwHjAOBgNVHQ8BAf8EBAMCB4AwDAYDVR0TAQH/BAIwADAKBggqhkjOPQQDAgNIADBFAiEAhVxthqGABVxAG0Kqlh0AGWQk74HoNqfr4493srgNBsQCICx9jMsucb8mRVNO1O4E2i2nN6IdtCb6cMNDa/4Y8neZ\",\"name\":\"Atrinik Classic\",\"playersCount\":4,\"version\":\"6.0.0\",\"textComment\":\"Access-code fixture Ω\",\"public\":true,\"accessCodeRequired\":true,\"hostname\":\"play.example.org\",\"port\":13327}",
+      "certificate_der_base64": "MIIBWDCB/6ADAgECAgEhMAoGCCqGSM49BAMCMCUxIzAhBgNVBAMTGkF0cmluaWsgQ2xhc3NpYyB2MiBmaXh0dXJlMB4XDTI2MDEwMTAwMDAwMFoXDTM2MDEwMTAwMDAwMFowJTEjMCEGA1UEAxMaQXRyaW5payBDbGFzc2ljIHYyIGZpeHR1cmUwWTATBgcqhkjOPQIBBggqhkjOPQMBBwNCAATo4QRR45SdaF7zpESDJmLYTpGJbLuZIR6lYm+D0tiFS4Okj0gskkrVPr5FeHGblhLvUTv1C+GLO08g10p0EmPRoyAwHjAOBgNVHQ8BAf8EBAMCB4AwDAYDVR0TAQH/BAIwADAKBggqhkjOPQQDAgNIADBFAiEAhVxthqGABVxAG0Kqlh0AGWQk74HoNqfr4493srgNBsQCICx9jMsucb8mRVNO1O4E2i2nN6IdtCb6cMNDa/4Y8neZ",
+      "error": "invalid_signature",
+      "failure_class": "signature_coordinate",
+      "name": "out-of-range-p1363-coordinate",
+      "positive": "public-protected-endpoint",
+      "server_id": "13e46c3b910727029646ba5db7ee5930080f832af4d9e29f70cf781250a23809",
+      "signature_base": "\"@method\": POST\n\"@authority\": publish.meta.atrinik.org\n\"@path\": /v2/classic/servers/13e46c3b910727029646ba5db7ee5930080f832af4d9e29f70cf781250a23809/publish\n\"content-digest\": sha-256=:mBfPpgnbQXGzCdNpaUZtEgJiceUliM4rByayVG5G9VM=:\n\"content-type\": application/json\n\"atrinik-server-id\": 13e46c3b910727029646ba5db7ee5930080f832af4d9e29f70cf781250a23809\n\"atrinik-publish-sequence\": 102\n\"@signature-params\": (\"@method\" \"@authority\" \"@path\" \"content-digest\" \"content-type\" \"atrinik-server-id\" \"atrinik-publish-sequence\");created=1800000600;expires=1800000900;nonce=\"303132333435363738393a3b3c3d3e3f\";alg=\"ecdsa-p256-sha256\";keyid=\"13e46c3b910727029646ba5db7ee5930080f832af4d9e29f70cf781250a23809\";tag=\"atrinik-classic-publish-v2\"",
+      "signature_base64": "/////////////////////////////////////////////////////////////////////////////////////w=="
+    }
+  ]
+}

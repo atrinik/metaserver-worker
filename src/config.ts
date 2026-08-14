@@ -33,11 +33,13 @@ export const MINIMUM_LISTING_TTL_SECONDS =
   DIRECTORY_ARTIFACT_POLICY_MAXIMUMS.minimumAliasPublicationLifetimeSeconds;
 
 export interface DirectoryArtifactConfigurationInput {
+  readonly CLASSIC_DIRECTORY_CUTOVER_MODE?: string;
   readonly DIRECTORY_REFRESH_LEAD_SECONDS?: string;
   readonly LISTING_TTL_SECONDS?: string;
 }
 
 export interface DirectoryArtifactConfiguration {
+  readonly classicDirectoryCutoverMode: "v4-production" | "v5-production";
   readonly refreshLeadSeconds: number;
   readonly listingTtlSeconds: number;
   readonly artifactLifetimeSeconds: number;
@@ -142,6 +144,17 @@ export function publisherEdgeConfiguration(
       MAXIMUM_RETRY_AFTER_SECONDS,
     ),
   });
+}
+
+function strictChoice<const T extends string>(
+  value: string | undefined,
+  variable: string,
+  choices: readonly T[],
+): T {
+  if (value === undefined || !choices.includes(value as T)) {
+    throw new RequestControlConfigurationError(variable);
+  }
+  return value as T;
 }
 
 /** Parse only the fail-closed policy required by the rendezvous edge. */
@@ -272,6 +285,11 @@ export function directoryArtifactConfiguration(
     ),
   );
   return Object.freeze({
+    classicDirectoryCutoverMode: strictChoice(
+      input.CLASSIC_DIRECTORY_CUTOVER_MODE,
+      "CLASSIC_DIRECTORY_CUTOVER_MODE",
+      ["v4-production", "v5-production"] as const,
+    ),
     refreshLeadSeconds,
     listingTtlSeconds,
     artifactLifetimeSeconds: Math.min(

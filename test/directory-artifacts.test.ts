@@ -2,6 +2,9 @@ import { describe, expect, it } from "vitest";
 
 import classicJsonFixture from "./fixtures/classic-directory-v4/index.json?raw";
 import classicXmlFixture from "./fixtures/classic-directory-v4/index.xml?raw";
+import classicV5HtmlFixture from "./fixtures/classic-directory-v5/index.html?raw";
+import classicV5JsonFixture from "./fixtures/classic-directory-v5/index.json?raw";
+import classicV5XmlFixture from "./fixtures/classic-directory-v5/index.xml?raw";
 import gameJsonFixture from "./fixtures/game-directory-v1/canonical.json?raw";
 import invalidAlabelFixture from "./fixtures/game-directory-v1/negative-invalid-alabel.json?raw";
 import invalidXmlNoncharacterFixture from "./fixtures/game-directory-v1/negative-xml-noncharacter.json?raw";
@@ -35,6 +38,19 @@ function classicSnapshot(
 ): ClassicDirectorySnapshot {
   return {
     profile: "classic-v1",
+    revision: 19,
+    generation: "42",
+    generatedAt: GENERATED_AT,
+    expiresAt: EXPIRES_AT,
+    servers,
+  };
+}
+
+function classicV2Snapshot(
+  servers: readonly ClassicDirectoryServer[] = [],
+): DirectorySnapshot {
+  return {
+    profile: "classic-v2",
     revision: 19,
     generation: "42",
     generatedAt: GENERATED_AT,
@@ -151,6 +167,45 @@ describe("static directory artifact rendering", () => {
     expect(artifact.sha256).toBe(
       await sha256Hex(new TextEncoder().encode(expected)),
     );
+  });
+
+  it("matches the exact Classic v5 JSON, XML, and HTML fixtures", async () => {
+    const rendered = await renderDirectoryArtifacts(classicV2Snapshot([
+      {
+        serverId: ID_A,
+        name: "Classic server",
+        playersCount: 2,
+        version: "6.0",
+        textComment: "Welcome",
+        certificateSha256: ID_A,
+        accessCodeRequired: false,
+      },
+      {
+        serverId: ID_B,
+        name: "Protected fallback",
+        playersCount: 4_294_967_295,
+        version: "6.0",
+        textComment: "",
+        certificateSha256: ID_B,
+        accessCodeRequired: true,
+        endpoint: { hostname: "play.example.net", port: 13_327 },
+      },
+    ]));
+    expect(rendered).toMatchObject({
+      profile: "classic-v2",
+      schema: "atrinik-classic-directory-v5",
+      serverCount: 2,
+    });
+    expect(rendered.artifacts.json.body).toBe(classicV5JsonFixture);
+    expect(rendered.artifacts.xml.body).toBe(classicV5XmlFixture);
+    expect(rendered.artifacts.html.body).toBe(classicV5HtmlFixture);
+    expect(rendered.artifacts.json.body).toContain("accessCodeRequired");
+    expect(rendered.artifacts.xml.body).toContain("AccessCodeRequired");
+    expect(rendered.artifacts.html.body).toContain("Access code");
+    for (const body of Object.values(rendered.artifacts).map(({ body }) => body)) {
+      expect(body).not.toContain("passwordRequired");
+      expect(body).not.toContain("PasswordRequired");
+    }
   });
 
   it("matches the exact non-empty protocol JSON and XML conformance vectors", async () => {

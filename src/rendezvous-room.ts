@@ -1,6 +1,7 @@
 import { DurableObject } from "cloudflare:workers";
 
 import type { CoreEnv } from "./core-env";
+import type { DirectoryProfile } from "./directory-state";
 
 import {
   RENDEZVOUS_POLICY_MAXIMUMS,
@@ -59,6 +60,8 @@ import {
   persistRendezvousPublication,
   readPublishedGeneration,
   readPublisherReplayState,
+  isClassicV1GloballyRetired,
+  isClassicV1ProfileRetired,
   rendezvousPublicationMatches,
 } from "./rendezvous-publication";
 
@@ -229,7 +232,9 @@ export class RendezvousRoom extends DurableObject<CoreEnv> {
     return this.serializeRoomOperation(async () => {
       try {
         await this.ensureInitialized();
-        await this.reconcileUpgradeGeneration(upgrade.generation);
+        if (!await this.reconcileUpgradeGeneration(upgrade.generation)) {
+          return roomError("room_unavailable");
+        }
         const policy = rendezvousPolicyConfiguration(this.env);
         const now = Date.now();
         this.expireClients(now);
@@ -271,9 +276,18 @@ export class RendezvousRoom extends DurableObject<CoreEnv> {
   private async commitPublication(
     publication: InternalRendezvousPublication,
   ): Promise<Response> {
+    if (
+      publication.directoryProfile === "classic-v1" &&
+      (await isClassicV1GloballyRetired(this.env.DB) ||
+        await isClassicV1ProfileRetired(this.env.DB, publication.serverId))
+    ) {
+      return profileRetiredResponse();
+    }
     const conflict = await this.signedPublicationConflict(publication);
     if (conflict !== null) {
-      return publishReplayResponse(conflict);
+      return conflict === "exhausted"
+        ? publishSequenceExhaustedResponse()
+        : publishReplayResponse(conflict);
     }
     const publishedGeneration = await this.reconcilePublishedGeneration(
       publication.directoryProfile,
@@ -296,10 +310,19 @@ export class RendezvousRoom extends DurableObject<CoreEnv> {
           publication.serverId,
         );
         const conflict = await this.signedPublicationConflict(publication);
+        if (
+          publication.directoryProfile === "classic-v1" &&
+          (await isClassicV1GloballyRetired(this.env.DB) ||
+            await isClassicV1ProfileRetired(this.env.DB, publication.serverId))
+        ) {
+          return profileRetiredResponse();
+        }
         if (conflict === null) {
           throw new Error("Publisher replay state did not explain rejection");
         }
-        return publishReplayResponse(conflict);
+        return conflict === "exhausted"
+          ? publishSequenceExhaustedResponse()
+          : publishReplayResponse(conflict);
       }
       visibleChanged = persisted.visibleChanged;
     } catch (error) {
@@ -324,7 +347,7 @@ export class RendezvousRoom extends DurableObject<CoreEnv> {
 
   private async signedPublicationConflict(
     publication: InternalRendezvousPublication,
-  ): Promise<string | null> {
+  ): Promise<string | "exhausted" | null> {
     const sequence = publication.publisherSequence;
     const nonce = publication.publisherNonce;
     if (sequence === null || nonce === null) {
@@ -336,6 +359,9 @@ export class RendezvousRoom extends DurableObject<CoreEnv> {
       publication.directoryProfile,
       nonce,
     );
+    if (state?.lastSequence === UINT64_MAXIMUM_SEQUENCE) {
+      return "exhausted";
+    }
     if (
       state === null ||
       (!state.nonceSeen && comparePublishSequences(
@@ -348,19 +374,41 @@ export class RendezvousRoom extends DurableObject<CoreEnv> {
     return minimumNextPublishSequence(state.lastSequence);
   }
 
-  private async reconcileUpgradeGeneration(generation: string): Promise<void> {
-    if (this.currentGeneration === generation) {
-      return;
-    }
+  private async reconcileUpgradeGeneration(generation: string): Promise<boolean> {
     const serverId = this.ctx.id.name;
     if (serverId === undefined || !TOKEN_GENERATION.test(serverId)) {
-      return;
+      // Production rooms are always named with a verified Classic server ID.
+      // Descriptive names are reserved for isolated Durable Object tests,
+      // which intentionally exercise the room without coordinator-owned D1
+      // publication state.
+      return this.currentGeneration === null ||
+        this.currentGeneration === generation;
     }
-    await this.reconcilePublishedGeneration("classic-v1", serverId);
+    const v2Generation = await readPublishedGeneration(
+      this.env.DB,
+      "classic-v2",
+      serverId,
+    );
+    if (v2Generation !== null) {
+      await this.rotateTokenGeneration(v2Generation);
+      return v2Generation === generation;
+    }
+    if (
+      await isClassicV1GloballyRetired(this.env.DB) ||
+      await isClassicV1ProfileRetired(this.env.DB, serverId)
+    ) {
+      await this.rotateTokenGeneration(null);
+      return false;
+    }
+    const v1Generation = await this.reconcilePublishedGeneration(
+      "classic-v1",
+      serverId,
+    );
+    return v1Generation === generation;
   }
 
   private async reconcilePublishedGeneration(
-    profile: "classic-v1" | "game-v1",
+    profile: DirectoryProfile,
     serverId: string,
   ): Promise<string | null> {
     const generation = await readPublishedGeneration(
@@ -2559,9 +2607,22 @@ export class RendezvousRoom extends DurableObject<CoreEnv> {
 }
 
 function publicationRoomName(publication: InternalRendezvousPublication): string {
-  return publication.directoryProfile === "classic-v1"
+  return publication.directoryProfile.startsWith("classic-")
     ? publication.serverId
     : `game-v1:${publication.serverId}`;
+}
+
+function profileRetiredResponse(): Response {
+  return Response.json(
+    { error: { code: "profile_retired" } },
+    {
+      status: 410,
+      headers: {
+        "Cache-Control": "no-store",
+        "X-Content-Type-Options": "nosniff",
+      },
+    },
+  );
 }
 
 class RendezvousTeardownIntegrityError extends Error {
@@ -2756,10 +2817,12 @@ function comparePublishSequences(left: string, right: string): number {
 }
 
 function minimumNextPublishSequence(lastSequence: string): string {
-  const maximum = 18_446_744_073_709_551_615n;
+  const maximum = BigInt(UINT64_MAXIMUM_SEQUENCE);
   const next = BigInt(lastSequence) + 1n;
   return (next > maximum ? maximum : next).toString();
 }
+
+const UINT64_MAXIMUM_SEQUENCE = "18446744073709551615";
 
 function publicationCommittedResponse(visibleChanged: boolean): Response {
   return new Response(null, {
@@ -2778,6 +2841,19 @@ function publishReplayResponse(minimumNextSequence: string): Response {
         minimumNextSequence,
       },
     },
+    {
+      status: 409,
+      headers: {
+        "Cache-Control": "no-store",
+        "X-Content-Type-Options": "nosniff",
+      },
+    },
+  );
+}
+
+function publishSequenceExhaustedResponse(): Response {
+  return Response.json(
+    { error: { code: "publish_sequence_exhausted" } },
     {
       status: 409,
       headers: {

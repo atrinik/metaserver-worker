@@ -29,7 +29,9 @@ learns a selected peer endpoint.
    only the token's SHA-256 verifier is stored in minimal profile presence,
    separately from renderable public directory metadata. Private publication
    retains that verifier and generation but no listing or endpoint, and neither
-   rendezvous role is admitted without a fresh public directory row.
+   rendezvous role is admitted without a fresh public directory row. Classic
+   v2 stores only the signed `accessCodeRequired` policy boolean; it never
+   stores an access code, proof, or v1 password field.
 6. Static R2 artifacts contain only the bounded public directory model plus a
    profile, schema, generation, freshness timestamps, body sizes, and keyed-by-
    content SHA-256 values. The D1 revision and outbox are builder-private and
@@ -99,10 +101,18 @@ Rollback may use the runtime-retirement bridge release, never a release that
 can reactivate those writers. A missing direct hostname remains NULL in
 canonical state, and the HTTPS request address is never inferred.
 
+Migration `0010_classic_access_code.sql` adds Classic v2 as a disjoint
+publication shape while retaining one shared Classic v1/v2 sequence and nonce
+lineage. It also adds durable per-identity upgrade state and the one-way global
+v1 receiver mode. A v2 upgrade atomically removes v1 public/presence state but
+retains replay history; global retirement does the same for every remaining v1
+identity without changing v2 or Game state.
+
 The signed replay ledger stores canonical decimal sequences as text because
 SQLite cannot represent the complete unsigned 64-bit range. Nonces are scoped
-by server ID and publisher profile, expire after the fixed replay window, and
-are pruned by scheduled maintenance. Sequence rows deliberately remain for the
+by replay lineage (shared Classic or independent Game), expire after the fixed
+replay window, and are pruned by scheduled maintenance. Sequence rows
+deliberately remain for the
 life of an identity so a stale state backup cannot lower replay protection.
 The server can consume the authenticated `minimumNextSequence` response to
 advance its protected local high-water mark; it never deletes or replaces its
@@ -143,8 +153,10 @@ account or zone identifier. The token is an encrypted core-only binding and is
 used solely in an authorization header to purge the three configured public
 aliases. It is never logged or included in metrics, D1, R2, or Durable Object
 storage. The private R2 bucket uses only
-`v1/<profile>/<generation>/<fixed-name>` keys. The public buckets contain only
-the fixed `index.html`, `index.xml`, `index.json`, and `manifest.json` aliases.
+`v1/<profile>/<generation>/<fixed-name>` keys. Production public aliases are
+the fixed `index.html`, `index.xml`, and `index.json`; before human cutover v5
+uses the isolated `canary-v5/` prefix, and afterward residual v4 reconciliation
+uses `precutover-v4/`. No alias contains a password or access code.
 Custom metadata is an exact allowlist of schema, profile, format, generation,
 freshness, and model/body digest. The public strong ETag is R2-selected object
 metadata rather than a copied application digest.
@@ -290,7 +302,7 @@ copied into a custom metric or log.
 
 ## Rendezvous transient state
 
-The first passwordless client candidate or protected `auth_init` carries a
+The first open client candidate or access-code-protected `auth_init` carries a
 fresh client-generated 64-hex ticket. The
 room retains the raw ticket beyond the frame currently being validated or
 forwarded only in that client's compact, versioned WebSocket attachment for the
@@ -351,7 +363,7 @@ only after every socket is either durably non-routing or transport-closed.
 Each accepted client reserves one row in the per-room Durable Object SQLite
 admission ledger. Apart from its local numeric row ID, its application fields
 are `accepted_at_ms` and exactly two nullable replay-alias columns. The first
-valid passwordless client candidate or protected `auth_init` derives and
+valid open client candidate or access-code-protected `auth_init` derives and
 atomically claims both aliases; the same
 transaction rejects a collision against either column before forwarding the
 candidate. The room deletes every row whose acceptance time is at or before
@@ -428,7 +440,7 @@ envelope contains only keyed aliases, never the source address.
 The directory never substitutes the request source for a direct endpoint.
 Signed publication may add an operator-configured, strictly
 validated optional DNS hostname/UDP port pair. That endpoint is public routing
-metadata even when `PasswordRequired` is true; it is not identity. Clients
+metadata under either retained v1 or v2 policy; it is not identity. Clients
 still pin the QUIC certificate. Canonical `xn--` labels must round-trip through
 the protocol's strict non-transitional UTS #46 profile; Unicode U-labels and
 malformed or bidi-invalid A-labels fail before persistence. The Worker never
@@ -437,13 +449,16 @@ resolves the hostname or stores its A/AAAA answers.
 The canonical room routes server candidates only to the client socket that
 originated their fresh ticket. Admission also requires a currently live server
 control authenticated with the listing's rendezvous token. That server-control
-proof is deliberately separate from a player's game password. A protected
-listing requires both peers to negotiate the exact classic invite subprotocol,
+proof is deliberately separate from player authorization. An
+access-code-protected v2 listing requires both peers to negotiate the exact
+classic invite subprotocol,
 then completes a single high-entropy invite challenge/response before the
 current authenticated server control can authorize that ticket. Unknown,
 expired, revoked, malformed, and incorrect capabilities receive the same
-generic denial from the classic server. The Worker never receives the invite
-secret, and the normal in-game join password remains required after QUIC.
+generic denial from the classic server. The Worker never receives the launch
+code, rendezvous secret, post-QUIC capability, or authorization result. A
+retained v1 `PasswordRequired` listing keeps its distinct old post-QUIC
+password semantics and is never projected as v2.
 Transient QUIC candidates are therefore not exposed merely because a client
 knows a listed server identity.
 
