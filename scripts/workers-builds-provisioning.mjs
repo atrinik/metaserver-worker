@@ -25,7 +25,7 @@ const maximumPrivateDocumentBytes = 64 * 1024;
 const maximumProviderPages = 100;
 const stagingBranchPattern = /^review-build-only-sentinel-[0-9a-f]{32}$/u;
 const gitShaPattern = /^[0-9a-f]{40}$/u;
-const expectedSetupPlanSha256 = "d970b8c539771b16f3de1ac56b5ef8d9d155373e56f83f4a6b2591d9979fea68";
+const expectedSetupPlanSha256 = "c4e1a3419152aee436533445b7479aba8660fb42f7868be8cefdd39de6846144";
 const githubRepository = Object.freeze({
   provider_account_id: "6371603",
   provider_account_name: "atrinik",
@@ -377,6 +377,7 @@ export function provisioningSetupPlan(production, review) {
       "ATRINIK_STAGED_PROOF_OUTPUT_FILE",
       "ATRINIK_STAGED_PROOF_FILE",
       "ATRINIK_PRODUCTION_ACTIVATION_PROOF_OUTPUT_FILE",
+      "ATRINIK_REVIEW_RESULT_PROOF_FILE",
       "ATRINIK_PRODUCTION_BUILD_TOKEN_SECRET_FILE",
       "ATRINIK_PRODUCTION_BUILD_TOKEN_ID_FILE",
       "ATRINIK_PRODUCTION_BUILD_TOKEN_PERMISSION_PROOF_FILE",
@@ -530,7 +531,7 @@ export function provisioningSetupPlan(production, review) {
       gate: "production-trigger-activation",
       precondition: {
         sentinel: "repeat-exact-private-random-sentinel-ref-absence-proof-immediately-before-atomic-patch",
-        reviewPath: "review-trigger-activated-and-disposable-review-proof-complete",
+        reviewPath: "fresh-private-successful-disposable-review-build-and-cleanup-proof",
         productionProof: "fresh-live-review-active-production-staged-proof-digest",
       },
       preconditionCommand: "npm run provision:workers-builds:verify-production-activation",
@@ -941,11 +942,47 @@ export function validateConfiguredBuildsSnapshot({ production, review, scripts,
   };
 }
 
+export function validateReviewResultProof({ proof, reviewTrigger, reviewToken, builds },
+  now = Date.now()) {
+  const keys = ["branch", "branchDeleted", "buildTokenUuid", "buildUuid", "capturedAt",
+    "cleanupProven", "evidenceLocation", "githubCheck", "repository", "reviewCommitSha",
+    "source", "triggerUuid"];
+  const captured = Date.parse(proof?.capturedAt ?? "");
+  const rows = requireExhaustiveEnvelope(builds, "review result builds");
+  const matches = rows.filter(({ build_uuid: id }) => id === proof?.buildUuid);
+  const row = matches[0];
+  const metadata = row?.build_trigger_metadata ?? {};
+  let details;
+  try { details = new URL(proof?.githubCheck?.detailsUrl ?? ""); } catch { details = null; }
+  if (!proof || !same(sorted(Object.keys(proof)), sorted(keys)) ||
+      proof.source !== "cloudflare-github-disposable-review-readback" ||
+      proof.repository !== "atrinik/metaserver-worker" ||
+      !/^review\/issue-56-[a-z0-9-]{1,40}$/u.test(proof.branch ?? "") ||
+      !gitShaPattern.test(proof.reviewCommitSha ?? "") || !uuidPattern.test(proof.buildUuid ?? "") ||
+      proof.triggerUuid !== reviewTrigger.trigger_uuid ||
+      proof.buildTokenUuid !== reviewToken.build_token_uuid || proof.branchDeleted !== true ||
+      proof.cleanupProven !== true ||
+      proof.evidenceLocation !== "atrinik/metaserver-worker#56-private-provider-evidence" ||
+      !same(sorted(Object.keys(proof.githubCheck ?? {})),
+        ["commitSha", "conclusion", "detailsUrl", "name"].sort()) ||
+      proof.githubCheck.name !== "Cloudflare Workers Builds" ||
+      proof.githubCheck.conclusion !== "success" ||
+      proof.githubCheck.commitSha !== proof.reviewCommitSha ||
+      details?.protocol !== "https:" || details.hostname !== "dash.cloudflare.com" ||
+      !Number.isFinite(captured) || captured > now + 30_000 || now - captured > 5 * 60_000 ||
+      matches.length !== 1 || row.status !== "stopped" || row.build_outcome !== "success" ||
+      row.trigger?.trigger_uuid !== proof.triggerUuid || metadata.branch !== proof.branch ||
+      metadata.commit_hash !== proof.reviewCommitSha ||
+      metadata.build_token_uuid !== proof.buildTokenUuid)
+    fail("disposable review result proof is missing, stale, failed, or mismatched");
+  return proof;
+}
+
 function validateActivationSnapshot({ production, review, scripts,
   productionTriggers, productionEnvironment, reviewTriggers, reviewEnvironment,
   nonEntrypointTriggers, deployHooks, builds, buildTokens, accountTriggers, reviewBootstrapState,
   reviewBootstrapConfig, accountId, tokenAuthorityProofs, sourceSha, sentinelProof,
-  snapshotManifest }, { reviewActive }) {
+  snapshotManifest, reviewResultProof }, { reviewActive }) {
   validateSentinelRefAbsence(sentinelProof);
   const scriptRows = requireEnvelope(scripts, "scripts");
   const productionScript = scriptRows.find(({ id }) => id === production.workers[0].name);
@@ -1015,6 +1052,9 @@ function validateActivationSnapshot({ production, review, scripts,
     "staged build")) validateNoActiveBuilds(envelope, label);
   validateReviewBootstrapState({ review, config: reviewBootstrapConfig,
     script: reviewScript, ...reviewBootstrapState, sourceSha, accountId });
+  if (reviewActive) validateReviewResultProof({ proof: reviewResultProof,
+    reviewTrigger: reviewRows[0], reviewToken,
+    builds: reviewBootstrapState.builds });
   validateSnapshotManifest(snapshotManifest, { accountId, sourceSha, production, review });
   const capturedAt = new Date().toISOString();
   const snapshotCoordinate = { accountId: snapshotManifest.accountId,
@@ -1026,7 +1066,8 @@ function validateActivationSnapshot({ production, review, scripts,
   const proof_digest = digestJson({ snapshotCoordinate, sentinelCoordinate, scripts,
     productionTriggers, productionEnvironment, reviewTriggers, reviewEnvironment,
     nonEntrypointTriggers, deployHooks, builds, buildTokens, accountTriggers,
-    reviewBootstrapState, tokenAuthorityProofs });
+    reviewBootstrapState, tokenAuthorityProofs,
+    ...(reviewActive ? { reviewResultProof } : {}) });
   return { outcome: reviewActive ? "workers-builds-production-activation-snapshot-valid" :
     "workers-builds-staged-snapshot-valid", mutation: false,
     stagedTriggerCount: 2, accountId, sourceSha, capturedAt, proof_digest };
@@ -1761,7 +1802,7 @@ async function validateConfiguredSnapshotDirectory({ snapshotDirectory, producti
 
 async function validateStagedSnapshotDirectory({ snapshotDirectory, production, review,
   reviewBootstrapConfig, accountId, tokenAuthorityProofs, sourceSha },
-{ reviewActive = false } = {}) {
+{ reviewActive = false, reviewResultProof = undefined } = {}) {
   const snapshotManifest = await loadSnapshot(snapshotDirectory, "snapshot-manifest.json");
   validateSnapshotManifest(snapshotManifest, { accountId, sourceSha, production, review });
   const core = production.workers[0];
@@ -1815,7 +1856,7 @@ async function validateStagedSnapshotDirectory({ snapshotDirectory, production, 
     deployHooks, builds, buildTokens,
     accountTriggers: await loadSnapshot(snapshotDirectory, "account-triggers.json"),
     reviewBootstrapState, reviewBootstrapConfig, accountId, tokenAuthorityProofs, sourceSha,
-    sentinelProof, snapshotManifest };
+    sentinelProof, snapshotManifest, reviewResultProof };
   return reviewActive ? validateProductionActivationSnapshot(arguments_) :
     validateStagedBuildsSnapshot(arguments_);
 }
@@ -1998,9 +2039,11 @@ async function main() {
     const outputDirectory = process.env.ATRINIK_PROVIDER_SNAPSHOT_OUTPUT;
     await readProviderSnapshot({ accountId, token, productionReadToken, outputDirectory,
       production, review, sourceSha });
+    const reviewResultProof = await readPrivateJson(
+      process.env.ATRINIK_REVIEW_RESULT_PROOF_FILE, "disposable review result proof");
     const proof = await validateStagedSnapshotDirectory({ snapshotDirectory: outputDirectory,
       production, review, reviewBootstrapConfig, accountId, tokenAuthorityProofs, sourceSha,
-    }, { reviewActive: true });
+    }, { reviewActive: true, reviewResultProof });
     await writePrivateProof(process.env.ATRINIK_PRODUCTION_ACTIVATION_PROOF_OUTPUT_FILE, proof);
     process.stdout.write(`${JSON.stringify(publicStagedProofSummary(proof))}\n`);
     return;

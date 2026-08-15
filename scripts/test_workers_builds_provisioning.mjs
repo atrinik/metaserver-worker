@@ -885,7 +885,37 @@ test("proves both triggers are inert before either activation", () => {
   finalReview.trigger_uuid = reviewTriggerUuid;
   reviewActive.reviewTriggers = envelope([finalReview]);
   assert.throws(() => validateStagedBuildsSnapshot(reviewActive), /branch_includes drift/u);
+  assert.throws(() => validateProductionActivationSnapshot(reviewActive),
+    /disposable review result proof/u);
+  const buildUuid = "77777777-7777-4777-8777-777777777777";
+  const reviewCommitSha = "b".repeat(40);
+  const branch = "review/issue-56-provider-proof";
+  const reviewBuild = { build_uuid: buildUuid, status: "stopped", build_outcome: "success",
+    trigger: { trigger_uuid: reviewTriggerUuid }, build_trigger_metadata: {
+      branch, commit_hash: reviewCommitSha, build_token_uuid: reviewTokenUuid } };
+  reviewActive.reviewBootstrapState.builds = envelope([reviewBuild]);
+  reviewActive.builds = reviewActive.builds.map(([label, value]) =>
+    [label, label === "review" ? envelope([reviewBuild]) : value]);
+  reviewActive.reviewResultProof = {
+    source: "cloudflare-github-disposable-review-readback",
+    repository: "atrinik/metaserver-worker", branch, reviewCommitSha, buildUuid,
+    triggerUuid: reviewTriggerUuid, buildTokenUuid: reviewTokenUuid,
+    branchDeleted: true, cleanupProven: true,
+    evidenceLocation: "atrinik/metaserver-worker#56-private-provider-evidence",
+    capturedAt: new Date().toISOString(), githubCheck: {
+      name: "Cloudflare Workers Builds", conclusion: "success", commitSha: reviewCommitSha,
+      detailsUrl: "https://dash.cloudflare.com/example/builds/77777777-7777-4777-8777-777777777777",
+    },
+  };
   const productionProof = validateProductionActivationSnapshot(reviewActive);
   assert.equal(productionProof.outcome, "workers-builds-production-activation-snapshot-valid");
   assert.match(productionProof.proof_digest, /^[0-9a-f]{64}$/u);
+  const failedReview = structuredClone(reviewActive);
+  failedReview.reviewBootstrapState.builds.result[0].build_outcome = "fail";
+  assert.throws(() => validateProductionActivationSnapshot(failedReview),
+    /disposable review result proof/u);
+  const wrongReviewSha = structuredClone(reviewActive);
+  wrongReviewSha.reviewResultProof.reviewCommitSha = "c".repeat(40);
+  assert.throws(() => validateProductionActivationSnapshot(wrongReviewSha),
+    /disposable review result proof/u);
 });
