@@ -123,8 +123,11 @@ Issue #56's fail-closed composition can be checked without credentials using
 `npm run provision:workers-builds:validate` and
 `npm run provision:workers-builds:dry-run`. Its separately credentialed
 readback and local materializer write only private mode-`0600` provider
-snapshots/configurations and have no remote mutation path; exact invocation and
-authorization boundaries are in [DEPLOYMENT.md](DEPLOYMENT.md).
+snapshots/configurations and have no remote mutation path. A post-setup
+`npm run provision:workers-builds:verify-configured` check proves the serialized
+trigger, isolated review, environment-classification, and no-Deploy-Hook
+boundaries from those private snapshots. Exact invocation and authorization
+boundaries are in [DEPLOYMENT.md](DEPLOYMENT.md).
 
 The accepted [review-environment design](docs/review-environment.md) gives
 eligible same-repository non-`main` branches an automatic build-only check

@@ -37,7 +37,8 @@
     "provision:workers-builds:validate": "node scripts/workers-builds-provisioning.mjs --validate-only",
     "provision:workers-builds:dry-run": "node scripts/workers-builds-provisioning.mjs --dry-run",
     "provision:workers-builds:readback": "node scripts/workers-builds-provisioning.mjs --readback",
-    "provision:workers-builds:materialize-production": "node scripts/workers-builds-provisioning.mjs --materialize-production"
+    "provision:workers-builds:materialize-production": "node scripts/workers-builds-provisioning.mjs --materialize-production",
+    "provision:workers-builds:verify-configured": "node scripts/workers-builds-provisioning.mjs --verify-configured"
   },
   "engines": {
     "node": "24.18.1",

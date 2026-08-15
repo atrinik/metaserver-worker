@@ -1,4 +1,5 @@
-import { chmod, lstat, mkdir, readFile, writeFile } from "node:fs/promises";
+import { constants } from "node:fs";
+import { lstat, mkdir, open, readFile, realpath } from "node:fs/promises";
 import { dirname, isAbsolute, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import {
@@ -14,6 +15,8 @@ const reviewPath = resolve(root, "deployment/workers-builds-review.json");
 const accountIdPattern = /^[0-9a-f]{32}$/u;
 const scriptTagPattern = /^[0-9a-f]{32}$/u;
 const uuidPattern = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/u;
+const maximumProviderResponseBytes = 1024 * 1024;
+const maximumPrivateDocumentBytes = 64 * 1024;
 
 export class WorkersBuildsProvisioningError extends Error {}
 
@@ -102,6 +105,11 @@ export function validateTriggerSnapshot(actual, expected, label) {
   ];
   for (const key of keys) if (!same(actual?.[key], expected[key]))
     fail(`${label} trigger ${key} drift`);
+  if (
+    actual.trigger_name !== expected.trigger_name ||
+    !uuidPattern.test(actual.trigger_uuid ?? "") ||
+    actual.deleted_on != null
+  ) fail(`${label} trigger identity drift`);
   if (normalizedRoot(actual.root_directory) !== normalizedRoot(expected.root_directory))
     fail(`${label} trigger root_directory drift`);
   const connection = actual.repo_connection ?? {};
@@ -140,8 +148,105 @@ export function validateAutomaticReviewEnvironment(actual, review) {
   const expected = automaticReviewEnvironmentSpec(review);
   if (!same(sorted(Object.keys(actual ?? {})), sorted(Object.keys(expected))))
     fail("review environment inventory drift");
-  if (!same(actual.SKIP_DEPENDENCY_INSTALL, expected.SKIP_DEPENDENCY_INSTALL))
+  const bootstrap = actual.SKIP_DEPENDENCY_INSTALL ?? {};
+  if (
+    bootstrap.is_secret !== expected.SKIP_DEPENDENCY_INSTALL.is_secret ||
+    bootstrap.value !== expected.SKIP_DEPENDENCY_INSTALL.value ||
+    (bootstrap.created_on !== undefined &&
+      !/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?Z$/u.test(bootstrap.created_on)) ||
+    !Object.keys(bootstrap).every((key) => ["created_on", "is_secret", "value"].includes(key))
+  )
     fail("review bootstrap environment drift");
+}
+
+export function validateNoDeployHooks(envelope, label) {
+  const hooks = requireEnvelope(envelope, `${label} deploy hooks`);
+  if (!Array.isArray(hooks) || hooks.length !== 0)
+    fail(`${label} gained a Deploy Hook`);
+}
+
+function exactLabeledInventories(actual, expectedLabels, label) {
+  if (!Array.isArray(actual) || actual.some((entry) =>
+    !Array.isArray(entry) || entry.length !== 2) ||
+      !same(sorted(actual.map(([name]) => name)), sorted(expectedLabels)))
+    fail(`${label} inventory is incomplete or ambiguous`);
+  return actual;
+}
+
+export function validateBuildTokenInventory(envelope, expectedUuids) {
+  const tokens = requireEnvelope(envelope, "build tokens");
+  if (!Array.isArray(tokens)) fail("build token inventory is invalid");
+  for (const uuid of expectedUuids) {
+    const matches = tokens.filter(({ build_token_uuid: candidate }) => candidate === uuid);
+    if (matches.length !== 1) fail("configured build token is missing or ambiguous");
+    const token = matches[0];
+    if (
+      token.owner_type !== "user" ||
+      typeof token.build_token_name !== "string" || !token.build_token_name.trim() ||
+      typeof token.cloudflare_token_id !== "string" || !token.cloudflare_token_id.trim()
+    ) fail("configured build token authority is malformed");
+  }
+}
+
+export function validateConfiguredBuildsSnapshot({ production, review, scripts,
+  productionTriggers, productionEnvironment, reviewTriggers, reviewEnvironment,
+  nonEntrypointTriggers, deployHooks, buildTokens }) {
+  const scriptRows = requireEnvelope(scripts, "scripts");
+  if (!Array.isArray(scriptRows)) fail("script inventory is invalid");
+  const productionScript = scriptRows.find(({ id }) => id === production.workers[0].name);
+  const reviewScript = scriptRows.find(({ id }) => id === review.automaticReview.project);
+  if (!scriptTagPattern.test(productionScript?.tag ?? "") ||
+      !scriptTagPattern.test(reviewScript?.tag ?? ""))
+    fail("configured Builds scripts are missing or malformed");
+  if (productionScript.tag === reviewScript.tag)
+    fail("production and review Builds projects share one script tag");
+  const productionRows = requireEnvelope(productionTriggers, "production triggers");
+  const reviewRows = requireEnvelope(reviewTriggers, "review triggers");
+  if (!Array.isArray(productionRows) || productionRows.length !== 1 ||
+      !Array.isArray(reviewRows) || reviewRows.length !== 1)
+    fail("configured trigger inventory is not exactly one per Builds project");
+  for (const [label, envelope] of exactLabeledInventories(nonEntrypointTriggers,
+    production.workers.slice(1).map(({ role }) => role), "non-entrypoint trigger")) {
+    const rows = requireEnvelope(envelope, `${label} triggers`);
+    if (!Array.isArray(rows) || rows.length !== 0)
+      fail(`${label} gained an independent Builds trigger`);
+  }
+  const productionActual = productionRows[0];
+  const reviewActual = reviewRows[0];
+  if (productionActual.trigger_uuid === reviewActual.trigger_uuid ||
+      productionActual.build_token_uuid === reviewActual.build_token_uuid)
+    fail("production and review trigger/token identities are not isolated");
+  validateBuildTokenInventory(buildTokens, [productionActual.build_token_uuid,
+    reviewActual.build_token_uuid]);
+  const productionExpected = productionTriggerSpec(production, {
+    externalScriptId: productionScript.tag,
+    repositoryConnectionUuid: productionActual.repo_connection?.repo_connection_uuid,
+    buildTokenUuid: productionActual.build_token_uuid,
+  });
+  const reviewExpected = automaticReviewTriggerSpec(review, {
+    externalScriptId: reviewScript.tag,
+    repositoryConnectionUuid: reviewActual.repo_connection?.repo_connection_uuid,
+    buildTokenUuid: reviewActual.build_token_uuid,
+  });
+  validateTriggerSnapshot(productionActual, productionExpected, "production");
+  validateTriggerSnapshot(reviewActual, reviewExpected, "review");
+  if (productionActual.repo_connection.repo_connection_uuid !==
+      reviewActual.repo_connection.repo_connection_uuid)
+    fail("production and review triggers do not reuse one repository connection");
+  validateBuildEnvironment(production, requireEnvelope(productionEnvironment,
+    "production environment"));
+  validateAutomaticReviewEnvironment(requireEnvelope(reviewEnvironment,
+    "review environment"), review);
+  for (const [label, envelope] of exactLabeledInventories(deployHooks,
+    [...production.workers.map(({ role }) => role), "review"], "Deploy Hook"))
+    validateNoDeployHooks(envelope, label);
+  return {
+    outcome: "workers-builds-configured-snapshot-valid",
+    mutation: false,
+    productionTriggerCount: productionRows.length,
+    reviewTriggerCount: reviewRows.length,
+    deployHookCount: 0,
+  };
 }
 
 export function materializeProductionConfiguration({
@@ -252,6 +357,10 @@ async function checkedInInputs() {
 
 async function createPrivateDirectory(path) {
   if (!isAbsolute(path ?? "")) fail("private output directory must be absolute");
+  if (resolve(path) !== path) fail("private output directory must be normalized");
+  const parent = dirname(path);
+  const canonicalParent = await realpath(parent).catch(() => null);
+  if (canonicalParent !== parent) fail("private output parent must be canonical and symlink-free");
   try {
     await lstat(path);
     fail("private output directory already exists");
@@ -260,32 +369,70 @@ async function createPrivateDirectory(path) {
     if (error?.code !== "ENOENT") fail("private output directory cannot be inspected");
   }
   await mkdir(path, { mode: 0o700 });
-  await chmod(path, 0o700);
+  const handle = await open(path, constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW)
+    .catch(() => null);
+  if (!handle) fail("private output directory cannot be pinned");
+  try {
+    const metadata = await handle.stat();
+    if (!metadata.isDirectory()) fail("private output path is not a directory");
+    await handle.chmod(0o700);
+  } finally { await handle.close(); }
 }
 
 async function readPrivateValue(path, label, pattern = null) {
   if (!isAbsolute(path ?? "")) fail(`${label} file path must be absolute`);
-  const metadata = await lstat(path).catch(() => null);
-  if (!metadata?.isFile() || (metadata.mode & 0o077) !== 0)
-    fail(`${label} file must be a private regular file`);
-  const value = (await readFile(path, "utf8")).trim();
+  const handle = await open(path, constants.O_RDONLY | constants.O_NOFOLLOW).catch(() => null);
+  if (!handle) fail(`${label} file cannot be opened without following links`);
+  let value;
+  try {
+    const metadata = await handle.stat();
+    if (!metadata.isFile() || (metadata.mode & 0o077) !== 0 ||
+        metadata.size > maximumPrivateDocumentBytes)
+      fail(`${label} file must be a bounded private regular file`);
+    value = (await handle.readFile("utf8")).trim();
+  } finally { await handle.close(); }
   if (!value || value.includes("\n") || (pattern && !pattern.test(value)))
     fail(`${label} file is malformed`);
   return value;
 }
 
 async function writePrivateJson(path, value) {
-  await writeFile(path, `${JSON.stringify(value)}\n`, { mode: 0o600, flag: "wx" });
-  await chmod(path, 0o600);
+  const handle = await open(path, constants.O_WRONLY | constants.O_CREAT |
+    constants.O_EXCL | constants.O_NOFOLLOW, 0o600);
+  try {
+    await handle.writeFile(`${JSON.stringify(value)}\n`, "utf8");
+    await handle.chmod(0o600);
+  } finally { await handle.close(); }
+}
+
+async function boundedResponseText(response, label) {
+  if (!response.body) fail(`${label} returned an empty provider body`);
+  const reader = response.body.getReader();
+  const chunks = [];
+  let total = 0;
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      total += value.byteLength;
+      if (total > maximumProviderResponseBytes) {
+        await reader.cancel();
+        fail(`${label} exceeded the provider response limit`);
+      }
+      chunks.push(value);
+    }
+  } finally { reader.releaseLock(); }
+  return new TextDecoder("utf-8", { fatal: true }).decode(Buffer.concat(chunks));
 }
 
 async function providerGet({ accountId, token, outputDirectory }, label, path) {
   const response = await fetch(`https://api.cloudflare.com/client/v4/accounts/${accountId}${path}`, {
     method: "GET", redirect: "error",
     headers: { Authorization: `Bearer ${token}`, Accept: "application/json" },
+    signal: AbortSignal.timeout(20_000),
   });
   let body;
-  try { body = JSON.parse(await response.text()); }
+  try { body = JSON.parse(await boundedResponseText(response, label)); }
   catch { fail(`${label} returned non-JSON provider data`); }
   await writePrivateJson(resolve(outputDirectory, `${label}.json`), body);
   if (!response.ok || body.success !== true) fail(`${label} provider readback failed`);
@@ -316,6 +463,12 @@ async function readProviderSnapshot({ accountId, token, outputDirectory, product
       `/workers/scripts/${encodeURIComponent(name)}/schedules`);
     await providerGet({ accountId, token, outputDirectory }, `${name}.script-settings`,
       `/workers/scripts/${encodeURIComponent(name)}/script-settings`);
+    await providerGet({ accountId, token, outputDirectory }, `${name}.deployments`,
+      `/workers/scripts/${encodeURIComponent(name)}/deployments`);
+    await providerGet({ accountId, token, outputDirectory }, `${name}.versions`,
+      `/workers/scripts/${encodeURIComponent(name)}/versions?per_page=20`);
+    await providerGet({ accountId, token, outputDirectory }, `${name}.deploy-hooks`,
+      `/builds/workers/${encodeURIComponent(name)}/deploy_hooks`);
     const triggers = await providerGet({ accountId, token, outputDirectory }, `${name}.triggers`,
       `/builds/workers/${encodeURIComponent(script.tag)}/triggers`);
     for (const trigger of triggers.result ?? []) {
@@ -326,7 +479,8 @@ async function readProviderSnapshot({ accountId, token, outputDirectory, product
     }
   }
   await providerGet({ accountId, token, outputDirectory }, "domains", "/workers/domains");
-  await providerGet({ accountId, token, outputDirectory }, "build-tokens", "/builds/tokens");
+  await providerGet({ accountId, token, outputDirectory }, "build-tokens",
+    "/builds/tokens?per_page=200");
   await providerGet({ accountId, token, outputDirectory }, "build-limits", "/builds/account/limits");
   return { outcome: "workers-builds-private-readback-complete", mutation: false,
     productionWorkers: production.workers.length,
@@ -335,11 +489,23 @@ async function readProviderSnapshot({ accountId, token, outputDirectory, product
 
 async function loadSnapshot(directory, name) {
   if (!isAbsolute(directory ?? "")) fail("private snapshot directory must be absolute");
+  if (resolve(directory) !== directory || await realpath(directory).catch(() => null) !== directory)
+    fail("private snapshot directory must be canonical and symlink-free");
   const metadata = await lstat(directory).catch(() => null);
   if (!metadata?.isDirectory() || (metadata.mode & 0o077) !== 0)
     fail("private snapshot directory must be private");
-  try { return JSON.parse(await readFile(resolve(directory, name), "utf8")); }
-  catch { fail(`private snapshot ${name} is missing or malformed`); }
+  const path = resolve(directory, name);
+  const handle = await open(path, constants.O_RDONLY | constants.O_NOFOLLOW).catch(() => null);
+  if (!handle) fail(`private snapshot ${name} is missing or linked`);
+  try {
+    const file = await handle.stat();
+    if (!file.isFile() || (file.mode & 0o077) !== 0 || file.size > maximumProviderResponseBytes)
+      fail(`private snapshot ${name} is not a bounded private regular file`);
+    return JSON.parse(await handle.readFile("utf8"));
+  } catch (error) {
+    if (error instanceof WorkersBuildsProvisioningError) throw error;
+    fail(`private snapshot ${name} is missing or malformed`);
+  } finally { await handle.close(); }
 }
 
 async function materializeSnapshot({ snapshotDirectory, outputDirectory, accountId,
@@ -363,6 +529,37 @@ async function materializeSnapshot({ snapshotDirectory, outputDirectory, account
     results.push({ role: worker.role, bytes });
   }
   return { outcome: "production-protected-documents-materialized", mutation: false, results };
+}
+
+async function validateConfiguredSnapshotDirectory({ snapshotDirectory, production, review }) {
+  const [core, publisher, rendezvous] = production.workers;
+  const reviewProject = review.automaticReview.project;
+  const scripts = await loadSnapshot(snapshotDirectory, "scripts.json");
+  const buildTokens = await loadSnapshot(snapshotDirectory, "build-tokens.json");
+  const productionTriggers = await loadSnapshot(snapshotDirectory, `${core.name}.triggers.json`);
+  const reviewTriggers = await loadSnapshot(snapshotDirectory, `${reviewProject}.triggers.json`);
+  const productionRows = requireEnvelope(productionTriggers, "production triggers");
+  const reviewRows = requireEnvelope(reviewTriggers, "review triggers");
+  if (!Array.isArray(productionRows) || productionRows.length !== 1 ||
+      !Array.isArray(reviewRows) || reviewRows.length !== 1)
+    fail("configured trigger inventory is not exactly one per Builds project");
+  const productionEnvironment = await loadSnapshot(snapshotDirectory,
+    `${core.name}.trigger-${productionRows[0].trigger_uuid}.environment.json`);
+  const reviewEnvironment = await loadSnapshot(snapshotDirectory,
+    `${reviewProject}.trigger-${reviewRows[0].trigger_uuid}.environment.json`);
+  const nonEntrypointTriggers = await Promise.all([publisher, rendezvous].map(async (worker) => [
+    worker.role,
+    await loadSnapshot(snapshotDirectory, `${worker.name}.triggers.json`),
+  ]));
+  const deployHooks = await Promise.all([...production.workers.map(({ role, name }) =>
+    [role, name]), ["review", reviewProject]].map(async ([label, name]) => [
+    label,
+    await loadSnapshot(snapshotDirectory, `${name}.deploy-hooks.json`),
+  ]));
+  return validateConfiguredBuildsSnapshot({
+    production, review, scripts, productionTriggers, productionEnvironment,
+    reviewTriggers, reviewEnvironment, nonEntrypointTriggers, deployHooks, buildTokens,
+  });
 }
 
 export async function validateCheckedInProvisioning() {
@@ -416,6 +613,13 @@ async function main() {
       snapshotDirectory: process.env.ATRINIK_PROVIDER_SNAPSHOT_DIRECTORY,
       outputDirectory: process.env.ATRINIK_PRODUCTION_CONFIG_OUTPUT,
       accountId, production, bases,
+    }))}\n`);
+    return;
+  }
+  if (mode === "--verify-configured") {
+    process.stdout.write(`${JSON.stringify(await validateConfiguredSnapshotDirectory({
+      snapshotDirectory: process.env.ATRINIK_PROVIDER_SNAPSHOT_DIRECTORY,
+      production, review,
     }))}\n`);
     return;
   }

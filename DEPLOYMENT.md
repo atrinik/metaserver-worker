@@ -140,13 +140,15 @@ ATRINIK_PROVIDER_SNAPSHOT_OUTPUT=/secure/new/provider-snapshot \
   npm run provision:workers-builds:readback
 ```
 
-The readback covers the exact production and inert-review scripts, script and
-version settings, schedules, alternate-URL state, Builds triggers and their
-environment classifications, Custom Domains, build-token inventory, and
-account build limits. It accepts an absent review-check bootstrap during the
-initial preflight but never an absent production Worker. It performs only
-`GET` requests and emits only a bounded summary; raw identifiers and provider
-responses remain in the private directory.
+The readback covers the exact production and inert-review scripts, version and
+active-deployment inventories, script settings, schedules, alternate-URL state,
+Builds triggers and their environment classifications, Deploy Hooks, Custom
+Domains, build-token inventory, and account build limits. It accepts an absent
+review-check bootstrap during the initial preflight but never an absent
+production Worker. It performs only bounded, timed `GET` requests and emits
+only a bounded summary; raw identifiers and provider responses remain in the
+private directory. Private inputs and snapshot files are opened without
+following symbolic links and must remain owner-only regular files.
 
 Materialize the three desired production documents from that same snapshot.
 This substitutes only the read-back account, D1, cache-zone, R2, Analytics,
@@ -170,6 +172,22 @@ GitHub or logs. No provisioning command in this section creates a connection,
 Worker, token, trigger, variable, build, or deployment. Those mutations remain
 behind the explicit setup authorization; migration `0010` and the first
 automatic production proof are later, separately authorized gates.
+
+After setup, take a new snapshot and prove the configured Builds boundary:
+
+```sh
+ATRINIK_PROVIDER_SNAPSHOT_DIRECTORY=/secure/post-setup-provider-snapshot \
+  npm run provision:workers-builds:verify-configured
+```
+
+This requires exactly one production trigger on the core project and one
+isolated trigger on the review-check project, distinct script/build-token/
+trigger identities, each selected build token appearing exactly once as a
+user-owned provider token, one shared exact GitHub repository connection, exact
+commands and branch/watch filters, exact environment names/classifications,
+no publisher or rendezvous trigger, and no Deploy Hook on any of the four
+projects. Provider timestamps are accepted only as metadata; they never relax
+the authored values or secret classifications.
 
 ## Non-main review delivery
 

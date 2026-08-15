@@ -9,7 +9,10 @@ import {
   productionEnvironmentSpec,
   productionTriggerSpec,
   validateAutomaticReviewEnvironment,
+  validateBuildTokenInventory,
   validateCheckedInProvisioning,
+  validateConfiguredBuildsSnapshot,
+  validateNoDeployHooks,
   validateProductionControlPlane,
   validateTriggerSnapshot,
 } from "./workers-builds-provisioning.mjs";
@@ -25,7 +28,10 @@ const bases = await Promise.all([
 ].map(async (path) => JSON.parse(await readFile(resolve(root, path), "utf8"))));
 const accountId = "a".repeat(32);
 const scriptTag = "b".repeat(32);
+const reviewScriptTag = "d".repeat(32);
 const resourceUuid = "11111111-1111-4111-8111-111111111111";
+const reviewTriggerUuid = "22222222-2222-4222-8222-222222222222";
+const reviewTokenUuid = "33333333-3333-4333-8333-333333333333";
 
 function envelope(result) {
   return { success: true, result };
@@ -74,11 +80,21 @@ function triggerCoordinates() {
 }
 
 function withConnection(spec) {
-  return { ...structuredClone(spec), repo_connection: {
+  return { ...structuredClone(spec), trigger_uuid: resourceUuid, deleted_on: null,
+    repo_connection: {
     repo_connection_uuid: spec.repo_connection_uuid, provider_type: "github",
     provider_account_id: "6371603", provider_account_name: "atrinik",
     repo_id: "1324297032", repo_name: "metaserver-worker",
   } };
+}
+
+function buildTokenInventory() {
+  return envelope([
+    { build_token_name: "Atrinik production build", build_token_uuid: resourceUuid,
+      cloudflare_token_id: "production-token-id", owner_type: "user" },
+    { build_token_name: "Atrinik review build", build_token_uuid: reviewTokenUuid,
+      cloudflare_token_id: "review-token-id", owner_type: "user" },
+  ]);
 }
 
 test("accepts the checked-in provisioning composition", async () => {
@@ -175,7 +191,83 @@ test("pins exact secret classifications and bounded values", () => {
 test("keeps the automatic review build environment value-only and exact", () => {
   const expected = automaticReviewEnvironmentSpec(review);
   assert.deepEqual(expected, { SKIP_DEPENDENCY_INSTALL: { is_secret: false, value: "1" } });
-  assert.doesNotThrow(() => validateAutomaticReviewEnvironment(expected, review));
+  assert.doesNotThrow(() => validateAutomaticReviewEnvironment({
+    SKIP_DEPENDENCY_INSTALL: { ...expected.SKIP_DEPENDENCY_INSTALL,
+      created_on: "2026-08-15T08:00:00Z" },
+  }, review));
   assert.throws(() => validateAutomaticReviewEnvironment({ ...expected,
     UNREVIEWED: { is_secret: true, value: null } }, review), /inventory/u);
+  assert.throws(() => validateAutomaticReviewEnvironment({
+    SKIP_DEPENDENCY_INSTALL: { ...expected.SKIP_DEPENDENCY_INSTALL,
+      created_on: "not-a-timestamp" },
+  }, review), /bootstrap/u);
+});
+
+test("proves one serialized production trigger and one isolated review trigger", () => {
+  const productionSpec = withConnection(productionTriggerSpec(production, triggerCoordinates()));
+  const reviewSpec = withConnection(automaticReviewTriggerSpec(review, {
+    externalScriptId: reviewScriptTag,
+    repositoryConnectionUuid: resourceUuid,
+    buildTokenUuid: reviewTokenUuid,
+  }));
+  reviewSpec.trigger_uuid = reviewTriggerUuid;
+  const values = Object.fromEntries(Object.values(production.protectedInputs)
+    .map((name) => [name, `${name}-value`]));
+  const productionEnvironment = productionEnvironmentSpec(production, values);
+  for (const name of Object.values(production.protectedInputs))
+    productionEnvironment[name].value = null;
+  const automaticEnvironment = automaticReviewEnvironmentSpec(review);
+  const result = validateConfiguredBuildsSnapshot({
+    production,
+    review,
+    scripts: envelope([
+      { id: production.workers[0].name, tag: scriptTag },
+      { id: review.automaticReview.project, tag: reviewScriptTag },
+    ]),
+    productionTriggers: envelope([productionSpec]),
+    productionEnvironment: envelope(productionEnvironment),
+    reviewTriggers: envelope([reviewSpec]),
+    reviewEnvironment: envelope(automaticEnvironment),
+    buildTokens: buildTokenInventory(),
+    nonEntrypointTriggers: production.workers.slice(1)
+      .map(({ role }) => [role, envelope([])]),
+    deployHooks: [...production.workers.map(({ role }) => role), "review"]
+      .map((label) => [label, envelope([])]),
+  });
+  assert.equal(result.mutation, false);
+
+  assert.throws(() => validateConfiguredBuildsSnapshot({
+    production,
+    review,
+    scripts: envelope([
+      { id: production.workers[0].name, tag: scriptTag },
+      { id: review.automaticReview.project, tag: reviewScriptTag },
+    ]),
+    productionTriggers: envelope([productionSpec]),
+    productionEnvironment: envelope(productionEnvironment),
+    reviewTriggers: envelope([reviewSpec]),
+    reviewEnvironment: envelope(automaticEnvironment),
+    buildTokens: buildTokenInventory(),
+    nonEntrypointTriggers: [["publisher", envelope([productionSpec])],
+      ["rendezvous", envelope([])]],
+    deployHooks: [...production.workers.map(({ role }) => role), "review"]
+      .map((label) => [label, envelope([])]),
+  }), /independent Builds trigger/u);
+  assert.throws(() => validateConfiguredBuildsSnapshot({
+    production, review, scripts: envelope([
+      { id: production.workers[0].name, tag: scriptTag },
+      { id: review.automaticReview.project, tag: reviewScriptTag },
+    ]),
+    productionTriggers: envelope([productionSpec]),
+    productionEnvironment: envelope(productionEnvironment),
+    reviewTriggers: envelope([reviewSpec]),
+    reviewEnvironment: envelope(automaticEnvironment),
+    buildTokens: buildTokenInventory(),
+    nonEntrypointTriggers: [], deployHooks: [],
+  }), /inventory is incomplete/u);
+  assert.throws(() => validateBuildTokenInventory(envelope([
+    { ...buildTokenInventory().result[0], build_token_uuid: reviewTokenUuid },
+  ]), [resourceUuid, reviewTokenUuid]), /missing or ambiguous/u);
+  assert.throws(() => validateNoDeployHooks(envelope([{ deploy_hook_uuid: resourceUuid }]),
+    "production"), /Deploy Hook/u);
 });
