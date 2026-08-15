@@ -125,7 +125,29 @@ credential-free and have no provider mutation path:
 ```sh
 npm run provision:workers-builds:validate
 npm run provision:workers-builds:dry-run
+npm run provision:workers-builds:plan-setup
 ```
+
+`plan-setup` emits a value-free, non-executable mutation plan. It records the
+exact GitHub repository connection, actor boundaries, private-file inputs,
+request/result dependencies, separate control-plane/build/lease token authority,
+separately gated activation, an owner-only mutation journal, ambiguous-response
+readback, and ordered exact-resource rollback. Existing production Workers,
+versions, state, and runtime secrets are never rollback targets.
+Because Cloudflare requires a trigger UUID before its environment can be
+written, setup creates both triggers against the reserved inert
+`review-build-only-sentinel`, writes and reads back their environments, then
+activates review separately. Production remains on the inert sentinel until
+its distinct activation authorization. It is never created directly on
+`main`, which would leave a window where an automatic build could start before
+the protected environment was complete.
+
+The production activation initially retains the `routine` control-plane gate.
+Its first automatic `main` build must therefore fail closed if the existing
+versions still lack delivery annotations. Once that exact merge SHA is known,
+the separately authorized operator may set `approved:<exact-current-main-SHA>`
+and retry that same provider entrypoint; an older SHA cannot be substituted.
+Restore `routine` only after coherent final readback and canaries.
 
 Provider readback uses a dedicated user-scoped token with Workers CI Write and
 Workers Scripts Read. Put the token and account ID in separate absolute,

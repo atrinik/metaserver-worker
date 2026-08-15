@@ -17,6 +17,13 @@ const scriptTagPattern = /^[0-9a-f]{32}$/u;
 const uuidPattern = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/u;
 const maximumProviderResponseBytes = 1024 * 1024;
 const maximumPrivateDocumentBytes = 64 * 1024;
+const githubRepository = Object.freeze({
+  provider_account_id: "6371603",
+  provider_account_name: "atrinik",
+  provider_type: "github",
+  repo_id: "1324297032",
+  repo_name: "metaserver-worker",
+});
 
 export class WorkersBuildsProvisioningError extends Error {}
 
@@ -142,6 +149,194 @@ export function automaticReviewEnvironmentSpec(review) {
   if (!same(review.automaticReview.buildEnvironment, { SKIP_DEPENDENCY_INSTALL: "1" }))
     fail("review bootstrap environment drift");
   return { SKIP_DEPENDENCY_INSTALL: { is_secret: false, value: "1" } };
+}
+
+function resultReference(operation, field) {
+  return { resultReference: `${operation}.${field}` };
+}
+
+function privateFileReference(environmentVariable) {
+  return { privateFileEnvironment: environmentVariable };
+}
+
+function triggerPlanSpec(spec, scriptOperation, tokenOperation) {
+  return {
+    ...spec,
+    root_directory: spec.root_directory || "/",
+    external_script_id: resultReference(scriptOperation, "script_tag"),
+    repo_connection_uuid: resultReference("repository-connection", "repo_connection_uuid"),
+    build_token_uuid: resultReference(tokenOperation, "build_token_uuid"),
+  };
+}
+
+function productionEnvironmentPlan(contract) {
+  const valueSources = {
+    [contract.protectedInputs.accountVariable]: privateFileReference(
+      "ATRINIK_CLOUDFLARE_ACCOUNT_ID_FILE"),
+    [contract.protectedInputs.coreConfigVariable]: privateFileReference(
+      "ATRINIK_PRODUCTION_CORE_CONFIG_FILE"),
+    [contract.protectedInputs.publisherConfigVariable]: privateFileReference(
+      "ATRINIK_PRODUCTION_PUBLISHER_CONFIG_FILE"),
+    [contract.protectedInputs.rendezvousConfigVariable]: privateFileReference(
+      "ATRINIK_PRODUCTION_RENDEZVOUS_CONFIG_FILE"),
+    [contract.protectedInputs.buildsApiTokenVariable]: privateFileReference(
+      "ATRINIK_PRODUCTION_LEASE_TOKEN_FILE"),
+    [contract.protectedInputs.controlPlaneGateVariable]: { literal: "routine" },
+  };
+  return Object.fromEntries([
+    ["SKIP_DEPENDENCY_INSTALL", { is_secret: false, valueSource: { literal: "1" } }],
+    ...Object.values(contract.protectedInputs).map((name) =>
+      [name, { is_secret: true, valueSource: valueSources[name] }]),
+  ]);
+}
+
+export function provisioningSetupPlan(production, review) {
+  const placeholderTag = "1".repeat(32);
+  const placeholderUuid = "11111111-1111-4111-8111-111111111111";
+  const sentinel = review.automaticReview.productionBranch;
+  const productionFinal = productionTriggerSpec(production, {
+    externalScriptId: placeholderTag,
+    repositoryConnectionUuid: placeholderUuid,
+    buildTokenUuid: placeholderUuid,
+  });
+  const reviewFinal = automaticReviewTriggerSpec(review, {
+    externalScriptId: placeholderTag,
+    repositoryConnectionUuid: placeholderUuid,
+    buildTokenUuid: placeholderUuid,
+  });
+  const productionStaged = structuredClone(productionFinal);
+  productionStaged.branch_includes = [sentinel];
+  const reviewStaged = structuredClone(reviewFinal);
+  reviewStaged.branch_includes = [sentinel];
+  reviewStaged.branch_excludes = ["main"];
+  return {
+    schemaVersion: 1,
+    outcome: "workers-builds-reviewed-setup-plan",
+    mutation: false,
+    repositoryConnection: structuredClone(githubRepository),
+    gates: [
+      "provider-setup-authorization",
+      "review-trigger-activation-and-proof",
+      "production-trigger-activation",
+      "migration-0010",
+      "initial-automatic-production-proof",
+    ],
+    privateInputs: [
+      "ATRINIK_CLOUDFLARE_ACCOUNT_ID_FILE",
+      "ATRINIK_WORKERS_BUILDS_API_TOKEN_FILE",
+      "ATRINIK_PRODUCTION_BUILD_TOKEN_SECRET_FILE",
+      "ATRINIK_PRODUCTION_BUILD_TOKEN_ID_FILE",
+      "ATRINIK_REVIEW_BUILD_TOKEN_SECRET_FILE",
+      "ATRINIK_REVIEW_BUILD_TOKEN_ID_FILE",
+      "ATRINIK_PRODUCTION_CORE_CONFIG_FILE",
+      "ATRINIK_PRODUCTION_PUBLISHER_CONFIG_FILE",
+      "ATRINIK_PRODUCTION_RENDEZVOUS_CONFIG_FILE",
+      "ATRINIK_PRODUCTION_LEASE_TOKEN_FILE",
+    ],
+    credentialAuthority: {
+      controlPlaneOperator: {
+        tokenType: review.automaticReview.controlPlaneOperator.tokenType,
+        permission: review.automaticReview.controlPlaneOperator.permission,
+        credentialBuildReadable: false,
+      },
+      productionBuildToken: {
+        accountPermissions: ["Workers Scripts:Edit", "D1:Read"],
+        purpose: "read-exact-worker-config-and-migration-ledger-deploy-three-workers",
+        forbiddenAuthority: ["D1:Edit", "DNS", "WAF", "Account Administration",
+          "Secrets:Read", "destructive-resource-authority"],
+      },
+      productionLeaseToken: {
+        accountPermissions: ["Workers CI Write"],
+        purpose: "read-trigger-and-build-inventory-cancel-only-competing-main-builds",
+      },
+      reviewBuildToken: structuredClone(review.automaticReview.tokenAuthority),
+    },
+    setupOperations: [
+      { id: "preflight", actor: "workers-builds-control-plane-operator",
+        action: "require-exact-private-readback-and-no-competing-trigger", mutation: false },
+      { id: "production-script", actor: "workers-builds-control-plane-operator",
+        action: "select-exact-existing-production-script-tag", mutation: false,
+        expected: { worker: production.workers[0].name } },
+      { id: "review-bootstrap", actor: "issue-56-review-check-bootstrap-operator",
+        action: "upload-exact-inert-review-worker", mutation: true,
+        config: review.automaticReview.bootstrap.configPath,
+        expected: { worker: review.automaticReview.project, retainedVersions: 1,
+          workersDev: false, previewUrls: false, bindings: [], routes: [] } },
+      { id: "repository-connection", actor: "workers-builds-control-plane-operator",
+        action: "put-repository-connection", mutation: true,
+        request: { method: "PUT", path: "/builds/repos/connections",
+          body: structuredClone(githubRepository) } },
+      { id: "production-build-token", actor: "workers-builds-control-plane-operator",
+        action: "post-build-token", mutation: true,
+        request: { method: "POST", path: "/builds/tokens", body: {
+          build_token_name: "Atrinik metaserver production",
+          build_token_secret: privateFileReference("ATRINIK_PRODUCTION_BUILD_TOKEN_SECRET_FILE"),
+          cloudflare_token_id: privateFileReference("ATRINIK_PRODUCTION_BUILD_TOKEN_ID_FILE"),
+        } } },
+      { id: "review-build-token", actor: "workers-builds-control-plane-operator",
+        action: "post-build-token", mutation: true,
+        request: { method: "POST", path: "/builds/tokens", body: {
+          build_token_name: "Atrinik metaserver review check",
+          build_token_secret: privateFileReference("ATRINIK_REVIEW_BUILD_TOKEN_SECRET_FILE"),
+          cloudflare_token_id: privateFileReference("ATRINIK_REVIEW_BUILD_TOKEN_ID_FILE"),
+        } } },
+      { id: "production-trigger-staged", actor: "workers-builds-control-plane-operator",
+        action: "post-inert-trigger", mutation: true,
+        request: { method: "POST", path: "/builds/triggers",
+          body: triggerPlanSpec(productionStaged, "production-script",
+            "production-build-token") } },
+      { id: "production-environment", actor: "workers-builds-control-plane-operator",
+        action: "patch-exact-environment", mutation: true,
+        request: { method: "PATCH",
+          path: resultReference("production-trigger-staged", "environment_variables_path"),
+          body: productionEnvironmentPlan(production) } },
+      { id: "review-trigger-staged", actor: "workers-builds-control-plane-operator",
+        action: "post-inert-trigger", mutation: true,
+        request: { method: "POST", path: "/builds/triggers",
+          body: triggerPlanSpec(reviewStaged, "review-bootstrap", "review-build-token") } },
+      { id: "review-environment", actor: "workers-builds-control-plane-operator",
+        action: "patch-exact-environment", mutation: true,
+        request: { method: "PATCH",
+          path: resultReference("review-trigger-staged", "environment_variables_path"),
+          body: Object.fromEntries(Object.entries(automaticReviewEnvironmentSpec(review))
+            .map(([name, value]) => [name, { is_secret: value.is_secret,
+              valueSource: { literal: value.value } }])) } },
+      { id: "staged-readback", actor: "workers-builds-control-plane-operator",
+        action: "prove-both-inert-triggers-environments-tokens-and-no-deploy-hooks",
+        mutation: false },
+    ],
+    reviewActivation: {
+      gate: "review-trigger-activation-and-proof",
+      request: { method: "PUT",
+        path: resultReference("review-trigger-staged", "trigger_path"),
+        body: triggerPlanSpec(reviewFinal, "review-bootstrap", "review-build-token") },
+      proof: "disposable-same-repository-non-main-build-only-branch",
+    },
+    productionActivation: {
+      gate: "production-trigger-activation",
+      request: { method: "PUT",
+        path: resultReference("production-trigger-staged", "trigger_path"),
+        body: triggerPlanSpec(productionFinal, "production-script", "production-build-token") },
+      initialGate: "routine-fails-closed-until-exact-main-sha-is-known-and-separately-approved",
+      proof: "automatic-main-build-then-exact-sha-provider-retry-if-first-annotation-gate-stops",
+    },
+    partialFailure: {
+      journal: "owner-only-append-after-each-mutation-with-operation-request-digest-resource-uuid-and-readback-digest",
+      policy: "stop-at-first-ambiguous-response-read-back-before-retry-and-never-recreate-an-unknown-resource",
+      rollbackScope: "delete-or-restore-only-exact-resources-proven-created-or-changed-by-this-journal",
+      productionWorkerPolicy: "never-delete-or-roll-back-existing-production-workers-versions-state-or-secrets",
+    },
+    rollbackOperations: [
+      "restore-production-trigger-to-inert-sentinel-before-cancelling-exact-active-builds",
+      "restore-review-trigger-to-inert-sentinel",
+      "prove-no-build-or-upload-remains-active",
+      "delete-exact-production-and-review-triggers",
+      "delete-only-the-two-recorded-build-token-uuids",
+      "delete-the-recorded-metaserver-repository-connection",
+      "delete-review-bootstrap-only-after-trigger-absence-and-exact-version-readback",
+      "prove-three-production-workers-and-website-app-selection-unchanged",
+    ],
+  };
 }
 
 export function validateAutomaticReviewEnvironment(actual, review) {
@@ -573,6 +768,7 @@ export async function validateCheckedInProvisioning() {
     externalScriptId: tag, repositoryConnectionUuid: id, buildTokenUuid: id,
   });
   automaticReviewEnvironmentSpec(review);
+  provisioningSetupPlan(production, review);
   return { production, review };
 }
 
@@ -584,14 +780,21 @@ async function main() {
     return;
   }
   if (mode === "--dry-run") {
+    const setupPlan = provisioningSetupPlan(production, review);
     process.stdout.write(`${JSON.stringify({
       outcome: "workers-builds-provisioning-plan-valid", mutation: false,
       production: { project: production.workers[0].name, branch: production.productionBranch,
         triggerCount: 1, protectedInputCount: Object.keys(production.protectedInputs).length },
       automaticReview: { project: review.automaticReview.project, triggerCount: 1,
         protectedInputCount: review.automaticReview.protectedInputs.length },
+      setupOperationCount: setupPlan.setupOperations.length,
+      rollbackOperationCount: setupPlan.rollbackOperations.length,
       gates: ["provider-setup-approval", "migration-0010", "initial-production-proof"],
     })}\n`);
+    return;
+  }
+  if (mode === "--plan-setup") {
+    process.stdout.write(`${JSON.stringify(provisioningSetupPlan(production, review))}\n`);
     return;
   }
   if (mode === "--readback") {

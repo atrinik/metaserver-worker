@@ -8,6 +8,7 @@ import {
   materializeProductionConfigurations,
   productionEnvironmentSpec,
   productionTriggerSpec,
+  provisioningSetupPlan,
   validateAutomaticReviewEnvironment,
   validateBuildTokenInventory,
   validateCheckedInProvisioning,
@@ -201,6 +202,46 @@ test("keeps the automatic review build environment value-only and exact", () => 
     SKIP_DEPENDENCY_INSTALL: { ...expected.SKIP_DEPENDENCY_INSTALL,
       created_on: "not-a-timestamp" },
   }, review), /bootstrap/u);
+});
+
+test("plans inert setup, separately gated activation, and ordered rollback", () => {
+  const plan = provisioningSetupPlan(production, review);
+  assert.equal(plan.mutation, false);
+  assert.deepEqual(plan.repositoryConnection, {
+    provider_account_id: "6371603", provider_account_name: "atrinik",
+    provider_type: "github", repo_id: "1324297032", repo_name: "metaserver-worker",
+  });
+  assert.equal(new Set(plan.setupOperations.map(({ id }) => id)).size,
+    plan.setupOperations.length);
+  const triggerCreates = plan.setupOperations.filter(({ action }) => action === "post-inert-trigger");
+  assert.equal(triggerCreates.length, 2);
+  for (const { request } of triggerCreates) {
+    assert.deepEqual(request.body.branch_includes,
+      [review.automaticReview.productionBranch]);
+    assert.ok(!request.body.branch_includes.includes("main"));
+  }
+  assert.deepEqual(plan.reviewActivation.request.body.branch_includes,
+    review.automaticReview.previewBranchIncludes);
+  assert.deepEqual(plan.productionActivation.request.body.branch_includes, ["main"]);
+  assert.equal(plan.productionActivation.request.body.root_directory, "/");
+  assert.match(plan.productionActivation.initialGate, /fails-closed/u);
+  assert.deepEqual(plan.credentialAuthority.productionLeaseToken.accountPermissions,
+    ["Workers CI Write"]);
+  assert.equal(plan.credentialAuthority.reviewBuildToken.productionWrite, false);
+  assert.ok(plan.credentialAuthority.productionBuildToken.forbiddenAuthority.includes("D1:Edit"));
+  assert.match(plan.partialFailure.policy, /ambiguous-response/u);
+  assert.match(plan.partialFailure.productionWorkerPolicy, /never-delete/u);
+  assert.equal(plan.rollbackOperations[0],
+    "restore-production-trigger-to-inert-sentinel-before-cancelling-exact-active-builds");
+  assert.equal(plan.rollbackOperations.at(-1),
+    "prove-three-production-workers-and-website-app-selection-unchanged");
+  const requestPaths = plan.setupOperations.flatMap(({ request }) => request ?
+    [typeof request.path === "string" ? request.path : JSON.stringify(request.path)] : []);
+  assert.ok(requestPaths.every((path) => !path.includes("deploy_hooks") &&
+    !path.includes("/builds/builds")));
+  assert.ok(plan.privateInputs.every((name) => name.endsWith("_FILE")));
+  assert.ok(plan.setupOperations.filter(({ mutation }) => mutation)
+    .every(({ actor, action }) => actor && action));
 });
 
 test("proves one serialized production trigger and one isolated review trigger", () => {

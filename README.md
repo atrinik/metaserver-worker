@@ -121,7 +121,10 @@ documents, never in Git or logs. Runtime secret values remain provisioned in
 Cloudflare and are not available to the routine build.
 Issue #56's fail-closed composition can be checked without credentials using
 `npm run provision:workers-builds:validate` and
-`npm run provision:workers-builds:dry-run`. Its separately credentialed
+`npm run provision:workers-builds:dry-run`. The value-free
+`npm run provision:workers-builds:plan-setup` output additionally pins inert
+staging, distinct review/production activation gates, and rollback order
+without an apply path. Its separately credentialed
 readback and local materializer write only private mode-`0600` provider
 snapshots/configurations and have no remote mutation path. A post-setup
 `npm run provision:workers-builds:verify-configured` check proves the serialized
