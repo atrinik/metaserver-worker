@@ -176,7 +176,7 @@ export function validateAutomaticReview(value) {
     persistentWorkers: 1, maximumMonthlyReviewBuildMinutes: 1000, alertAtMinutes: 800,
     owner: "metaserver-review-environment-operator",
     thresholdAction: "disable-review-check-nonproduction-trigger-and-read-back",
-    staleBuildPolicy: "older-build-may-finish-build-only-but-sha-bound-result-is-superseded-never-live-authority-and-counts-against-budget-no-cancellation-credential",
+    staleBuildPolicy: "older-build-may-finish-build-only-but-sha-bound-result-is-superseded-never-live-authority-counts-against-budget-and-workflow-does-not-cancel-stale-builds",
     accountPlanAndUsageReadbackRequired: true,
   };
   for (const [key, expected] of Object.entries(cost))
