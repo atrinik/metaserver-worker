@@ -213,6 +213,8 @@ test("plans inert setup, separately gated activation, and ordered rollback", () 
   });
   assert.equal(new Set(plan.setupOperations.map(({ id }) => id)).size,
     plan.setupOperations.length);
+  assert.match(plan.setupOperations.find(({ id }) => id === "preflight").action,
+    /sentinel-branch-absence/u);
   const triggerCreates = plan.setupOperations.filter(({ action }) => action === "post-inert-trigger");
   assert.equal(triggerCreates.length, 2);
   for (const { request } of triggerCreates) {

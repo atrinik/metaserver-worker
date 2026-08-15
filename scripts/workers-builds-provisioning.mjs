@@ -253,7 +253,8 @@ export function provisioningSetupPlan(production, review) {
     },
     setupOperations: [
       { id: "preflight", actor: "workers-builds-control-plane-operator",
-        action: "require-exact-private-readback-and-no-competing-trigger", mutation: false },
+        action: "require-exact-private-readback-no-competing-trigger-and-sentinel-branch-absence",
+        mutation: false },
       { id: "production-script", actor: "workers-builds-control-plane-operator",
         action: "select-exact-existing-production-script-tag", mutation: false,
         expected: { worker: production.workers[0].name } },

@@ -138,9 +138,11 @@ Because Cloudflare requires a trigger UUID before its environment can be
 written, setup creates both triggers against the reserved inert
 `review-build-only-sentinel`, writes and reads back their environments, then
 activates review separately. Production remains on the inert sentinel until
-its distinct activation authorization. It is never created directly on
-`main`, which would leave a window where an automatic build could start before
-the protected environment was complete.
+its distinct activation authorization. The preflight must prove that the
+reserved sentinel branch does not exist before either trigger is created, so
+the staging selector cannot execute repository code. It is never created
+directly on `main`, which would leave a window where an automatic build could
+start before the protected environment was complete.
 
 The production activation initially retains the `routine` control-plane gate.
 Its first automatic `main` build must therefore fail closed if the existing
