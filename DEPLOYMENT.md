@@ -116,6 +116,61 @@ secret-read, or destructive-resource authority.
 all bundles, and prints only safe digests and names. It never reads GitHub or
 Cloudflare and has no upload path.
 
+### Workers Builds provisioning preflight
+
+Issue #56 composes the production and review contracts through
+`scripts/workers-builds-provisioning.mjs`. The validator and dry run are
+credential-free and have no provider mutation path:
+
+```sh
+npm run provision:workers-builds:validate
+npm run provision:workers-builds:dry-run
+```
+
+Provider readback uses a dedicated user-scoped token with Workers CI Write and
+Workers Scripts Read. Put the token and account ID in separate absolute,
+owner-only regular files; do not export either value directly. Point the
+command at a new absolute output directory, which the command creates as mode
+`0700` and fills with mode-`0600` raw provider responses:
+
+```sh
+ATRINIK_CLOUDFLARE_ACCOUNT_ID_FILE=/secure/path/account-id \
+ATRINIK_WORKERS_BUILDS_API_TOKEN_FILE=/secure/path/builds-read-token \
+ATRINIK_PROVIDER_SNAPSHOT_OUTPUT=/secure/new/provider-snapshot \
+  npm run provision:workers-builds:readback
+```
+
+The readback covers the exact production and inert-review scripts, script and
+version settings, schedules, alternate-URL state, Builds triggers and their
+environment classifications, Custom Domains, build-token inventory, and
+account build limits. It accepts an absent review-check bootstrap during the
+initial preflight but never an absent production Worker. It performs only
+`GET` requests and emits only a bounded summary; raw identifiers and provider
+responses remain in the private directory.
+
+Materialize the three desired production documents from that same snapshot.
+This substitutes only the read-back account, D1, cache-zone, R2, Analytics,
+rate-namespace, and Service Binding coordinates into the reviewed sources;
+the checked-in desired circuits and all authored policy remain authoritative.
+It requires exact secret names, compatibility settings, schedules,
+observability destinations, Custom Domains, and disabled `workers.dev` and
+preview URLs, then runs the production topology validator and enforces the
+provider's 5 KiB limit:
+
+```sh
+ATRINIK_CLOUDFLARE_ACCOUNT_ID_FILE=/secure/path/account-id \
+ATRINIK_PROVIDER_SNAPSHOT_DIRECTORY=/secure/provider-snapshot \
+ATRINIK_PRODUCTION_CONFIG_OUTPUT=/secure/new/production-configs \
+  npm run provision:workers-builds:materialize-production
+```
+
+The output files are `core.json`, `publisher.json`, and `rendezvous.json`.
+Review their digests in the owner-only provider record, never their contents in
+GitHub or logs. No provisioning command in this section creates a connection,
+Worker, token, trigger, variable, build, or deployment. Those mutations remain
+behind the explicit setup authorization; migration `0010` and the first
+automatic production proof are later, separately authorized gates.
+
 ## Non-main review delivery
 
 The accepted review design is

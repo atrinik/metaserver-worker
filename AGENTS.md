@@ -103,8 +103,12 @@
   circuits, exact-duration lease, quiescing/terminal teardown fence, logical
   versus physical fixture retention, Access boundary, and force-delete/readback cleanup guards must
   remain synchronized with `docs/review-environment.md` and
-  `scripts/review-environment.mjs`. Provider provisioning remains reserved for
-  issue #56; `npm run deploy:review-canary` must fail closed until then.
+  `scripts/review-environment.mjs`. `scripts/workers-builds-provisioning.mjs`
+  composes both checked-in contracts, performs only bounded private readback
+  and local protected-document materialization, and must never gain implicit
+  provider mutation. Provider apply and live-canary execution remain gated by
+  issue #56 authorization; `npm run deploy:review-canary` must fail closed
+  until the dedicated account and exact runner are reviewed and provisioned.
 - Preserve the curated `request_rejected`, `blacklist_match`, and
   `unexpected_error` diagnostics with their closed, redacted schemas. Do not
   log routine success, expected `404`, rate-limit, or open-circuit traffic; use

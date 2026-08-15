@@ -119,6 +119,12 @@ approved; staged partial cohorts remain routine fix-forward state.
 Production identifiers stay in bounded Cloudflare-owned secret configuration
 documents, never in Git or logs. Runtime secret values remain provisioned in
 Cloudflare and are not available to the routine build.
+Issue #56's fail-closed composition can be checked without credentials using
+`npm run provision:workers-builds:validate` and
+`npm run provision:workers-builds:dry-run`. Its separately credentialed
+readback and local materializer write only private mode-`0600` provider
+snapshots/configurations and have no remote mutation path; exact invocation and
+authorization boundaries are in [DEPLOYMENT.md](DEPLOYMENT.md).
 
 The accepted [review-environment design](docs/review-environment.md) gives
 eligible same-repository non-`main` branches an automatic build-only check

@@ -13,9 +13,10 @@
     "test": "vitest run",
     "test:watch": "vitest",
     "test:admin": "python3 -m unittest discover -s scripts -p 'test_*.py'",
-    "check": "npm run types:generate && npm run types:check && npm run typecheck && npm test && npm run test:admin && npm run test:deployment && npm run test:review && npm run deploy:dry-run && npm run deploy:dry-run:review-check && npm run test:service-bindings && npm run deploy:production:validate && npm run review:validate",
+    "check": "npm run types:generate && npm run types:check && npm run typecheck && npm test && npm run test:admin && npm run test:deployment && npm run test:review && npm run test:provisioning && npm run deploy:dry-run && npm run deploy:dry-run:review-check && npm run test:service-bindings && npm run deploy:production:validate && npm run review:validate && npm run provision:workers-builds:validate",
     "test:deployment": "node --test scripts/test_production_delivery.mjs",
     "test:review": "node --test scripts/test_review_environment.mjs",
+    "test:provisioning": "node --test scripts/test_workers_builds_provisioning.mjs",
     "test:service-bindings": "vitest run --config vitest.service.config.ts",
     "deploy:dry-run": "npm run deploy:dry-run:core && npm run deploy:dry-run:publisher && npm run deploy:dry-run:rendezvous",
     "deploy:dry-run:core": "wrangler deploy --dry-run --outdir dist/core -c wrangler.jsonc",
@@ -32,7 +33,11 @@
     "review:dry-run": "node scripts/review-environment.mjs --dry-run",
     "review:branch": "node scripts/review-environment.mjs --branch",
     "review:reject-sentinel": "node scripts/review-environment.mjs --reject-sentinel",
-    "deploy:review-canary": "node scripts/review-environment.mjs --live-not-provisioned"
+    "deploy:review-canary": "node scripts/review-environment.mjs --live-not-provisioned",
+    "provision:workers-builds:validate": "node scripts/workers-builds-provisioning.mjs --validate-only",
+    "provision:workers-builds:dry-run": "node scripts/workers-builds-provisioning.mjs --dry-run",
+    "provision:workers-builds:readback": "node scripts/workers-builds-provisioning.mjs --readback",
+    "provision:workers-builds:materialize-production": "node scripts/workers-builds-provisioning.mjs --materialize-production"
   },
   "engines": {
     "node": "24.18.1",
