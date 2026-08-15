@@ -175,6 +175,13 @@ ATRINIK_PROVIDER_SNAPSHOT_OUTPUT=/secure/new/provider-snapshot \
   npm run provision:workers-builds:readback
 ```
 
+Every credentialed readback/verification command derives `HEAD` from the local
+checkout, requires an empty tracked and untracked worktree, compares it to the
+owner-only reviewed-SHA file, and then reads the public GitHub `main` ref
+directly. All three coordinates must be the same 40-hex SHA; a stale branch,
+dirty checkout, or self-consistent but wrong operator input fails before the
+provider proof is accepted.
+
 The readback covers the exact production and inert-review scripts, version and
 active-deployment and active-version/export inventories, script settings,
 schedules, alternate-URL state, Builds triggers across every account Worker,
@@ -183,7 +190,10 @@ Custom Domains, build-token inventory, account build
 limits, and the ordered production D1 migration ledger. Every paginated
 security inventory is read in two bounded complete passes and stored as a
 canonical exhaustive snapshot; incomplete, changing, reordered, replaced, or
-duplicated pages fail closed. A fresh manifest binds the snapshot to the exact
+duplicated pages fail closed. Settings, URL state, schedules, routes, script
+settings, deployments, active-version resources, trigger environments, build
+limits, and the D1 ledger are likewise read twice; deployments are reread after
+the active version so a mid-read activation fails closed. A fresh manifest binds the snapshot to the exact
 account, reviewed source SHA, and checked-in production/review contract digests.
 Before setup, prove the fresh no-trigger/no-Deploy-Hook/no-active-build boundary:
 
@@ -267,6 +277,11 @@ ATRINIK_WORKERS_BUILDS_USAGE_PROOF_FILE=/secure/path/build-usage.json \
 This requires both triggers to select only the same fresh private sentinel and
 use the zero-resource review token, while both exact environments are present,
 all builds are stopped, and the bootstrap/token/usage proofs are current.
+The setup plan makes this exact command produce the private staged-proof digest;
+both activation PATCHes consume that result, so neither activation is reachable
+when staged verification is skipped or stale. The complete setup/activation/
+rollback request document is digest-pinned by the validator, not merely its
+operation names.
 
 After activation, take another new snapshot and prove the configured boundary:
 

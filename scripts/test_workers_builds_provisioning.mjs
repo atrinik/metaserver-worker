@@ -27,6 +27,7 @@ import {
   validateProductionControlPlane,
   validateProductionRuntimeProof,
   validateRepositoryConnectionOwnerProof,
+  validateReviewedSourceCoordinates,
   validateSentinelRefAbsence,
   validateSnapshotManifest,
   validateSetupPlan,
@@ -321,6 +322,16 @@ test("binds provider snapshots to a fresh exact reviewed source", () => {
   assert.throws(() => validateSnapshotManifest({ ...manifest,
     completedAt: "2026-08-15T11:50:00.000Z" },
   { accountId, sourceSha, production, review }, now), /snapshot manifest is stale/u);
+});
+
+test("requires the reviewed source to be clean HEAD and live current main", () => {
+  const sha = "a".repeat(40);
+  assert.equal(validateReviewedSourceCoordinates({ expected: sha, head: sha,
+    currentMain: sha, dirty: "" }), sha);
+  assert.throws(() => validateReviewedSourceCoordinates({ expected: sha, head: sha,
+    currentMain: "b".repeat(40), dirty: "" }), /clean current GitHub main/u);
+  assert.throws(() => validateReviewedSourceCoordinates({ expected: sha, head: sha,
+    currentMain: sha, dirty: " M README.md\n" }), /clean current GitHub main/u);
 });
 
 test("requires fresh owner proof for the unreadable shared repository connection", () => {
@@ -636,6 +647,19 @@ test("plans inert setup, separately gated activation, and ordered rollback", () 
   [reordered.setupOperations[6], reordered.setupOperations[7]] =
     [reordered.setupOperations[7], reordered.setupOperations[6]];
   assert.throws(() => validateSetupPlan(reordered), /operation set, order/u);
+  const unsafeSelector = structuredClone(plan);
+  unsafeSelector.setupOperations.find(({ id }) => id === "production-trigger-staged")
+    .request.body.branch_includes = ["main"];
+  assert.throws(() => validateSetupPlan(unsafeSelector), /complete setup plan schema drift/u);
+  const unsafeActivation = structuredClone(plan);
+  unsafeActivation.productionActivation.request.method = "DELETE";
+  assert.throws(() => validateSetupPlan(unsafeActivation), /complete setup plan schema drift/u);
+  const missingStagedEdge = structuredClone(plan);
+  delete missingStagedEdge.reviewActivation.precondition;
+  assert.throws(() => validateSetupPlan(missingStagedEdge), /complete setup plan schema drift/u);
+  const rollbackDrift = structuredClone(plan);
+  rollbackDrift.rollbackOperations.pop();
+  assert.throws(() => validateSetupPlan(rollbackDrift), /complete setup plan schema drift/u);
 });
 
 test("proves one serialized production trigger and one isolated review trigger", () => {
@@ -821,6 +845,11 @@ test("proves both triggers are inert before either activation", () => {
   const wrongToken = structuredClone(arguments_);
   wrongToken.productionTriggers.result[0].build_token_uuid = resourceUuid;
   assert.throws(() => validateStagedBuildsSnapshot(wrongToken), /zero-resource review token/u);
+  const splitConnection = structuredClone(arguments_);
+  splitConnection.reviewTriggers.result[0].repo_connection.repo_connection_uuid =
+    "66666666-6666-4666-8666-666666666666";
+  assert.throws(() => validateStagedBuildsSnapshot(splitConnection),
+    /journaled repository connection/u);
   const callerTrigger = structuredClone(arguments_);
   callerTrigger.nonEntrypointTriggers[0][1].result.push({ trigger_uuid: resourceUuid,
     repo_connection: { provider_type: "gitlab", repo_id: "unrelated" } });

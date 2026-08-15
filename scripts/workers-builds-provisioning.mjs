@@ -1,8 +1,10 @@
 import { constants } from "node:fs";
 import { createHash } from "node:crypto";
+import { execFile } from "node:child_process";
 import { lstat, mkdir, open, readFile, readdir, realpath } from "node:fs/promises";
 import { dirname, isAbsolute, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { promisify } from "node:util";
 import {
   validateBuildEnvironment,
   validateContract as validateProductionContract,
@@ -23,6 +25,7 @@ const maximumPrivateDocumentBytes = 64 * 1024;
 const maximumProviderPages = 100;
 const stagingBranchPattern = /^review-build-only-sentinel-[0-9a-f]{32}$/u;
 const gitShaPattern = /^[0-9a-f]{40}$/u;
+const expectedSetupPlanSha256 = "28ed55c661d95d5f26f41277c938e0fe7ff5a650423652c7af82f01b77f297ea";
 const githubRepository = Object.freeze({
   provider_account_id: "6371603",
   provider_account_name: "atrinik",
@@ -31,6 +34,7 @@ const githubRepository = Object.freeze({
   repo_name: "metaserver-worker",
 });
 const currentUid = typeof process.getuid === "function" ? process.getuid() : null;
+const execFileAsync = promisify(execFile);
 
 export class WorkersBuildsProvisioningError extends Error {}
 
@@ -48,6 +52,51 @@ function sorted(values) {
 
 function digestJson(value) {
   return createHash("sha256").update(JSON.stringify(value)).digest("hex");
+}
+
+export function validateReviewedSourceCoordinates({ expected, head, dirty, currentMain }) {
+  if (!gitShaPattern.test(expected ?? "") || !gitShaPattern.test(head ?? "") ||
+      !gitShaPattern.test(currentMain ?? "") || expected !== head || head !== currentMain ||
+      dirty !== "")
+    fail("reviewed source is not the exact clean current GitHub main checkout");
+  return head;
+}
+
+async function reviewedSourceSha() {
+  const expected = await readPrivateValue(process.env.ATRINIK_REVIEWED_SOURCE_SHA_FILE,
+    "reviewed source SHA", gitShaPattern);
+  const options = { cwd: root, encoding: "utf8", timeout: 10_000,
+    env: { PATH: process.env.PATH, GIT_CONFIG_NOSYSTEM: "1", GIT_TERMINAL_PROMPT: "0" } };
+  let head;
+  let dirty;
+  try {
+    ({ stdout: head } = await execFileAsync("git", ["rev-parse", "HEAD"], options));
+    ({ stdout: dirty } = await execFileAsync("git",
+      ["status", "--porcelain=v1", "--untracked-files=all"], options));
+  } catch { fail("reviewed source checkout proof failed"); }
+  head = head.trim();
+  return { expected, head, dirty };
+}
+
+async function currentMainSha() {
+  const response = await fetch(
+    "https://api.github.com/repos/atrinik/metaserver-worker/git/ref/heads/main",
+    { redirect: "error", headers: { Accept: "application/vnd.github+json",
+      "User-Agent": "atrinik-workers-builds-provisioning" },
+    signal: AbortSignal.timeout(10_000) });
+  let body;
+  try { body = JSON.parse(await boundedResponseText(response, "GitHub current main")); }
+  catch { fail("GitHub current main proof is malformed"); }
+  const sha = body?.object?.sha;
+  if (!response.ok || body?.ref !== "refs/heads/main" || !gitShaPattern.test(sha ?? ""))
+    fail("GitHub current main proof failed");
+  return sha;
+}
+
+async function reviewedCurrentMainSha() {
+  const coordinates = await reviewedSourceSha();
+  return validateReviewedSourceCoordinates({ ...coordinates,
+    currentMain: await currentMainSha() });
 }
 
 export function validateSnapshotManifest(manifest, { accountId, sourceSha, production, review },
@@ -461,10 +510,12 @@ export function provisioningSetupPlan(production, review) {
               valueSource: { literal: value.value } }])) } },
       { id: "staged-readback", actor: "workers-builds-control-plane-operator",
         action: "prove-both-inert-triggers-environments-tokens-and-no-deploy-hooks",
-        mutation: false },
+        mutation: false, command: "npm run provision:workers-builds:verify-staged",
+        produces: { proof_digest: "fresh-private-staged-verifier-digest" } },
     ],
     reviewActivation: {
       gate: "review-trigger-activation-and-proof",
+      precondition: { stagedProof: resultReference("staged-readback", "proof_digest") },
       request: { method: "PATCH",
         path: apiPathReference("/builds/triggers/{trigger_uuid}",
           "review-trigger-staged", "trigger_uuid"),
@@ -473,7 +524,10 @@ export function provisioningSetupPlan(production, review) {
     },
     productionActivation: {
       gate: "production-trigger-activation",
-      precondition: "repeat-exact-private-random-sentinel-ref-absence-proof-immediately-before-atomic-patch",
+      precondition: {
+        sentinel: "repeat-exact-private-random-sentinel-ref-absence-proof-immediately-before-atomic-patch",
+        stagedProof: resultReference("staged-readback", "proof_digest"),
+      },
       request: { method: "PATCH",
         path: apiPathReference("/builds/triggers/{trigger_uuid}",
           "production-trigger-staged", "trigger_uuid"),
@@ -553,6 +607,7 @@ export function validateSetupPlan(plan) {
       cloudflare_token_id: "exact-private-input-token-id" }],
     ["production-trigger-staged", { trigger_uuid: "provider-trigger-uuid" }],
     ["review-trigger-staged", { trigger_uuid: "provider-trigger-uuid" }],
+    ["staged-readback", { proof_digest: "fresh-private-staged-verifier-digest" }],
   ]);
   for (const operation of operations) {
     const expected = expectedProduces.get(operation.id);
@@ -578,6 +633,9 @@ export function validateSetupPlan(plan) {
   }
   inspect(plan.reviewActivation);
   inspect(plan.productionActivation);
+  const actualDigest = digestJson(plan);
+  if (actualDigest !== expectedSetupPlanSha256)
+    fail(`complete setup plan schema drift (${actualDigest})`);
   return plan;
 }
 
@@ -923,6 +981,9 @@ export function validateStagedBuildsSnapshot({ production, review, scripts,
   reviewExpected.branch_excludes = ["main"];
   validateTriggerSnapshot(productionRows[0], productionExpected, "staged production");
   validateTriggerSnapshot(reviewRows[0], reviewExpected, "staged review");
+  if (productionRows[0].repo_connection.repo_connection_uuid !==
+      reviewRows[0].repo_connection.repo_connection_uuid)
+    fail("staged triggers do not share the journaled repository connection");
   validateBuildEnvironment(production, requireEnvelope(productionEnvironment,
     "staged production environment"));
   validateAutomaticReviewEnvironment(requireEnvelope(reviewEnvironment,
@@ -1237,6 +1298,25 @@ async function providerPost({ accountId, token, outputDirectory }, label, path, 
   return body;
 }
 
+async function providerGetStable(context, label, path) {
+  const first = await providerGet(context, `${label}.pass-1`, path);
+  const second = await providerGet(context, `${label}.pass-2`, path);
+  if (!same(first.result, second.result))
+    fail(`${label} provider state changed between complete passes`);
+  await writePrivateJson(resolve(context.outputDirectory, `${label}.json`), second);
+  return second;
+}
+
+async function providerPostStable(context, label, path, requestBody, projection = ({ result }) =>
+  result) {
+  const first = await providerPost(context, `${label}.pass-1`, path, requestBody);
+  const second = await providerPost(context, `${label}.pass-2`, path, requestBody);
+  if (!same(projection(first), projection(second)))
+    fail(`${label} provider state changed between complete passes`);
+  await writePrivateJson(resolve(context.outputDirectory, `${label}.json`), second);
+  return second;
+}
+
 export function combineProviderPages(envelopes, label, identity) {
   if (!Array.isArray(envelopes) || envelopes.length === 0 ||
       envelopes.length > maximumProviderPages)
@@ -1372,7 +1452,7 @@ async function readProviderSnapshot({ accountId, token, productionReadToken, out
       fail(`required production Worker ${name} is absent`);
     }
     if (!scriptTagPattern.test(script.tag ?? "")) fail(`${name} script tag is malformed`);
-    const settings = await providerGet(context, `${name}.settings`,
+    const settings = await providerGetStable(context, `${name}.settings`,
       `/workers/scripts/${encodeURIComponent(name)}/settings`);
     if (name === production.workers[0].name) {
       const database = (settings.result?.bindings ?? []).filter(({ name: binding, type }) =>
@@ -1381,15 +1461,15 @@ async function readProviderSnapshot({ accountId, token, productionReadToken, out
         fail("production D1 binding is missing or ambiguous");
       productionDatabaseId = database[0].id ?? database[0].database_id;
     }
-    await providerGet(context, `${name}.subdomain`,
+    await providerGetStable(context, `${name}.subdomain`,
       `/workers/scripts/${encodeURIComponent(name)}/subdomain`);
-    await providerGet(context, `${name}.schedules`,
+    await providerGetStable(context, `${name}.schedules`,
       `/workers/scripts/${encodeURIComponent(name)}/schedules`);
-    await providerGet(context, `${name}.routes`,
+    await providerGetStable(context, `${name}.routes`,
       `/workers/services/${encodeURIComponent(name)}/environments/production/routes?show_zonename=true`);
-    await providerGet(context, `${name}.script-settings`,
+    await providerGetStable(context, `${name}.script-settings`,
       `/workers/scripts/${encodeURIComponent(name)}/script-settings`);
-    const deployments = await providerGet(context, `${name}.deployments`,
+    const deployments = await providerGetStable(context, `${name}.deployments`,
       `/workers/scripts/${encodeURIComponent(name)}/deployments`);
     const deploymentRows = deployments.result?.deployments;
     const activeVersions = deploymentRows?.[0]?.versions ?? [];
@@ -1397,8 +1477,12 @@ async function readProviderSnapshot({ accountId, token, productionReadToken, out
         activeVersions.length !== 1 || activeVersions[0].percentage !== 100 ||
         !uuidPattern.test(activeVersions[0].version_id ?? ""))
       fail(`${name} does not have one unambiguous active version`);
-    await providerGet(context, `${name}.active-version`,
+    await providerGetStable(context, `${name}.active-version`,
       `/workers/scripts/${encodeURIComponent(name)}/versions/${encodeURIComponent(activeVersions[0].version_id)}`);
+    const deploymentsFinal = await providerGetStable(context, `${name}.deployments-final`,
+      `/workers/scripts/${encodeURIComponent(name)}/deployments`);
+    if (!same(deployments.result, deploymentsFinal.result))
+      fail(`${name} active deployment changed during version readback`);
     await providerGetWorkerVersions(context, `${name}.versions`,
       `/workers/scripts/${encodeURIComponent(name)}/versions`);
     await providerGetPaginated(context, `${name}.deploy-hooks`,
@@ -1412,7 +1496,7 @@ async function readProviderSnapshot({ accountId, token, productionReadToken, out
       ({ build_uuid: id }) => id, 200);
     for (const trigger of triggers.result ?? []) {
       if (!uuidPattern.test(trigger.trigger_uuid ?? "")) fail(`${name} trigger UUID is malformed`);
-      await providerGet(context,
+      await providerGetStable(context,
         `${name}.trigger-${trigger.trigger_uuid}.environment`,
         `/builds/triggers/${encodeURIComponent(trigger.trigger_uuid)}/environment_variables`);
     }
@@ -1443,11 +1527,12 @@ async function readProviderSnapshot({ accountId, token, productionReadToken, out
     ({ hostname, service }) => `${hostname}\0${service}`);
   await providerGetPaginated(context, "build-tokens", "/builds/tokens",
     ({ build_token_uuid: id }) => id);
-  await providerGet(context, "build-limits", "/builds/account/limits");
+  await providerGetStable(context, "build-limits", "/builds/account/limits");
   if (!productionDatabaseId) fail("production D1 database identity is unavailable");
-  await providerPost({ accountId, token: productionReadToken, outputDirectory },
+  await providerPostStable({ accountId, token: productionReadToken, outputDirectory },
     "production-migrations", `/d1/database/${encodeURIComponent(productionDatabaseId)}/query`,
-    { sql: "SELECT id, name FROM d1_migrations ORDER BY id", params: [] });
+    { sql: "SELECT id, name FROM d1_migrations ORDER BY id", params: [] },
+    ({ result }) => result?.map(({ results }) => results));
   await writePrivateJson(resolve(outputDirectory, "snapshot-manifest.json"), {
     accountId, sourceSha, startedAt, completedAt: new Date().toISOString(),
     productionContractSha256: digestJson(production), reviewContractSha256: digestJson(review),
@@ -1718,8 +1803,7 @@ async function main() {
     const productionReadToken = await readPrivateValue(
       process.env.ATRINIK_PRODUCTION_BUILD_TOKEN_SECRET_FILE,
       "production D1 read API token");
-    const sourceSha = await readPrivateValue(process.env.ATRINIK_REVIEWED_SOURCE_SHA_FILE,
-      "reviewed source SHA", gitShaPattern);
+    const sourceSha = await reviewedCurrentMainSha();
     const outputDirectory = process.env.ATRINIK_PROVIDER_SNAPSHOT_OUTPUT;
     process.stdout.write(`${JSON.stringify(await readProviderSnapshot({
       accountId, token, productionReadToken, outputDirectory, production, review, sourceSha,
@@ -1730,8 +1814,7 @@ async function main() {
     const accountId = await readPrivateValue(process.env.ATRINIK_CLOUDFLARE_ACCOUNT_ID_FILE,
       "Cloudflare account ID", accountIdPattern);
     const { bases } = await checkedInInputs();
-    const sourceSha = await readPrivateValue(process.env.ATRINIK_REVIEWED_SOURCE_SHA_FILE,
-      "reviewed source SHA", gitShaPattern);
+    const sourceSha = await reviewedCurrentMainSha();
     process.stdout.write(`${JSON.stringify(await materializeSnapshot({
       snapshotDirectory: process.env.ATRINIK_PROVIDER_SNAPSHOT_DIRECTORY,
       outputDirectory: process.env.ATRINIK_PRODUCTION_CONFIG_OUTPUT,
@@ -1742,8 +1825,7 @@ async function main() {
   if (mode === "--verify-preflight") {
     const accountId = await readPrivateValue(process.env.ATRINIK_CLOUDFLARE_ACCOUNT_ID_FILE,
       "Cloudflare account ID", accountIdPattern);
-    const sourceSha = await readPrivateValue(process.env.ATRINIK_REVIEWED_SOURCE_SHA_FILE,
-      "reviewed source SHA", gitShaPattern);
+    const sourceSha = await reviewedCurrentMainSha();
     process.stdout.write(`${JSON.stringify(await validateFreshSnapshotDirectory({
       snapshotDirectory: process.env.ATRINIK_PROVIDER_SNAPSHOT_DIRECTORY,
       production, review, accountId, sourceSha,
@@ -1759,8 +1841,7 @@ async function main() {
       await readPrivateJson(process.env.ATRINIK_REVIEW_BUILD_TOKEN_PERMISSION_PROOF_FILE,
         "review build token permission proof"),
     ];
-    const sourceSha = await readPrivateValue(process.env.ATRINIK_REVIEWED_SOURCE_SHA_FILE,
-      "reviewed source SHA", gitShaPattern);
+    const sourceSha = await reviewedCurrentMainSha();
     process.stdout.write(`${JSON.stringify(await validateStagedSnapshotDirectory({
       snapshotDirectory: process.env.ATRINIK_PROVIDER_SNAPSHOT_DIRECTORY,
       production, review, reviewBootstrapConfig, accountId, tokenAuthorityProofs, sourceSha,
@@ -1776,8 +1857,7 @@ async function main() {
       await readPrivateJson(process.env.ATRINIK_REVIEW_BUILD_TOKEN_PERMISSION_PROOF_FILE,
         "review build token permission proof"),
     ];
-    const sourceSha = await readPrivateValue(process.env.ATRINIK_REVIEWED_SOURCE_SHA_FILE,
-      "reviewed source SHA", gitShaPattern);
+    const sourceSha = await reviewedCurrentMainSha();
     process.stdout.write(`${JSON.stringify(await validateConfiguredSnapshotDirectory({
       snapshotDirectory: process.env.ATRINIK_PROVIDER_SNAPSHOT_DIRECTORY,
       production, review, reviewBootstrapConfig, accountId, tokenAuthorityProofs, sourceSha,
