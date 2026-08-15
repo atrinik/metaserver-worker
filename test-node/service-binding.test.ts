@@ -5,6 +5,7 @@ import { readD1Migrations } from "@cloudflare/vitest-pool-workers";
 import { Miniflare } from "miniflare";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 
+import classicV2Fixture from "../test/fixtures/metaserver-classic-publisher-v2.json";
 import publisherFixture from "../test/fixtures/metaserver-publisher-v1.json";
 
 const CURRENT_SECRET = "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA";
@@ -14,6 +15,8 @@ const TEST_TOKEN = "a".repeat(64);
 
 let miniflare: Miniflare;
 let harness: WorkerFetcher;
+let publisher: WorkerFetcher;
+let rendezvous: WorkerFetcher;
 
 beforeAll(async () => {
   const core = await readConfiguration("wrangler.jsonc");
@@ -35,27 +38,32 @@ beforeAll(async () => {
               const target = headers.get("X-Atrinik-Test-Target");
               if (target === null) return new Response("Missing target", { status: 400 });
               const publisher = new URL(target).hostname === "publish.meta.atrinik.org";
+              const edge = headers.get("X-Atrinik-Test-Edge") === "1";
               const forwardedHeaders = new Headers();
               const allowed = publisher
                 ? ["Atrinik-Publish-Sequence", "Atrinik-Server-ID", "Content-Digest", "Content-Type", "Signature", "Signature-Input"]
                 : ["Authorization", "Connection", "Sec-WebSocket-Key", "Sec-WebSocket-Protocol", "Sec-WebSocket-Version", "Upgrade"];
+              if (edge) allowed.push("CF-Connecting-IP");
               for (const name of allowed) {
                 const value = headers.get(name);
                 if (value !== null) forwardedHeaders.set(name, value);
               }
               if (publisher) forwardedHeaders.set("Content-Type", "application/json");
-              if (!publisher) {
+              if (!publisher && !edge) {
                 forwardedHeaders.set("Atrinik-Internal-Source-Tag", "v1.test-a.aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa");
                 forwardedHeaders.set("Atrinik-Internal-Source-Tag-Previous", "v1.test-b.bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb");
               }
-              const service = publisher
-                ? env.PUBLISH_COORDINATOR
-                : env.RENDEZVOUS_COORDINATOR;
+              const service = edge
+                ? (publisher ? env.PUBLISH_EDGE : env.RENDEZVOUS_EDGE)
+                : (publisher ? env.PUBLISH_COORDINATOR : env.RENDEZVOUS_COORDINATOR);
+              const body = request.body === null
+                ? undefined
+                : await request.arrayBuffer();
               const forwarded = new Request(target, {
                 method: request.method,
                 headers: forwardedHeaders,
                 redirect: "manual",
-                ...(request.body === null ? {} : { body: request.body }),
+                ...(body === undefined ? {} : { body }),
               });
               return service.fetch(forwarded);
             },
@@ -72,6 +80,8 @@ beforeAll(async () => {
             name: "core",
             entrypoint: "RendezvousCoordinator",
           },
+          PUBLISH_EDGE: "publisher",
+          RENDEZVOUS_EDGE: "rendezvous",
         },
       },
       {
@@ -161,6 +171,8 @@ beforeAll(async () => {
     );
   }
   harness = await miniflare.getWorker("harness") as unknown as WorkerFetcher;
+  publisher = await miniflare.getWorker("publisher") as unknown as WorkerFetcher;
+  rendezvous = await miniflare.getWorker("rendezvous") as unknown as WorkerFetcher;
 });
 
 afterAll(async () => {
@@ -168,6 +180,35 @@ afterAll(async () => {
 });
 
 describe("compiled named Worker Service Bindings", () => {
+  it("carries both credential-free production canary envelopes to core", async () => {
+    const serverId = "0".repeat(64);
+    const publishResponse = await fetchPublisherCanary();
+    expect(publishResponse.status).toBe(401);
+    const publishBody = await publishResponse.json() as {
+      error?: { code?: string };
+    };
+    expect(publishBody.error?.code).toBe("unauthorized");
+
+    const rendezvousTarget =
+      `https://rendezvous.meta.atrinik.org/v1/classic/servers/${serverId}?role=server`;
+    const rendezvousResponse = await harness.fetch(
+      "http://service-binding.test/forward",
+      {
+        headers: {
+          "CF-Connecting-IP": "192.0.2.212",
+          Connection: "Upgrade",
+          "Sec-WebSocket-Key": "AAAAAAAAAAAAAAAAAAAAAA==",
+          "Sec-WebSocket-Version": "13",
+          Upgrade: "websocket",
+          "X-Atrinik-Test-Edge": "1",
+          "X-Atrinik-Test-Target": rendezvousTarget,
+        },
+      },
+    );
+    expect(rendezvousResponse.status).toBe(404);
+    expect(await rendezvousResponse.text()).toBe("Server is offline\n");
+  });
+
   it("carries a signed request without public source state", async () => {
     const target = `https://${publisherFixture.authority}${publisherFixture.path}`;
     const response = await harness.fetch("http://service-binding.test/forward", {
@@ -258,7 +299,42 @@ describe("compiled named Worker Service Bindings", () => {
     response.webSocket?.accept();
     response.webSocket?.close(1000, "Test complete");
   });
+
+  it("keeps the v2 publisher canary valid after global v1 retirement", async () => {
+    const bindings = await miniflare.getBindings<{ DB: D1Database }>("core");
+    await bindings.DB.prepare(
+      `UPDATE classic_receiver_mode
+          SET mode = 'classic-v1-retired', activated_at = ?
+        WHERE singleton = 1 AND mode = 'classic-v1-accepting'`,
+    ).bind(Math.floor(Date.now() / 1_000)).run();
+
+    const response = await fetchPublisherCanary();
+    expect(response.status, await response.clone().text()).toBe(401);
+    expect(await response.json()).toMatchObject({
+      error: { code: "unauthorized" },
+    });
+  });
 });
+
+async function fetchPublisherCanary(): Promise<Response> {
+  const vector = classicV2Fixture.positive[0];
+  const target = `https://${classicV2Fixture.authority}${vector.path}`;
+  return await harness.fetch("http://service-binding.test/forward", {
+    method: "POST",
+    headers: {
+      "CF-Connecting-IP": "192.0.2.211",
+      "Atrinik-Publish-Sequence": vector.sequence,
+      "Atrinik-Server-ID": classicV2Fixture.server_id,
+      "Content-Digest": vector.content_digest,
+      "Content-Type": classicV2Fixture.content_type,
+      Signature: `atrinik=:${"A".repeat(86)}==:`,
+      "Signature-Input": vector.signature_input,
+      "X-Atrinik-Test-Edge": "1",
+      "X-Atrinik-Test-Target": target,
+    },
+    body: new TextEncoder().encode(vector.body),
+  });
+}
 
 interface WranglerConfiguration {
   readonly vars: Readonly<Record<string, string>>;

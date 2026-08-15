@@ -41,7 +41,9 @@ function publisherEnvironment(
   limit = vi.fn(async () => ({ success: true })),
 ): { readonly env: PublisherEnv; readonly limit: typeof limit } {
   const base = {
-    COORDINATOR: { fetch } as PublisherEnv["COORDINATOR"],
+    COORDINATOR: {
+      fetch,
+    } as PublisherEnv["COORDINATOR"],
     GLOBAL_RATE_LIMITER: { limit } as RateLimit,
     PUBLISH_HOSTNAME: "publish.meta.atrinik.org",
     PUBLISH_ENABLED: "disabled",
@@ -71,7 +73,9 @@ function rendezvousEnvironment(
   readonly clientLimit: typeof clientLimit;
 } {
   const base = {
-    COORDINATOR: { fetch } as RendezvousEnv["COORDINATOR"],
+    COORDINATOR: {
+      fetch,
+    } as RendezvousEnv["COORDINATOR"],
     GLOBAL_RATE_LIMITER: { limit: globalLimit } as RateLimit,
     RENDEZVOUS_CLIENT_RATE_LIMITER: { limit: clientLimit } as RateLimit,
     RENDEZVOUS_HOSTNAME: "rendezvous.meta.atrinik.org",

@@ -9,6 +9,151 @@ work is append-only. The core owns D1, R2, schedules, Analytics Engine,
 `RendezvousRoom`, and `DirectoryBuilder`. The publisher and rendezvous Workers
 are stateless public edges with one named Service Binding each.
 
+## Automatic protected-main delivery
+
+Routine delivery uses one Cloudflare Workers Builds connection to
+`atrinik/metaserver-worker`. Configure it exactly from
+`deployment/workers-builds-production.json`: repository root, production
+branch `main`, every push included with no watch-path exclusion, build command
+`env -i PATH="$PATH" npm_config_cache=/tmp/atrinik-npm-cache npm install
+--global --ignore-scripts npm@11.16.0 && env -i PATH="$PATH"
+npm_config_cache=/tmp/atrinik-npm-cache npm ci --ignore-scripts`, deploy command
+`npm run deploy:production`, `SKIP_DEPENDENCY_INSTALL=1`, and the pinned
+Node/npm/Wrangler versions. An accepted pull-request merge into protected
+`main` is the routine authorization. Do not add another production branch,
+tag/release gate, GitHub environment approval, deploy hook, Actions deployment
+workflow/secret, or local Wrangler step. Semantic Release independently
+consumes the same accepted SHA and does not gate deployment.
+
+Cloudflare-owned secret build variables contain three minified JSONC
+configurations, each below the provider's 5 KiB variable limit:
+
+```text
+ATRINIK_PRODUCTION_CORE_CONFIG
+ATRINIK_PRODUCTION_PUBLISHER_CONFIG
+ATRINIK_PRODUCTION_RENDEZVOUS_CONFIG
+ATRINIK_WORKERS_BUILDS_API_TOKEN
+CLOUDFLARE_ACCOUNT_ID
+ATRINIK_PRODUCTION_CONTROL_PLANE_READY
+```
+
+The entrypoint materializes the configurations as owner-only temporary files
+outside the checkout, resolves only repository-contained entrypoints, and
+removes the files on every exit. The Builds API token is a separate
+user-scoped secret with Workers CI Write only; it arbitrates this production
+trigger by retaining the newest eligible current-main build, making every
+older build relinquish, and cancelling only older competitors before any
+Worker mutation. It also reconciles the live GitHub repository, root, core
+project tag, branch/watch filters, build/deploy commands, and exact protected
+environment inventory/classification with the checked-in contract. Every fence
+fetches the current trigger rather than trusting the build-start snapshot. Use
+`routine` only while the live
+control-plane digest is unchanged. After separately authorized
+migration/DNS/WAF/domain/route/trigger, secret-rotation, resource, or ownership
+work, use `approved:<exact-current-main-SHA>` for that retry only, then restore
+`routine`. Never print a protected file, identifier, secret value, recovery
+coordinate, or raw provider response. Routine deploys inherit already
+provisioned encrypted runtime secrets by name and never read, upload, rotate,
+or delete their values.
+The first provider connection also uses this exact-SHA gate because the live
+versions do not yet carry the repository delivery annotations; restore
+`routine` after all three annotated versions pass readback and canaries.
+
+The entrypoint performs this fail-closed sequence:
+
+1. Require Workers Builds on `main`, a build UUID, the expected connected core
+   project/tag, a clean `HEAD` equal to `WORKERS_CI_COMMIT_SHA`, and the
+   intended account. The provider install command starts with an empty
+   environment and disables dependency lifecycle scripts. Before repository
+   code runs, reconcile the live trigger and protected environment. Repository
+   checks and public canaries receive a positive allowlist of non-secret process
+   settings only; Wrangler additionally receives only deployment authentication
+   and its private configuration path; the lease token remains in the parent
+   process. This allowlist prevents inheritance and accidental tool exposure;
+   trusted merged repository code remains in the same-UID build trust boundary.
+   Materialize private configurations only after repository checks.
+2. Run the complete repository check; then validate all three protected configs,
+   bounded runtime policies, coherent circuit values, exact Custom Domains and
+   their shared `atrinik.org` zone ID, bindings, variables, secret names, unique
+   rate namespaces, disabled alternate URLs, observability, cron schedules, and
+   the ordered D1 ledger against live readback.
+3. Resolve the desired and disabled-circuit strict dry-run bundles before
+   mutation and hash them with the configs, migrations, lockfile, commands,
+   canaries, and contract.
+4. Read back one active 100% version per Worker. If the complete deployable
+   digest is already active, report `no-deployment-required`, run the bounded
+   canaries, and upload nothing, avoiding a Durable Object restart.
+5. Recheck current `main` before the first upload and before and after every
+   stage; cancel and wait for every stale main build, repeat the inventory until
+   the sole exact-SHA Builds lease converges, and make current `main` the final
+   remote proof. Deploy and read back core, publisher, then rendezvous with every
+   public circuit forced disabled.
+6. Prove the staged three-role cohort is coherent. Restore the desired caller
+   configs in publisher/rendezvous order while core remains disabled, restore
+   core last, and validate every direct `wrangler deploy --strict` at 100%.
+   Thus any pre-final failure leaves or restores the core breakers disabled.
+7. Record exact source, deployable, migration digest/horizon, control-plane,
+   role, and phase
+   in each version. Re-read exports, bindings, routes, Custom Domains,
+   subdomain, schedules, runtime, and observability after each stage; reread
+   one coherent active topology, then run bounded Classic/Game static-origin
+   canaries. The publisher and rendezvous canaries use credential-free probes
+   inside the exact governed non-retirable Classic v2 `POST .../publish` and
+   Classic `GET ...?role=server` envelopes: an enabled circuit must return the
+   coordinator's fixed closed rejection across the Service Binding, while a
+   disabled circuit must return its exact local closed response and retry
+   policy. No health-route or WAF exception exists. A canary/final-readback
+   failure also restores and proves the disabled core configuration.
+
+The build token needs read access to current Worker configuration and the D1
+migration ledger plus exact deployment authority for these three Workers. The
+separate lease token needs Workers CI Write solely to inspect this trigger and
+cancel competing builds.
+It must not receive D1 migration, DNS, WAF, general account administration,
+secret-read, or destructive-resource authority.
+
+`npm run deploy:production:dry-run` validates the checked-in fixtures, resolves
+all bundles, and prints only safe digests and names. It never reads GitHub or
+Cloudflare and has no upload path. Non-production Workers Builds must use this
+command until the separate isolated-review design is merged; it cannot fall
+through to production because the production entrypoint requires `main`.
+
+### Pauses, retries, outages, and manual escape
+
+A pending/divergent migration, changed control plane, placeholder/missing
+input, wrong account, route/binding/secret drift, stale SHA, or failed
+validation/upload/readback/canary stops the build. The command never applies a
+migration or changes external control-plane state incidentally. Preserve the
+safest circuit state and private recovery evidence, perform only the separately
+authorized prerequisite from the same revision, verify it, and manually retry
+that exact SHA through Workers Builds. The retry must still be current `main`;
+never create an empty commit or deploy from a local checkout.
+
+An authorized append-only migration retry is accepted only when the active
+annotation's prior horizon hashes to an exact prefix of the new checked-in
+ledger and the remote name ledger already equals the new ledger. Rewriting,
+reordering, deleting, or inserting into the prior horizon remains divergent.
+An interrupted staged cohort is internal recovery state, not external control
+drift, so the newest routine build can safely finish it. Failure evidence keeps
+the original phase/role and separately records disabled-core recovery as
+`not-needed`, `proven`, or `failed`.
+
+After a partial deployment, record the read-back phase/role prefix and the
+disabled-core recovery result, then fix forward from exact current `main`;
+never roll back across exports or schema. During a
+provider outage, repository validation and Semantic Release remain independent
+and the Workers Build is retried only after readback is reliable. An emergency
+manual escape requires explicit incident authorization and the exact clean
+current-main tree, contract, protected inputs, strict order, readback, and
+canaries; record why Workers Builds was unavailable and restore it as the sole
+routine path.
+
+To disconnect, an organization owner disables the trigger, verifies no build
+or upload remains active, revokes the build token and metaserver repository
+selection without disturbing the website connection, and retains the last
+source/version/digest evidence privately. A disconnected repository has no
+automatic production path and fails closed.
+
 ## Prepare
 
 Use explicit protected targets for every Wrangler command; the checked-in
@@ -29,8 +174,9 @@ credential; the edge file supplies only the shared reviewed source-tag pair.
 Do not use sequential `secret put` operations or an incomplete file that would
 create an unreviewed intermediate version.
 
-1. Work from an exact reviewed release commit with a clean tree. Record the
-   commit, Wrangler version, account, zone, database, buckets, Durable Object
+1. For a separately authorized exceptional gate, work from the exact clean
+   current `main` commit selected by Workers Builds. Record the commit,
+   Wrangler version, account, zone, database, buckets, Durable Object
    namespaces, service names, routes/domains, active version IDs, configuration
    digests, secret names, and enabled edge-rule IDs in an owner-only private
    deployment record. Never record a secret value or actor key.

@@ -1,0 +1,209 @@
+{
+  "schemaVersion": 1,
+  "provider": "cloudflare-workers-builds",
+  "repository": "atrinik/metaserver-worker",
+  "rootDirectory": "",
+  "productionBranch": "main",
+  "automaticPush": true,
+  "pathIncludes": ["*"],
+  "pathExcludes": [],
+  "installCommand": "env -i PATH=\"$PATH\" npm_config_cache=/tmp/atrinik-npm-cache npm install --global --ignore-scripts npm@11.16.0 && env -i PATH=\"$PATH\" npm_config_cache=/tmp/atrinik-npm-cache npm ci --ignore-scripts",
+  "validationCommand": "npm run check",
+  "deployCommand": "npm run deploy:production",
+  "reviewCommand": "npm run deploy:production:dry-run",
+  "buildEnvironment": {
+    "SKIP_DEPENDENCY_INSTALL": "1"
+  },
+  "productionCanaries": [
+    {
+      "name": "classic-static-directory",
+      "command": [
+        "python3",
+        "scripts/static_origin_canary.py",
+        "--profile",
+        "classic-v2",
+        "--base-url",
+        "https://classic.meta.atrinik.org",
+        "--allow-production",
+        "--json"
+      ]
+    },
+    {
+      "name": "game-static-directory",
+      "command": [
+        "python3",
+        "scripts/static_origin_canary.py",
+        "--profile",
+        "game-v1",
+        "--base-url",
+        "https://meta.atrinik.org",
+        "--allow-production",
+        "--json"
+      ]
+    },
+    {
+      "name": "publisher-service-binding",
+      "command": [
+        "python3",
+        "scripts/dynamic_edge_canary.py",
+        "--role",
+        "publisher",
+        "--base-url",
+        "https://publish.meta.atrinik.org",
+        "--expected-circuit",
+        "$PUBLISH_ENABLED",
+        "--disabled-retry-seconds",
+        "$ROUTE_DISABLED_RETRY_SECONDS",
+        "--json"
+      ]
+    },
+    {
+      "name": "rendezvous-service-binding",
+      "command": [
+        "python3",
+        "scripts/dynamic_edge_canary.py",
+        "--role",
+        "rendezvous",
+        "--base-url",
+        "https://rendezvous.meta.atrinik.org",
+        "--expected-circuit",
+        "$RENDEZVOUS_ENABLED",
+        "--disabled-retry-seconds",
+        "$ROUTE_DISABLED_RETRY_SECONDS",
+        "--json"
+      ]
+    }
+  ],
+  "toolchain": {
+    "node": "24.18.1",
+    "npm": "11.16.0",
+    "wrangler": "4.119.0",
+    "lockfile": "package-lock.json"
+  },
+  "source": {
+    "branchVariable": "WORKERS_CI_BRANCH",
+    "commitVariable": "WORKERS_CI_COMMIT_SHA",
+    "buildVariable": "WORKERS_CI_BUILD_UUID",
+    "currentMainUrl": "https://api.github.com/repos/atrinik/metaserver-worker/commits/main"
+  },
+  "protectedInputs": {
+    "accountVariable": "CLOUDFLARE_ACCOUNT_ID",
+    "coreConfigVariable": "ATRINIK_PRODUCTION_CORE_CONFIG",
+    "publisherConfigVariable": "ATRINIK_PRODUCTION_PUBLISHER_CONFIG",
+    "rendezvousConfigVariable": "ATRINIK_PRODUCTION_RENDEZVOUS_CONFIG",
+    "buildsApiTokenVariable": "ATRINIK_WORKERS_BUILDS_API_TOKEN",
+    "controlPlaneGateVariable": "ATRINIK_PRODUCTION_CONTROL_PLANE_READY"
+  },
+  "workers": [
+    {
+      "role": "core",
+      "name": "atrinik-metaserver",
+      "configuration": "ATRINIK_PRODUCTION_CORE_CONFIG",
+      "order": 1,
+      "directDeploy": true,
+      "customDomains": [],
+      "requiredVariables": [
+        "CLASSIC_DIRECTORY_CUTOVER_MODE",
+        "CLASSIC_DIRECTORY_PUBLIC_ORIGIN",
+        "DIRECTORY_CACHE_ZONE_ID",
+        "DIRECTORY_REFRESH_LEAD_SECONDS",
+        "GAME_DIRECTORY_PUBLIC_ORIGIN",
+        "GAME_PUBLISH_ENABLED",
+        "LISTING_TTL_SECONDS",
+        "PUBLISH_ENABLED",
+        "PUBLISH_HOSTNAME",
+        "PUBLISH_SERVER_DAILY_LIMIT",
+        "RENDEZVOUS_ACTIVE_CLIENT_LIMIT",
+        "RENDEZVOUS_CLIENT_PAIR_BURST_LIMIT",
+        "RENDEZVOUS_CLIENT_PAIR_INITIAL_COOLDOWN_SECONDS",
+        "RENDEZVOUS_CLIENT_PAIR_MAXIMUM_COOLDOWN_SECONDS",
+        "RENDEZVOUS_CLIENT_PAIR_RESET_SECONDS",
+        "RENDEZVOUS_CLIENT_PAIR_WINDOW_SECONDS",
+        "RENDEZVOUS_CLIENT_SESSION_SECONDS",
+        "RENDEZVOUS_ENABLED",
+        "RENDEZVOUS_HOSTNAME",
+        "RENDEZVOUS_SERVER_DAILY_LIMIT",
+        "ROUTE_DISABLED_RETRY_SECONDS",
+        "SOURCE_TAG_KEY_CURRENT_ID",
+        "SOURCE_TAG_KEY_PREVIOUS_ID"
+      ],
+      "state": [
+        "D1:DB",
+        "DurableObject:RENDEZVOUS",
+        "DurableObject:DIRECTORY_BUILDER",
+        "R2:DIRECTORY_GENERATIONS",
+        "R2:CLASSIC_DIRECTORY_PUBLIC",
+        "R2:GAME_DIRECTORY_PUBLIC",
+        "AnalyticsEngine:RENDEZVOUS_METRICS",
+        "AnalyticsEngine:DIRECTORY_METRICS",
+        "RateLimit:PUBLISH_IDENTITY_RATE_LIMITER",
+        "RateLimit:RENDEZVOUS_SERVER_RATE_LIMITER",
+        "Cron:*/5 * * * *",
+        "Cron:17 * * * *"
+      ],
+      "serviceBindings": [],
+      "requiredSecrets": [
+        "DIRECTORY_CACHE_PURGE_TOKEN",
+        "SOURCE_TAG_KEY_CURRENT",
+        "SOURCE_TAG_KEY_PREVIOUS"
+      ]
+    },
+    {
+      "role": "publisher",
+      "name": "atrinik-metaserver-publisher",
+      "configuration": "ATRINIK_PRODUCTION_PUBLISHER_CONFIG",
+      "order": 2,
+      "directDeploy": true,
+      "customDomains": ["publish.meta.atrinik.org"],
+      "requiredVariables": [
+        "GAME_PUBLISH_ENABLED",
+        "PUBLISH_ENABLED",
+        "PUBLISH_HOSTNAME",
+        "ROUTE_DISABLED_RETRY_SECONDS",
+        "SOURCE_TAG_KEY_CURRENT_ID",
+        "SOURCE_TAG_KEY_PREVIOUS_ID"
+      ],
+      "state": ["RateLimit:GLOBAL_RATE_LIMITER"],
+      "serviceBindings": ["COORDINATOR:atrinik-metaserver#PublisherCoordinator"],
+      "requiredSecrets": [
+        "SOURCE_TAG_KEY_CURRENT",
+        "SOURCE_TAG_KEY_PREVIOUS"
+      ]
+    },
+    {
+      "role": "rendezvous",
+      "name": "atrinik-metaserver-rendezvous",
+      "configuration": "ATRINIK_PRODUCTION_RENDEZVOUS_CONFIG",
+      "order": 3,
+      "directDeploy": true,
+      "customDomains": ["rendezvous.meta.atrinik.org"],
+      "requiredVariables": [
+        "RENDEZVOUS_ENABLED",
+        "RENDEZVOUS_HOSTNAME",
+        "ROUTE_DISABLED_RETRY_SECONDS",
+        "SOURCE_TAG_KEY_CURRENT_ID",
+        "SOURCE_TAG_KEY_PREVIOUS_ID"
+      ],
+      "state": [
+        "RateLimit:GLOBAL_RATE_LIMITER",
+        "RateLimit:RENDEZVOUS_CLIENT_RATE_LIMITER"
+      ],
+      "serviceBindings": ["COORDINATOR:atrinik-metaserver#RendezvousCoordinator"],
+      "requiredSecrets": [
+        "SOURCE_TAG_KEY_CURRENT",
+        "SOURCE_TAG_KEY_PREVIOUS"
+      ]
+    }
+  ],
+  "invariants": {
+    "productionWorkersDev": false,
+    "productionPreviewUrls": false,
+    "migrationPolicy": "exact-ledger-no-automatic-apply",
+    "controlPlanePolicy": "explicit-external-gate-before-upload",
+    "deploymentOrder": ["core", "publisher", "rendezvous"],
+    "deploymentMode": "direct-100-percent-strict",
+    "buildSerialization": "newest-current-main-build-owns-one-topology-entrypoint",
+    "noOp": "matching-bundles-config-migrations-and-command-contract",
+    "recovery": "disabled-circuit-fix-forward-and-exact-current-main-retry"
+  }
+}

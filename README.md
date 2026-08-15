@@ -80,11 +80,12 @@ receives the launch code, rendezvous secret, or post-QUIC result.
 
 ## Development
 
-Use Node.js 20 or newer:
+Use the Node and npm versions pinned by `.nvmrc` and `packageManager`:
 
 ```sh
 npm ci
 npm run check
+npm run deploy:production:dry-run
 ```
 
 `npm run check` generates and verifies isolated core/publisher/rendezvous
@@ -92,6 +93,36 @@ Wrangler declarations, runs every TypeScript project, the local Workers runtime
 tests, the Python administrative tests, and one distinct Wrangler dry run per
 deployable. Generated declarations and `dist/` output are untracked and must
 not be edited.
+
+Every accepted push to protected `main` is the routine production
+authorization. Cloudflare Workers Builds disables its implicit dependency
+install, selects npm 11.16.0, installs with `npm ci`, and invokes the one
+checked-in `npm run deploy:production` entrypoint; it does not wait for
+a tag, release, second branch, GitHub environment, workflow dispatch, deploy
+hook, or local operator command. The machine contract is
+[`deployment/workers-builds-production.json`](deployment/workers-builds-production.json).
+It validates protected production inputs, refuses migration/control-plane
+drift, resolves all bundles before mutation, returns a verified no-op for
+identical deployable input, rejects stale or competing builds, deploys directly
+and strictly through a core/publisher/rendezvous disabled-circuit cohort,
+restores callers before core, reads back each exact 100% phase and the final
+coherent active topology, and runs bounded credential-free static and canonical
+dynamic-envelope canaries. The publisher probe uses the non-retirable Classic
+v2 envelope. Enabled dynamic probes prove the named Service Binding through a
+fixed closed coordinator rejection; disabled probes prove the exact circuit
+response without adding a health route or WAF exception. Newer
+eligible builds always supersede older ones, and child
+processes receive only a positive allowlist plus the credentials required for
+their role. Append-only migration evolution is prefix-proven and exact-SHA
+approved; staged partial cohorts remain routine fix-forward state.
+
+Production identifiers stay in bounded Cloudflare-owned secret configuration
+documents, never in Git or logs. Runtime secret values remain provisioned in
+Cloudflare and are not available to the routine build. Non-production branches use only the
+zero-mutation dry run until the separately reviewed isolated-review contract
+is enabled. See [DEPLOYMENT.md](DEPLOYMENT.md) for provider settings,
+exceptional pauses, exact-SHA retry, partial failure, outage, revocation, and
+manual escape procedures.
 
 After an operator has separately provisioned an isolated R2 custom domain and
 its reviewed edge rules, validate the public static contract with the
