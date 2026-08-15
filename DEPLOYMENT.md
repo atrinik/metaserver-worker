@@ -173,12 +173,15 @@ hours, but alarm-based physical pruning is best effort; retained DO state is
 recorded and both exact namespaces are force-deleted and read absent by the
 mandatory 90-day cohort teardown.
 
-Irreversible teardown first closes circuits, recovers/releases every run row,
-and atomically changes the coordination control row to terminal `teardown`
-only when no run row exists. That mode rejects acquire, renew, enable, reclaim,
-fixture, deploy, and recreation work. Keep the coordination D1 fence through
-Worker/namespace absence, `workers.dev` disablement, and Access deletion; delete
-the coordination D1 last.
+Irreversible teardown first atomically enters `quiescing`, blocking new
+acquire/renew/enable/reclaim and all external forward proofs while preserving
+owner closure/release. Cleanup never releases an unexpired row: wait the
+425-second proof/operation/recovery horizon, close/read back circuits, accept a
+cooperative owner release, or wait for expiry plus the exact disabled-state and
+60-second drain proofs before the cleanup-only expired release. Only then may
+an empty run table transition to terminal `teardown`. Keep the coordination D1
+fence through Worker/namespace absence, `workers.dev` disablement, and Access
+deletion; delete the coordination D1 last.
 
 This design does not authorize provisioning. Until issue #56 supplies and
 validates the exact provider resources, `npm run deploy:review-canary` fails

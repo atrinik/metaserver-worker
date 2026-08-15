@@ -148,6 +148,7 @@ test("requires every isolated owner, resource ceiling, circuit, and cleanup guar
     changed((value) => value.liveCanary.resources.coordinationD1.columns.pop()),
     changed((value) => value.liveCanary.resources.coordinationD1.controlColumns.pop()),
     changed((value) => value.liveCanary.resources.coordinationD1.acquire = "unfenced-insert"),
+    changed((value) => value.liveCanary.resources.coordinationD1.quiesce = "delete-live-row"),
     changed((value) => value.liveCanary.resources.coordinationD1.teardown = "delete-with-live-runner"),
     changed((value) => value.liveCanary.resources.rateLimits[0].namespaceId = "review-rate-name"),
     changed((value) => value.liveCanary.resources.rateLimits[0].simple.limit = 99),
@@ -219,6 +220,10 @@ test("coordination SQL enforces acquisition, generation, state, expiry, and rele
   assert.equal(coordinationOperations.maximumLeaseProofAgeSeconds, 5);
   assert.equal(coordinationOperations.maximumForwardMutationSeconds, 120);
   assert.equal(coordinationOperations.minimumRecoveryReserveSeconds, 300);
+  assert.equal(coordinationOperations.minimumQuiesceSeconds, 425);
+  assert.equal(coordinationOperations.minimumDisabledDrainSeconds, 60);
+  assert.deepEqual(coordinationOperations.operationActors.cleanupOperatorOnly,
+    ["beginQuiesce", "releaseExpiredForTeardown", "beginTeardown"]);
   assert.ok(coordinationOperations.maximumLeaseProofAgeSeconds +
     coordinationOperations.maximumForwardMutationSeconds +
     coordinationOperations.minimumRecoveryReserveSeconds <
@@ -233,16 +238,35 @@ test("coordination SQL enforces acquisition, generation, state, expiry, and rele
   assert.equal(reclaimed.length, 1);
   assert.equal(reclaimed[0].run_uuid, runB);
   assert.equal(reclaimed[0].lease_generation, 2);
+  const quiescing = statements.beginQuiesce.all();
+  assert.equal(quiescing.length, 1);
+  assert.equal(quiescing[0].mode, "quiescing");
+  assert.equal(statements.renew.all(runB, 2, 1800).length, 0);
+  assert.equal(statements.enable.all(runB, 2).length, 0);
+  assert.equal(statements.acquireFresh.all(shaA, runA, namespaceA, 1800).length, 0);
+  assert.equal(statements.releaseExpiredForTeardown.all(runB, 2).length, 0);
+  assert.equal(statements.release.all(runB, 2).length, 1);
   assert.equal(statements.beginTeardown.all().length, 0);
-  const renewedB = statements.renew.all(runB, 2, 1800);
-  assert.equal(renewedB[0].lease_generation, 3);
-  assert.equal(statements.release.all(runB, 3).length, 1);
+  database.exec("UPDATE review_environment_control SET quiesced_at = unixepoch() - 425");
   const teardown = statements.beginTeardown.all();
   assert.equal(teardown.length, 1);
   assert.equal(teardown[0].mode, "teardown");
   assert.equal(statements.acquireFresh.all(shaA, runA, namespaceA, 1800).length, 0);
   assert.equal(statements.reclaimExpired.all(shaA, runA, namespaceA, 1800).length, 0);
   database.close();
+
+  const abandoned = new DatabaseSync(":memory:");
+  abandoned.exec(coordinationSchema);
+  const abandonedStatements = Object.fromEntries(Object.entries(coordinationOperations.statements)
+    .map(([name, sql]) => [name, abandoned.prepare(sql)]));
+  assert.equal(abandonedStatements.acquireFresh.all(shaA, runA, namespaceA, 1800).length, 1);
+  assert.equal(abandonedStatements.beginQuiesce.all().length, 1);
+  abandoned.exec("UPDATE review_runs SET lease_expires_at = unixepoch() - 1");
+  abandoned.exec("UPDATE review_environment_control SET quiesced_at = unixepoch() - 425");
+  assert.equal(abandonedStatements.release.all(runA, 1).length, 0);
+  assert.equal(abandonedStatements.releaseExpiredForTeardown.all(runA, 1).length, 1);
+  assert.equal(abandonedStatements.beginTeardown.all().length, 1);
+  abandoned.close();
 });
 
 test("defines executable migration, fixture, binding, stale, canary, and cleanup boundaries", () => {

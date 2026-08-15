@@ -100,8 +100,8 @@
   exact review trigger ID guards must reject production mutations. Its digest-pinned inert bootstrap Worker remains
   unreachable, and branch builds create no Worker version. Live review is an operator-supervised exact-SHA run in a dedicated
   account with no GitHub connection or zone. Its production-disjoint resources, disabled
-  circuits, exact-duration lease, logical versus physical fixture retention,
-  Access boundary, and force-delete/readback cleanup guards must
+  circuits, exact-duration lease, quiescing/terminal teardown fence, logical
+  versus physical fixture retention, Access boundary, and force-delete/readback cleanup guards must
   remain synchronized with `docs/review-environment.md` and
   `scripts/review-environment.mjs`. Provider provisioning remains reserved for
   issue #56; `npm run deploy:review-canary` must fail closed until then.

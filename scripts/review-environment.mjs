@@ -275,29 +275,31 @@ function validateResources(resources) {
   exactKeys(resources.coordinationD1, [
     "owner", "name", "schema", "schemaPath", "schemaSha256", "operationsPath", "operationsSha256",
     "controlTable", "controlColumns", "table", "columns",
-    "acquire", "renew", "release", "reclaim", "teardown", "leaseDurationSeconds",
+    "acquire", "renew", "release", "reclaim", "quiesce", "teardown", "leaseDurationSeconds",
     "maximumLeaseProofAgeSeconds", "maximumForwardMutationSeconds", "minimumRecoveryReserveSeconds",
+    "minimumQuiesceSeconds", "minimumDisabledDrainSeconds",
   ], "review coordination D1");
   const coordination = {
     owner: "review-live-runner", name: "atrinik-metaserver-review-coordination",
     schema: "review-coordination-v1", schemaPath: "deployment/review-coordination-v1.sql",
-    schemaSha256: "b6f1a1a85ba6003cc21c1781760356eb2d7a68c1ce4cfd0f15f3de3bd4bce3b3",
+    schemaSha256: "be6c3880c5aee7dd6c52175550913aee45e3b15aa673ba695553597bda22ffc2",
     operationsPath: "deployment/review-coordination-operations-v1.json",
-    operationsSha256: "3270e247a3a702d82664a34395c500db92cfc59bc543ac0d5d34898ba29d99e7",
+    operationsSha256: "5dec6a2ae391a933da84373d7bd3859db752db541dd1b89a65ff1a202576c9b3",
     controlTable: "review_environment_control",
     table: "review_runs",
     acquire: "insert-or-cas-expired-after-disabled-drain-proof",
     renew: "cas-run-uuid-generation-before-forward-mutation",
     release: "cas-run-uuid-generation-after-disabled-drain-proof",
     reclaim: "compare-lease-expires-at-to-provider-utc-after-exact-disabled-readback-and-sixty-second-drain",
-    teardown: "atomic-terminal-mode-only-when-no-review-run-row-rejects-acquire-renew-enable-reclaim-and-all-forward-mutations",
+    quiesce: "atomic-active-to-quiescing-transition-blocks-new-forward-proofs-while-owner-closure-and-release-remain-allowed",
+    teardown: "atomic-quiescing-to-terminal-after-four-hundred-twenty-five-seconds-and-no-review-run-row",
   };
   for (const [key, expected] of Object.entries(coordination))
     exactValue(resources.coordinationD1[key], expected, `review coordination ${key}`);
   exactArray(resources.coordinationD1.columns, [
     "singleton", "source_sha", "run_uuid", "lease_generation", "lease_expires_at", "fixture_namespace", "state",
   ], "review coordination columns");
-  exactArray(resources.coordinationD1.controlColumns, ["singleton", "mode"],
+  exactArray(resources.coordinationD1.controlColumns, ["singleton", "mode", "quiesced_at"],
     "review coordination control columns");
   exactValue(resources.coordinationD1.leaseDurationSeconds, 1800, "review coordination lease duration");
   exactValue(resources.coordinationD1.maximumLeaseProofAgeSeconds, 5,
@@ -306,6 +308,10 @@ function validateResources(resources) {
     "review coordination forward mutation timeout");
   exactValue(resources.coordinationD1.minimumRecoveryReserveSeconds, 300,
     "review coordination recovery reserve");
+  exactValue(resources.coordinationD1.minimumQuiesceSeconds, 425,
+    "review coordination quiesce horizon");
+  exactValue(resources.coordinationD1.minimumDisabledDrainSeconds, 60,
+    "review coordination disabled drain");
   if (!Array.isArray(resources.durableObjects) || resources.durableObjects.length !== 2)
     fail("review Durable Object inventory drift");
   for (const item of resources.durableObjects)
@@ -716,7 +722,7 @@ export function validateLiveCanary(value) {
     "disable-all-circuits-and-prove-closed-read-back",
     "prove-no-directory-outbox-builder-or-alarm-work-was-created",
     "close-circuits-wait-sixty-second-socket-drain-release-lease-record-logical-twenty-four-hour-replay-expiry-and-schedule-operator-physical-retention-readback",
-    "prove-terminal-teardown-cas-rejects-concurrent-acquire-renew-enable-reclaim-fixture-deploy-and-worker-recreation-through-final-access-deletion",
+    "prove-quiescing-blocks-new-proofs-retains-unexpired-owner-row-drains-inflight-work-and-terminal-teardown-rejects-fixture-deploy-and-worker-recreation-through-final-access-deletion",
   ], "review executable test plan");
   exactKeys(value.cleanup, [
     "owner", "automaticOnBranchEvent", "normal", "fullOrder", "guards",
@@ -726,9 +732,11 @@ export function validateLiveCanary(value) {
   exactValue(value.cleanup.automaticOnBranchEvent, false, "review branch cleanup");
   exactValue(value.cleanup.normal, "disable-circuits-expire-fixtures-retain-singleton", "review normal cleanup");
   exactArray(value.cleanup.fullOrder, [
-    "disable-circuits",
-    "release-or-recover-every-review-run-row-then-atomically-enter-terminal-teardown-mode",
-    "prove-terminal-teardown-mode-and-no-active-or-expired-review-run-row",
+    "atomically-enter-quiescing-mode-before-circuit-closure-or-any-destructive-action",
+    "wait-four-hundred-twenty-five-seconds-for-proof-operation-and-recovery-horizon-then-disable-circuits-and-read-back",
+    "accept-only-cooperative-live-runner-release-or-after-expiry-exact-disabled-readback-sixty-second-drain-and-cleanup-release",
+    "prove-no-review-run-row-then-atomically-enter-terminal-teardown-mode",
+    "prove-terminal-teardown-mode-and-quiesce-timestamp",
     "revoke-and-delete-run-access-service-token", "delete-caller-workers",
     "inventory-exact-core-script-tag-and-both-durable-object-namespace-ids",
     "force-delete-exact-core-worker-and-associated-durable-object-namespaces",
@@ -743,6 +751,7 @@ export function validateLiveCanary(value) {
     "no-unowned-resource", "preview-before-apply", "recheck-disabled-circuits",
     "no-active-rendezvous-sockets-or-directory-builder-work",
     "exact-core-script-tag-and-durable-object-namespace-id-match",
+    "cleanup-never-releases-an-unexpired-review-run-row",
     "terminal-teardown-fence-remains-until-final-access-deletion",
   ], "review cleanup guards");
   exactValue(value.cleanup.partialFailure, "stop-record-completed-prefix-leave-circuits-disabled-retry-from-readback", "review partial cleanup");

@@ -210,9 +210,10 @@ Every remote operation requires readback before the next:
    expired lease may be reclaimed only after exact-cohort disabled-circuit
    readback, explicit close acknowledgement for every canary server/client
    socket, an offline read through the same DO, and a 60-second teardown drain.
-   The coordination D1 also owns a singleton `active`/`teardown` control row.
-   Acquire, renew, enable, reclaim, fixture, deploy, and every other forward
-   operation require `active` in the same fenced plan.
+   The coordination D1 also owns a singleton
+   `active`/`quiescing`/`teardown` control row and provider timestamp. Acquire,
+   renew, enable, reclaim, fixture, deploy, and every other forward operation
+   require `active` in the same fenced plan.
 3. Inventory exact resources and ceilings; reject missing, duplicate, unknown,
    production-matching, or unowned objects. Disable/read back all circuits.
 4. Require the application migration ledger to be exact. A pending migration
@@ -274,12 +275,19 @@ resumed only after exact SHA and lease proof.
 Normal completion disables circuits, expires fixtures, discards keys, and
 retains the singleton. Full teardown is separately authorized and preview-first:
 verify exact account/inventory/prefix, no production identifier, disabled
-circuits, and no unowned resource. It first recovers/releases every run row,
-then atomically changes the control row from `active` to terminal `teardown`
-only when no run row exists. The cleanup operator proves that state and keeps
-the coordination D1 through the complete cleanup; no runner can acquire,
-renew, enable, reclaim, seed fixtures, deploy, or recreate a Worker after that
-point. It then revokes/deletes the exact run service token, deletes the callers,
+circuits, and no unowned resource. It first atomically changes `active` to
+`quiescing`, which blocks new acquire, renew, enable, reclaim, fixture, deploy,
+and test proofs but still permits the owning runner's fail-safe closure and
+release. Cleanup never releases an unexpired row. It waits at least 425 seconds
+for the five-second proof age, 120-second operation timeout, and 300-second
+recovery reserve, then disables/read-backs circuits again. A cooperative owner
+may release only after its provider operations and readbacks finish. For an
+abandoned row, cleanup waits for lease expiry, proves exact disabled state and
+a 60-second drain, then uses the cleanup-only expired-row release. Only with no
+run row and the quiesce horizon elapsed may one atomic statement enter terminal
+`teardown`. The operator keeps the coordination D1 through the complete
+cleanup; no runner can recreate authority after that point. It then
+revokes/deletes the exact run service token, deletes the callers,
 and inventories the exact core script tag and both Durable Object
 namespace IDs, then calls the Worker delete API for that exact core with
 `force=true`. The API contract deletes its associated namespaces; both IDs and

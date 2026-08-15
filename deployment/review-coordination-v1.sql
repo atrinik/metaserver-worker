@@ -1,9 +1,12 @@
 CREATE TABLE review_environment_control (
   singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
-  mode TEXT NOT NULL CHECK (mode IN ('active', 'teardown'))
+  mode TEXT NOT NULL CHECK (mode IN ('active', 'quiescing', 'teardown')),
+  quiesced_at INTEGER,
+  CHECK ((mode = 'active' AND quiesced_at IS NULL) OR
+         (mode IN ('quiescing', 'teardown') AND quiesced_at IS NOT NULL))
 );
 
-INSERT INTO review_environment_control (singleton, mode) VALUES (1, 'active');
+INSERT INTO review_environment_control (singleton, mode, quiesced_at) VALUES (1, 'active', NULL);
 
 CREATE TABLE review_runs (
   singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
