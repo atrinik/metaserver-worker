@@ -114,9 +114,41 @@ secret-read, or destructive-resource authority.
 
 `npm run deploy:production:dry-run` validates the checked-in fixtures, resolves
 all bundles, and prints only safe digests and names. It never reads GitHub or
-Cloudflare and has no upload path. Non-production Workers Builds must use this
-command until the separate isolated-review design is merged; it cannot fall
-through to production because the production entrypoint requires `main`.
+Cloudflare and has no upload path.
+
+## Non-main review delivery
+
+The accepted review design is
+[`deployment/workers-builds-review.json`](deployment/workers-builds-review.json)
+and its rationale/runbook is
+[`docs/review-environment.md`](docs/review-environment.md). The production
+connection above continues to reject every non-`main` branch. A distinct inert
+review-check project includes same-repository non-`main` branches but runs only
+`npm run review:branch`; it owns no binding, route, secret, protected
+configuration, live Worker version, or URL. Its provider production branch is
+the absent `review-build-only-sentinel`, automatic production pushes are
+disabled, and the sentinel command always stops. Forks never enter Workers
+Builds with credentials. This project lives in a dedicated empty build-check
+account. The live cohort lives in a second dedicated review account, and both
+are distinct from production; account-scoped tokens therefore cannot cross
+from arbitrary branch code into live canary or production resources.
+
+Live evidence is a separate manual exact-commit request against one serialized
+canary-only cohort. It must prove an exact same-repository non-`main` SHA and
+approval, acquire the singleton lease, stage disabled circuits, verify the
+independent migration ledger and fixtures, deploy core then callers, read back
+same-cohort Service Bindings, run bounded Access-protected canaries, and leave
+all circuits disabled. Every Worker, D1/DO namespace, R2 bucket, Analytics
+dataset, rate namespace, secret value/epoch, hostname, Access/WAF/cache rule,
+log destination, and credential is review-only. Stable URLs name the mutable
+cohort, not the commit and not a secret boundary.
+
+This design does not authorize provisioning. Until issue #56 supplies and
+validates the exact provider resources, `npm run deploy:review-canary` fails
+closed. Local manual escape is limited to `npm ci --ignore-scripts`,
+`npm run check`, and `npm run review:dry-run` without Cloudflare credentials.
+It does not prove live behavior. A provider outage or build failure never falls
+through to the production command or blocks unrelated GitHub validation.
 
 ### Pauses, retries, outages, and manual escape
 

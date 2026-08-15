@@ -118,9 +118,23 @@ approved; staged partial cohorts remain routine fix-forward state.
 
 Production identifiers stay in bounded Cloudflare-owned secret configuration
 documents, never in Git or logs. Runtime secret values remain provisioned in
-Cloudflare and are not available to the routine build. Non-production branches use only the
-zero-mutation dry run until the separately reviewed isolated-review contract
-is enabled. See [DEPLOYMENT.md](DEPLOYMENT.md) for provider settings,
+Cloudflare and are not available to the routine build.
+
+The accepted [review-environment design](docs/review-environment.md) gives
+eligible same-repository non-`main` branches an automatic build-only check
+with no bindings, protected inputs, upload, or URL. Forks receive ordinary
+GitHub repository validation only. Changes that need live provider evidence
+use a separately requested exact-SHA build against one serialized,
+Access-protected, production-disjoint canary cohort. The inert branch-build and
+live-canary projects use two dedicated Cloudflare accounts, neither of which is
+the production account, so account-scoped branch credentials cannot cross the
+boundary. The check account has no zone or enabled `workers.dev` subdomain; its
+provider-managed token is not treated as isolation from malicious branch code
+inside that empty account. That cohort is not
+provisioned by this repository change; `npm run deploy:review-canary` remains a
+fail-closed placeholder until issue #56. Validate the machine boundary with
+`npm run test:review`, `npm run review:validate`, and
+`npm run review:dry-run`. See [DEPLOYMENT.md](DEPLOYMENT.md) for provider settings,
 exceptional pauses, exact-SHA retry, partial failure, outage, revocation, and
 manual escape procedures.
 

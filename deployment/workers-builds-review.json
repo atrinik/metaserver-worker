@@ -1,0 +1,314 @@
+{
+  "schemaVersion": 1,
+  "provider": "cloudflare-workers-builds",
+  "repository": "atrinik/metaserver-worker",
+  "productionContract": "deployment/workers-builds-production.json",
+  "selectedMode": "build-only-plus-explicit-reusable-live-canary",
+  "automaticReview": {
+    "accountBoundary": {
+      "mode": "dedicated-build-check-account",
+      "productionAccountReuse": false,
+      "liveCanaryAccountReuse": false,
+      "zones": [],
+      "workersDevSubdomainEnabled": false,
+      "resources": ["atrinik-metaserver-review-check-build-project"]
+    },
+    "project": "atrinik-metaserver-review-check",
+    "rootDirectory": "",
+    "productionBranch": "review-build-only-sentinel",
+    "productionAutomaticPush": false,
+    "productionDeployCommand": "npm run review:reject-sentinel",
+    "previewBranchIncludes": ["*"],
+    "previewBranchExcludes": ["main", "review-build-only-sentinel"],
+    "pathIncludes": ["*"],
+    "pathExcludes": [],
+    "installCommand": "env -i PATH=\"$PATH\" npm_config_cache=/tmp/atrinik-npm-cache npm install --global --ignore-scripts npm@11.16.0 && env -i PATH=\"$PATH\" npm_config_cache=/tmp/atrinik-npm-cache npm ci --ignore-scripts",
+    "buildCommand": "npm run review:branch",
+    "deployCommand": "npm run review:validate",
+    "maximumBuildMinutes": 15,
+    "buildEnvironment": {
+      "SKIP_DEPENDENCY_INSTALL": "1"
+    },
+    "protectedInputs": [],
+    "bindings": [],
+    "routes": [],
+    "result": {
+      "githubCheck": true,
+      "githubComment": false,
+      "reviewUrl": null,
+      "workerVersion": false,
+      "workerLogs": false
+    },
+    "forkPolicy": "github-repository-validation-only-no-workers-build",
+    "tokenAuthority": "dedicated-build-check-account-only"
+  },
+  "liveCanary": {
+    "accountBoundary": {
+      "mode": "dedicated-live-canary-account",
+      "productionAccountReuse": false,
+      "buildCheckAccountReuse": false,
+      "zone": "review.meta.atrinik.org",
+      "parentDnsAuthority": false
+    },
+    "automatic": false,
+    "invocation": "manual-workers-builds-api-exact-commit",
+    "project": "atrinik-metaserver-review-canary-core",
+    "productionBranch": "review-live-canary-sentinel",
+    "automaticPush": false,
+    "approvedGateVariable": "ATRINIK_REVIEW_APPROVED_SHA",
+    "requestedCommitVariable": "WORKERS_CI_COMMIT_SHA",
+    "deployCommand": "npm run deploy:review-canary",
+    "maximumBuildMinutes": 30,
+    "maximumLiveWindowMinutes": 30,
+    "maximumConcurrentCohorts": 1,
+    "lease": "newest-approved-exact-sha-build-owns-single-cohort",
+    "stalePolicy": "cancel-before-mutation-and-recheck-exact-sha",
+    "deploymentOrder": ["core", "publisher", "rendezvous"],
+    "circuits": {
+      "staging": "disabled",
+      "final": "disabled-unless-explicit-live-test-window",
+      "restoreOrder": ["publisher", "rendezvous", "core"]
+    },
+    "access": {
+      "mode": "cloudflare-access-service-token-or-interactive-session",
+      "public": false,
+      "urlsAreSecret": false,
+      "websocket": "access-session-or-service-token-headers-required",
+      "credentialStorage": "cloudflare-only-never-repository-or-comment"
+    },
+    "reviewEvidence": {
+      "immutableIdentifiers": ["sourceCommit", "buildUuid", "deployableDigest"],
+      "mutableUrls": [
+        "https://classic-directory.review.meta.atrinik.org",
+        "https://game-directory.review.meta.atrinik.org",
+        "https://publish.review.meta.atrinik.org",
+        "https://rendezvous.review.meta.atrinik.org"
+      ],
+      "maximumRetentionDays": 7,
+      "contents": "closed-outcome-digests-counts-and-resource-names-only"
+    },
+    "resourceCeilings": {
+      "workers": 3,
+      "d1Databases": 1,
+      "durableObjectNamespaces": 2,
+      "r2Buckets": 3,
+      "analyticsDatasets": 2,
+      "rateLimitNamespaces": 5,
+      "customHostnames": 4,
+      "accessApplications": 1,
+      "cohortLifetime": "long-lived-singleton",
+      "quarterlyReprovisionRequired": true
+    },
+    "resources": {
+      "workers": [
+        {
+          "role": "core",
+          "name": "atrinik-metaserver-review-canary",
+          "source": "approved-exact-commit",
+          "stateOwner": true,
+          "serviceBindings": []
+        },
+        {
+          "role": "publisher",
+          "name": "atrinik-metaserver-publisher-review-canary",
+          "source": "approved-exact-commit",
+          "stateOwner": false,
+          "serviceBindings": ["COORDINATOR:atrinik-metaserver-review-canary#PublisherCoordinator"]
+        },
+        {
+          "role": "rendezvous",
+          "name": "atrinik-metaserver-rendezvous-review-canary",
+          "source": "approved-exact-commit",
+          "stateOwner": false,
+          "serviceBindings": ["COORDINATOR:atrinik-metaserver-review-canary#RendezvousCoordinator"]
+        }
+      ],
+      "d1": {
+        "owner": "core",
+        "name": "atrinik-metaserver-review-canary",
+        "binding": "DB",
+        "migrationLedger": "independent-exact-checked-in-ledger",
+        "reset": "fresh-d1-or-reviewed-expiry-only-no-bulk-production-copy",
+        "fixtureSources": [
+          "test/fixtures/metaserver-publisher-v1.json",
+          "test/fixtures/metaserver-classic-publisher-v2.json",
+          "test/fixtures/metaserver-game-publisher-v1.json"
+        ]
+      },
+      "durableObjects": [
+        {
+          "owner": "atrinik-metaserver-review-canary",
+          "binding": "RENDEZVOUS",
+          "class": "RendezvousRoom"
+        },
+        {
+          "owner": "atrinik-metaserver-review-canary",
+          "binding": "DIRECTORY_BUILDER",
+          "class": "DirectoryBuilder"
+        }
+      ],
+      "r2": [
+        {
+          "owner": "core",
+          "binding": "DIRECTORY_GENERATIONS",
+          "name": "atrinik-metaserver-review-canary-generations",
+          "r2Dev": false
+        },
+        {
+          "owner": "core",
+          "binding": "CLASSIC_DIRECTORY_PUBLIC",
+          "name": "atrinik-metaserver-review-canary-classic",
+          "r2Dev": false
+        },
+        {
+          "owner": "core",
+          "binding": "GAME_DIRECTORY_PUBLIC",
+          "name": "atrinik-metaserver-review-canary-game",
+          "r2Dev": false
+        }
+      ],
+      "analytics": [
+        {
+          "owner": "core",
+          "binding": "RENDEZVOUS_METRICS",
+          "name": "atrinik_metaserver_rendezvous_review_canary"
+        },
+        {
+          "owner": "core",
+          "binding": "DIRECTORY_METRICS",
+          "name": "atrinik_metaserver_directory_review_canary"
+        }
+      ],
+      "rateLimits": [
+        {
+          "owner": "core",
+          "binding": "PUBLISH_IDENTITY_RATE_LIMITER",
+          "namespace": "review-canary-core-publish",
+          "productionNamespaceReuse": false
+        },
+        {
+          "owner": "core",
+          "binding": "RENDEZVOUS_SERVER_RATE_LIMITER",
+          "namespace": "review-canary-core-rendezvous-server",
+          "productionNamespaceReuse": false
+        },
+        {
+          "owner": "publisher",
+          "binding": "GLOBAL_RATE_LIMITER",
+          "namespace": "review-canary-publisher-global",
+          "productionNamespaceReuse": false
+        },
+        {
+          "owner": "rendezvous",
+          "binding": "GLOBAL_RATE_LIMITER",
+          "namespace": "review-canary-rendezvous-global",
+          "productionNamespaceReuse": false
+        }
+      ],
+      "rendezvousClientRateLimit": {
+        "owner": "rendezvous",
+        "binding": "RENDEZVOUS_CLIENT_RATE_LIMITER",
+        "namespace": "review-canary-rendezvous-client",
+        "sharesRendezvousGlobalCeiling": true,
+        "productionNamespaceReuse": false
+      },
+      "secrets": {
+        "owner": "canary-cohort-only",
+        "names": ["DIRECTORY_CACHE_PURGE_TOKEN", "SOURCE_TAG_KEY_CURRENT", "SOURCE_TAG_KEY_PREVIOUS"],
+        "epochIds": ["review-canary-current", "review-canary-previous"],
+        "productionValueReuse": false,
+        "buildReadable": false
+      },
+      "hostnames": {
+        "zone": "review.meta.atrinik.org",
+        "static": ["classic-directory.review.meta.atrinik.org", "game-directory.review.meta.atrinik.org"],
+        "dynamic": ["publish.review.meta.atrinik.org", "rendezvous.review.meta.atrinik.org"],
+        "workersDev": false,
+        "previewUrls": false,
+        "productionDnsAuthority": false,
+        "productionRouteAuthority": false,
+        "productionCachePurgeAuthority": false
+      },
+      "edgePolicy": {
+        "owner": "review-canary-zone-only",
+        "tls": "full-strict",
+        "waf": "review-host-exact-envelopes",
+        "cache": "review-static-hosts-only",
+        "access": "single-review-canary-application",
+        "productionRuleAuthority": false
+      },
+      "cron": {
+        "enabled": false,
+        "maintenance": "explicit-test-step-only"
+      },
+      "observability": {
+        "destinations": [],
+        "workerLogs": true,
+        "redaction": "docs/privacy.md",
+        "productionDestinationReuse": false
+      }
+    },
+    "dataPolicy": {
+      "productionCopies": false,
+      "liveRequestCopies": false,
+      "credentials": false,
+      "realServerIdentities": false,
+      "rendezvousStateCopies": false,
+      "fixturePrefix": "review-canary-fixture-",
+      "fixtureIdentityDerivation": "sha256(review-cohort-source-sha-build-uuid-vector-name)",
+      "fixtureMaximumAgeHours": 24,
+      "isolationBeforeEveryRun": "unique-fixture-namespace-and-no-unexpired-collision",
+      "disableCircuitsAfterEveryRun": true
+    },
+    "testPlan": [
+      "validate-source-and-approved-exact-sha-before-provider-read",
+      "acquire-single-cohort-lease-and-suppress-stale-builds",
+      "disable-all-circuits-and-read-back",
+      "prove-isolated-empty-state-and-apply-exact-migration-ledger",
+      "seed-deterministic-nonproduction-fixtures",
+      "deploy-core-then-publisher-then-rendezvous",
+      "read-back-same-cohort-service-bindings-and-resource-identifiers",
+      "run-static-dynamic-websocket-replay-migration-and-redaction-canaries",
+      "disable-all-circuits-and-prove-closed-read-back",
+      "expire-fixtures-and-record-bounded-closed-evidence"
+    ],
+    "cleanup": {
+      "owner": "metaserver-review-environment-operator",
+      "automaticOnBranchEvent": false,
+      "normal": "disable-circuits-expire-fixtures-retain-singleton",
+      "fullOrder": [
+        "disable-circuits",
+        "detach-review-hostnames-and-access",
+        "delete-caller-workers",
+        "delete-core-worker",
+        "delete-review-r2-d1-analytics-and-rate-resources",
+        "delete-review-build-projects"
+      ],
+      "guards": [
+        "exact-review-prefix",
+        "exact-account",
+        "exact-resource-inventory",
+        "no-production-identifier-match",
+        "no-unowned-resource",
+        "preview-before-apply",
+        "recheck-disabled-circuits"
+      ],
+      "partialFailure": "stop-record-completed-prefix-leave-circuits-disabled-retry-from-readback",
+      "evidenceMaximumRetentionDays": 7
+    }
+  },
+  "reviewerBehavior": {
+    "sameRepositoryPullRequest": "automatic-build-only-check",
+    "liveReview": "maintainer-explicit-exact-sha-request-only",
+    "forkPullRequest": "github-repository-validation-only",
+    "rebaseOrForcePush": "new-sha-supersedes-old-build-and-old-live-request",
+    "rename": "source-sha-authoritative-branch-label-updated",
+    "mergeOrClose": "no-live-cleanup-singleton-circuits-remain-disabled",
+    "reopen": "new-head-build-only-check-live-request-not-restored",
+    "overlap": "newest-exact-sha-build-owns-branch-check-single-live-cohort-serialized",
+    "providerOutage": "github-validation-remains-authoritative-no-production-fallback",
+    "manualEscape": "run-local-build-only-check-no-cloudflare-credentials-or-live-deploy",
+    "commentPolicy": "no-privileged-github-actions-comment",
+    "logPolicy": "private-redacted-provider-logs-and-bounded-digest-evidence"
+  }
+}

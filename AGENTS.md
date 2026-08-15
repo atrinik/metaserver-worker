@@ -87,6 +87,16 @@
   custom hostname, secrets, D1 database, Analytics Engine dataset, and native
   Rate Limiting namespace IDs for canaries; reused namespace IDs share
   counters across Workers.
+- `deployment/workers-builds-review.json` owns the non-`main` review design.
+  Same-repository branch automation is build-only, has no bindings, protected
+  inputs, upload, or URL, and must reject `main`, both reserved sentinel
+  branches, and forks. Its build account is distinct from both the production
+  and live-canary accounts. Live review is an explicit exact-SHA request
+  against one serialized canary-only cohort; its production-disjoint resources, disabled
+  circuits, lease, fixture retention, Access boundary, and cleanup guards must
+  remain synchronized with `docs/review-environment.md` and
+  `scripts/review-environment.mjs`. Provider provisioning remains reserved for
+  issue #56; `npm run deploy:review-canary` must fail closed until then.
 - Preserve the curated `request_rejected`, `blacklist_match`, and
   `unexpected_error` diagnostics with their closed, redacted schemas. Do not
   log routine success, expected `404`, rate-limit, or open-circuit traffic; use
