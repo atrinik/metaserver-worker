@@ -38,6 +38,7 @@
     "provision:workers-builds:dry-run": "node scripts/workers-builds-provisioning.mjs --dry-run",
     "provision:workers-builds:plan-setup": "node scripts/workers-builds-provisioning.mjs --plan-setup",
     "provision:workers-builds:readback": "node scripts/workers-builds-provisioning.mjs --readback",
+    "provision:workers-builds:verify-preflight": "node scripts/workers-builds-provisioning.mjs --verify-preflight",
     "provision:workers-builds:materialize-production": "node scripts/workers-builds-provisioning.mjs --materialize-production",
     "provision:workers-builds:verify-configured": "node scripts/workers-builds-provisioning.mjs --verify-configured"
   },

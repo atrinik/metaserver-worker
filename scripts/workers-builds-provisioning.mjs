@@ -24,6 +24,7 @@ const githubRepository = Object.freeze({
   repo_id: "1324297032",
   repo_name: "metaserver-worker",
 });
+const currentUid = typeof process.getuid === "function" ? process.getuid() : null;
 
 export class WorkersBuildsProvisioningError extends Error {}
 
@@ -43,10 +44,29 @@ function normalizedRoot(value) {
   return value === "/" ? "" : value;
 }
 
+function isCurrentUserOwned(metadata) {
+  return currentUid !== null && metadata.uid === currentUid;
+}
+
 function oneBinding(bindings, name, type) {
   const matches = bindings.filter((value) => value.name === name && value.type === type);
   if (matches.length !== 1) fail(`${type} binding ${name} is missing or ambiguous`);
   return matches[0];
+}
+
+function expectedBindingInventory(config) {
+  return [
+    ...Object.keys(config.vars ?? {}).map((name) => ({ name, type: "plain_text" })),
+    ...(config.secrets?.required ?? []).map((name) => ({ name, type: "secret_text" })),
+    ...(config.d1_databases ?? []).map(({ binding: name }) => ({ name, type: "d1" })),
+    ...(config.r2_buckets ?? []).map(({ binding: name }) => ({ name, type: "r2_bucket" })),
+    ...(config.analytics_engine_datasets ?? []).map(({ binding: name }) =>
+      ({ name, type: "analytics_engine" })),
+    ...(config.ratelimits ?? []).map(({ name }) => ({ name, type: "ratelimit" })),
+    ...(config.durable_objects?.bindings ?? []).map(({ name }) =>
+      ({ name, type: "durable_object_namespace" })),
+    ...(config.services ?? []).map(({ binding: name }) => ({ name, type: "service" })),
+  ].sort((left, right) => `${left.name}:${left.type}`.localeCompare(`${right.name}:${right.type}`));
 }
 
 function requireEnvelope(value, label) {
@@ -155,6 +175,10 @@ function resultReference(operation, field) {
   return { resultReference: `${operation}.${field}` };
 }
 
+function apiPathReference(template, operation, field) {
+  return { template, resultReference: `${operation}.${field}` };
+}
+
 function privateFileReference(environmentVariable) {
   return { privateFileEnvironment: environmentVariable };
 }
@@ -224,6 +248,7 @@ export function provisioningSetupPlan(production, review) {
     privateInputs: [
       "ATRINIK_CLOUDFLARE_ACCOUNT_ID_FILE",
       "ATRINIK_WORKERS_BUILDS_API_TOKEN_FILE",
+      "ATRINIK_REVIEW_BOOTSTRAP_API_TOKEN_FILE",
       "ATRINIK_PRODUCTION_BUILD_TOKEN_SECRET_FILE",
       "ATRINIK_PRODUCTION_BUILD_TOKEN_ID_FILE",
       "ATRINIK_REVIEW_BUILD_TOKEN_SECRET_FILE",
@@ -236,8 +261,19 @@ export function provisioningSetupPlan(production, review) {
     credentialAuthority: {
       controlPlaneOperator: {
         tokenType: review.automaticReview.controlPlaneOperator.tokenType,
-        permission: review.automaticReview.controlPlaneOperator.permission,
+        contractPermission: review.automaticReview.controlPlaneOperator.permission,
+        providerAccountPermissions: [
+          "Workers Builds Configuration:Edit",
+          "Workers Scripts:Read",
+        ],
         credentialBuildReadable: false,
+      },
+      reviewBootstrapToken: {
+        accountPermissions: structuredClone(
+          review.automaticReview.bootstrap.provisioningPermissions),
+        purpose: "upload-readback-and-if-proven-setup-owned-delete-inert-review-worker",
+        credentialBuildReadable:
+          review.automaticReview.bootstrap.provisioningCredentialBuildReadable,
       },
       productionBuildToken: {
         accountPermissions: ["Workers Scripts:Edit", "D1:Read"],
@@ -246,7 +282,7 @@ export function provisioningSetupPlan(production, review) {
           "Secrets:Read", "destructive-resource-authority"],
       },
       productionLeaseToken: {
-        accountPermissions: ["Workers CI Write"],
+        accountPermissions: ["Workers Builds Configuration:Edit"],
         purpose: "read-trigger-and-build-inventory-cancel-only-competing-main-builds",
       },
       reviewBuildToken: structuredClone(review.automaticReview.tokenAuthority),
@@ -260,22 +296,27 @@ export function provisioningSetupPlan(production, review) {
         expected: { worker: production.workers[0].name } },
       { id: "review-bootstrap", actor: "issue-56-review-check-bootstrap-operator",
         action: "upload-exact-inert-review-worker", mutation: true,
+        credential: privateFileReference("ATRINIK_REVIEW_BOOTSTRAP_API_TOKEN_FILE"),
         config: review.automaticReview.bootstrap.configPath,
         expected: { worker: review.automaticReview.project, retainedVersions: 1,
-          workersDev: false, previewUrls: false, bindings: [], routes: [] } },
+          workersDev: false, previewUrls: false, bindings: [], routes: [],
+          configSha256: review.automaticReview.bootstrap.configSha256,
+          sourceSha256: review.automaticReview.bootstrap.sourceSha256 } },
       { id: "repository-connection", actor: "workers-builds-control-plane-operator",
         action: "put-repository-connection", mutation: true,
         request: { method: "PUT", path: "/builds/repos/connections",
           body: structuredClone(githubRepository) } },
       { id: "production-build-token", actor: "workers-builds-control-plane-operator",
-        action: "post-build-token", mutation: true,
+        action: "post-build-token-only-after-exact-list-proves-no-match-or-resume-journal-binds-one",
+        mutation: true,
         request: { method: "POST", path: "/builds/tokens", body: {
           build_token_name: "Atrinik metaserver production",
           build_token_secret: privateFileReference("ATRINIK_PRODUCTION_BUILD_TOKEN_SECRET_FILE"),
           cloudflare_token_id: privateFileReference("ATRINIK_PRODUCTION_BUILD_TOKEN_ID_FILE"),
         } } },
       { id: "review-build-token", actor: "workers-builds-control-plane-operator",
-        action: "post-build-token", mutation: true,
+        action: "post-build-token-only-after-exact-list-proves-no-match-or-resume-journal-binds-one",
+        mutation: true,
         request: { method: "POST", path: "/builds/tokens", body: {
           build_token_name: "Atrinik metaserver review check",
           build_token_secret: privateFileReference("ATRINIK_REVIEW_BUILD_TOKEN_SECRET_FILE"),
@@ -289,7 +330,8 @@ export function provisioningSetupPlan(production, review) {
       { id: "production-environment", actor: "workers-builds-control-plane-operator",
         action: "patch-exact-environment", mutation: true,
         request: { method: "PATCH",
-          path: resultReference("production-trigger-staged", "environment_variables_path"),
+          path: apiPathReference("/builds/triggers/{trigger_uuid}/environment_variables",
+            "production-trigger-staged", "trigger_uuid"),
           body: productionEnvironmentPlan(production) } },
       { id: "review-trigger-staged", actor: "workers-builds-control-plane-operator",
         action: "post-inert-trigger", mutation: true,
@@ -298,7 +340,8 @@ export function provisioningSetupPlan(production, review) {
       { id: "review-environment", actor: "workers-builds-control-plane-operator",
         action: "patch-exact-environment", mutation: true,
         request: { method: "PATCH",
-          path: resultReference("review-trigger-staged", "environment_variables_path"),
+          path: apiPathReference("/builds/triggers/{trigger_uuid}/environment_variables",
+            "review-trigger-staged", "trigger_uuid"),
           body: Object.fromEntries(Object.entries(automaticReviewEnvironmentSpec(review))
             .map(([name, value]) => [name, { is_secret: value.is_secret,
               valueSource: { literal: value.value } }])) } },
@@ -308,15 +351,17 @@ export function provisioningSetupPlan(production, review) {
     ],
     reviewActivation: {
       gate: "review-trigger-activation-and-proof",
-      request: { method: "PUT",
-        path: resultReference("review-trigger-staged", "trigger_path"),
+      request: { method: "PATCH",
+        path: apiPathReference("/builds/triggers/{trigger_uuid}",
+          "review-trigger-staged", "trigger_uuid"),
         body: triggerPlanSpec(reviewFinal, "review-bootstrap", "review-build-token") },
       proof: "disposable-same-repository-non-main-build-only-branch",
     },
     productionActivation: {
       gate: "production-trigger-activation",
-      request: { method: "PUT",
-        path: resultReference("production-trigger-staged", "trigger_path"),
+      request: { method: "PATCH",
+        path: apiPathReference("/builds/triggers/{trigger_uuid}",
+          "production-trigger-staged", "trigger_uuid"),
         body: triggerPlanSpec(productionFinal, "production-script", "production-build-token") },
       initialGate: "routine-fails-closed-until-exact-main-sha-is-known-and-separately-approved",
       proof: "automatic-main-build-then-exact-sha-provider-retry-if-first-annotation-gate-stops",
@@ -333,7 +378,7 @@ export function provisioningSetupPlan(production, review) {
       "prove-no-build-or-upload-remains-active",
       "delete-exact-production-and-review-triggers",
       "delete-only-the-two-recorded-build-token-uuids",
-      "delete-the-recorded-metaserver-repository-connection",
+      "delete-recorded-metaserver-repository-connection-only-if-private-journal-proves-created-by-this-setup-otherwise-retain",
       "delete-review-bootstrap-only-after-trigger-absence-and-exact-version-readback",
       "prove-three-production-workers-and-website-app-selection-unchanged",
     ],
@@ -361,6 +406,44 @@ export function validateNoDeployHooks(envelope, label) {
     fail(`${label} gained a Deploy Hook`);
 }
 
+export function validateNoActiveBuilds(envelope, label) {
+  const builds = requireEnvelope(envelope, `${label} builds`);
+  if (!Array.isArray(builds) || builds.some(({ status }) =>
+    !["queued", "initializing", "running", "stopped"].includes(status)))
+    fail(`${label} build inventory is malformed`);
+  if (builds.some(({ status }) => status !== "stopped"))
+    fail(`${label} has an active Workers Build`);
+}
+
+export function validateFreshBuildsSnapshot({ production, review, scripts,
+  triggers, deployHooks, builds }) {
+  const scriptRows = requireEnvelope(scripts, "scripts");
+  if (!Array.isArray(scriptRows)) fail("script inventory is invalid");
+  const requiredNames = production.workers.map(({ name }) => name);
+  for (const name of requiredNames) {
+    const matches = scriptRows.filter(({ id }) => id === name);
+    if (matches.length !== 1 || !scriptTagPattern.test(matches[0].tag ?? ""))
+      fail(`required production Worker ${name} is missing or ambiguous`);
+  }
+  const reviewRows = scriptRows.filter(({ id }) => id === review.automaticReview.project);
+  if (reviewRows.length !== 0)
+    fail("fresh setup cannot adopt a pre-existing review bootstrap Worker");
+  const expectedLabels = production.workers.map(({ role }) => role);
+  for (const [label, envelope] of exactLabeledInventories(triggers,
+    expectedLabels, "fresh trigger")) {
+    const rows = requireEnvelope(envelope, `${label} triggers`);
+    if (!Array.isArray(rows) || rows.length !== 0)
+      fail(`${label} has a competing Workers Builds trigger`);
+  }
+  for (const [label, envelope] of exactLabeledInventories(deployHooks,
+    expectedLabels, "fresh Deploy Hook")) validateNoDeployHooks(envelope, label);
+  for (const [label, envelope] of exactLabeledInventories(builds,
+    expectedLabels, "fresh build")) validateNoActiveBuilds(envelope, label);
+  return { outcome: "workers-builds-fresh-preflight-valid", mutation: false,
+    productionProjectCount: production.workers.length,
+    reviewBootstrapPresent: false };
+}
+
 function exactLabeledInventories(actual, expectedLabels, label) {
   if (!Array.isArray(actual) || actual.some((entry) =>
     !Array.isArray(entry) || entry.length !== 2) ||
@@ -369,16 +452,16 @@ function exactLabeledInventories(actual, expectedLabels, label) {
   return actual;
 }
 
-export function validateBuildTokenInventory(envelope, expectedUuids) {
+export function validateBuildTokenInventory(envelope, expectedTokens) {
   const tokens = requireEnvelope(envelope, "build tokens");
   if (!Array.isArray(tokens)) fail("build token inventory is invalid");
-  for (const uuid of expectedUuids) {
+  for (const { uuid, name } of expectedTokens) {
     const matches = tokens.filter(({ build_token_uuid: candidate }) => candidate === uuid);
     if (matches.length !== 1) fail("configured build token is missing or ambiguous");
     const token = matches[0];
     if (
       token.owner_type !== "user" ||
-      typeof token.build_token_name !== "string" || !token.build_token_name.trim() ||
+      token.build_token_name !== name ||
       typeof token.cloudflare_token_id !== "string" || !token.cloudflare_token_id.trim()
     ) fail("configured build token authority is malformed");
   }
@@ -412,8 +495,10 @@ export function validateConfiguredBuildsSnapshot({ production, review, scripts,
   if (productionActual.trigger_uuid === reviewActual.trigger_uuid ||
       productionActual.build_token_uuid === reviewActual.build_token_uuid)
     fail("production and review trigger/token identities are not isolated");
-  validateBuildTokenInventory(buildTokens, [productionActual.build_token_uuid,
-    reviewActual.build_token_uuid]);
+  validateBuildTokenInventory(buildTokens, [
+    { uuid: productionActual.build_token_uuid, name: "Atrinik metaserver production" },
+    { uuid: reviewActual.build_token_uuid, name: "Atrinik metaserver review check" },
+  ]);
   const productionExpected = productionTriggerSpec(production, {
     externalScriptId: productionScript.tag,
     repositoryConnectionUuid: productionActual.repo_connection?.repo_connection_uuid,
@@ -460,6 +545,11 @@ export function materializeProductionConfiguration({
 
   const config = structuredClone(base);
   const bindings = settings.bindings ?? [];
+  if (!Array.isArray(bindings)) fail(`${worker.role} binding inventory is malformed`);
+  const actualBindingInventory = bindings.map(({ name, type }) => ({ name, type }))
+    .sort((left, right) => `${left.name}:${left.type}`.localeCompare(`${right.name}:${right.type}`));
+  if (!same(actualBindingInventory, expectedBindingInventory(base)))
+    fail(`${worker.role} binding inventory drift`);
   config.account_id = accountId;
   config.workers_dev = false;
   config.preview_urls = false;
@@ -468,9 +558,20 @@ export function materializeProductionConfiguration({
     const live = oneBinding(bindings, "DIRECTORY_CACHE_ZONE_ID", "plain_text");
     config.vars.DIRECTORY_CACHE_ZONE_ID = live.text;
   }
+  for (const [name, expected] of Object.entries(config.vars ?? {})) {
+    if (name === "DIRECTORY_CACHE_ZONE_ID") continue;
+    if (oneBinding(bindings, name, "plain_text").text !== expected)
+      fail(`${worker.role} plain-text binding ${name} drift`);
+  }
+  for (const { name, class_name: expectedClass } of config.durable_objects?.bindings ?? [])
+    if (oneBinding(bindings, name, "durable_object_namespace").class_name !== expectedClass)
+      fail(`${worker.role} Durable Object binding ${name} drift`);
   if (config.d1_databases) config.d1_databases = config.d1_databases.map((item) => {
     const live = oneBinding(bindings, item.binding, "d1");
-    return { ...item, database_id: live.id ?? live.database_id };
+    if (live.id !== undefined && live.database_id !== undefined &&
+        live.id !== live.database_id)
+      fail(`${worker.role} D1 binding ${item.binding} has ambiguous identifiers`);
+    return { ...item, database_id: live.database_id ?? live.id };
   });
   if (config.r2_buckets) config.r2_buckets = config.r2_buckets.map((item) => {
     const live = oneBinding(bindings, item.binding, "r2_bucket");
@@ -487,6 +588,8 @@ export function materializeProductionConfiguration({
   });
   if (config.services) config.services = config.services.map((item) => {
     const live = oneBinding(bindings, item.binding, "service");
+    if (live.environment !== undefined && live.environment !== "production")
+      fail(`${worker.role} service binding ${item.binding} targets a nonproduction environment`);
     return { ...item, service: live.service, entrypoint: live.entrypoint };
   });
   const actualSecrets = sorted(bindings.filter(({ type }) => type === "secret_text")
@@ -516,18 +619,25 @@ export function materializeProductionConfigurations({
 export function validateProductionControlPlane({ contract, configurations, snapshots, domains }) {
   const expectedDomains = contract.workers.flatMap((worker) =>
     worker.customDomains.map((hostname) => ({ hostname, service: worker.name })));
-  const actualDomains = (requireEnvelope(domains, "Custom Domain") ?? [])
-    .filter(({ service }) => contract.workers.some((worker) => worker.name === service))
-    .map(({ hostname, service }) => ({ hostname, service }));
+  const liveDomainRows = (requireEnvelope(domains, "Custom Domain") ?? [])
+    .filter(({ service }) => contract.workers.some((worker) => worker.name === service));
+  const actualDomains = liveDomainRows.map(({ hostname, service }) => ({ hostname, service }));
   if (!same(actualDomains.sort((a, b) => a.hostname.localeCompare(b.hostname)),
     expectedDomains.sort((a, b) => a.hostname.localeCompare(b.hostname))))
     fail("production Custom Domain inventory drift");
+  const expectedZoneId = configurations[0]?.vars?.DIRECTORY_CACHE_ZONE_ID;
+  if (liveDomainRows.some(({ zone_id: zoneId, zone_name: zoneName }) =>
+    zoneId !== expectedZoneId || zoneName !== "atrinik.org"))
+    fail("production Custom Domain zone authority drift");
   for (const [index, snapshot] of snapshots.entries()) {
     const expected = configurations[index].triggers?.crons ?? [];
     const schedules = requireEnvelope(snapshot.schedules, `${contract.workers[index].role} schedules`);
     const actual = (schedules.schedules ?? []).map(({ cron }) => cron);
     if (!same(sorted(actual), sorted(expected)))
       fail(`${contract.workers[index].role} schedule drift`);
+    const routes = requireEnvelope(snapshot.routes, `${contract.workers[index].role} routes`);
+    if (!Array.isArray(routes) || routes.length !== 0)
+      fail(`${contract.workers[index].role} gained an alternate production route`);
     const scriptSettings = requireEnvelope(snapshot.scriptSettings,
       `${contract.workers[index].role} script settings`);
     if ((scriptSettings.tail_consumers ?? []).length !== 0 || scriptSettings.logpush === true)
@@ -537,6 +647,8 @@ export function validateProductionControlPlane({ contract, configurations, snaps
     for (const channel of [observability?.logs, observability?.traces])
       if ((channel?.destinations ?? []).length !== 0)
         fail(`${contract.workers[index].role} gained an observability destination`);
+    if (!same(observability, configurations[index].observability))
+      fail(`${contract.workers[index].role} observability configuration drift`);
   }
 }
 
@@ -551,7 +663,7 @@ async function checkedInInputs() {
   return { production, review, bases };
 }
 
-async function createPrivateDirectory(path) {
+export async function createPrivateDirectory(path) {
   if (!isAbsolute(path ?? "")) fail("private output directory must be absolute");
   if (resolve(path) !== path) fail("private output directory must be normalized");
   const parent = dirname(path);
@@ -570,19 +682,21 @@ async function createPrivateDirectory(path) {
   if (!handle) fail("private output directory cannot be pinned");
   try {
     const metadata = await handle.stat();
-    if (!metadata.isDirectory()) fail("private output path is not a directory");
+    if (!metadata.isDirectory() || !isCurrentUserOwned(metadata))
+      fail("private output path is not an owner-controlled directory");
     await handle.chmod(0o700);
   } finally { await handle.close(); }
 }
 
-async function readPrivateValue(path, label, pattern = null) {
+export async function readPrivateValue(path, label, pattern = null) {
   if (!isAbsolute(path ?? "")) fail(`${label} file path must be absolute`);
   const handle = await open(path, constants.O_RDONLY | constants.O_NOFOLLOW).catch(() => null);
   if (!handle) fail(`${label} file cannot be opened without following links`);
   let value;
   try {
     const metadata = await handle.stat();
-    if (!metadata.isFile() || (metadata.mode & 0o077) !== 0 ||
+    if (!metadata.isFile() || !isCurrentUserOwned(metadata) ||
+        (metadata.mode & 0o077) !== 0 ||
         metadata.size > maximumPrivateDocumentBytes)
       fail(`${label} file must be a bounded private regular file`);
     value = (await handle.readFile("utf8")).trim();
@@ -601,7 +715,7 @@ async function writePrivateJson(path, value) {
   } finally { await handle.close(); }
 }
 
-async function boundedResponseText(response, label) {
+export async function boundedResponseText(response, label) {
   if (!response.body) fail(`${label} returned an empty provider body`);
   const reader = response.body.getReader();
   const chunks = [];
@@ -657,6 +771,8 @@ async function readProviderSnapshot({ accountId, token, outputDirectory, product
       `/workers/scripts/${encodeURIComponent(name)}/subdomain`);
     await providerGet({ accountId, token, outputDirectory }, `${name}.schedules`,
       `/workers/scripts/${encodeURIComponent(name)}/schedules`);
+    await providerGet({ accountId, token, outputDirectory }, `${name}.routes`,
+      `/workers/services/${encodeURIComponent(name)}/environments/production/routes?show_zonename=true`);
     await providerGet({ accountId, token, outputDirectory }, `${name}.script-settings`,
       `/workers/scripts/${encodeURIComponent(name)}/script-settings`);
     await providerGet({ accountId, token, outputDirectory }, `${name}.deployments`,
@@ -667,6 +783,8 @@ async function readProviderSnapshot({ accountId, token, outputDirectory, product
       `/builds/workers/${encodeURIComponent(name)}/deploy_hooks`);
     const triggers = await providerGet({ accountId, token, outputDirectory }, `${name}.triggers`,
       `/builds/workers/${encodeURIComponent(script.tag)}/triggers`);
+    await providerGet({ accountId, token, outputDirectory }, `${name}.builds`,
+      `/builds/workers/${encodeURIComponent(script.tag)}/builds?page=1&per_page=50`);
     for (const trigger of triggers.result ?? []) {
       if (!uuidPattern.test(trigger.trigger_uuid ?? "")) fail(`${name} trigger UUID is malformed`);
       await providerGet({ accountId, token, outputDirectory },
@@ -683,19 +801,21 @@ async function readProviderSnapshot({ accountId, token, outputDirectory, product
     reviewBootstrapPresent: (scripts.result ?? []).some(({ id }) => id === review.automaticReview.project) };
 }
 
-async function loadSnapshot(directory, name) {
+export async function loadSnapshot(directory, name) {
   if (!isAbsolute(directory ?? "")) fail("private snapshot directory must be absolute");
   if (resolve(directory) !== directory || await realpath(directory).catch(() => null) !== directory)
     fail("private snapshot directory must be canonical and symlink-free");
   const metadata = await lstat(directory).catch(() => null);
-  if (!metadata?.isDirectory() || (metadata.mode & 0o077) !== 0)
+  if (!metadata?.isDirectory() || !isCurrentUserOwned(metadata) ||
+      (metadata.mode & 0o077) !== 0)
     fail("private snapshot directory must be private");
   const path = resolve(directory, name);
   const handle = await open(path, constants.O_RDONLY | constants.O_NOFOLLOW).catch(() => null);
   if (!handle) fail(`private snapshot ${name} is missing or linked`);
   try {
     const file = await handle.stat();
-    if (!file.isFile() || (file.mode & 0o077) !== 0 || file.size > maximumProviderResponseBytes)
+    if (!file.isFile() || !isCurrentUserOwned(file) ||
+        (file.mode & 0o077) !== 0 || file.size > maximumProviderResponseBytes)
       fail(`private snapshot ${name} is not a bounded private regular file`);
     return JSON.parse(await handle.readFile("utf8"));
   } catch (error) {
@@ -710,6 +830,7 @@ async function materializeSnapshot({ snapshotDirectory, outputDirectory, account
     settings: await loadSnapshot(snapshotDirectory, `${name}.settings.json`),
     subdomain: await loadSnapshot(snapshotDirectory, `${name}.subdomain.json`),
     schedules: await loadSnapshot(snapshotDirectory, `${name}.schedules.json`),
+    routes: await loadSnapshot(snapshotDirectory, `${name}.routes.json`),
     scriptSettings: await loadSnapshot(snapshotDirectory, `${name}.script-settings.json`),
   })));
   const domains = await loadSnapshot(snapshotDirectory, "domains.json");
@@ -755,6 +876,28 @@ async function validateConfiguredSnapshotDirectory({ snapshotDirectory, producti
   return validateConfiguredBuildsSnapshot({
     production, review, scripts, productionTriggers, productionEnvironment,
     reviewTriggers, reviewEnvironment, nonEntrypointTriggers, deployHooks, buildTokens,
+  });
+}
+
+async function validateFreshSnapshotDirectory({ snapshotDirectory, production, review }) {
+  const scripts = await loadSnapshot(snapshotDirectory, "scripts.json");
+  const scriptRows = requireEnvelope(scripts, "scripts");
+  if (!Array.isArray(scriptRows)) fail("script inventory is invalid");
+  const projects = production.workers.map(({ role, name }) => [role, name]);
+  const tagged = projects.map(([label, name]) => {
+    const row = scriptRows.find(({ id }) => id === name);
+    if (!row || !scriptTagPattern.test(row.tag ?? ""))
+      fail(`${label} Builds script is missing or malformed`);
+    return [label, name];
+  });
+  const triggers = await Promise.all(tagged.map(async ([label, name]) =>
+    [label, await loadSnapshot(snapshotDirectory, `${name}.triggers.json`)]));
+  const deployHooks = await Promise.all(tagged.map(async ([label, name]) =>
+    [label, await loadSnapshot(snapshotDirectory, `${name}.deploy-hooks.json`)]));
+  const builds = await Promise.all(tagged.map(async ([label, name]) =>
+    [label, await loadSnapshot(snapshotDirectory, `${name}.builds.json`)]));
+  return validateFreshBuildsSnapshot({
+    production, review, scripts, triggers, deployHooks, builds,
   });
 }
 
@@ -817,6 +960,13 @@ async function main() {
       snapshotDirectory: process.env.ATRINIK_PROVIDER_SNAPSHOT_DIRECTORY,
       outputDirectory: process.env.ATRINIK_PRODUCTION_CONFIG_OUTPUT,
       accountId, production, bases,
+    }))}\n`);
+    return;
+  }
+  if (mode === "--verify-preflight") {
+    process.stdout.write(`${JSON.stringify(await validateFreshSnapshotDirectory({
+      snapshotDirectory: process.env.ATRINIK_PROVIDER_SNAPSHOT_DIRECTORY,
+      production, review,
     }))}\n`);
     return;
   }

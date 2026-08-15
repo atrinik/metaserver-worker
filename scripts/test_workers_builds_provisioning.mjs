@@ -1,18 +1,25 @@
 import assert from "node:assert/strict";
-import { readFile } from "node:fs/promises";
+import { chmod, lstat, mkdir, mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
 import { resolve } from "node:path";
 import test from "node:test";
 import {
   automaticReviewEnvironmentSpec,
   automaticReviewTriggerSpec,
+  boundedResponseText,
+  createPrivateDirectory,
+  loadSnapshot,
   materializeProductionConfigurations,
   productionEnvironmentSpec,
   productionTriggerSpec,
   provisioningSetupPlan,
+  readPrivateValue,
   validateAutomaticReviewEnvironment,
   validateBuildTokenInventory,
   validateCheckedInProvisioning,
   validateConfiguredBuildsSnapshot,
+  validateFreshBuildsSnapshot,
+  validateNoActiveBuilds,
   validateNoDeployHooks,
   validateProductionControlPlane,
   validateTriggerSnapshot,
@@ -71,6 +78,7 @@ function snapshot(config) {
       observability: config.observability }),
     subdomain: envelope({ enabled: false, previews_enabled: false }),
     schedules: envelope({ schedules: (config.triggers?.crons ?? []).map((cron) => ({ cron })) }),
+    routes: envelope([]),
     scriptSettings: envelope({ logpush: null, tail_consumers: [] }),
   };
 }
@@ -91,15 +99,55 @@ function withConnection(spec) {
 
 function buildTokenInventory() {
   return envelope([
-    { build_token_name: "Atrinik production build", build_token_uuid: resourceUuid,
+    { build_token_name: "Atrinik metaserver production", build_token_uuid: resourceUuid,
       cloudflare_token_id: "production-token-id", owner_type: "user" },
-    { build_token_name: "Atrinik review build", build_token_uuid: reviewTokenUuid,
+    { build_token_name: "Atrinik metaserver review check", build_token_uuid: reviewTokenUuid,
       cloudflare_token_id: "review-token-id", owner_type: "user" },
   ]);
 }
 
 test("accepts the checked-in provisioning composition", async () => {
   assert.equal((await validateCheckedInProvisioning()).production.productionBranch, "main");
+});
+
+test("enforces owner-only no-follow private inputs and snapshots", async () => {
+  const temporary = await mkdtemp(resolve(tmpdir(), "atrinik-builds-provisioning-"));
+  await chmod(temporary, 0o700);
+  try {
+    const valuePath = resolve(temporary, "value");
+    await writeFile(valuePath, "private-value\n", { mode: 0o600 });
+    assert.equal(await readPrivateValue(valuePath, "test value"), "private-value");
+    await chmod(valuePath, 0o640);
+    await assert.rejects(readPrivateValue(valuePath, "test value"), /private regular file/u);
+    await chmod(valuePath, 0o600);
+    const linkedValue = resolve(temporary, "value-link");
+    await symlink(valuePath, linkedValue);
+    await assert.rejects(readPrivateValue(linkedValue, "test value"), /without following links/u);
+
+    const snapshot = resolve(temporary, "snapshot");
+    await mkdir(snapshot, { mode: 0o700 });
+    const snapshotFile = resolve(snapshot, "provider.json");
+    await writeFile(snapshotFile, '{"success":true,"result":[]}\n', { mode: 0o600 });
+    assert.deepEqual(await loadSnapshot(snapshot, "provider.json"), {
+      success: true, result: [],
+    });
+    await chmod(snapshotFile, 0o604);
+    await assert.rejects(loadSnapshot(snapshot, "provider.json"), /bounded private regular file/u);
+
+    const output = resolve(temporary, "new-output");
+    await createPrivateDirectory(output);
+    const outputMetadata = await lstat(output);
+    assert.equal(outputMetadata.mode & 0o777, 0o700);
+    await assert.rejects(createPrivateDirectory(output), /already exists/u);
+  } finally {
+    await rm(temporary, { recursive: true, force: true });
+  }
+});
+
+test("bounds provider response bodies before retaining them", async () => {
+  assert.equal(await boundedResponseText(new Response("provider"), "test"), "provider");
+  await assert.rejects(boundedResponseText(
+    new Response("x".repeat(1024 * 1024 + 1)), "test"), /response limit/u);
 });
 
 test("materializes bounded production documents only from live private coordinates", () => {
@@ -120,8 +168,16 @@ test("materializes bounded production documents only from live private coordinat
     (values) => values[0].subdomain.result.enabled = true,
     (values) => values[0].settings.result.bindings = values[0].settings.result.bindings
       .filter(({ name }) => name !== "SOURCE_TAG_KEY_CURRENT"),
+    (values) => values[0].settings.result.bindings.push({
+      name: "UNREVIEWED_DB", type: "d1", id: resourceUuid,
+    }),
+    (values) => one(values[0].settings.result.bindings, "PUBLISH_ENABLED").text = "typo",
+    (values) => one(values[0].settings.result.bindings, "RENDEZVOUS").class_name = "WrongRoom",
     (values) => one(values[0].settings.result.bindings, "DB").id = "not-a-uuid",
+    (values) => one(values[0].settings.result.bindings, "DB").database_id =
+      "44444444-4444-4444-8444-444444444444",
     (values) => one(values[1].settings.result.bindings, "COORDINATOR").service = "atrinik-metaserver-wrong",
+    (values) => one(values[1].settings.result.bindings, "COORDINATOR").environment = "preview",
     (values) => values[0].settings.result.compatibility_date = "2026-08-04",
   ]) {
     const changed = structuredClone(snapshots);
@@ -142,8 +198,10 @@ test("validates production domains, schedules, and observability boundaries", ()
     contract: production, bases, snapshots, accountId,
   });
   const domains = envelope([
-    { hostname: "publish.meta.atrinik.org", service: "atrinik-metaserver-publisher" },
-    { hostname: "rendezvous.meta.atrinik.org", service: "atrinik-metaserver-rendezvous" },
+    { hostname: "publish.meta.atrinik.org", service: "atrinik-metaserver-publisher",
+      zone_id: "c".repeat(32), zone_name: "atrinik.org" },
+    { hostname: "rendezvous.meta.atrinik.org", service: "atrinik-metaserver-rendezvous",
+      zone_id: "c".repeat(32), zone_name: "atrinik.org" },
     { hostname: "unrelated.example", service: "unrelated" },
   ]);
   assert.doesNotThrow(() => validateProductionControlPlane({
@@ -154,6 +212,21 @@ test("validates production domains, schedules, and observability boundaries", ()
   assert.throws(() => validateProductionControlPlane({
     contract: production, configurations, snapshots: changed, domains,
   }), /observability destination/u);
+  const samplingDrift = structuredClone(snapshots);
+  samplingDrift[1].settings.result.observability.logs.head_sampling_rate = 0.5;
+  assert.throws(() => validateProductionControlPlane({
+    contract: production, configurations, snapshots: samplingDrift, domains,
+  }), /observability configuration/u);
+  const routeDrift = structuredClone(snapshots);
+  routeDrift[2].routes.result.push({ pattern: "rendezvous.meta.atrinik.org/*" });
+  assert.throws(() => validateProductionControlPlane({
+    contract: production, configurations, snapshots: routeDrift, domains,
+  }), /alternate production route/u);
+  const wrongZone = structuredClone(domains);
+  wrongZone.result[0].zone_id = "d".repeat(32);
+  assert.throws(() => validateProductionControlPlane({
+    contract: production, configurations, snapshots, domains: wrongZone,
+  }), /zone authority/u);
 });
 
 test("pins production and build-only review trigger shapes", () => {
@@ -204,6 +277,42 @@ test("keeps the automatic review build environment value-only and exact", () => 
   }, review), /bootstrap/u);
 });
 
+test("proves a fresh setup has no competing trigger, Deploy Hook, or active build", () => {
+  const projects = production.workers.map(({ role }) => role);
+  const result = validateFreshBuildsSnapshot({
+    production, review,
+    scripts: envelope(production.workers.map(({ name }, index) =>
+      ({ id: name, tag: String(index + 1).repeat(32) }))),
+    triggers: projects.map((label) => [label, envelope([])]),
+    deployHooks: projects.map((label) => [label, envelope([])]),
+    builds: projects.map((label) => [label, envelope([
+      { status: "stopped", build_outcome: "success" },
+    ])]),
+  });
+  assert.equal(result.reviewBootstrapPresent, false);
+  const scriptsWithReview = structuredClone(envelope(production.workers.map(({ name }, index) =>
+    ({ id: name, tag: String(index + 1).repeat(32) }))));
+  scriptsWithReview.result.push({ id: review.automaticReview.project, tag: reviewScriptTag });
+  assert.throws(() => validateFreshBuildsSnapshot({
+    production, review, scripts: scriptsWithReview,
+    triggers: projects.map((label) => [label, envelope([])]),
+    deployHooks: projects.map((label) => [label, envelope([])]),
+    builds: projects.map((label) => [label, envelope([])]),
+  }), /cannot adopt a pre-existing review bootstrap/u);
+  assert.throws(() => validateNoActiveBuilds(envelope([
+    { status: "running", build_uuid: resourceUuid },
+  ]), "core"), /active Workers Build/u);
+  assert.throws(() => validateFreshBuildsSnapshot({
+    production, review,
+    scripts: envelope(production.workers.map(({ name }, index) =>
+      ({ id: name, tag: String(index + 1).repeat(32) }))),
+    triggers: projects.map((label, index) => [label,
+      envelope(index === 0 ? [{ trigger_uuid: resourceUuid }] : [])]),
+    deployHooks: projects.map((label) => [label, envelope([])]),
+    builds: projects.map((label) => [label, envelope([])]),
+  }), /competing Workers Builds trigger/u);
+});
+
 test("plans inert setup, separately gated activation, and ordered rollback", () => {
   const plan = provisioningSetupPlan(production, review);
   assert.equal(plan.mutation, false);
@@ -224,11 +333,28 @@ test("plans inert setup, separately gated activation, and ordered rollback", () 
   }
   assert.deepEqual(plan.reviewActivation.request.body.branch_includes,
     review.automaticReview.previewBranchIncludes);
+  assert.equal(plan.reviewActivation.request.method, "PATCH");
+  assert.deepEqual(plan.reviewActivation.request.path, {
+    template: "/builds/triggers/{trigger_uuid}",
+    resultReference: "review-trigger-staged.trigger_uuid",
+  });
   assert.deepEqual(plan.productionActivation.request.body.branch_includes, ["main"]);
+  assert.equal(plan.productionActivation.request.method, "PATCH");
+  assert.deepEqual(plan.productionActivation.request.path, {
+    template: "/builds/triggers/{trigger_uuid}",
+    resultReference: "production-trigger-staged.trigger_uuid",
+  });
   assert.equal(plan.productionActivation.request.body.root_directory, "/");
   assert.match(plan.productionActivation.initialGate, /fails-closed/u);
   assert.deepEqual(plan.credentialAuthority.productionLeaseToken.accountPermissions,
-    ["Workers CI Write"]);
+    ["Workers Builds Configuration:Edit"]);
+  assert.deepEqual(plan.credentialAuthority.controlPlaneOperator.providerAccountPermissions,
+    ["Workers Builds Configuration:Edit", "Workers Scripts:Read"]);
+  assert.equal(plan.credentialAuthority.controlPlaneOperator.contractPermission,
+    "Workers CI Write");
+  assert.deepEqual(plan.credentialAuthority.reviewBootstrapToken.accountPermissions,
+    ["Workers Scripts:Edit"]);
+  assert.equal(plan.credentialAuthority.reviewBootstrapToken.credentialBuildReadable, false);
   assert.equal(plan.credentialAuthority.reviewBuildToken.productionWrite, false);
   assert.ok(plan.credentialAuthority.productionBuildToken.forbiddenAuthority.includes("D1:Edit"));
   assert.match(plan.partialFailure.policy, /ambiguous-response/u);
@@ -237,11 +363,16 @@ test("plans inert setup, separately gated activation, and ordered rollback", () 
     "restore-production-trigger-to-inert-sentinel-before-cancelling-exact-active-builds");
   assert.equal(plan.rollbackOperations.at(-1),
     "prove-three-production-workers-and-website-app-selection-unchanged");
+  assert.match(plan.rollbackOperations.find((operation) =>
+    operation.includes("repository-connection")), /only-if-private-journal-proves-created/u);
   const requestPaths = plan.setupOperations.flatMap(({ request }) => request ?
     [typeof request.path === "string" ? request.path : JSON.stringify(request.path)] : []);
+  assert.ok(requestPaths.some((path) => path.includes("environment_variables") &&
+    path.includes("trigger_uuid")));
   assert.ok(requestPaths.every((path) => !path.includes("deploy_hooks") &&
     !path.includes("/builds/builds")));
   assert.ok(plan.privateInputs.every((name) => name.endsWith("_FILE")));
+  assert.ok(plan.privateInputs.includes("ATRINIK_REVIEW_BOOTSTRAP_API_TOKEN_FILE"));
   assert.ok(plan.setupOperations.filter(({ mutation }) => mutation)
     .every(({ actor, action }) => actor && action));
 });
@@ -310,7 +441,10 @@ test("proves one serialized production trigger and one isolated review trigger",
   }), /inventory is incomplete/u);
   assert.throws(() => validateBuildTokenInventory(envelope([
     { ...buildTokenInventory().result[0], build_token_uuid: reviewTokenUuid },
-  ]), [resourceUuid, reviewTokenUuid]), /missing or ambiguous/u);
+  ]), [
+    { uuid: resourceUuid, name: "Atrinik metaserver production" },
+    { uuid: reviewTokenUuid, name: "Atrinik metaserver review check" },
+  ]), /missing or ambiguous/u);
   assert.throws(() => validateNoDeployHooks(envelope([{ deploy_hook_uuid: resourceUuid }]),
     "production"), /Deploy Hook/u);
 });

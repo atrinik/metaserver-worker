@@ -131,9 +131,11 @@ npm run provision:workers-builds:plan-setup
 `plan-setup` emits a value-free, non-executable mutation plan. It records the
 exact GitHub repository connection, actor boundaries, private-file inputs,
 request/result dependencies, separate control-plane/build/lease token authority,
-separately gated activation, an owner-only mutation journal, ambiguous-response
-readback, and ordered exact-resource rollback. Existing production Workers,
-versions, state, and runtime secrets are never rollback targets.
+dedicated non-build-readable review-bootstrap authority, separately gated
+activation, an owner-only mutation journal, ambiguous-response readback, and
+ordered exact-resource rollback. An existing repository connection is retained
+unless the private journal proves this setup created it. Existing production
+Workers, versions, state, and runtime secrets are never rollback targets.
 Because Cloudflare requires a trigger UUID before its environment can be
 written, setup creates both triggers against the reserved inert
 `review-build-only-sentinel`, writes and reads back their environments, then
@@ -151,11 +153,13 @@ the separately authorized operator may set `approved:<exact-current-main-SHA>`
 and retry that same provider entrypoint; an older SHA cannot be substituted.
 Restore `routine` only after coherent final readback and canaries.
 
-Provider readback uses a dedicated user-scoped token with Workers CI Write and
-Workers Scripts Read. Put the token and account ID in separate absolute,
-owner-only regular files; do not export either value directly. Point the
-command at a new absolute output directory, which the command creates as mode
-`0700` and fills with mode-`0600` raw provider responses:
+Provider readback uses a dedicated user-scoped token with the provider's
+Workers Builds Configuration Edit and Workers Scripts Read permissions (the
+review contract calls the first capability `Workers CI Write`). Put the token
+and account ID in separate absolute, owner-only regular files; do not export
+either value directly. Point the command at a new absolute output directory,
+which the command creates as mode `0700` and fills with mode-`0600` raw
+provider responses:
 
 ```sh
 ATRINIK_CLOUDFLARE_ACCOUNT_ID_FILE=/secure/path/account-id \
@@ -166,10 +170,20 @@ ATRINIK_PROVIDER_SNAPSHOT_OUTPUT=/secure/new/provider-snapshot \
 
 The readback covers the exact production and inert-review scripts, version and
 active-deployment inventories, script settings, schedules, alternate-URL state,
-Builds triggers and their environment classifications, Deploy Hooks, Custom
-Domains, build-token inventory, and account build limits. It accepts an absent
-review-check bootstrap during the initial preflight but never an absent
-production Worker. It performs only bounded, timed `GET` requests and emits
+Builds triggers, active-build inventory and their environment classifications,
+Deploy Hooks, Custom Domains, build-token inventory, and account build limits.
+Before setup, prove the fresh no-trigger/no-Deploy-Hook/no-active-build boundary:
+
+```sh
+ATRINIK_PROVIDER_SNAPSHOT_DIRECTORY=/secure/provider-snapshot \
+  npm run provision:workers-builds:verify-preflight
+```
+
+The readback accepts an absent review-check bootstrap, and the fresh preflight
+requires that absence so it cannot adopt unproven Worker bytes. A journal-bound
+partial setup uses exact recovery readback instead of the fresh verifier. The
+readback never accepts an absent production Worker. It performs only bounded,
+timed `GET` requests and emits
 only a bounded summary; raw identifiers and provider responses remain in the
 private directory. Private inputs and snapshot files are opened without
 following symbolic links and must remain owner-only regular files.
