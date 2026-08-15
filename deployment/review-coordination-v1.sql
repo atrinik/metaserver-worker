@@ -1,3 +1,10 @@
+CREATE TABLE review_environment_control (
+  singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
+  mode TEXT NOT NULL CHECK (mode IN ('active', 'teardown'))
+);
+
+INSERT INTO review_environment_control (singleton, mode) VALUES (1, 'active');
+
 CREATE TABLE review_runs (
   singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
   source_sha TEXT NOT NULL CHECK (length(source_sha) = 40 AND source_sha NOT GLOB '*[^0-9a-f]*'),

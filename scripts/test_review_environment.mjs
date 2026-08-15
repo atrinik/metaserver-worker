@@ -146,7 +146,9 @@ test("requires every isolated owner, resource ceiling, circuit, and cleanup guar
     changed((value) => value.liveCanary.resources.analytics[0].owner = "publisher"),
     changed((value) => value.liveCanary.resources.analytics[0].binding = "WRONG"),
     changed((value) => value.liveCanary.resources.coordinationD1.columns.pop()),
+    changed((value) => value.liveCanary.resources.coordinationD1.controlColumns.pop()),
     changed((value) => value.liveCanary.resources.coordinationD1.acquire = "unfenced-insert"),
+    changed((value) => value.liveCanary.resources.coordinationD1.teardown = "delete-with-live-runner"),
     changed((value) => value.liveCanary.resources.rateLimits[0].namespaceId = "review-rate-name"),
     changed((value) => value.liveCanary.resources.rateLimits[0].simple.limit = 99),
     changed((value) => value.liveCanary.resources.rateLimits[0].owner = "rendezvous"),
@@ -231,6 +233,15 @@ test("coordination SQL enforces acquisition, generation, state, expiry, and rele
   assert.equal(reclaimed.length, 1);
   assert.equal(reclaimed[0].run_uuid, runB);
   assert.equal(reclaimed[0].lease_generation, 2);
+  assert.equal(statements.beginTeardown.all().length, 0);
+  const renewedB = statements.renew.all(runB, 2, 1800);
+  assert.equal(renewedB[0].lease_generation, 3);
+  assert.equal(statements.release.all(runB, 3).length, 1);
+  const teardown = statements.beginTeardown.all();
+  assert.equal(teardown.length, 1);
+  assert.equal(teardown[0].mode, "teardown");
+  assert.equal(statements.acquireFresh.all(shaA, runA, namespaceA, 1800).length, 0);
+  assert.equal(statements.reclaimExpired.all(shaA, runA, namespaceA, 1800).length, 0);
   database.close();
 });
 

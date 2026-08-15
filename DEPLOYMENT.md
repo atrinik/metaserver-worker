@@ -140,9 +140,11 @@ Cloudflare emits its native check and PR status comment/history without a
 preview URL.
 
 The review-check build identity cannot reach production project settings.
-Cloudflare cannot project-scope `Workers CI Write`, however, so the trusted
-setup/budget/recovery operator has explicit production-account Builds
-control-plane reach. Its non-build-readable credential may mutate only the
+Cloudflare cannot project-scope `Workers CI Write` and supports it only on a
+user API token, so the dedicated-nonhuman setup/budget/recovery operator has
+explicit production-account Builds control-plane reach, including technical
+authority over builds, tokens, environment variables, connections, triggers,
+and manual builds. Its operator-secret-store-only credential may mutate only the
 exact review project/trigger IDs, must reject production IDs, and must read the
 result back. This administrative tradeoff is not a review-run permission.
 
@@ -170,6 +172,13 @@ operation timeout, and 300-second recovery reserve. Replay validity ends at 24
 hours, but alarm-based physical pruning is best effort; retained DO state is
 recorded and both exact namespaces are force-deleted and read absent by the
 mandatory 90-day cohort teardown.
+
+Irreversible teardown first closes circuits, recovers/releases every run row,
+and atomically changes the coordination control row to terminal `teardown`
+only when no run row exists. That mode rejects acquire, renew, enable, reclaim,
+fixture, deploy, and recreation work. Keep the coordination D1 fence through
+Worker/namespace absence, `workers.dev` disablement, and Access deletion; delete
+the coordination D1 last.
 
 This design does not authorize provisioning. Until issue #56 supplies and
 validates the exact provider resources, `npm run deploy:review-canary` fails

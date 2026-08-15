@@ -94,9 +94,10 @@
   review-check project in the production account reuses the one repository
   connection but has a distinct zero-resource token and no production project
   setting or protected input available to builds. The trusted setup/budget
-  operator's account-wide Builds control-plane reach is an explicit provider
-  limitation; its credential is never build-readable and exact review trigger
-  ID guards must reject production mutations. Its digest-pinned inert bootstrap Worker remains
+  operator's account-wide Builds control-plane reach (builds, tokens,
+  environment variables, connections, triggers, and manual builds) is an
+  explicit provider limitation; its user API token is never build-readable and
+  exact review trigger ID guards must reject production mutations. Its digest-pinned inert bootstrap Worker remains
   unreachable, and branch builds create no Worker version. Live review is an operator-supervised exact-SHA run in a dedicated
   account with no GitHub connection or zone. Its production-disjoint resources, disabled
   circuits, exact-duration lease, logical versus physical fixture retention,

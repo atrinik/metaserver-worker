@@ -130,8 +130,9 @@ inert review-check project in the production account reuses the single
 supported repository connection but has its own zero-resource token and no
 production protected input or setting available to the build. Cloudflare's
 account-scoped Builds control-plane permission remains an explicit trusted
-operator exception, never a build credential, and exact trigger-ID guards must
-reject production changes. Its one inert bootstrap version has no
+operator user-token exception across builds, tokens, environment variables,
+connections, and triggers, never a build credential; the procedure uses only
+exact review-trigger mutations and rejects production IDs. Its one inert bootstrap version has no
 binding, route, `workers.dev` URL, preview URL, or observability, and branch
 builds create no versions. A 1,000-minute monthly review-build budget fails
 closed at its operator threshold. The live

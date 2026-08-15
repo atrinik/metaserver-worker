@@ -64,11 +64,14 @@ no-op `npm run review:validate`. Neither its commands nor its settings are
 shared with the production project.
 
 Cloudflare's `Workers CI Write` permission is account-scoped rather than
-project-scoped. The review-check build identity has no such permission, but the
-trusted `metaserver-review-environment-operator` inevitably has production
-Builds control-plane reach when it creates, changes, disables, or recovers the
-review trigger. That credential is never build-readable or used by a review
-run. Its only accepted mutations target the exact review project/trigger IDs;
+project-scoped and requires a user API token; account tokens are unsupported.
+The review-check build identity has no such permission, but the dedicated
+nonhuman `metaserver-review-environment-operator` inevitably can read/cancel
+account builds, start builds, manage build tokens and environment variables,
+change repository connections, and mutate triggers—including production
+Builds state. Its token stays only in the operator secret store and is never
+placed in a project environment, build, or repository. Its only accepted
+mutations target the exact review project/trigger IDs;
 the procedure rejects either production ID and reads the result back. This is
 an explicit option-3 administrative tradeoff, not provider-enforced isolation.
 
@@ -112,8 +115,9 @@ but has no reachable URL. #56 records the account plan and current build usage.
 Review automation has a 1,000-minute monthly budget, alerts at 800 minutes, and
 is disabled/read back at the threshold. Newer same-branch results supersede old
 results. An older build may finish its credential-free build-only work and
-counts against the budget, but its SHA-bound result has no live authority. No
-account-wide build-cancellation credential is introduced.
+counts against the budget, but its SHA-bound result has no live authority.
+Although the trusted operator token is technically cancellation-capable, this
+workflow never uses cancellation.
 
 ## Live source and authority boundary
 
@@ -206,6 +210,9 @@ Every remote operation requires readback before the next:
    expired lease may be reclaimed only after exact-cohort disabled-circuit
    readback, explicit close acknowledgement for every canary server/client
    socket, an offline read through the same DO, and a 60-second teardown drain.
+   The coordination D1 also owns a singleton `active`/`teardown` control row.
+   Acquire, renew, enable, reclaim, fixture, deploy, and every other forward
+   operation require `active` in the same fenced plan.
 3. Inventory exact resources and ceilings; reject missing, duplicate, unknown,
    production-matching, or unowned objects. Disable/read back all circuits.
 4. Require the application migration ledger to be exact. A pending migration
@@ -267,13 +274,20 @@ resumed only after exact SHA and lease proof.
 Normal completion disables circuits, expires fixtures, discards keys, and
 retains the singleton. Full teardown is separately authorized and preview-first:
 verify exact account/inventory/prefix, no production identifier, disabled
-circuits, and no unowned resource; revoke/delete the exact run service token,
-delete callers, inventory the exact core script tag and both Durable Object
-namespace IDs, then call the Worker delete API for that exact core with
+circuits, and no unowned resource. It first recovers/releases every run row,
+then atomically changes the control row from `active` to terminal `teardown`
+only when no run row exists. The cleanup operator proves that state and keeps
+the coordination D1 through the complete cleanup; no runner can acquire,
+renew, enable, reclaim, seed fixtures, deploy, or recreate a Worker after that
+point. It then revokes/deletes the exact run service token, deletes the callers,
+and inventories the exact core script tag and both Durable Object
+namespace IDs, then calls the Worker delete API for that exact core with
 `force=true`. The API contract deletes its associated namespaces; both IDs and
-the core script must read absent before deleting the remaining named state. Disable the live
-account's `workers.dev` subdomain, and only then delete the still-protective
-`all_workers` Access application. On failure, stop, preserve disabled
+the core script must read absent before deleting the remaining application
+state. The operator next disables the live account's `workers.dev` subdomain
+and deletes the still-protective `all_workers` Access application only after all
+public endpoints are absent. The terminal fence remains through those steps;
+the coordination D1 is removed last. On failure, stop, preserve disabled
 circuits, record the completed prefix, and retry from readback.
 
 Analytics Engine datasets are provider-created on first write and may retain

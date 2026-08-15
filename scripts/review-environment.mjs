@@ -207,20 +207,28 @@ export function validateAutomaticReview(value) {
     "prove-build-and-local-no-op-deploy-succeed-with-no-account-or-zone-resource-permissions",
     "review token provisioning gate");
   exactKeys(value.controlPlaneOperator, [
-    "actor", "when", "permission", "resourceScope", "productionBuildsControlPlaneReach",
+    "actor", "when", "tokenType", "tokenIdentity", "credentialStorage", "permission", "resourceScope", "providerCapabilityFamilies",
+    "productionBuildsControlPlaneReach",
     "credentialBuildReadable", "allowedMutations", "guards", "acceptance",
   ], "review control-plane operator");
   const operator = {
     actor: "metaserver-review-environment-operator",
     when: "setup-budget-threshold-or-provider-recovery-only-never-review-build",
+    tokenType: "user-api-token-account-tokens-not-supported",
+    tokenIdentity: "dedicated-nonhuman-no-personal-data",
+    credentialStorage: "operator-secret-store-only-never-project-environment-build-or-repository",
     permission: "Workers CI Write",
-    resourceScope: "production-account-all-workers-builds-triggers-provider-cannot-scope-to-project",
+    resourceScope: "production-account-all-workers-builds-control-plane-resources-provider-cannot-scope-to-project",
     productionBuildsControlPlaneReach: true,
     credentialBuildReadable: false,
     acceptance: "unavoidable-trusted-production-account-control-plane-authority-explicitly-accepted-for-option-three",
   };
   for (const [key, expected] of Object.entries(operator))
     exactValue(value.controlPlaneOperator[key], expected, `review control-plane operator ${key}`);
+  exactArray(value.controlPlaneOperator.providerCapabilityFamilies, [
+    "build-read-cancel", "build-token-create-delete", "environment-variable-read-write",
+    "repository-connection-read-write", "trigger-read-write", "manual-build-create",
+  ], "review operator provider capabilities");
   exactArray(value.controlPlaneOperator.allowedMutations,
     ["exact-review-check-trigger-create-update-disable"], "review operator mutations");
   exactArray(value.controlPlaneOperator.guards, [
@@ -265,27 +273,32 @@ function validateResources(resources) {
     "test/fixtures/metaserver-game-publisher-v1.json",
   ], "review fixture sources");
   exactKeys(resources.coordinationD1, [
-    "owner", "name", "schema", "schemaPath", "schemaSha256", "operationsPath", "operationsSha256", "table", "columns",
-    "acquire", "renew", "release", "reclaim", "leaseDurationSeconds",
+    "owner", "name", "schema", "schemaPath", "schemaSha256", "operationsPath", "operationsSha256",
+    "controlTable", "controlColumns", "table", "columns",
+    "acquire", "renew", "release", "reclaim", "teardown", "leaseDurationSeconds",
     "maximumLeaseProofAgeSeconds", "maximumForwardMutationSeconds", "minimumRecoveryReserveSeconds",
   ], "review coordination D1");
   const coordination = {
     owner: "review-live-runner", name: "atrinik-metaserver-review-coordination",
     schema: "review-coordination-v1", schemaPath: "deployment/review-coordination-v1.sql",
-    schemaSha256: "a0ff96b0741e6c362f03c16bc6af909cba606a4993b9353621e9ee00ffab34c1",
+    schemaSha256: "b6f1a1a85ba6003cc21c1781760356eb2d7a68c1ce4cfd0f15f3de3bd4bce3b3",
     operationsPath: "deployment/review-coordination-operations-v1.json",
-    operationsSha256: "077b175ead04533d466a0a5ad0ab60e50ecaf8e1b86dc04a96c9b57194226534",
+    operationsSha256: "3270e247a3a702d82664a34395c500db92cfc59bc543ac0d5d34898ba29d99e7",
+    controlTable: "review_environment_control",
     table: "review_runs",
     acquire: "insert-or-cas-expired-after-disabled-drain-proof",
     renew: "cas-run-uuid-generation-before-forward-mutation",
     release: "cas-run-uuid-generation-after-disabled-drain-proof",
     reclaim: "compare-lease-expires-at-to-provider-utc-after-exact-disabled-readback-and-sixty-second-drain",
+    teardown: "atomic-terminal-mode-only-when-no-review-run-row-rejects-acquire-renew-enable-reclaim-and-all-forward-mutations",
   };
   for (const [key, expected] of Object.entries(coordination))
     exactValue(resources.coordinationD1[key], expected, `review coordination ${key}`);
   exactArray(resources.coordinationD1.columns, [
     "singleton", "source_sha", "run_uuid", "lease_generation", "lease_expires_at", "fixture_namespace", "state",
   ], "review coordination columns");
+  exactArray(resources.coordinationD1.controlColumns, ["singleton", "mode"],
+    "review coordination control columns");
   exactValue(resources.coordinationD1.leaseDurationSeconds, 1800, "review coordination lease duration");
   exactValue(resources.coordinationD1.maximumLeaseProofAgeSeconds, 5,
     "review coordination lease proof age");
@@ -703,6 +716,7 @@ export function validateLiveCanary(value) {
     "disable-all-circuits-and-prove-closed-read-back",
     "prove-no-directory-outbox-builder-or-alarm-work-was-created",
     "close-circuits-wait-sixty-second-socket-drain-release-lease-record-logical-twenty-four-hour-replay-expiry-and-schedule-operator-physical-retention-readback",
+    "prove-terminal-teardown-cas-rejects-concurrent-acquire-renew-enable-reclaim-fixture-deploy-and-worker-recreation-through-final-access-deletion",
   ], "review executable test plan");
   exactKeys(value.cleanup, [
     "owner", "automaticOnBranchEvent", "normal", "fullOrder", "guards",
@@ -712,18 +726,24 @@ export function validateLiveCanary(value) {
   exactValue(value.cleanup.automaticOnBranchEvent, false, "review branch cleanup");
   exactValue(value.cleanup.normal, "disable-circuits-expire-fixtures-retain-singleton", "review normal cleanup");
   exactArray(value.cleanup.fullOrder, [
-    "disable-circuits", "revoke-and-delete-run-access-service-token", "delete-caller-workers",
+    "disable-circuits",
+    "release-or-recover-every-review-run-row-then-atomically-enter-terminal-teardown-mode",
+    "prove-terminal-teardown-mode-and-no-active-or-expired-review-run-row",
+    "revoke-and-delete-run-access-service-token", "delete-caller-workers",
     "inventory-exact-core-script-tag-and-both-durable-object-namespace-ids",
     "force-delete-exact-core-worker-and-associated-durable-object-namespaces",
     "prove-core-script-and-both-durable-object-namespace-ids-absent",
-    "delete-review-r2-and-d1-resources-and-remove-worker-rate-and-analytics-bindings",
-    "disable-live-account-workers-dev-subdomain", "delete-all-workers-access-application-last",
+    "delete-review-r2-and-application-d1-resources-and-remove-worker-rate-and-analytics-bindings",
+    "disable-live-account-workers-dev-subdomain",
+    "delete-all-workers-access-application-after-all-public-endpoints-are-absent",
+    "delete-coordination-d1-terminal-fence-last",
   ], "review full cleanup order");
   exactArray(value.cleanup.guards, [
     "exact-review-prefix", "exact-account", "exact-resource-inventory", "no-production-identifier-match",
     "no-unowned-resource", "preview-before-apply", "recheck-disabled-circuits",
     "no-active-rendezvous-sockets-or-directory-builder-work",
     "exact-core-script-tag-and-durable-object-namespace-id-match",
+    "terminal-teardown-fence-remains-until-final-access-deletion",
   ], "review cleanup guards");
   exactValue(value.cleanup.partialFailure, "stop-record-completed-prefix-leave-circuits-disabled-retry-from-readback", "review partial cleanup");
   exactValue(value.cleanup.evidenceMaximumRetentionDays, 7, "review cleanup evidence retention");
