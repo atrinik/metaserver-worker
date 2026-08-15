@@ -6,6 +6,7 @@ import test from "node:test";
 import {
   ReviewEnvironmentError,
   describeBranchCheckFailure,
+  materializeReviewConfiguration,
   validateAutomaticReview,
   validateCheckedInContract,
   validateContract,
@@ -45,7 +46,7 @@ test("reserves main exclusively for the production contract", () => {
     changed((value) => value.liveCanary.source.branch = "main"),
     changed((value) => value.automaticReview.productionDeployCommand = "npm run review:validate"),
     changed((value) => value.automaticReview.accountBoundary.productionAccountReuse = false),
-    changed((value) => value.automaticReview.accountBoundary.productionProjectSettingsReachable = true),
+    changed((value) => value.automaticReview.accountBoundary.buildIdentityProductionProjectSettingsReachable = true),
     changed((value) => value.automaticReview.providerBuildTimeoutMinutes = 30),
     changed((value) => value.automaticReview.checkCommandTimeoutMinutes = 20),
   ]) assert.throws(() => validateContract(candidate, production, configurations), ReviewEnvironmentError);
@@ -64,6 +65,8 @@ test("automatic review has no bindings, routes, secrets, or deployable version",
     (value) => value.bootstrap.workersDev = true,
     (value) => value.bootstrap.configSha256 = "0".repeat(64),
     (value) => value.costPolicy.maximumMonthlyReviewBuildMinutes = 3000,
+    (value) => value.controlPlaneOperator.credentialBuildReadable = true,
+    (value) => value.controlPlaneOperator.guards.pop(),
   ]) {
     const value = structuredClone(review.automaticReview);
     mutate(value);
@@ -97,6 +100,8 @@ test("live review requires an exact clean GitHub SHA", () => {
     { branch: "main" },
     { branch: "review-build-only-sentinel" },
     { sha: "not-a-sha" }, { runUuid: "not-a-uuid" },
+    { runUuid: "22222222-2222-1222-8222-222222222222" },
+    { runUuid: "22222222-2222-4222-7222-222222222222" },
     { githubMatches: false }, { checkoutClean: false }, { mainReachable: true },
   ]) assert.throws(() => validateLiveApproval({ ...valid, ...patch }), ReviewEnvironmentError);
 });
@@ -136,7 +141,7 @@ test("requires every isolated owner, resource ceiling, circuit, and cleanup guar
     changed((value) => value.liveCanary.access.serviceToken.duration = "forever"),
     changed((value) => value.liveCanary.configurationMaterialization.core.workersDev = false),
     changed((value) => value.liveCanary.dataPolicy.productionCopies = true),
-    changed((value) => value.liveCanary.dataPolicy.rendezvousDoMaximumRetentionHours = 25),
+    changed((value) => value.liveCanary.dataPolicy.rendezvousReplayValidityHours = 25),
     changed((value) => value.liveCanary.cleanup.guards.pop()),
     changed((value) => value.liveCanary.resources.analytics[0].owner = "publisher"),
     changed((value) => value.liveCanary.resources.analytics[0].binding = "WRONG"),
@@ -149,6 +154,26 @@ test("requires every isolated owner, resource ceiling, circuit, and cleanup guar
     changed((value) => value.liveCanary.resources.rendezvousClientRateLimit.owner = "core"),
     changed((value) => value.liveCanary.resources.rendezvousClientRateLimit.binding = "WRONG"),
   ]) assert.throws(() => validateContract(candidate, production, configurations), ReviewEnvironmentError);
+});
+
+test("materializes every role circuit for closed and live-window stages", () => {
+  const roles = ["core", "publisher", "rendezvous"];
+  const outside = roles.map((role, index) => materializeReviewConfiguration(
+    configurations[index], role, review.liveCanary.configurationMaterialization, false));
+  const inside = roles.map((role, index) => materializeReviewConfiguration(
+    configurations[index], role, review.liveCanary.configurationMaterialization, true));
+  assert.deepEqual(outside.map(({ vars }) => [vars.PUBLISH_ENABLED, vars.GAME_PUBLISH_ENABLED,
+    vars.RENDEZVOUS_ENABLED]), [
+    ["disabled", "disabled", "disabled"], ["disabled", "disabled", undefined],
+    [undefined, undefined, "disabled"],
+  ]);
+  assert.deepEqual(inside.map(({ vars }) => [vars.PUBLISH_ENABLED, vars.GAME_PUBLISH_ENABLED,
+    vars.RENDEZVOUS_ENABLED]), [
+    ["enabled", "enabled", "enabled"], ["enabled", "enabled", undefined],
+    [undefined, undefined, "enabled"],
+  ]);
+  assert.equal(inside[1].services[0].service, "atrinik-metaserver-review-canary");
+  assert.equal(inside[2].services[0].service, "atrinik-metaserver-review-canary");
 });
 
 test("coordination SQL enforces acquisition, generation, state, expiry, and release CAS", () => {
@@ -174,9 +199,34 @@ test("coordination SQL enforces acquisition, generation, state, expiry, and rele
   assert.equal(statements.release.all(runA, 1).length, 0);
   assert.equal(statements.release.all(runA, 2).length, 1);
   assert.throws(() => statements.acquireFresh.all(shaA, "not-a-valid-uuid-value-at-all-000000", namespaceA, 1800));
+  const shortHex = "11111111-1111-4111-8111-11111111111-";
+  assert.throws(() => statements.acquireFresh.all(shaA, shortHex,
+    `review-canary-fixture-${shaA}-${shortHex}`, 1800));
+  const leadingExtraHyphen = "-1111111-1111-4111-8111-111111111111";
+  assert.throws(() => statements.acquireFresh.all(shaA, leadingExtraHyphen,
+    `review-canary-fixture-${shaA}-${leadingExtraHyphen}`, 1800));
+  const wrongVersion = "11111111-1111-1111-8111-111111111111";
+  assert.throws(() => statements.acquireFresh.all(shaA, wrongVersion,
+    `review-canary-fixture-${shaA}-${wrongVersion}`, 1800));
+  const wrongVariant = "11111111-1111-4111-7111-111111111111";
+  assert.throws(() => statements.acquireFresh.all(shaA, wrongVariant,
+    `review-canary-fixture-${shaA}-${wrongVariant}`, 1800));
   assert.equal(statements.acquireFresh.all(shaA, runA, namespaceA, 1801).length, 0);
-  assert.equal(statements.acquireFresh.all(shaA, runA, namespaceA, 1).length, 1);
+  assert.equal(statements.acquireFresh.all(shaA, runA, namespaceA, 1).length, 0);
+  assert.equal(coordinationOperations.leaseDurationSeconds, 1800);
+  assert.equal(coordinationOperations.maximumLeaseProofAgeSeconds, 5);
+  assert.equal(coordinationOperations.maximumForwardMutationSeconds, 120);
+  assert.equal(coordinationOperations.minimumRecoveryReserveSeconds, 300);
+  assert.ok(coordinationOperations.maximumLeaseProofAgeSeconds +
+    coordinationOperations.maximumForwardMutationSeconds +
+    coordinationOperations.minimumRecoveryReserveSeconds <
+    coordinationOperations.leaseDurationSeconds);
+  assert.equal(statements.acquireFresh.all(shaA, runA, namespaceA, 1800).length, 1);
+  assert.equal(statements.renew.all(runA, 1, 1).length, 0);
+  assert.equal(statements.enable.all(runA, 1).length, 1);
   database.exec("UPDATE review_runs SET lease_expires_at = unixepoch() - 1");
+  assert.equal(statements.reclaimExpired.all(shaB, runB, namespaceB, 1800).length, 0);
+  assert.equal(statements.proveDisabled.all(runA, 1).length, 1);
   const reclaimed = statements.reclaimExpired.all(shaB, runB, namespaceB, 1800);
   assert.equal(reclaimed.length, 1);
   assert.equal(reclaimed[0].run_uuid, runB);

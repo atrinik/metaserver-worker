@@ -63,6 +63,15 @@ lifecycle-disabled pinned install and `npm run review:branch`, then the local
 no-op `npm run review:validate`. Neither its commands nor its settings are
 shared with the production project.
 
+Cloudflare's `Workers CI Write` permission is account-scoped rather than
+project-scoped. The review-check build identity has no such permission, but the
+trusted `metaserver-review-environment-operator` inevitably has production
+Builds control-plane reach when it creates, changes, disables, or recovers the
+review trigger. That credential is never build-readable or used by a review
+run. Its only accepted mutations target the exact review project/trigger IDs;
+the procedure rejects either production ID and reads the result back. This is
+an explicit option-3 administrative tradeoff, not provider-enforced isolation.
+
 Cloudflare requires a build token even when the deploy command is a local
 validator. The entire review-check project must use a different user token from production
 on a dedicated nonhuman identity with exactly `User Details:Read`, no personal
@@ -102,8 +111,9 @@ The persistent review-check Worker counts as one production-account resource,
 but has no reachable URL. #56 records the account plan and current build usage.
 Review automation has a 1,000-minute monthly budget, alerts at 800 minutes, and
 is disabled/read back at the threshold. Newer same-branch results supersede old
-results; the operator cancels any observed still-running stale build using a
-separate Workers CI Write credential that is never build-readable.
+results. An older build may finish its credential-free build-only work and
+counts against the budget, but its SHA-bound result has no live authority. No
+account-wide build-cancellation credential is introduced.
 
 ## Live source and authority boundary
 
@@ -158,7 +168,7 @@ their results; the account boundary is the hard production isolation.
 | Host/TLS/Access | Three stable review `workers.dev` hosts, provider TLS, one account-scoped `all_workers` Access application; no Custom Domain, zone WAF, cache rule, route, or preview URL |
 | Data | No production/live-request copies; fresh ephemeral nonproduction signing keys and certificates per run; no real identity or rendezvous state |
 | Schedules/logs | No cron; private Worker logs with repository redaction and no external destination |
-| Retention/cost | One cohort: 3 Workers, 2 D1 databases, 2 DO namespaces, 3 R2 buckets, 2 datasets, 5 rate namespaces, 0 custom hosts, 1 Access app; 20-minute supervised run, at most 15 mutation minutes and a five-minute live window, seven-day evidence; unique replay-admission DO rows/alarms expire within 24 hours, Analytics Engine may retain synthetic rows for 90 days, and native rate counters expire on provider cadence |
+| Retention/cost | One cohort: 3 Workers, 2 D1 databases, 2 DO namespaces, 3 R2 buckets, 2 datasets, 5 rate namespaces, 0 custom hosts, 1 Access app; 20-minute supervised run, at most 15 mutation minutes and a five-minute live window, seven-day evidence; replay admission is invalid after 24 hours but its physical DO row is a recorded provider residual until alarm pruning or mandatory 90-day namespace teardown, Analytics Engine may retain synthetic rows for 90 days, and native rate counters expire on provider cadence |
 
 The protocol identity is the fresh certificate hash; it is not forced into a
 text prefix. The fixture record separately carries the
@@ -171,7 +181,7 @@ reused as live valid publications.
 The machine contract pins the raw SHA-256 of all three checked-in role
 configurations and permits only its enumerated review overrides. Those exact
 overrides name every Worker, D1/R2/Analytics/rate binding, Service Binding,
-review hostname, source-tag epoch, circuit, no-zone placeholder origin/cache
+review hostname, source-tag epoch, every core and caller circuit, no-zone placeholder origin/cache
 ID, schedule, `workers_dev`, preview, route, and observability setting. #56 may
 substitute only provider-issued private resource IDs and the read-back account
 `workers.dev` subdomain; every other parsed value remains equivalent to the
@@ -189,7 +199,10 @@ Every remote operation requires readback before the next:
    state. Every forward mutation CAS-renews the exact UUID/generation and
    reproves source authority. The digest-pinned operations file supplies each
    parameterized, single-statement D1 CAS and exactly-one-row success predicate;
-   SQLite provider UTC is the clock and no renewal exceeds 1,800 seconds. An
+   SQLite provider UTC is the clock and every acquire, renewal, or reclaim uses
+   exactly 1,800 seconds. A lease proof may be at most five seconds old before a
+   forward mutation, each provider operation has a 120-second hard timeout, and
+   at least 300 seconds remain reserved for ambiguous-result recovery. An
    expired lease may be reclaimed only after exact-cohort disabled-circuit
    readback, explicit close acknowledgement for every canary server/client
    socket, an offline read through the same DO, and a 60-second teardown drain.
@@ -223,10 +236,13 @@ Every remote operation requires readback before the next:
    acknowledgements, prove a new same-room client observes offline, then wait
    60 seconds for active rendezvous sockets and teardown retries to drain,
    CAS-release the lease, and retain only closed outcomes/digests/counts/names
-   for seven days. A successfully claimed replay admission is deliberately kept
-   by the uniquely named per-run room and its cleanup alarm for no more than the
-   24-hour replay window. That bounded fail-safe prune needs no live lease and
-   cannot collide with a later run's fresh server ID.
+   for seven days. A successfully claimed replay admission becomes unusable at
+   the 24-hour logical cutoff. Its alarm is best-effort physical pruning:
+   provider delay or exhausted retries can retain the row longer, so the
+   operator records and reads back that residual. The unique room cannot
+   collide with a later run, and mandatory full cohort teardown force-deletes
+   both namespaces no later than cohort age 90 days; new runs stop once that
+   deadline is reached until absence is proved.
 
 An ambiguous deploy/readback is possible mutation. Recovery always inspects and
 proves the disabled core. Partial runs record their completed prefix and may be
@@ -252,7 +268,10 @@ Normal completion disables circuits, expires fixtures, discards keys, and
 retains the singleton. Full teardown is separately authorized and preview-first:
 verify exact account/inventory/prefix, no production identifier, disabled
 circuits, and no unowned resource; revoke/delete the exact run service token,
-delete callers before core, delete the named state resources, disable the live
+delete callers, inventory the exact core script tag and both Durable Object
+namespace IDs, then call the Worker delete API for that exact core with
+`force=true`. The API contract deletes its associated namespaces; both IDs and
+the core script must read absent before deleting the remaining named state. Disable the live
 account's `workers.dev` subdomain, and only then delete the still-protective
 `all_workers` Access application. On failure, stop, preserve disabled
 circuits, record the completed prefix, and retry from readback.
@@ -262,9 +281,11 @@ the synthetic rows for 90 days; teardown stops writes and removes bindings but
 does not claim dataset deletion. Rate-limit namespaces are binding IDs rather
 than deletable resources; teardown removes the bindings and lets counters
 expire. Both residuals are recorded separately from seven-day review evidence.
-The rendezvous replay admission/alarm is likewise recorded as bounded runtime
-cleanup; full teardown may delete the review Worker/DO namespace after circuit
-closure instead of waiting for that alarm.
+The rendezvous replay admission has a 24-hour logical security lifetime, while
+its alarm is only best-effort physical cleanup. A retained row is recorded and
+checked after expiry. The separately authorized irreversible full teardown
+deletes the exact Worker and both inventoried namespaces by cohort age 90 days
+after circuit closure, socket/offline proof, and a no-builder-work check.
 
 ## Provider references
 

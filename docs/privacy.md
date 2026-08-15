@@ -78,14 +78,16 @@ datasets, rate counters, hosts, and logs. It never imports production rows,
 requests, server identities, rendezvous state, credentials, tags, or secret
 values. Private evidence is limited to the public source SHA, run/deployable
 digests, resource names, counts, durations, and closed outcomes and expires
-within seven days; fixture state expires within 24 hours. Stable review URLs
+within seven days; fixture and replay validity expires within 24 hours. Stable review URLs
 are not a secret boundary. Access credentials and raw provider responses stay
 out of URLs, comments, bodies, logs, and evidence. Normal completion disables
 all circuits. A replay canary's unique per-run rendezvous DO retains only its
-bounded admission tags and cleanup alarm for the 24-hour replay window; active
-sockets drain first and later runs use different room identities. Quarterly
-reprovision prevents the singleton from becoming unbounded retained review
-history.
+admission tags and cleanup alarm; active sockets drain first and later runs use
+different room identities. The tags are unusable after the 24-hour logical
+window, but provider alarm delay or exhausted retries can retain physical rows
+longer. That residual is recorded/read back, and mandatory teardown
+force-deletes both exact DO namespaces by cohort age 90 days before further
+runs, preventing unbounded retained review history.
 
 ## Source tags
 

@@ -3,6 +3,7 @@ CREATE TABLE review_runs (
   source_sha TEXT NOT NULL CHECK (length(source_sha) = 40 AND source_sha NOT GLOB '*[^0-9a-f]*'),
   run_uuid TEXT NOT NULL CHECK (
     length(run_uuid) = 36 AND
+    length(replace(run_uuid, '-', '')) = 32 AND
     substr(run_uuid, 9, 1) = '-' AND substr(run_uuid, 14, 1) = '-' AND
     substr(run_uuid, 19, 1) = '-' AND substr(run_uuid, 24, 1) = '-' AND
     replace(run_uuid, '-', '') NOT GLOB '*[^0-9a-f]*' AND

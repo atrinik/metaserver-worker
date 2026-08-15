@@ -139,6 +139,13 @@ exist in the connected repository and receive ordinary GitHub validation only.
 Cloudflare emits its native check and PR status comment/history without a
 preview URL.
 
+The review-check build identity cannot reach production project settings.
+Cloudflare cannot project-scope `Workers CI Write`, however, so the trusted
+setup/budget/recovery operator has explicit production-account Builds
+control-plane reach. Its non-build-readable credential may mutate only the
+exact review project/trigger IDs, must reject production IDs, and must read the
+result back. This administrative tradeoff is not a review-run permission.
+
 Live evidence is a separate operator-supervised exact-commit run against one
 serialized cohort in a dedicated account with no GitHub connection or zone. It
 must prove an explicitly approved same-repository non-`main` SHA that is not
@@ -156,7 +163,13 @@ The exact Access application is `all_workers` with a `non_identity` policy that
 includes only the run's 60-minute service-token ID. The separately authorized
 token operator creates it after lease acquisition and revokes it after closed
 readback; full teardown keeps Access attached until every Worker and the
-account `workers.dev` subdomain are gone.
+account `workers.dev` subdomain are gone. All three materialized role configs
+switch their own circuits together. Lease acquire/renew/reclaim uses exactly
+1,800 seconds, with a five-second proof-age ceiling, 120-second provider
+operation timeout, and 300-second recovery reserve. Replay validity ends at 24
+hours, but alarm-based physical pruning is best effort; retained DO state is
+recorded and both exact namespaces are force-deleted and read absent by the
+mandatory 90-day cohort teardown.
 
 This design does not authorize provisioning. Until issue #56 supplies and
 validates the exact provider resources, `npm run deploy:review-canary` fails

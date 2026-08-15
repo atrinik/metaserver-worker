@@ -2,15 +2,18 @@
   "schemaVersion": 1,
   "transactionMode": "one-atomic-d1-statement-with-returning-per-operation",
   "clock": "sqlite-unixepoch-provider-utc",
-  "maximumLeaseSeconds": 1800,
+  "leaseDurationSeconds": 1800,
+  "maximumLeaseProofAgeSeconds": 5,
+  "maximumForwardMutationSeconds": 120,
+  "minimumRecoveryReserveSeconds": 300,
   "successPredicate": "exactly-one-returned-row-with-expected-run-uuid-and-generation-otherwise-stop",
   "statements": {
-    "acquireFresh": "INSERT INTO review_runs (singleton, source_sha, run_uuid, lease_generation, lease_expires_at, fixture_namespace, state) SELECT 1, ?1, ?2, 1, unixepoch() + ?4, ?3, 'disabled' WHERE ?4 BETWEEN 1 AND 1800 AND NOT EXISTS (SELECT 1 FROM review_runs WHERE singleton = 1) RETURNING run_uuid, lease_generation, lease_expires_at, state",
-    "renew": "UPDATE review_runs SET lease_generation = lease_generation + 1, lease_expires_at = unixepoch() + ?3 WHERE singleton = 1 AND run_uuid = ?1 AND lease_generation = ?2 AND lease_expires_at > unixepoch() AND ?3 BETWEEN 1 AND 1800 RETURNING run_uuid, lease_generation, lease_expires_at, state",
+    "acquireFresh": "INSERT INTO review_runs (singleton, source_sha, run_uuid, lease_generation, lease_expires_at, fixture_namespace, state) SELECT 1, ?1, ?2, 1, unixepoch() + ?4, ?3, 'disabled' WHERE ?4 = 1800 AND NOT EXISTS (SELECT 1 FROM review_runs WHERE singleton = 1) RETURNING run_uuid, lease_generation, lease_expires_at, state",
+    "renew": "UPDATE review_runs SET lease_generation = lease_generation + 1, lease_expires_at = unixepoch() + ?3 WHERE singleton = 1 AND run_uuid = ?1 AND lease_generation = ?2 AND lease_expires_at > unixepoch() AND ?3 = 1800 RETURNING run_uuid, lease_generation, lease_expires_at, state",
     "enable": "UPDATE review_runs SET state = 'enabled' WHERE singleton = 1 AND run_uuid = ?1 AND lease_generation = ?2 AND lease_expires_at > unixepoch() AND state = 'disabled' RETURNING run_uuid, lease_generation, lease_expires_at, state",
     "beginDrain": "UPDATE review_runs SET state = 'draining' WHERE singleton = 1 AND run_uuid = ?1 AND lease_generation = ?2 AND state = 'enabled' RETURNING run_uuid, lease_generation, lease_expires_at, state",
     "proveDisabled": "UPDATE review_runs SET state = 'disabled' WHERE singleton = 1 AND run_uuid = ?1 AND lease_generation = ?2 AND state IN ('disabled', 'enabled', 'draining') RETURNING run_uuid, lease_generation, lease_expires_at, state",
-    "reclaimExpired": "UPDATE review_runs SET source_sha = ?1, run_uuid = ?2, lease_generation = lease_generation + 1, lease_expires_at = unixepoch() + ?4, fixture_namespace = ?3, state = 'disabled' WHERE singleton = 1 AND lease_expires_at <= unixepoch() AND state = 'disabled' AND ?4 BETWEEN 1 AND 1800 RETURNING run_uuid, lease_generation, lease_expires_at, state",
+    "reclaimExpired": "UPDATE review_runs SET source_sha = ?1, run_uuid = ?2, lease_generation = lease_generation + 1, lease_expires_at = unixepoch() + ?4, fixture_namespace = ?3, state = 'disabled' WHERE singleton = 1 AND lease_expires_at <= unixepoch() AND state = 'disabled' AND ?4 = 1800 RETURNING run_uuid, lease_generation, lease_expires_at, state",
     "release": "DELETE FROM review_runs WHERE singleton = 1 AND run_uuid = ?1 AND lease_generation = ?2 AND state = 'disabled' RETURNING run_uuid, lease_generation, lease_expires_at, state"
   }
 }
