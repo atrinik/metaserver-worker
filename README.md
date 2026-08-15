@@ -124,11 +124,14 @@ Issue #56's fail-closed composition can be checked without credentials using
 `npm run provision:workers-builds:dry-run`. The value-free
 `npm run provision:workers-builds:plan-setup` output additionally pins inert
 staging, distinct review/production activation gates, and rollback order
-without an apply path. Its separately credentialed
-readback and local materializer write only private mode-`0600` provider
+without an apply path. Staging uses a private random, freshly absent GitHub ref
+and the zero-resource review token; the production selector and token change
+together only at activation. Its separately credentialed exhaustive provider
+readback, D1-ledger proof, and local materializer write only private mode-`0600` provider
 snapshots/configurations and have no remote mutation path. A post-setup
 `npm run provision:workers-builds:verify-configured` check proves the serialized
-trigger, isolated review, environment-classification, and no-Deploy-Hook
+trigger, distinct provider-token policies, digest-pinned inert review Worker,
+environment-classification, and no-Deploy-Hook
 boundaries from those private snapshots. Exact invocation and authorization
 boundaries are in [DEPLOYMENT.md](DEPLOYMENT.md).
 

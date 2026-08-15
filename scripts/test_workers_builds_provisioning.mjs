@@ -7,6 +7,7 @@ import {
   automaticReviewEnvironmentSpec,
   automaticReviewTriggerSpec,
   boundedResponseText,
+  combineProviderPages,
   createPrivateDirectory,
   loadSnapshot,
   materializeProductionConfigurations,
@@ -22,6 +23,10 @@ import {
   validateNoActiveBuilds,
   validateNoDeployHooks,
   validateProductionControlPlane,
+  validateProductionRuntimeProof,
+  validateRepositoryConnectionOwnerProof,
+  validateSentinelRefAbsence,
+  validateSetupPlan,
   validateTriggerSnapshot,
 } from "./workers-builds-provisioning.mjs";
 import { validateBuildEnvironment } from "./production-delivery.mjs";
@@ -34,6 +39,8 @@ const review = JSON.parse(await readFile(resolve(root,
 const bases = await Promise.all([
   "wrangler.jsonc", "wrangler.publisher.jsonc", "wrangler.rendezvous.jsonc",
 ].map(async (path) => JSON.parse(await readFile(resolve(root, path), "utf8"))));
+const reviewBootstrapConfig = JSON.parse(await readFile(resolve(root,
+  review.automaticReview.bootstrap.configPath), "utf8"));
 const accountId = "a".repeat(32);
 const scriptTag = "b".repeat(32);
 const reviewScriptTag = "d".repeat(32);
@@ -42,7 +49,9 @@ const reviewTriggerUuid = "22222222-2222-4222-8222-222222222222";
 const reviewTokenUuid = "33333333-3333-4333-8333-333333333333";
 
 function envelope(result) {
-  return { success: true, result };
+  return Array.isArray(result) ? { success: true, result, result_info: {
+    page: 1, total_pages: 1, total_count: result.length, exhaustive: true,
+  } } : { success: true, result };
 }
 
 function bindings(config) {
@@ -106,6 +115,68 @@ function buildTokenInventory() {
   ]);
 }
 
+function freshBoundary() {
+  return {
+    accountId,
+    buildTokens: envelope([]),
+    accountTriggers: envelope([]),
+    sentinelProof: {
+      repository: {
+        provider_account_id: "6371603", provider_account_name: "atrinik",
+        provider_type: "github", repo_id: "1324297032", repo_name: "metaserver-worker",
+      },
+      branch: `review-build-only-sentinel-${"a".repeat(32)}`,
+      refs: [],
+      capturedAt: new Date().toISOString(),
+    },
+    repositoryConnectionProof: {
+      source: "cloudflare-owner-ui-readback", accountId,
+      connectionPreexisting: true, websitePreserved: true,
+      repository: {
+        provider_account_id: "6371603", provider_account_name: "atrinik",
+        provider_type: "github", repo_id: "1324297032", repo_name: "metaserver-worker",
+      },
+      capturedAt: new Date().toISOString(),
+    },
+  };
+}
+
+function configuredBoundary(productionSpec, reviewSpec) {
+  const versionId = "44444444-4444-4444-8444-444444444444";
+  return {
+    accountId,
+    accountTriggers: envelope([productionSpec, reviewSpec]),
+    reviewBootstrapConfig,
+    reviewBootstrapState: {
+      settings: envelope({ compatibility_date: reviewBootstrapConfig.compatibility_date,
+        compatibility_flags: [], bindings: [], observability: { enabled: false } }),
+      subdomain: envelope({ enabled: false, previews_enabled: false }),
+      schedules: envelope({ schedules: [] }),
+      routes: envelope([]),
+      scriptSettings: envelope({ logpush: null, tail_consumers: [] }),
+      deployments: envelope({ deployments: [{ versions: [
+        { version_id: versionId, percentage: 100 },
+      ] }] }),
+      versions: envelope([{ id: versionId }]),
+      activeVersion: envelope({ id: versionId, annotations: {
+        "workers/tag": "atrinik-review-bootstrap",
+        "workers/message": `config=${review.automaticReview.bootstrap.configSha256} source=${review.automaticReview.bootstrap.sourceSha256}`,
+      }, resources: { bindings: [], script_runtime: { exports: {} } } }),
+      builds: envelope([]),
+      buildLimits: envelope({ has_reached_build_minutes_limit: false }),
+    },
+    tokenAuthorityProofs: [
+      { kind: "production", source: "cloudflare-owner-token-policy-readback",
+        tokenId: "production-token-id", userPermissions: [],
+        accountPermissions: ["D1:Read", "Workers Scripts:Edit"],
+        accountResources: [accountId], zonePermissions: [], zoneResources: [] },
+      { kind: "review", source: "cloudflare-owner-token-policy-readback",
+        tokenId: "review-token-id", userPermissions: ["User Details:Read"],
+        accountPermissions: [], accountResources: [], zonePermissions: [], zoneResources: [] },
+    ],
+  };
+}
+
 test("accepts the checked-in provisioning composition", async () => {
   assert.equal((await validateCheckedInProvisioning()).production.productionBranch, "main");
 });
@@ -131,6 +202,9 @@ test("enforces owner-only no-follow private inputs and snapshots", async () => {
     assert.deepEqual(await loadSnapshot(snapshot, "provider.json"), {
       success: true, result: [],
     });
+    const outside = resolve(temporary, "outside.json");
+    await writeFile(outside, '{"secret":true}\n', { mode: 0o600 });
+    await assert.rejects(loadSnapshot(snapshot, "../outside.json"), /safe JSON basename/u);
     await chmod(snapshotFile, 0o604);
     await assert.rejects(loadSnapshot(snapshot, "provider.json"), /bounded private regular file/u);
 
@@ -148,6 +222,48 @@ test("bounds provider response bodies before retaining them", async () => {
   assert.equal(await boundedResponseText(new Response("provider"), "test"), "provider");
   await assert.rejects(boundedResponseText(
     new Response("x".repeat(1024 * 1024 + 1)), "test"), /response limit/u);
+});
+
+test("combines only stable exhaustive provider pages", () => {
+  const combined = combineProviderPages([
+    { success: true, result: [{ build_uuid: resourceUuid }], result_info: {
+      page: 1, total_pages: 2, total_count: 2 } },
+    { success: true, result: [{ build_uuid: reviewTriggerUuid }], result_info: {
+      page: 2, total_pages: 2, total_count: 2 } },
+  ], "builds", ({ build_uuid }) => build_uuid);
+  assert.equal(combined.result_info.exhaustive, true);
+  assert.equal(combined.result.length, 2);
+  assert.throws(() => combineProviderPages([
+    { success: true, result: [{ build_uuid: resourceUuid }], result_info: {
+      page: 1, total_pages: 2, total_count: 2 } },
+  ], "builds", ({ build_uuid }) => build_uuid), /changed during readback/u);
+  assert.throws(() => combineProviderPages([
+    { success: true, result: [{ build_uuid: resourceUuid }], result_info: {
+      page: 1, total_pages: 2, total_count: 2 } },
+    { success: true, result: [{ build_uuid: resourceUuid }], result_info: {
+      page: 2, total_pages: 2, total_count: 2 } },
+  ], "builds", ({ build_uuid }) => build_uuid), /duplicated/u);
+});
+
+test("requires an exact private random absent staging ref", () => {
+  const proof = freshBoundary().sentinelProof;
+  assert.equal(validateSentinelRefAbsence(proof).outcome, "staging-sentinel-ref-absent");
+  assert.throws(() => validateSentinelRefAbsence({ ...proof,
+    branch: "review-build-only-sentinel" }), /malformed/u);
+  assert.throws(() => validateSentinelRefAbsence({ ...proof,
+    refs: [{ ref: `refs/heads/${proof.branch}` }] }), /exists or its absence/u);
+  assert.throws(() => validateSentinelRefAbsence({ ...proof,
+    capturedAt: "2026-08-15T00:00:00Z" }, Date.parse("2026-08-15T00:06:00Z")), /stale/u);
+});
+
+test("requires fresh owner proof for the unreadable shared repository connection", () => {
+  const proof = freshBoundary().repositoryConnectionProof;
+  assert.doesNotThrow(() => validateRepositoryConnectionOwnerProof(proof, accountId));
+  assert.throws(() => validateRepositoryConnectionOwnerProof({ ...proof,
+    websitePreserved: false }, accountId), /owner proof drift/u);
+  assert.throws(() => validateRepositoryConnectionOwnerProof({ ...proof,
+    capturedAt: "2026-08-14T00:00:00Z" }, accountId,
+    Date.parse("2026-08-15T00:00:01Z")), /stale/u);
 });
 
 test("materializes bounded production documents only from live private coordinates", () => {
@@ -229,6 +345,36 @@ test("validates production domains, schedules, and observability boundaries", ()
   }), /zone authority/u);
 });
 
+test("proves one active production topology and an exact migration prefix", () => {
+  const configurations = materializeProductionConfigurations({
+    contract: production, bases, snapshots: bases.map(snapshot), accountId,
+  });
+  const versionIds = production.workers.map((_, index) =>
+    `${String(index + 1).repeat(8)}-${String(index + 1).repeat(4)}-4${String(index + 1).repeat(3)}-8${String(index + 1).repeat(3)}-${String(index + 1).repeat(12)}`);
+  const deployments = versionIds.map((versionId) => envelope({ deployments: [{
+    versions: [{ version_id: versionId, percentage: 100 }],
+  }] }));
+  const activeVersions = configurations.map((config, index) => envelope({
+    id: versionIds[index], resources: { script_runtime: {
+      compatibility_date: config.compatibility_date,
+      compatibility_flags: config.compatibility_flags ?? [], exports: config.exports ?? {},
+    } },
+  }));
+  const migrationNames = Array.from({ length: 10 }, (_, index) =>
+    `${String(index + 1).padStart(4, "0")}_migration.sql`);
+  const result = validateProductionRuntimeProof({ contract: production, configurations,
+    deployments, activeVersions,
+    migrationEnvelope: envelope([{ results: migrationNames.slice(0, 9).map((name) => ({ name })) }]),
+    migrationNames });
+  assert.deepEqual(result.pendingMigrations, [migrationNames[9]]);
+  const drift = structuredClone(activeVersions);
+  drift[0].result.resources.script_runtime.exports.Unreviewed = { type: "worker" };
+  assert.throws(() => validateProductionRuntimeProof({ contract: production, configurations,
+    deployments, activeVersions: drift,
+    migrationEnvelope: envelope([{ results: migrationNames.slice(0, 9).map((name) => ({ name })) }]),
+    migrationNames }), /exports reconciliation/u);
+});
+
 test("pins production and build-only review trigger shapes", () => {
   const productionSpec = productionTriggerSpec(production, triggerCoordinates());
   const reviewSpec = automaticReviewTriggerSpec(review, triggerCoordinates());
@@ -280,6 +426,7 @@ test("keeps the automatic review build environment value-only and exact", () => 
 test("proves a fresh setup has no competing trigger, Deploy Hook, or active build", () => {
   const projects = production.workers.map(({ role }) => role);
   const result = validateFreshBuildsSnapshot({
+    ...freshBoundary(),
     production, review,
     scripts: envelope(production.workers.map(({ name }, index) =>
       ({ id: name, tag: String(index + 1).repeat(32) }))),
@@ -294,6 +441,7 @@ test("proves a fresh setup has no competing trigger, Deploy Hook, or active buil
     ({ id: name, tag: String(index + 1).repeat(32) }))));
   scriptsWithReview.result.push({ id: review.automaticReview.project, tag: reviewScriptTag });
   assert.throws(() => validateFreshBuildsSnapshot({
+    ...freshBoundary(),
     production, review, scripts: scriptsWithReview,
     triggers: projects.map((label) => [label, envelope([])]),
     deployHooks: projects.map((label) => [label, envelope([])]),
@@ -303,6 +451,7 @@ test("proves a fresh setup has no competing trigger, Deploy Hook, or active buil
     { status: "running", build_uuid: resourceUuid },
   ]), "core"), /active Workers Build/u);
   assert.throws(() => validateFreshBuildsSnapshot({
+    ...freshBoundary(),
     production, review,
     scripts: envelope(production.workers.map(({ name }, index) =>
       ({ id: name, tag: String(index + 1).repeat(32) }))),
@@ -323,14 +472,18 @@ test("plans inert setup, separately gated activation, and ordered rollback", () 
   assert.equal(new Set(plan.setupOperations.map(({ id }) => id)).size,
     plan.setupOperations.length);
   assert.match(plan.setupOperations.find(({ id }) => id === "preflight").action,
-    /sentinel-branch-absence/u);
-  const triggerCreates = plan.setupOperations.filter(({ action }) => action === "post-inert-trigger");
+    /sentinel-ref-absence/u);
+  const triggerCreates = plan.setupOperations.filter(({ action }) =>
+    action === "post-inert-trigger-with-zero-resource-token");
   assert.equal(triggerCreates.length, 2);
   for (const { request } of triggerCreates) {
     assert.deepEqual(request.body.branch_includes,
-      [review.automaticReview.productionBranch]);
+      [{ privateFileEnvironment: "ATRINIK_STAGING_SENTINEL_BRANCH_FILE" }]);
     assert.ok(!request.body.branch_includes.includes("main"));
   }
+  const productionStaged = triggerCreates.find(({ id }) => id === "production-trigger-staged");
+  assert.equal(productionStaged.request.body.build_token_uuid.resultReference,
+    "review-build-token.build_token_uuid");
   assert.deepEqual(plan.reviewActivation.request.body.branch_includes,
     review.automaticReview.previewBranchIncludes);
   assert.equal(plan.reviewActivation.request.method, "PATCH");
@@ -339,6 +492,8 @@ test("plans inert setup, separately gated activation, and ordered rollback", () 
     resultReference: "review-trigger-staged.trigger_uuid",
   });
   assert.deepEqual(plan.productionActivation.request.body.branch_includes, ["main"]);
+  assert.equal(plan.productionActivation.request.body.build_token_uuid.resultReference,
+    "production-build-token.build_token_uuid");
   assert.equal(plan.productionActivation.request.method, "PATCH");
   assert.deepEqual(plan.productionActivation.request.path, {
     template: "/builds/triggers/{trigger_uuid}",
@@ -364,7 +519,7 @@ test("plans inert setup, separately gated activation, and ordered rollback", () 
   assert.equal(plan.rollbackOperations.at(-1),
     "prove-three-production-workers-and-website-app-selection-unchanged");
   assert.match(plan.rollbackOperations.find((operation) =>
-    operation.includes("repository-connection")), /only-if-private-journal-proves-created/u);
+    operation.includes("repository-connection")), /retain-shared/u);
   const requestPaths = plan.setupOperations.flatMap(({ request }) => request ?
     [typeof request.path === "string" ? request.path : JSON.stringify(request.path)] : []);
   assert.ok(requestPaths.some((path) => path.includes("environment_variables") &&
@@ -373,8 +528,22 @@ test("plans inert setup, separately gated activation, and ordered rollback", () 
     !path.includes("/builds/builds")));
   assert.ok(plan.privateInputs.every((name) => name.endsWith("_FILE")));
   assert.ok(plan.privateInputs.includes("ATRINIK_REVIEW_BOOTSTRAP_API_TOKEN_FILE"));
+  assert.ok(plan.privateInputs.includes("ATRINIK_STAGING_SENTINEL_REFS_FILE"));
   assert.ok(plan.setupOperations.filter(({ mutation }) => mutation)
     .every(({ actor, action }) => actor && action));
+  assert.equal(validateSetupPlan(plan), plan);
+  const dangling = structuredClone(plan);
+  dangling.productionActivation.request.body.build_token_uuid.resultReference =
+    "missing-token.build_token_uuid";
+  assert.throws(() => validateSetupPlan(dangling), /dangling or forward/u);
+  const missingField = structuredClone(plan);
+  delete missingField.setupOperations.find(({ id }) => id === "production-script")
+    .produces.script_tag;
+  assert.throws(() => validateSetupPlan(missingField), /producer schema/u);
+  const apiFieldDrift = structuredClone(plan);
+  apiFieldDrift.setupOperations.find(({ id }) => id === "production-script")
+    .produces.script_tag.sourceField = "script_tag";
+  assert.throws(() => validateSetupPlan(apiFieldDrift), /producer schema/u);
 });
 
 test("proves one serialized production trigger and one isolated review trigger", () => {
@@ -391,7 +560,8 @@ test("proves one serialized production trigger and one isolated review trigger",
   for (const name of Object.values(production.protectedInputs))
     productionEnvironment[name].value = null;
   const automaticEnvironment = automaticReviewEnvironmentSpec(review);
-  const result = validateConfiguredBuildsSnapshot({
+  const validArguments = () => ({
+    ...configuredBoundary(productionSpec, reviewSpec),
     production,
     review,
     scripts: envelope([
@@ -408,9 +578,63 @@ test("proves one serialized production trigger and one isolated review trigger",
     deployHooks: [...production.workers.map(({ role }) => role), "review"]
       .map((label) => [label, envelope([])]),
   });
+  const result = validateConfiguredBuildsSnapshot(validArguments());
   assert.equal(result.mutation, false);
 
+  for (const mutate of [
+    (value) => value.reviewBootstrapState.settings.result.bindings.push({
+      name: "UNREVIEWED", type: "plain_text", text: "1" }),
+    (value) => value.reviewBootstrapState.routes.result.push({ pattern: "unexpected.example" }),
+    (value) => { value.reviewBootstrapState.versions.result.push({ id: resourceUuid });
+      value.reviewBootstrapState.versions.result_info.total_count = 2; },
+    (value) => value.reviewBootstrapState.activeVersion.result.annotations["workers/tag"] = "wrong",
+    (value) => { value.reviewBootstrapState.builds.result.push({
+      build_uuid: resourceUuid, status: "running" });
+      value.reviewBootstrapState.builds.result_info.total_count = 1; },
+    (value) => value.reviewBootstrapState.buildLimits.result.has_reached_build_minutes_limit = true,
+    (value) => value.tokenAuthorityProofs[1].accountPermissions.push("Workers Scripts:Edit"),
+    (value) => { value.accountTriggers.result.push({
+      trigger_uuid: "55555555-5555-4555-8555-555555555555",
+      repo_connection: productionSpec.repo_connection });
+      value.accountTriggers.result_info.total_count = 3; },
+  ]) {
+    const changed = validArguments();
+    mutate(changed);
+    assert.throws(() => validateConfiguredBuildsSnapshot(changed));
+  }
+
+  const reusedTokens = buildTokenInventory();
+  reusedTokens.result[1].cloudflare_token_id = reusedTokens.result[0].cloudflare_token_id;
+  const reusedBoundary = configuredBoundary(productionSpec, reviewSpec);
+  reusedBoundary.tokenAuthorityProofs[1].tokenId = reusedBoundary.tokenAuthorityProofs[0].tokenId;
   assert.throws(() => validateConfiguredBuildsSnapshot({
+    ...reusedBoundary, production, review,
+    scripts: envelope([{ id: production.workers[0].name, tag: scriptTag },
+      { id: review.automaticReview.project, tag: reviewScriptTag }]),
+    productionTriggers: envelope([productionSpec]), productionEnvironment: envelope(productionEnvironment),
+    reviewTriggers: envelope([reviewSpec]), reviewEnvironment: envelope(automaticEnvironment),
+    buildTokens: reusedTokens,
+    nonEntrypointTriggers: production.workers.slice(1).map(({ role }) => [role, envelope([])]),
+    deployHooks: [...production.workers.map(({ role }) => role), "review"]
+      .map((label) => [label, envelope([])]),
+  }), /reuse one underlying/u);
+
+  const publicBootstrap = configuredBoundary(productionSpec, reviewSpec);
+  publicBootstrap.reviewBootstrapState.subdomain.result.enabled = true;
+  assert.throws(() => validateConfiguredBuildsSnapshot({
+    ...publicBootstrap, production, review,
+    scripts: envelope([{ id: production.workers[0].name, tag: scriptTag },
+      { id: review.automaticReview.project, tag: reviewScriptTag }]),
+    productionTriggers: envelope([productionSpec]), productionEnvironment: envelope(productionEnvironment),
+    reviewTriggers: envelope([reviewSpec]), reviewEnvironment: envelope(automaticEnvironment),
+    buildTokens: buildTokenInventory(),
+    nonEntrypointTriggers: production.workers.slice(1).map(({ role }) => [role, envelope([])]),
+    deployHooks: [...production.workers.map(({ role }) => role), "review"]
+      .map((label) => [label, envelope([])]),
+  }), /public or preview URL/u);
+
+  assert.throws(() => validateConfiguredBuildsSnapshot({
+    ...configuredBoundary(productionSpec, reviewSpec),
     production,
     review,
     scripts: envelope([
@@ -428,6 +652,7 @@ test("proves one serialized production trigger and one isolated review trigger",
       .map((label) => [label, envelope([])]),
   }), /independent Builds trigger/u);
   assert.throws(() => validateConfiguredBuildsSnapshot({
+    ...configuredBoundary(productionSpec, reviewSpec),
     production, review, scripts: envelope([
       { id: production.workers[0].name, tag: scriptTag },
       { id: review.automaticReview.project, tag: reviewScriptTag },

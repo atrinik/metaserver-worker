@@ -133,18 +133,23 @@ exact GitHub repository connection, actor boundaries, private-file inputs,
 request/result dependencies, separate control-plane/build/lease token authority,
 dedicated non-build-readable review-bootstrap authority, separately gated
 activation, an owner-only mutation journal, ambiguous-response readback, and
-ordered exact-resource rollback. An existing repository connection is retained
-unless the private journal proves this setup created it. Existing production
+ordered exact-resource rollback. Cloudflare exposes repository-connection
+upsert and delete but no read/list operation, so rollback always retains the
+shared exact GitHub connection; configured trigger readback proves the returned
+connection identity. Existing production
 Workers, versions, state, and runtime secrets are never rollback targets.
 Because Cloudflare requires a trigger UUID before its environment can be
-written, setup creates both triggers against the reserved inert
-`review-build-only-sentinel`, writes and reads back their environments, then
-activates review separately. Production remains on the inert sentinel until
-its distinct activation authorization. The preflight must prove that the
-reserved sentinel branch does not exist before either trigger is created, so
-the staging selector cannot execute repository code. It is never created
-directly on `main`, which would leave a window where an automatic build could
-start before the protected environment was complete.
+written, the operator generates a private random
+`review-build-only-sentinel-<32-lowercase-hex>` selector and uses `gh api`
+outside the sandbox to retain a fresh, exact empty matching-ref proof for the
+governed repository. Setup rechecks that proof immediately before both trigger
+creates, before installing the production environment, and before production
+activation. Both staged triggers use the review token, whose provider policy
+has no account or zone resource. Production activation is one trigger PATCH
+that atomically replaces both the private selector and zero-resource token with
+`main` and the production token. Thus a selector race never receives deploy
+authority; the unguessable, repeatedly absent ref also protects the staged
+production secrets. The fixed `review-build-only-sentinel` name is not used.
 
 The production activation initially retains the `routine` control-plane gate.
 Its first automatic `main` build must therefore fail closed if the existing
@@ -164,29 +169,48 @@ provider responses:
 ```sh
 ATRINIK_CLOUDFLARE_ACCOUNT_ID_FILE=/secure/path/account-id \
 ATRINIK_WORKERS_BUILDS_API_TOKEN_FILE=/secure/path/builds-read-token \
+ATRINIK_PRODUCTION_BUILD_TOKEN_SECRET_FILE=/secure/path/production-build-token \
 ATRINIK_PROVIDER_SNAPSHOT_OUTPUT=/secure/new/provider-snapshot \
   npm run provision:workers-builds:readback
 ```
 
 The readback covers the exact production and inert-review scripts, version and
-active-deployment inventories, script settings, schedules, alternate-URL state,
-Builds triggers, active-build inventory and their environment classifications,
-Deploy Hooks, Custom Domains, build-token inventory, and account build limits.
+active-deployment and active-version/export inventories, script settings,
+schedules, alternate-URL state, Builds triggers across every account Worker,
+active-build inventory and their environment classifications, Deploy Hooks,
+Custom Domains, build-token inventory, account build
+limits, and the ordered production D1 migration ledger. Every paginated
+security inventory is read to a bounded stable count and stored as a canonical
+exhaustive snapshot; incomplete, changing, or duplicated pages fail closed.
 Before setup, prove the fresh no-trigger/no-Deploy-Hook/no-active-build boundary:
 
 ```sh
 ATRINIK_PROVIDER_SNAPSHOT_DIRECTORY=/secure/provider-snapshot \
+ATRINIK_CLOUDFLARE_ACCOUNT_ID_FILE=/secure/path/account-id \
+ATRINIK_STAGING_SENTINEL_BRANCH_FILE=/secure/path/private-random-sentinel \
+ATRINIK_STAGING_SENTINEL_REFS_FILE=/secure/path/fresh-sentinel-proof.json \
+ATRINIK_REPOSITORY_CONNECTION_OWNER_PROOF_FILE=/secure/path/connection-owner-proof.json \
   npm run provision:workers-builds:verify-preflight
 ```
 
 The readback accepts an absent review-check bootstrap, and the fresh preflight
 requires that absence so it cannot adopt unproven Worker bytes. A journal-bound
 partial setup uses exact recovery readback instead of the fresh verifier. The
-readback never accepts an absent production Worker. It performs only bounded,
-timed `GET` requests and emits
+readback never accepts an absent production Worker. The sentinel proof contains
+the exact repository object, private selector, empty `refs` array, and an RFC
+3339 `capturedAt` no more than five minutes old. It is produced from the exact
+`gh api repos/atrinik/metaserver-worker/git/matching-refs/heads/<selector>`
+result outside the sandbox. Readback performs only bounded, timed provider
+reads (including the read-only D1 ledger query) and emits
 only a bounded summary; raw identifiers and provider responses remain in the
 private directory. Private inputs and snapshot files are opened without
 following symbolic links and must remain owner-only regular files.
+Because the provider has no repository-connection read endpoint, preflight
+also requires a no-more-than-24-hour owner-UI proof that the exact account and
+repository connection pre-existed and that the website remains connected. The
+proof uses source `cloudflare-owner-ui-readback`, the exact repository object,
+`connectionPreexisting: true`, and `websitePreserved: true`; it contains no
+credential or connection UUID. Rollback always retains that connection.
 
 Materialize the three desired production documents from that same snapshot.
 This substitutes only the read-back account, D1, cache-zone, R2, Analytics,
@@ -205,6 +229,9 @@ ATRINIK_PRODUCTION_CONFIG_OUTPUT=/secure/new/production-configs \
 ```
 
 The output files are `core.json`, `publisher.json`, and `rendezvous.json`.
+Materialization also requires one unambiguous active version per production
+Worker, exact reviewed exports/runtime, and a live migration ledger that is an
+exact checked-in prefix with at most the separately gated `0010` pending.
 Review their digests in the owner-only provider record, never their contents in
 GitHub or logs. No provisioning command in this section creates a connection,
 Worker, token, trigger, variable, build, or deployment. Those mutations remain
@@ -215,16 +242,24 @@ After setup, take a new snapshot and prove the configured Builds boundary:
 
 ```sh
 ATRINIK_PROVIDER_SNAPSHOT_DIRECTORY=/secure/post-setup-provider-snapshot \
+ATRINIK_CLOUDFLARE_ACCOUNT_ID_FILE=/secure/path/account-id \
+ATRINIK_PRODUCTION_BUILD_TOKEN_PERMISSION_PROOF_FILE=/secure/path/production-token-policy.json \
+ATRINIK_REVIEW_BUILD_TOKEN_PERMISSION_PROOF_FILE=/secure/path/review-token-policy.json \
   npm run provision:workers-builds:verify-configured
 ```
 
 This requires exactly one production trigger on the core project and one
 isolated trigger on the review-check project, distinct script/build-token/
 trigger identities, each selected build token appearing exactly once as a
-user-owned provider token, one shared exact GitHub repository connection, exact
+user-owned provider token, distinct underlying token IDs, exact private
+owner-policy readbacks for the production and zero-resource review tokens, one
+shared exact GitHub repository connection, exact
 commands and branch/watch filters, exact environment names/classifications,
 no publisher or rendezvous trigger, and no Deploy Hook on any of the four
-projects. Provider timestamps are accepted only as metadata; they never relax
+projects. It also proves the review bootstrap has exactly one 100%-active
+digest-annotated version, exact inert runtime settings, no binding/route/
+schedule/log consumer/public URL, no active build, and an account that has not
+reached its build-minute limit. Provider timestamps are accepted only as metadata; they never relax
 the authored values or secret classifications.
 
 ## Non-main review delivery
