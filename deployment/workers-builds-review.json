@@ -135,6 +135,7 @@
     "stalePolicy": {
       "forwardMutationFence": "reprove-github-branch-sha-and-live-lease-before-every-enable-deploy-fixture-or-test-mutation",
       "failSafeClosure": "always-authorized-for-exact-reviewed-cohort-after-account-and-resource-readback",
+      "boundedRuntimeCleanup": "existing-unique-review-do-sockets-expire-within-fifteen-seconds-and-replay-admission-alarm-prunes-within-twenty-four-hours-without-live-lease",
       "lossInjection": "force-push-branch-delete-and-lease-expiry-during-every-enabled-stage-must-close-circuits"
     },
     "deploymentOrder": ["core", "publisher", "rendezvous"],
@@ -353,6 +354,8 @@
       "fixtureIdentityDerivation": "fresh-ephemeral-public-certificate-hash-plus-source-sha-run-uuid-vector-name",
       "fixtureSigningKey": "ephemeral-generated-in-supervised-run-never-persisted-or-logged",
       "fixtureMaximumAgeHours": 24,
+      "rendezvousDoMaximumRetentionHours": 24,
+      "rendezvousDoIsolation": "unique-ephemeral-server-id-per-run-no-cross-run-room-reuse",
       "isolationBeforeEveryRun": "unique-fixture-namespace-and-no-unexpired-collision",
       "disableCircuitsAfterEveryRun": true
     },
@@ -368,7 +371,7 @@
       "inject-source-or-lease-loss-at-every-enabled-stage-and-prove-fail-safe-closure",
       "disable-all-circuits-and-prove-closed-read-back",
       "prove-no-directory-outbox-builder-or-alarm-work-was-created",
-      "close-circuits-wait-sixty-second-drain-release-lease-and-record-bounded-evidence"
+      "close-circuits-wait-sixty-second-socket-drain-release-lease-and-record-unique-bounded-twenty-four-hour-rendezvous-do-cleanup-alarm-evidence"
     ],
     "cleanup": {
       "owner": "metaserver-review-environment-operator",
@@ -396,7 +399,8 @@
       "providerResiduals": {
         "analyticsDatasetRetentionDays": 90,
         "analyticsAction": "stop-writes-remove-bindings-and-record-retained-synthetic-residue",
-        "rateLimitAction": "remove-bindings-and-allow-provider-counters-to-expire"
+        "rateLimitAction": "remove-bindings-and-allow-provider-counters-to-expire",
+        "rendezvousDoAction": "close-sockets-retain-unique-replay-admission-only-until-bounded-alarm-prune-within-twenty-four-hours"
       }
     }
   },

@@ -145,7 +145,7 @@ their results; the account boundary is the hard production isolation.
 | Host/TLS/Access | Three stable review `workers.dev` hosts, provider TLS, one account-scoped `all_workers` Access application; no Custom Domain, zone WAF, cache rule, route, or preview URL |
 | Data | No production/live-request copies; fresh ephemeral nonproduction signing keys and certificates per run; no real identity or rendezvous state |
 | Schedules/logs | No cron; private Worker logs with repository redaction and no external destination |
-| Retention/cost | One cohort: 3 Workers, 2 D1 databases, 2 DO namespaces, 3 R2 buckets, 2 datasets, 5 rate namespaces, 0 custom hosts, 1 Access app; 20-minute supervised run, at most 15 mutation minutes and a five-minute live window, seven-day evidence; Analytics Engine may retain synthetic rows for 90 days and native rate counters expire on provider cadence |
+| Retention/cost | One cohort: 3 Workers, 2 D1 databases, 2 DO namespaces, 3 R2 buckets, 2 datasets, 5 rate namespaces, 0 custom hosts, 1 Access app; 20-minute supervised run, at most 15 mutation minutes and a five-minute live window, seven-day evidence; unique replay-admission DO rows/alarms expire within 24 hours, Analytics Engine may retain synthetic rows for 90 days, and native rate counters expire on provider cadence |
 
 The protocol identity is the fresh certificate hash; it is not forced into a
 text prefix. The fixture record separately carries the
@@ -189,8 +189,12 @@ Every remote operation requires readback before the next:
    failures. Prove they prohibit forward work while exact-cohort fail-safe
    circuit closure remains authorized.
 8. Disable/read back all circuits, expire direct D1 fixtures, discard keys,
-   wait the 60-second rendezvous/DO drain, CAS-release the lease, and retain only
-   closed outcomes/digests/counts/names for seven days.
+   wait 60 seconds for active rendezvous sockets and teardown retries to drain,
+   CAS-release the lease, and retain only closed outcomes/digests/counts/names
+   for seven days. A successfully claimed replay admission is deliberately kept
+   by the uniquely named per-run room and its cleanup alarm for no more than the
+   24-hour replay window. That bounded fail-safe prune needs no live lease and
+   cannot collide with a later run's fresh server ID.
 
 An ambiguous deploy/readback is possible mutation. Recovery always inspects and
 proves the disabled core. Partial runs record their completed prefix and may be
@@ -225,6 +229,9 @@ the synthetic rows for 90 days; teardown stops writes and removes bindings but
 does not claim dataset deletion. Rate-limit namespaces are binding IDs rather
 than deletable resources; teardown removes the bindings and lets counters
 expire. Both residuals are recorded separately from seven-day review evidence.
+The rendezvous replay admission/alarm is likewise recorded as bounded runtime
+cleanup; full teardown may delete the review Worker/DO namespace after circuit
+closure instead of waiting for that alarm.
 
 ## Provider references
 

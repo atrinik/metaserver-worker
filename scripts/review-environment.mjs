@@ -394,13 +394,18 @@ export function validateLiveCanary(value) {
   exactValue(value.maximumLiveWindowMinutes, 5, "live test window");
   exactValue(value.maximumConcurrentCohorts, 1, "live concurrency");
   exactValue(value.lease, "atomic-live-d1-lease-exact-sha-owner-with-bounded-expiry", "live lease");
-  exactKeys(value.stalePolicy, ["forwardMutationFence", "failSafeClosure", "lossInjection"], "live stale policy");
+  exactKeys(value.stalePolicy, [
+    "forwardMutationFence", "failSafeClosure", "boundedRuntimeCleanup", "lossInjection",
+  ], "live stale policy");
   exactValue(value.stalePolicy.forwardMutationFence,
     "reprove-github-branch-sha-and-live-lease-before-every-enable-deploy-fixture-or-test-mutation",
     "live forward mutation fence");
   exactValue(value.stalePolicy.failSafeClosure,
     "always-authorized-for-exact-reviewed-cohort-after-account-and-resource-readback",
     "live fail-safe closure");
+  exactValue(value.stalePolicy.boundedRuntimeCleanup,
+    "existing-unique-review-do-sockets-expire-within-fifteen-seconds-and-replay-admission-alarm-prunes-within-twenty-four-hours-without-live-lease",
+    "live bounded runtime cleanup");
   exactValue(value.stalePolicy.lossInjection,
     "force-push-branch-delete-and-lease-expiry-during-every-enabled-stage-must-close-circuits",
     "live loss injection");
@@ -438,6 +443,7 @@ export function validateLiveCanary(value) {
   exactKeys(value.dataPolicy, [
     "productionCopies", "liveRequestCopies", "credentials", "realServerIdentities",
     "rendezvousStateCopies", "fixturePrefix", "fixtureIdentityDerivation", "fixtureSigningKey", "fixtureMaximumAgeHours",
+    "rendezvousDoMaximumRetentionHours", "rendezvousDoIsolation",
     "isolationBeforeEveryRun", "disableCircuitsAfterEveryRun",
   ], "review data policy");
   for (const key of ["productionCopies", "liveRequestCopies", "credentials", "realServerIdentities", "rendezvousStateCopies"])
@@ -451,6 +457,9 @@ export function validateLiveCanary(value) {
   exactValue(value.dataPolicy.fixtureSigningKey,
     "ephemeral-generated-in-supervised-run-never-persisted-or-logged", "review fixture signing key");
   exactValue(value.dataPolicy.fixtureMaximumAgeHours, 24, "review fixture retention");
+  exactValue(value.dataPolicy.rendezvousDoMaximumRetentionHours, 24, "review rendezvous DO retention");
+  exactValue(value.dataPolicy.rendezvousDoIsolation,
+    "unique-ephemeral-server-id-per-run-no-cross-run-room-reuse", "review rendezvous DO isolation");
   exactArray(value.testPlan, [
     "prove-clean-exact-github-sha-before-loading-live-credentials",
     "acquire-atomic-d1-single-cohort-lease-and-suppress-stale-runs",
@@ -463,7 +472,7 @@ export function validateLiveCanary(value) {
     "inject-source-or-lease-loss-at-every-enabled-stage-and-prove-fail-safe-closure",
     "disable-all-circuits-and-prove-closed-read-back",
     "prove-no-directory-outbox-builder-or-alarm-work-was-created",
-    "close-circuits-wait-sixty-second-drain-release-lease-and-record-bounded-evidence",
+    "close-circuits-wait-sixty-second-socket-drain-release-lease-and-record-unique-bounded-twenty-four-hour-rendezvous-do-cleanup-alarm-evidence",
   ], "review executable test plan");
   exactKeys(value.cleanup, [
     "owner", "automaticOnBranchEvent", "normal", "fullOrder", "guards",
@@ -484,7 +493,7 @@ export function validateLiveCanary(value) {
   exactValue(value.cleanup.partialFailure, "stop-record-completed-prefix-leave-circuits-disabled-retry-from-readback", "review partial cleanup");
   exactValue(value.cleanup.evidenceMaximumRetentionDays, 7, "review cleanup evidence retention");
   exactKeys(value.cleanup.providerResiduals, [
-    "analyticsDatasetRetentionDays", "analyticsAction", "rateLimitAction",
+    "analyticsDatasetRetentionDays", "analyticsAction", "rateLimitAction", "rendezvousDoAction",
   ], "review provider residuals");
   exactValue(value.cleanup.providerResiduals.analyticsDatasetRetentionDays, 90,
     "review analytics retention");
@@ -492,6 +501,9 @@ export function validateLiveCanary(value) {
     "stop-writes-remove-bindings-and-record-retained-synthetic-residue", "review analytics cleanup");
   exactValue(value.cleanup.providerResiduals.rateLimitAction,
     "remove-bindings-and-allow-provider-counters-to-expire", "review rate cleanup");
+  exactValue(value.cleanup.providerResiduals.rendezvousDoAction,
+    "close-sockets-retain-unique-replay-admission-only-until-bounded-alarm-prune-within-twenty-four-hours",
+    "review rendezvous DO cleanup");
 }
 
 function productionIdentifiers(production, configurations) {

@@ -78,8 +78,11 @@ digests, resource names, counts, durations, and closed outcomes and expires
 within seven days; fixture state expires within 24 hours. Stable review URLs
 are not a secret boundary. Access credentials and raw provider responses stay
 out of URLs, comments, bodies, logs, and evidence. Normal completion disables
-all circuits, and quarterly reprovision prevents the singleton from becoming
-unbounded retained review history.
+all circuits. A replay canary's unique per-run rendezvous DO retains only its
+bounded admission tags and cleanup alarm for the 24-hour replay window; active
+sockets drain first and later runs use different room identities. Quarterly
+reprovision prevents the singleton from becoming unbounded retained review
+history.
 
 ## Source tags
 
