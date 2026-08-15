@@ -296,11 +296,22 @@ After the review trigger is active and its disposable branch proof succeeds,
 retain a no-more-than-five-minute owner-only
 `ATRINIK_REVIEW_RESULT_PROOF_FILE`. It binds the exact review trigger/token,
 terminal successful Cloudflare build UUID, same-repository
-`review/issue-56-*` branch and commit, successful GitHub Cloudflare check link,
-branch deletion, cleanup result, and the governed private-evidence coordinate.
+`review/issue-56-*` branch and commit, provider-trusted build creation/stop
+times and automatic `push` source, complete embedded trigger/command snapshot,
+and the governed private-evidence coordinate. Capture the raw results of
+`gh api repos/atrinik/metaserver-worker/commits/<review-sha>/check-runs`,
+`gh api repos/atrinik/metaserver-worker/git/matching-refs/heads/<review-ref>`,
+and `gh api repos/atrinik/metaserver-worker/compare/<review-sha>...main` outside
+the sandbox after deleting the disposable branch. The proof requires exactly
+one completed successful check from App 85455 whose exact SHA and dashboard URL
+link the live build UUID, an empty matching-ref result, and a comparison proving
+the review commit is neither equal to nor reachable from current `main`.
 The verifier corroborates that exact build in the exhaustive live review-build
-inventory; empty, failed, cancelled, stale, wrong-trigger, wrong-branch, or
-wrong-SHA evidence fails closed. Then run
+inventory and the build-only cleanup policy against the already exact bootstrap
+version/binding/route/URL/resource readback; empty, failed, cancelled, manual,
+API-triggered, stale, wrong-trigger, wrong-branch, wrong-SHA, wrong-App,
+duplicate-check, fabricated-link, live-ref, or main-reachable evidence fails
+closed. Then run
 `npm run provision:workers-builds:verify-production-activation` with a new
 snapshot output and `ATRINIK_PRODUCTION_ACTIVATION_PROOF_OUTPUT_FILE`. This
 phase-specific live verifier requires the review trigger to have its exact

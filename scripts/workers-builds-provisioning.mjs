@@ -942,38 +942,71 @@ export function validateConfiguredBuildsSnapshot({ production, review, scripts,
   };
 }
 
-export function validateReviewResultProof({ proof, reviewTrigger, reviewToken, builds },
+export function validateReviewResultProof({ proof, reviewTrigger, reviewToken, builds, mainSha },
   now = Date.now()) {
-  const keys = ["branch", "branchDeleted", "buildTokenUuid", "buildUuid", "capturedAt",
-    "cleanupProven", "evidenceLocation", "githubCheck", "repository", "reviewCommitSha",
-    "source", "triggerUuid"];
+  const keys = ["branch", "buildTokenUuid", "buildUuid", "capturedAt", "cleanupPolicy",
+    "evidenceLocation", "githubEvidence", "repository", "reviewCommitSha", "source",
+    "triggerUuid", "productionMainSha"];
   const captured = Date.parse(proof?.capturedAt ?? "");
   const rows = requireExhaustiveEnvelope(builds, "review result builds");
   const matches = rows.filter(({ build_uuid: id }) => id === proof?.buildUuid);
   const row = matches[0];
   const metadata = row?.build_trigger_metadata ?? {};
+  const created = Date.parse(row?.created_on ?? "");
+  const stopped = Date.parse(row?.stopped_on ?? "");
+  const evidenceCaptured = Date.parse(proof?.githubEvidence?.capturedAt ?? "");
+  const checkRuns = proof?.githubEvidence?.checkRuns;
+  const check = checkRuns?.check_runs?.[0];
+  const checkStarted = Date.parse(check?.started_at ?? "");
+  const checkCompleted = Date.parse(check?.completed_at ?? "");
   let details;
-  try { details = new URL(proof?.githubCheck?.detailsUrl ?? ""); } catch { details = null; }
+  try { details = new URL(check?.details_url ?? ""); } catch { details = null; }
+  const triggerKeys = ["branch_excludes", "branch_includes", "build_caching_enabled",
+    "build_command", "deploy_command", "external_script_id", "path_excludes", "path_includes",
+    "root_directory", "trigger_name", "trigger_uuid"];
+  const liveTriggerView = Object.fromEntries(triggerKeys.map((key) => [key,
+    key === "root_directory" ? normalizedRoot(reviewTrigger[key]) : reviewTrigger[key]]));
+  const buildTriggerView = Object.fromEntries(triggerKeys.map((key) => [key,
+    key === "root_directory" ? normalizedRoot(row?.trigger?.[key]) : row?.trigger?.[key]]));
   if (!proof || !same(sorted(Object.keys(proof)), sorted(keys)) ||
       proof.source !== "cloudflare-github-disposable-review-readback" ||
       proof.repository !== "atrinik/metaserver-worker" ||
+      proof.productionMainSha !== mainSha || proof.reviewCommitSha === mainSha ||
       !/^review\/issue-56-[a-z0-9-]{1,40}$/u.test(proof.branch ?? "") ||
       !gitShaPattern.test(proof.reviewCommitSha ?? "") || !uuidPattern.test(proof.buildUuid ?? "") ||
       proof.triggerUuid !== reviewTrigger.trigger_uuid ||
-      proof.buildTokenUuid !== reviewToken.build_token_uuid || proof.branchDeleted !== true ||
-      proof.cleanupProven !== true ||
+      proof.buildTokenUuid !== reviewToken.build_token_uuid ||
+      proof.cleanupPolicy !== "build-only-no-version-binding-route-url-or-resource-created" ||
       proof.evidenceLocation !== "atrinik/metaserver-worker#56-private-provider-evidence" ||
-      !same(sorted(Object.keys(proof.githubCheck ?? {})),
-        ["commitSha", "conclusion", "detailsUrl", "name"].sort()) ||
-      proof.githubCheck.name !== "Cloudflare Workers Builds" ||
-      proof.githubCheck.conclusion !== "success" ||
-      proof.githubCheck.commitSha !== proof.reviewCommitSha ||
-      details?.protocol !== "https:" || details.hostname !== "dash.cloudflare.com" ||
       !Number.isFinite(captured) || captured > now + 30_000 || now - captured > 5 * 60_000 ||
       matches.length !== 1 || row.status !== "stopped" || row.build_outcome !== "success" ||
       row.trigger?.trigger_uuid !== proof.triggerUuid || metadata.branch !== proof.branch ||
       metadata.commit_hash !== proof.reviewCommitSha ||
-      metadata.build_token_uuid !== proof.buildTokenUuid)
+      metadata.build_token_uuid !== proof.buildTokenUuid || metadata.build_trigger_source !== "push" ||
+      metadata.repo_id !== githubRepository.repo_id || metadata.repo_name !== githubRepository.repo_name ||
+      metadata.build_command !== reviewTrigger.build_command ||
+      metadata.deploy_command !== reviewTrigger.deploy_command ||
+      normalizedRoot(metadata.root_directory) !== normalizedRoot(reviewTrigger.root_directory) ||
+      !same(buildTriggerView, liveTriggerView) ||
+      !Number.isFinite(created) || !Number.isFinite(stopped) || created > stopped ||
+      stopped - created > 20 * 60_000 || stopped > captured || captured - stopped > 5 * 60_000 ||
+      !Number.isFinite(evidenceCaptured) || evidenceCaptured > now + 30_000 ||
+      evidenceCaptured < stopped || now - evidenceCaptured > 5 * 60_000 ||
+      !Array.isArray(proof.githubEvidence?.refs) || proof.githubEvidence.refs.length !== 0 ||
+      proof.githubEvidence?.comparison?.status === "ahead" ||
+      proof.githubEvidence?.comparison?.status === "identical" ||
+      !["behind", "diverged"].includes(proof.githubEvidence?.comparison?.status) ||
+      proof.githubEvidence?.comparison?.base_commit?.sha !== proof.reviewCommitSha ||
+      proof.githubEvidence?.comparison?.head_commit?.sha !== mainSha ||
+      checkRuns?.total_count !== 1 || !Array.isArray(checkRuns?.check_runs) ||
+      checkRuns.check_runs.length !== 1 || !Number.isSafeInteger(check?.id) ||
+      check.name !== "Cloudflare Workers Builds" || check.status !== "completed" ||
+      check.conclusion !== "success" || check.head_sha !== proof.reviewCommitSha ||
+      check.app?.id !== 85455 || typeof check.external_id !== "string" || !check.external_id ||
+      details?.protocol !== "https:" || details.hostname !== "dash.cloudflare.com" ||
+      !details.pathname.includes(proof.buildUuid) || !Number.isFinite(checkStarted) ||
+      !Number.isFinite(checkCompleted) || checkStarted > checkCompleted ||
+      checkCompleted > evidenceCaptured)
     fail("disposable review result proof is missing, stale, failed, or mismatched");
   return proof;
 }
@@ -1054,7 +1087,7 @@ function validateActivationSnapshot({ production, review, scripts,
     script: reviewScript, ...reviewBootstrapState, sourceSha, accountId });
   if (reviewActive) validateReviewResultProof({ proof: reviewResultProof,
     reviewTrigger: reviewRows[0], reviewToken,
-    builds: reviewBootstrapState.builds });
+    builds: reviewBootstrapState.builds, mainSha: sourceSha });
   validateSnapshotManifest(snapshotManifest, { accountId, sourceSha, production, review });
   const capturedAt = new Date().toISOString();
   const snapshotCoordinate = { accountId: snapshotManifest.accountId,

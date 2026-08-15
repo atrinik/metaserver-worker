@@ -890,21 +890,34 @@ test("proves both triggers are inert before either activation", () => {
   const buildUuid = "77777777-7777-4777-8777-777777777777";
   const reviewCommitSha = "b".repeat(40);
   const branch = "review/issue-56-provider-proof";
+  const evidenceNow = Date.now();
+  const createdOn = new Date(evidenceNow - 120_000).toISOString();
+  const stoppedOn = new Date(evidenceNow - 60_000).toISOString();
+  const capturedAt = new Date(evidenceNow).toISOString();
   const reviewBuild = { build_uuid: buildUuid, status: "stopped", build_outcome: "success",
-    trigger: { trigger_uuid: reviewTriggerUuid }, build_trigger_metadata: {
-      branch, commit_hash: reviewCommitSha, build_token_uuid: reviewTokenUuid } };
+    created_on: createdOn, stopped_on: stoppedOn, trigger: structuredClone(finalReview),
+    build_trigger_metadata: {
+      branch, commit_hash: reviewCommitSha, build_token_uuid: reviewTokenUuid,
+      build_trigger_source: "push", repo_id: "1324297032", repo_name: "metaserver-worker",
+      build_command: finalReview.build_command, deploy_command: finalReview.deploy_command,
+      root_directory: finalReview.root_directory } };
   reviewActive.reviewBootstrapState.builds = envelope([reviewBuild]);
   reviewActive.builds = reviewActive.builds.map(([label, value]) =>
     [label, label === "review" ? envelope([reviewBuild]) : value]);
   reviewActive.reviewResultProof = {
     source: "cloudflare-github-disposable-review-readback",
     repository: "atrinik/metaserver-worker", branch, reviewCommitSha, buildUuid,
+    productionMainSha: "a".repeat(40),
     triggerUuid: reviewTriggerUuid, buildTokenUuid: reviewTokenUuid,
-    branchDeleted: true, cleanupProven: true,
+    cleanupPolicy: "build-only-no-version-binding-route-url-or-resource-created",
     evidenceLocation: "atrinik/metaserver-worker#56-private-provider-evidence",
-    capturedAt: new Date().toISOString(), githubCheck: {
-      name: "Cloudflare Workers Builds", conclusion: "success", commitSha: reviewCommitSha,
-      detailsUrl: "https://dash.cloudflare.com/example/builds/77777777-7777-4777-8777-777777777777",
+    capturedAt, githubEvidence: { capturedAt, refs: [], comparison: { status: "behind",
+      base_commit: { sha: reviewCommitSha }, head_commit: { sha: "a".repeat(40) } },
+      checkRuns: { total_count: 1, check_runs: [{ id: 123456, name: "Cloudflare Workers Builds",
+        status: "completed", conclusion: "success", head_sha: reviewCommitSha,
+        started_at: createdOn, completed_at: stoppedOn, external_id: "cloudflare-review-check",
+        details_url: "https://dash.cloudflare.com/example/builds/77777777-7777-4777-8777-777777777777",
+        app: { id: 85455 } }] },
     },
   };
   const productionProof = validateProductionActivationSnapshot(reviewActive);
@@ -917,5 +930,38 @@ test("proves both triggers are inert before either activation", () => {
   const wrongReviewSha = structuredClone(reviewActive);
   wrongReviewSha.reviewResultProof.reviewCommitSha = "c".repeat(40);
   assert.throws(() => validateProductionActivationSnapshot(wrongReviewSha),
+    /disposable review result proof/u);
+  const manualReview = structuredClone(reviewActive);
+  manualReview.reviewBootstrapState.builds.result[0].build_trigger_metadata.build_trigger_source =
+    "api";
+  assert.throws(() => validateProductionActivationSnapshot(manualReview),
+    /disposable review result proof/u);
+  const wrongApp = structuredClone(reviewActive);
+  wrongApp.reviewResultProof.githubEvidence.checkRuns.check_runs[0].app.id = 999;
+  assert.throws(() => validateProductionActivationSnapshot(wrongApp),
+    /disposable review result proof/u);
+  const existingBranch = structuredClone(reviewActive);
+  existingBranch.reviewResultProof.githubEvidence.refs = [{ ref: `refs/heads/${branch}` }];
+  assert.throws(() => validateProductionActivationSnapshot(existingBranch),
+    /disposable review result proof/u);
+  const unrelatedLink = structuredClone(reviewActive);
+  unrelatedLink.reviewResultProof.githubEvidence.checkRuns.check_runs[0].details_url =
+    "https://dash.cloudflare.com/example/builds/unrelated";
+  assert.throws(() => validateProductionActivationSnapshot(unrelatedLink),
+    /disposable review result proof/u);
+  const mainReachable = structuredClone(reviewActive);
+  mainReachable.reviewResultProof.githubEvidence.comparison.status = "ahead";
+  assert.throws(() => validateProductionActivationSnapshot(mainReachable),
+    /disposable review result proof/u);
+  const duplicateCheck = structuredClone(reviewActive);
+  duplicateCheck.reviewResultProof.githubEvidence.checkRuns.total_count = 2;
+  duplicateCheck.reviewResultProof.githubEvidence.checkRuns.check_runs.push(
+    structuredClone(duplicateCheck.reviewResultProof.githubEvidence.checkRuns.check_runs[0]));
+  assert.throws(() => validateProductionActivationSnapshot(duplicateCheck),
+    /disposable review result proof/u);
+  const oldBuild = structuredClone(reviewActive);
+  oldBuild.reviewBootstrapState.builds.result[0].created_on =
+    new Date(evidenceNow - 30 * 60_000).toISOString();
+  assert.throws(() => validateProductionActivationSnapshot(oldBuild),
     /disposable review result proof/u);
 });
