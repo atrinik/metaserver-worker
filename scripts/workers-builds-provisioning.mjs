@@ -879,7 +879,7 @@ export function validateConfiguredBuildsSnapshot({ production, review, scripts,
 
 export function validateStagedBuildsSnapshot({ production, review, scripts,
   productionTriggers, productionEnvironment, reviewTriggers, reviewEnvironment,
-  deployHooks, builds, buildTokens, accountTriggers, reviewBootstrapState,
+  nonEntrypointTriggers, deployHooks, builds, buildTokens, accountTriggers, reviewBootstrapState,
   reviewBootstrapConfig, accountId, tokenAuthorityProofs, sourceSha, sentinelProof }) {
   validateSentinelRefAbsence(sentinelProof);
   const scriptRows = requireEnvelope(scripts, "scripts");
@@ -927,6 +927,10 @@ export function validateStagedBuildsSnapshot({ production, review, scripts,
     "staged production environment"));
   validateAutomaticReviewEnvironment(requireEnvelope(reviewEnvironment,
     "staged review environment"), review);
+  for (const [label, envelope] of exactLabeledInventories(nonEntrypointTriggers,
+    production.workers.slice(1).map(({ role }) => role), "staged non-entrypoint trigger"))
+    if (requireExhaustiveEnvelope(envelope, `${label} staged triggers`).length !== 0)
+      fail(`${label} has an independent staged Builds trigger`);
   const metaserverTriggers = requireExhaustiveEnvelope(accountTriggers, "account triggers")
     .filter(({ repo_connection: connection }) => connection?.provider_type === "github" &&
       connection.provider_account_id === githubRepository.provider_account_id &&
@@ -1596,6 +1600,9 @@ async function validateStagedSnapshotDirectory({ snapshotDirectory, production, 
   const builds = await Promise.all([...production.workers.map(({ role, name }) => [role, name]),
     ["review", reviewProject]].map(async ([label, name]) =>
       [label, await loadSnapshot(snapshotDirectory, `${name}.builds.json`)]));
+  const nonEntrypointTriggers = await Promise.all(production.workers.slice(1)
+    .map(async ({ role, name }) =>
+      [role, await loadSnapshot(snapshotDirectory, `${name}.triggers.json`)]));
   const reviewBootstrapState = {
     settings: await loadSnapshot(snapshotDirectory, `${reviewProject}.settings.json`),
     subdomain: await loadSnapshot(snapshotDirectory, `${reviewProject}.subdomain.json`),
@@ -1618,7 +1625,8 @@ async function validateStagedSnapshotDirectory({ snapshotDirectory, production, 
     "staging sentinel refs");
   if (sentinelProof.branch !== branch) fail("staging sentinel proof branch drift");
   return validateStagedBuildsSnapshot({ production, review, scripts, productionTriggers,
-    productionEnvironment, reviewTriggers, reviewEnvironment, deployHooks, builds, buildTokens,
+    productionEnvironment, reviewTriggers, reviewEnvironment, nonEntrypointTriggers,
+    deployHooks, builds, buildTokens,
     accountTriggers: await loadSnapshot(snapshotDirectory, "account-triggers.json"),
     reviewBootstrapState, reviewBootstrapConfig, accountId, tokenAuthorityProofs, sourceSha,
     sentinelProof });

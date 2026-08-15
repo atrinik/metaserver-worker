@@ -806,6 +806,8 @@ test("proves both triggers are inert before either activation", () => {
     productionEnvironment: envelope(productionEnvironment),
     reviewTriggers: envelope([reviewSpec]),
     reviewEnvironment: envelope(automaticReviewEnvironmentSpec(review)),
+    nonEntrypointTriggers: production.workers.slice(1)
+      .map(({ role }) => [role, envelope([])]),
     buildTokens: buildTokenInventory(),
     deployHooks: [...production.workers.map(({ role }) => role), "review"]
       .map((label) => [label, envelope([])]),
@@ -819,4 +821,10 @@ test("proves both triggers are inert before either activation", () => {
   const wrongToken = structuredClone(arguments_);
   wrongToken.productionTriggers.result[0].build_token_uuid = resourceUuid;
   assert.throws(() => validateStagedBuildsSnapshot(wrongToken), /zero-resource review token/u);
+  const callerTrigger = structuredClone(arguments_);
+  callerTrigger.nonEntrypointTriggers[0][1].result.push({ trigger_uuid: resourceUuid,
+    repo_connection: { provider_type: "gitlab", repo_id: "unrelated" } });
+  callerTrigger.nonEntrypointTriggers[0][1].result_info.total_count = 1;
+  assert.throws(() => validateStagedBuildsSnapshot(callerTrigger),
+    /independent staged Builds trigger/u);
 });
