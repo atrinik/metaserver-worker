@@ -271,15 +271,26 @@ ATRINIK_PRODUCTION_BUILD_TOKEN_PERMISSION_PROOF_FILE=/secure/path/production-tok
 ATRINIK_REVIEW_BUILD_TOKEN_PERMISSION_PROOF_FILE=/secure/path/review-token-policy.json \
 ATRINIK_REVIEW_BOOTSTRAP_UPLOAD_PROOF_FILE=/secure/path/review-bootstrap-upload.json \
 ATRINIK_WORKERS_BUILDS_USAGE_PROOF_FILE=/secure/path/build-usage.json \
+ATRINIK_STAGED_PROOF_OUTPUT_FILE=/secure/private/staged-proof.json \
   npm run provision:workers-builds:verify-staged
 ```
 
 This requires both triggers to select only the same fresh private sentinel and
 use the zero-resource review token, while both exact environments are present,
 all builds are stopped, and the bootstrap/token/usage proofs are current.
-The setup plan makes this exact command produce the private staged-proof digest;
-both activation PATCHes consume that result, so neither activation is reachable
-when staged verification is skipped or stale. The complete setup/activation/
+The command writes a new owner-only proof containing a deterministic SHA-256 of
+the fresh manifest and exact staged trigger/environment/token/bootstrap/
+hook/build evidence. Immediately before each activation PATCH, set
+`ATRINIK_STAGED_PROOF_FILE` to that record and run
+`npm run provision:workers-builds:verify-staged-proof` with the read token,
+production D1-read token, and a new `ATRINIK_PROVIDER_SNAPSHOT_OUTPUT`
+directory. It performs two new complete provider sweeps, requires the original
+proof to be no more than five minutes old and the live sweep no more than 30
+seconds old, and
+rejects any coordinate or digest mismatch. The setup plan makes the original
+command produce this private staged-proof digest and makes both activation
+PATCHes consume a successful fresh revalidation, so neither activation is reachable
+when staged verification is skipped, stale, or replayed. The complete setup/activation/
 rollback request document is digest-pinned by the validator, not merely its
 operation names.
 

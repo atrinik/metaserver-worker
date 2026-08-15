@@ -25,7 +25,7 @@ const maximumPrivateDocumentBytes = 64 * 1024;
 const maximumProviderPages = 100;
 const stagingBranchPattern = /^review-build-only-sentinel-[0-9a-f]{32}$/u;
 const gitShaPattern = /^[0-9a-f]{40}$/u;
-const expectedSetupPlanSha256 = "28ed55c661d95d5f26f41277c938e0fe7ff5a650423652c7af82f01b77f297ea";
+const expectedSetupPlanSha256 = "06ec6da538be0dd3f33ce47b1715845a661afaeebb06fe80e89c3af15aeed5ee";
 const githubRepository = Object.freeze({
   provider_account_id: "6371603",
   provider_account_name: "atrinik",
@@ -374,6 +374,8 @@ export function provisioningSetupPlan(production, review) {
       "ATRINIK_REVIEW_BOOTSTRAP_API_TOKEN_FILE",
       "ATRINIK_REVIEW_BOOTSTRAP_UPLOAD_PROOF_FILE",
       "ATRINIK_WORKERS_BUILDS_USAGE_PROOF_FILE",
+      "ATRINIK_STAGED_PROOF_OUTPUT_FILE",
+      "ATRINIK_STAGED_PROOF_FILE",
       "ATRINIK_PRODUCTION_BUILD_TOKEN_SECRET_FILE",
       "ATRINIK_PRODUCTION_BUILD_TOKEN_ID_FILE",
       "ATRINIK_PRODUCTION_BUILD_TOKEN_PERMISSION_PROOF_FILE",
@@ -516,6 +518,7 @@ export function provisioningSetupPlan(production, review) {
     reviewActivation: {
       gate: "review-trigger-activation-and-proof",
       precondition: { stagedProof: resultReference("staged-readback", "proof_digest") },
+      preconditionCommand: "npm run provision:workers-builds:verify-staged-proof",
       request: { method: "PATCH",
         path: apiPathReference("/builds/triggers/{trigger_uuid}",
           "review-trigger-staged", "trigger_uuid"),
@@ -528,6 +531,7 @@ export function provisioningSetupPlan(production, review) {
         sentinel: "repeat-exact-private-random-sentinel-ref-absence-proof-immediately-before-atomic-patch",
         stagedProof: resultReference("staged-readback", "proof_digest"),
       },
+      preconditionCommand: "npm run provision:workers-builds:verify-staged-proof",
       request: { method: "PATCH",
         path: apiPathReference("/builds/triggers/{trigger_uuid}",
           "production-trigger-staged", "trigger_uuid"),
@@ -938,7 +942,8 @@ export function validateConfiguredBuildsSnapshot({ production, review, scripts,
 export function validateStagedBuildsSnapshot({ production, review, scripts,
   productionTriggers, productionEnvironment, reviewTriggers, reviewEnvironment,
   nonEntrypointTriggers, deployHooks, builds, buildTokens, accountTriggers, reviewBootstrapState,
-  reviewBootstrapConfig, accountId, tokenAuthorityProofs, sourceSha, sentinelProof }) {
+  reviewBootstrapConfig, accountId, tokenAuthorityProofs, sourceSha, sentinelProof,
+  snapshotManifest }) {
   validateSentinelRefAbsence(sentinelProof);
   const scriptRows = requireEnvelope(scripts, "scripts");
   const productionScript = scriptRows.find(({ id }) => id === production.workers[0].name);
@@ -1006,8 +1011,41 @@ export function validateStagedBuildsSnapshot({ production, review, scripts,
     "staged build")) validateNoActiveBuilds(envelope, label);
   validateReviewBootstrapState({ review, config: reviewBootstrapConfig,
     script: reviewScript, ...reviewBootstrapState, sourceSha, accountId });
+  validateSnapshotManifest(snapshotManifest, { accountId, sourceSha, production, review });
+  const capturedAt = new Date().toISOString();
+  const snapshotCoordinate = { accountId: snapshotManifest.accountId,
+    sourceSha: snapshotManifest.sourceSha,
+    productionContractSha256: snapshotManifest.productionContractSha256,
+    reviewContractSha256: snapshotManifest.reviewContractSha256 };
+  const sentinelCoordinate = { repository: sentinelProof.repository, branch: sentinelProof.branch,
+    refs: sentinelProof.refs };
+  const proof_digest = digestJson({ snapshotCoordinate, sentinelCoordinate, scripts,
+    productionTriggers, productionEnvironment, reviewTriggers, reviewEnvironment,
+    nonEntrypointTriggers, deployHooks, builds, buildTokens, accountTriggers,
+    reviewBootstrapState, tokenAuthorityProofs });
   return { outcome: "workers-builds-staged-snapshot-valid", mutation: false,
-    stagedTriggerCount: 2 };
+    stagedTriggerCount: 2, accountId, sourceSha, capturedAt, proof_digest };
+}
+
+export function validateStagedProof(proof, current, now = Date.now()) {
+  const keys = ["accountId", "capturedAt", "mutation", "outcome", "proof_digest",
+    "sourceSha", "stagedTriggerCount"];
+  const captured = Date.parse(proof?.capturedAt ?? "");
+  const currentCaptured = Date.parse(current?.capturedAt ?? "");
+  if (!proof || !current || !same(sorted(Object.keys(proof)), sorted(keys)) ||
+      !same(sorted(Object.keys(current)), sorted(keys)) ||
+      proof.accountId !== current.accountId || proof.sourceSha !== current.sourceSha ||
+      proof.proof_digest !== current.proof_digest ||
+      proof.outcome !== "workers-builds-staged-snapshot-valid" || proof.mutation !== false ||
+      proof.stagedTriggerCount !== 2 || !/^[0-9a-f]{64}$/u.test(proof.proof_digest ?? "") ||
+      !Number.isFinite(captured) || captured > now + 30_000 || now - captured > 5 * 60_000)
+    fail("staged activation proof is missing, stale, or mismatched");
+  if (current.outcome !== proof.outcome || current.mutation !== false ||
+      current.stagedTriggerCount !== 2 || !Number.isFinite(currentCaptured) ||
+      currentCaptured > now + 30_000 || now - currentCaptured > 30_000)
+    fail("current staged activation readback is stale or malformed");
+  return { outcome: "workers-builds-staged-activation-proof-valid", mutation: false,
+    proof_digest: proof.proof_digest };
 }
 
 export function materializeProductionConfiguration({
@@ -1249,6 +1287,17 @@ async function writePrivateJson(path, value) {
   } finally { await handle.close(); }
 }
 
+async function writePrivateProof(path, value) {
+  if (!isAbsolute(path ?? "") || resolve(path) !== path)
+    fail("private proof output path must be absolute and normalized");
+  const parent = dirname(path);
+  const metadata = await lstat(parent).catch(() => null);
+  if (await realpath(parent).catch(() => null) !== parent || !metadata?.isDirectory() ||
+      !isCurrentUserOwned(metadata) || (metadata.mode & 0o077) !== 0)
+    fail("private proof output parent must be owner-only and symlink-free");
+  await writePrivateJson(path, value);
+}
+
 export async function boundedResponseText(response, label) {
   if (!response.body) fail(`${label} returned an empty provider body`);
   const reader = response.body.getReader();
@@ -1304,6 +1353,7 @@ async function providerGetStable(context, label, path) {
   if (!same(first.result, second.result))
     fail(`${label} provider state changed between complete passes`);
   await writePrivateJson(resolve(context.outputDirectory, `${label}.json`), second);
+  context.stableReadbacks.push({ kind: "get", label, path, expected: second.result });
   return second;
 }
 
@@ -1314,6 +1364,8 @@ async function providerPostStable(context, label, path, requestBody, projection 
   if (!same(projection(first), projection(second)))
     fail(`${label} provider state changed between complete passes`);
   await writePrivateJson(resolve(context.outputDirectory, `${label}.json`), second);
+  context.stableReadbacks.push({ kind: "post", label, path, requestBody, token: context.token,
+    expected: projection(second), projection });
   return second;
 }
 
@@ -1395,6 +1447,8 @@ async function providerGetPaginated(context, label, path, identity, perPage = 50
   const second = await providerGetPaginatedPass(context, `${label}.pass-2`, path, identity, perPage);
   validateStableProviderPasses(first, second, label);
   await writePrivateJson(resolve(context.outputDirectory, `${label}.json`), second);
+  context.stableReadbacks.push({ kind: "paginated", label, path, identity, perPage,
+    expected: second.result });
   return second;
 }
 
@@ -1422,19 +1476,45 @@ async function providerGetWorkerVersions(context, label, path, perPage = 50) {
   const second = await providerGetWorkerVersionsPass(context, `${label}.pass-2`, path, perPage);
   validateStableProviderPasses(first, second, label);
   await writePrivateJson(resolve(context.outputDirectory, `${label}.json`), second);
+  context.stableReadbacks.push({ kind: "versions", label, path, perPage,
+    expected: second.result });
   return second;
+}
+
+async function verifyCompleteProviderSweep(context) {
+  const readbacks = [...context.stableReadbacks];
+  for (const item of readbacks) {
+    let actual;
+    if (item.kind === "get")
+      actual = (await providerGet(context, `${item.label}.sweep-final`, item.path)).result;
+    else if (item.kind === "post")
+      actual = item.projection(await providerPost({ ...context, token: item.token },
+        `${item.label}.sweep-final`,
+        item.path, item.requestBody));
+    else if (item.kind === "paginated")
+      actual = (await providerGetPaginatedPass(context, `${item.label}.sweep-final`,
+        item.path, item.identity, item.perPage)).result;
+    else if (item.kind === "versions")
+      actual = (await providerGetWorkerVersionsPass(context, `${item.label}.sweep-final`,
+        item.path, item.perPage)).result;
+    else fail("provider sweep readback kind is malformed");
+    if (!same(item.expected, actual))
+      fail(`${item.label} changed between complete provider sweeps`);
+  }
 }
 
 async function readProviderSnapshot({ accountId, token, productionReadToken, outputDirectory,
   production, review, sourceSha }) {
   const startedAt = new Date().toISOString();
   await createPrivateDirectory(outputDirectory);
-  const context = { accountId, token, outputDirectory };
+  const context = { accountId, token, outputDirectory, stableReadbacks: [] };
   const scriptsFirst = await providerGet(context, "scripts.pass-1", "/workers/scripts");
   const scripts = await providerGet(context, "scripts.pass-2", "/workers/scripts");
   if (!same(scriptsFirst.result, scripts.result))
     fail("account Worker inventory changed between complete passes");
   await writePrivateJson(resolve(outputDirectory, "scripts.json"), scripts);
+  context.stableReadbacks.push({ kind: "get", label: "scripts", path: "/workers/scripts",
+    expected: scripts.result });
   const scriptRows = requireEnvelope(scripts, "scripts");
   if (!Array.isArray(scriptRows) || scriptRows.length > 1000)
     fail("account Worker inventory is invalid or unbounded");
@@ -1529,10 +1609,11 @@ async function readProviderSnapshot({ accountId, token, productionReadToken, out
     ({ build_token_uuid: id }) => id);
   await providerGetStable(context, "build-limits", "/builds/account/limits");
   if (!productionDatabaseId) fail("production D1 database identity is unavailable");
-  await providerPostStable({ accountId, token: productionReadToken, outputDirectory },
+  await providerPostStable({ ...context, token: productionReadToken },
     "production-migrations", `/d1/database/${encodeURIComponent(productionDatabaseId)}/query`,
     { sql: "SELECT id, name FROM d1_migrations ORDER BY id", params: [] },
     ({ result }) => result?.map(({ results }) => results));
+  await verifyCompleteProviderSweep(context);
   await writePrivateJson(resolve(outputDirectory, "snapshot-manifest.json"), {
     accountId, sourceSha, startedAt, completedAt: new Date().toISOString(),
     productionContractSha256: digestJson(production), reviewContractSha256: digestJson(review),
@@ -1661,8 +1742,8 @@ async function validateConfiguredSnapshotDirectory({ snapshotDirectory, producti
 
 async function validateStagedSnapshotDirectory({ snapshotDirectory, production, review,
   reviewBootstrapConfig, accountId, tokenAuthorityProofs, sourceSha }) {
-  validateSnapshotManifest(await loadSnapshot(snapshotDirectory, "snapshot-manifest.json"),
-    { accountId, sourceSha, production, review });
+  const snapshotManifest = await loadSnapshot(snapshotDirectory, "snapshot-manifest.json");
+  validateSnapshotManifest(snapshotManifest, { accountId, sourceSha, production, review });
   const core = production.workers[0];
   const reviewProject = review.automaticReview.project;
   const scripts = await loadSnapshot(snapshotDirectory, "scripts.json");
@@ -1714,7 +1795,7 @@ async function validateStagedSnapshotDirectory({ snapshotDirectory, production, 
     deployHooks, builds, buildTokens,
     accountTriggers: await loadSnapshot(snapshotDirectory, "account-triggers.json"),
     reviewBootstrapState, reviewBootstrapConfig, accountId, tokenAuthorityProofs, sourceSha,
-    sentinelProof });
+    sentinelProof, snapshotManifest });
 }
 
 async function validateFreshSnapshotDirectory({ snapshotDirectory, production, review,
@@ -1842,10 +1923,39 @@ async function main() {
         "review build token permission proof"),
     ];
     const sourceSha = await reviewedCurrentMainSha();
-    process.stdout.write(`${JSON.stringify(await validateStagedSnapshotDirectory({
+    const stagedProof = await validateStagedSnapshotDirectory({
       snapshotDirectory: process.env.ATRINIK_PROVIDER_SNAPSHOT_DIRECTORY,
       production, review, reviewBootstrapConfig, accountId, tokenAuthorityProofs, sourceSha,
-    }))}\n`);
+    });
+    await writePrivateProof(process.env.ATRINIK_STAGED_PROOF_OUTPUT_FILE, stagedProof);
+    process.stdout.write(`${JSON.stringify(stagedProof)}\n`);
+    return;
+  }
+  if (mode === "--verify-staged-proof") {
+    const accountId = await readPrivateValue(process.env.ATRINIK_CLOUDFLARE_ACCOUNT_ID_FILE,
+      "Cloudflare account ID", accountIdPattern);
+    const token = await readPrivateValue(process.env.ATRINIK_WORKERS_BUILDS_API_TOKEN_FILE,
+      "Workers Builds API token");
+    const productionReadToken = await readPrivateValue(
+      process.env.ATRINIK_PRODUCTION_BUILD_TOKEN_SECRET_FILE,
+      "production D1 read API token");
+    const tokenAuthorityProofs = [
+      await readPrivateJson(process.env.ATRINIK_PRODUCTION_BUILD_TOKEN_PERMISSION_PROOF_FILE,
+        "production build token permission proof"),
+      await readPrivateJson(process.env.ATRINIK_REVIEW_BUILD_TOKEN_PERMISSION_PROOF_FILE,
+        "review build token permission proof"),
+    ];
+    const sourceSha = await reviewedCurrentMainSha();
+    const activationSnapshotDirectory = process.env.ATRINIK_PROVIDER_SNAPSHOT_OUTPUT;
+    await readProviderSnapshot({ accountId, token, productionReadToken,
+      outputDirectory: activationSnapshotDirectory, production, review, sourceSha });
+    const current = await validateStagedSnapshotDirectory({
+      snapshotDirectory: activationSnapshotDirectory,
+      production, review, reviewBootstrapConfig, accountId, tokenAuthorityProofs, sourceSha,
+    });
+    const proof = await readPrivateJson(process.env.ATRINIK_STAGED_PROOF_FILE,
+      "staged activation proof");
+    process.stdout.write(`${JSON.stringify(validateStagedProof(proof, current))}\n`);
     return;
   }
   if (mode === "--verify-configured") {

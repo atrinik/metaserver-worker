@@ -33,6 +33,7 @@ import {
   validateSetupPlan,
   validateStableProviderPasses,
   validateStagedBuildsSnapshot,
+  validateStagedProof,
   validateTriggerSnapshot,
 } from "./workers-builds-provisioning.mjs";
 import { validateBuildEnvironment } from "./production-delivery.mjs";
@@ -58,6 +59,13 @@ function envelope(result) {
   return Array.isArray(result) ? { success: true, result, result_info: {
     page: 1, total_pages: 1, total_count: result.length, exhaustive: true,
   } } : { success: true, result };
+}
+
+function freshSnapshotManifest(sourceSha = "a".repeat(40)) {
+  const now = new Date().toISOString();
+  return { accountId, sourceSha, startedAt: now, completedAt: now,
+    productionContractSha256: createHash("sha256").update(JSON.stringify(production)).digest("hex"),
+    reviewContractSha256: createHash("sha256").update(JSON.stringify(review)).digest("hex") };
 }
 
 function bindings(config) {
@@ -824,6 +832,7 @@ test("proves both triggers are inert before either activation", () => {
     productionEnvironment[name].value = null;
   const arguments_ = {
     ...configuredBoundary(productionSpec, reviewSpec), production, review, sentinelProof,
+    snapshotManifest: freshSnapshotManifest(),
     scripts: envelope([{ id: production.workers[0].name, tag: scriptTag },
       { id: review.automaticReview.project, tag: reviewScriptTag }]),
     productionTriggers: envelope([productionSpec]),
@@ -838,7 +847,16 @@ test("proves both triggers are inert before either activation", () => {
     builds: [...production.workers.map(({ role }) => [role, envelope([])]),
       ["review", envelope([])]],
   };
-  assert.equal(validateStagedBuildsSnapshot(arguments_).stagedTriggerCount, 2);
+  const stagedProof = validateStagedBuildsSnapshot(arguments_);
+  assert.equal(stagedProof.stagedTriggerCount, 2);
+  assert.match(stagedProof.proof_digest, /^[0-9a-f]{64}$/u);
+  assert.equal(validateStagedProof(stagedProof, stagedProof).proof_digest,
+    stagedProof.proof_digest);
+  assert.throws(() => validateStagedProof({ ...stagedProof, proof_digest: "0".repeat(64) },
+    stagedProof), /staged activation proof/u);
+  const staleProof = { ...stagedProof, capturedAt: "2026-08-15T00:00:00.000Z" };
+  assert.throws(() => validateStagedProof(staleProof, staleProof,
+    Date.parse("2026-08-15T00:06:00.000Z")), /staged activation proof/u);
   const active = structuredClone(arguments_);
   active.productionTriggers.result[0].branch_includes = ["main"];
   assert.throws(() => validateStagedBuildsSnapshot(active), /trigger branch_includes drift/u);
