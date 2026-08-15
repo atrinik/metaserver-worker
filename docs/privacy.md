@@ -62,8 +62,9 @@ trigger contains no protected input, binding, route, Worker upload, production
 resource permission, or live-canary credential. They emit only the public
 branch, source SHA, build UUID, closed check outcome, bounded output size, and
 Cloudflare's native PR status comment/history. Fork code is not replayed
-through that connection. The non-production trigger shares the one supported
-production-account GitHub connection, but its distinct dedicated-nonhuman user
+through that connection. A separate inert review-check project in the
+production account reuses the one supported repository connection but shares
+no production project setting or protected input. Its dedicated-nonhuman user
 token contains no personal data and has only `User Details:Read` plus empty
 account/zone permissions and selectors. #56 must
 prove representative production reads and writes fail before enabling it.

@@ -125,9 +125,10 @@ eligible same-repository non-`main` branches an automatic build-only check
 with no bindings, protected inputs, upload, or URL. Forks receive ordinary
 GitHub repository validation only. Changes that need live provider evidence
 use a separately requested, operator-supervised exact-SHA run against one
-serialized, Access-protected, production-disjoint canary cohort. The automatic
-trigger shares the single supported production-account GitHub connection but
-uses a distinct token with no account/zone resource permission; the live
+serialized, Access-protected, production-disjoint canary cohort. A separate
+inert review-check project in the production account reuses the single
+supported repository connection but has its own zero-resource token and no
+production protected input or setting; the live
 account has no GitHub connection and uses stable `workers.dev` hosts. Native
 Cloudflare checks and PR status comments/history contain no preview URL. That
 cohort is not

@@ -6,23 +6,24 @@
   "selectedMode": "single-connection-build-only-plus-operator-live-canary",
   "automaticReview": {
     "accountBoundary": {
-      "mode": "production-connection-zero-resource-preview-token",
+      "mode": "production-account-dedicated-zero-resource-project",
       "productionAccountReuse": true,
       "liveCanaryAccountReuse": false,
       "githubAccountConnections": 1,
-      "connectedWorker": "atrinik-metaserver"
+      "repositoryConnectionReuse": true,
+      "connectedWorker": "atrinik-metaserver-review-check",
+      "productionProjectSettingsReachable": false
     },
-    "project": "atrinik-metaserver",
+    "project": "atrinik-metaserver-review-check",
     "rootDirectory": "",
-    "productionBranch": "main",
-    "productionAutomaticPush": true,
-    "productionDeployCommand": "npm run deploy:production",
+    "productionBranch": "review-build-only-sentinel",
+    "productionAutomaticPush": false,
+    "productionDeployCommand": "npm run review:reject-sentinel",
     "previewBranchIncludes": ["*"],
-    "previewBranchExcludes": ["main"],
+    "previewBranchExcludes": ["main", "review-build-only-sentinel"],
     "pathIncludes": ["*"],
     "pathExcludes": [],
-    "installCommand": "env -i PATH=\"$PATH\" npm_config_cache=/tmp/atrinik-npm-cache npm install --global --ignore-scripts npm@11.16.0 && env -i PATH=\"$PATH\" npm_config_cache=/tmp/atrinik-npm-cache npm ci --ignore-scripts",
-    "buildCommand": "npm run review:branch",
+    "buildCommand": "env -i PATH=\"$PATH\" npm_config_cache=/tmp/atrinik-npm-cache npm install --global --ignore-scripts npm@11.16.0 && env -i PATH=\"$PATH\" npm_config_cache=/tmp/atrinik-npm-cache npm ci --ignore-scripts && npm run review:branch",
     "deployCommand": "npm run review:validate",
     "providerBuildTimeoutMinutes": 20,
     "checkCommandTimeoutMinutes": 15,
@@ -72,7 +73,7 @@
       "branch": "same-repository-non-main",
       "commit": "full-40-lowercase-hex-sha",
       "checkout": "clean-detached-exact-sha",
-      "githubProof": "gh-read-only-branch-and-commit-readback-before-credentials",
+      "githubProof": "gh-read-only-branch-commit-and-not-reachable-from-main-proof-before-credentials",
       "approval": "maintainer-explicit-exact-sha-record"
     },
     "actors": [
@@ -81,7 +82,7 @@
         "when": "issue-56-reviewed-setup-only",
         "permissions": ["Workers Scripts:Edit", "D1:Edit", "Workers R2 Storage:Edit", "Access Apps and Policies:Edit", "Account Settings:Read"],
         "resources": ["dedicated-live-canary-account"],
-        "authority": ["live-account-resource-create", "workers-dev-subdomain", "access-policy", "runtime-secret-write"],
+        "authority": ["live-account-resource-create", "workers-dev-subdomain", "all-workers-access-policy", "runtime-secret-write"],
         "routine": false
       },
       {
@@ -104,8 +105,8 @@
         "actor": "access-canary",
         "when": "bounded-live-window",
         "permissions": [],
-        "resources": ["three-review-access-applications"],
-        "authority": ["three-review-access-applications"],
+        "resources": ["one-review-all-workers-access-application"],
+        "authority": ["one-review-all-workers-access-application"],
         "routine": true
       },
       {
@@ -131,7 +132,11 @@
     "maximumLiveWindowMinutes": 5,
     "maximumConcurrentCohorts": 1,
     "lease": "atomic-live-d1-lease-exact-sha-owner-with-bounded-expiry",
-    "stalePolicy": "reprove-github-branch-sha-before-every-mutation",
+    "stalePolicy": {
+      "forwardMutationFence": "reprove-github-branch-sha-and-live-lease-before-every-enable-deploy-fixture-or-test-mutation",
+      "failSafeClosure": "always-authorized-for-exact-reviewed-cohort-after-account-and-resource-readback",
+      "lossInjection": "force-push-branch-delete-and-lease-expiry-during-every-enabled-stage-must-close-circuits"
+    },
     "deploymentOrder": ["core", "publisher", "rendezvous"],
     "circuits": {
       "staging": "disabled",
@@ -157,13 +162,13 @@
     },
     "resourceCeilings": {
       "workers": 3,
-      "d1Databases": 1,
+      "d1Databases": 2,
       "durableObjectNamespaces": 2,
       "r2Buckets": 3,
       "analyticsDatasets": 2,
       "rateLimitNamespaces": 5,
       "customHostnames": 0,
-      "accessApplications": 3,
+      "accessApplications": 1,
       "cohortLifetime": "long-lived-singleton",
       "quarterlyReprovisionRequired": true
     },
@@ -202,6 +207,20 @@
           "test/fixtures/metaserver-classic-publisher-v2.json",
           "test/fixtures/metaserver-game-publisher-v1.json"
         ]
+      },
+      "coordinationD1": {
+        "owner": "review-live-runner",
+        "name": "atrinik-metaserver-review-coordination",
+        "schema": "review-coordination-v1",
+        "schemaPath": "deployment/review-coordination-v1.sql",
+        "schemaSha256": "5fc64aed0bbeb937f357630df3bdb3052eb98490f0f857f987e812be42b06140",
+        "table": "review_runs",
+        "columns": ["singleton", "source_sha", "run_uuid", "lease_generation", "lease_expires_at", "fixture_namespace", "state"],
+        "acquire": "insert-or-cas-expired-after-disabled-drain-proof",
+        "renew": "cas-run-uuid-generation-before-forward-mutation",
+        "release": "cas-run-uuid-generation-after-disabled-drain-proof",
+        "reclaim": "compare-lease-expires-at-to-provider-utc-after-exact-disabled-readback-and-sixty-second-drain",
+        "maximumLeaseMinutes": 30
       },
       "durableObjects": [
         {
@@ -251,32 +270,37 @@
         {
           "owner": "core",
           "binding": "PUBLISH_IDENTITY_RATE_LIMITER",
-          "namespace": "review-canary-core-publish",
+          "namespaceId": "2006",
+          "simple": { "limit": 2, "period": 60 },
           "productionNamespaceReuse": false
         },
         {
           "owner": "core",
           "binding": "RENDEZVOUS_SERVER_RATE_LIMITER",
-          "namespace": "review-canary-core-rendezvous-server",
+          "namespaceId": "2007",
+          "simple": { "limit": 3, "period": 60 },
           "productionNamespaceReuse": false
         },
         {
           "owner": "publisher",
           "binding": "GLOBAL_RATE_LIMITER",
-          "namespace": "review-canary-publisher-global",
+          "namespaceId": "2101",
+          "simple": { "limit": 10, "period": 60 },
           "productionNamespaceReuse": false
         },
         {
           "owner": "rendezvous",
           "binding": "GLOBAL_RATE_LIMITER",
-          "namespace": "review-canary-rendezvous-global",
+          "namespaceId": "2201",
+          "simple": { "limit": 10, "period": 60 },
           "productionNamespaceReuse": false
         }
       ],
       "rendezvousClientRateLimit": {
         "owner": "rendezvous",
         "binding": "RENDEZVOUS_CLIENT_RATE_LIMITER",
-        "namespace": "review-canary-rendezvous-client",
+        "namespaceId": "2202",
+        "simple": { "limit": 60, "period": 60 },
         "countedWithinRateLimitNamespaceCeiling": true,
         "productionNamespaceReuse": false
       },
@@ -305,7 +329,7 @@
         "tls": "provider-managed-workers-dev",
         "waf": "none-production-waf-not-proven",
         "cache": "none-static-r2-readback-is-provider-api-only",
-        "access": "three-review-canary-applications",
+        "access": "one-all-workers-review-canary-application",
         "productionRuleAuthority": false
       },
       "cron": {
@@ -337,12 +361,14 @@
       "acquire-atomic-d1-single-cohort-lease-and-suppress-stale-runs",
       "disable-all-circuits-and-read-back",
       "prove-isolated-state-and-require-exact-preapplied-migration-ledger",
-      "generate-ephemeral-signing-keys-and-seed-fresh-nonproduction-fixtures",
+      "generate-ephemeral-identities-and-seed-fresh-nonproduction-d1-fixtures-directly",
       "deploy-core-then-publisher-then-rendezvous",
       "read-back-same-cohort-service-bindings-and-resource-identifiers",
-      "run-private-r2-dynamic-websocket-replay-migration-and-redaction-canaries",
+      "run-private-r2-readback-publisher-rejection-rendezvous-websocket-replay-and-redaction-canaries-without-directory-reconciliation",
+      "inject-source-or-lease-loss-at-every-enabled-stage-and-prove-fail-safe-closure",
       "disable-all-circuits-and-prove-closed-read-back",
-      "expire-fixtures-and-record-bounded-closed-evidence"
+      "prove-no-directory-outbox-builder-or-alarm-work-was-created",
+      "close-circuits-wait-sixty-second-drain-release-lease-and-record-bounded-evidence"
     ],
     "cleanup": {
       "owner": "metaserver-review-environment-operator",
@@ -353,7 +379,7 @@
         "detach-workers-dev-access-applications",
         "delete-caller-workers",
         "delete-core-worker",
-        "delete-review-r2-d1-analytics-and-rate-resources",
+        "delete-review-r2-and-d1-resources-and-remove-worker-rate-and-analytics-bindings",
         "disable-live-account-workers-dev-subdomain"
       ],
       "guards": [
@@ -366,7 +392,12 @@
         "recheck-disabled-circuits"
       ],
       "partialFailure": "stop-record-completed-prefix-leave-circuits-disabled-retry-from-readback",
-      "evidenceMaximumRetentionDays": 7
+      "evidenceMaximumRetentionDays": 7,
+      "providerResiduals": {
+        "analyticsDatasetRetentionDays": 90,
+        "analyticsAction": "stop-writes-remove-bindings-and-record-retained-synthetic-residue",
+        "rateLimitAction": "remove-bindings-and-allow-provider-counters-to-expire"
+      }
     }
   },
   "reviewerBehavior": {

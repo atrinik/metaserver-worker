@@ -7,10 +7,12 @@ and `npm run review:validate` is its fail-closed validator.
 
 ## Decision
 
-Use option 3: the one Cloudflare GitHub connection used for production also
-runs a build-only non-production trigger, while an explicit maintainer may run
-one reusable live cohort from a clean checkout of an exact same-repository
-non-`main` commit. The live account has no GitHub connection. This respects
+Use option 3: one Cloudflare account/repository connection backs two separate
+projects. The privileged production project remains #54-only; a dedicated
+inert review-check project runs build-only non-production branches with its own
+project token and environment. An explicit maintainer may run one reusable live
+cohort from a clean checkout of an exact same-repository non-`main` commit. The
+live account has no GitHub connection. This respects
 Cloudflare's one-GitHub-account/one-Cloudflare-account guidance and preserves
 the existing website installation.
 
@@ -44,19 +46,25 @@ subdomain setup is Enterprise-only. The selected live account uses its stable
 
 ## Automatic trigger and GitHub feedback
 
-The connected project is the production core, `atrinik-metaserver`. Its
-production trigger remains exactly #54: branch `main`, all paths, and `npm run
-deploy:production`. Its non-production trigger includes all branches and
-excludes `main`; it runs the same lifecycle-disabled pinned install, `npm run
-review:branch`, then the local no-op `npm run review:validate`. `main` therefore
-has one production command, not a second project or branch.
+The privileged connected project is the production core,
+`atrinik-metaserver`; it remains exactly #54: branch `main`, all paths, and
+`npm run deploy:production`, with non-production builds disabled. The same
+Cloudflare account reuses its repository connection for the separate inert
+Worker/project `atrinik-metaserver-review-check`. That project's absent
+production branch is `review-build-only-sentinel`; automatic production pushes
+are disabled and its production command always stops. Its non-production
+trigger includes all branches except `main` and the sentinel, runs the
+lifecycle-disabled pinned install and `npm run review:branch`, then the local
+no-op `npm run review:validate`. Neither its commands nor its settings are
+shared with the production project.
 
 Cloudflare requires a build token even when the deploy command is a local
-validator. The preview trigger must use a different user token from production
+validator. The entire review-check project must use a different user token from production
 on a dedicated nonhuman identity with exactly `User Details:Read`, no personal
 data, empty account/zone permissions, and empty
-account/zone resource selectors. #56 must prove a branch build and its local
-deploy command succeed with that token and must prove representative
+account/zone resource selectors. #56 must prove that the project has no
+production protected input, that a branch build and its local deploy command
+succeed with that token, and that representative
 Cloudflare account/zone reads and writes fail. If Cloudflare will not accept
 that zero-resource token, non-production Workers Builds stays disabled; never
 substitute the production token or broaden permissions.
@@ -79,7 +87,11 @@ GitHub Actions deployment or comment workflow.
 The provider's hard build timeout is 20 minutes. The repository check child is
 limited to 15 minutes, reserving five minutes for the lifecycle-disabled install,
 contract validation, and provider finalization; a timeout fails the check and
-never falls through to production.
+never falls through to production. The branch runner executes a fixed sequence
+of named type, test, dry-run, and contract stages. On failure its private log
+reports only the allowlisted stage, exit/signal/timeout/output-limit class, and
+stdout/stderr byte counts. It never emits captured child output or environment
+values.
 
 ## Live source and authority boundary
 
@@ -94,21 +106,22 @@ npm run deploy:review-canary -- --source-sha <40-lowercase-hex-sha>
 ```
 
 The eventual #56 entrypoint must first use read-only `gh` access to prove the
-commit belongs to a same-repository non-`main` branch, matches the explicit
-maintainer approval record, and equals the clean checkout. Only then may it
-load live-account credentials. It generates a UUID for the run, acquires an
-atomic expiring lease in the live D1 database, and reproves the branch/SHA
-before every mutation. A force-push, branch deletion, or lease loss stops and
-closes the circuits.
+commit is the head of a same-repository non-`main` branch, is not reachable
+from live `main`, matches the explicit maintainer approval record, and equals the clean checkout. Only then may it
+load live-account credentials. It generates a UUID for the run and acquires an
+atomic expiring lease in the live D1 database. Every forward mutation—fixture
+change, deploy, enable, or test—reproves the branch/SHA and lease. A force-push,
+branch deletion, or lease loss forbids further forward work but still authorizes
+idempotent fail-safe closure after exact live-account and resource readback.
 
 The authority matrix is exact:
 
 | Actor | Routine | Exact live-account permission template | Authority |
 | --- | --- | --- | --- |
-| Provisioner | No; #56 setup only | Workers Scripts Edit, D1 Edit, Workers R2 Storage Edit, Access Apps and Policies Edit, Account Settings Read | Create named resources, enable `workers.dev`, configure Access, and write runtime secrets |
+| Provisioner | No; #56 setup only | Workers Scripts Edit, D1 Edit, Workers R2 Storage Edit, Access Apps and Policies Edit, Account Settings Read | Create named resources, enable `workers.dev`, configure one `all_workers` Access application, and write runtime secrets |
 | Migration operator | No; reviewed ledger advance only | D1 Edit | Apply pending migrations |
 | Live runner | Yes, explicit exact-SHA run | Workers Scripts Edit, D1 Edit, Workers R2 Storage Read, Account Analytics Read | Deploy three Workers, execute allowlisted lease/fixture SQL, and read back live state |
-| Access canary | Yes, five-minute window | No Cloudflare API permission; one service token scoped to three Access applications | Reach only review endpoints |
+| Access canary | Yes, five-minute window | No Cloudflare API permission; one service token scoped to the review `all_workers` application | Reach only review endpoints |
 | Cleanup operator | No; separate preview/apply | Workers Scripts Edit, D1 Edit, Workers R2 Storage Edit, Access Apps and Policies Edit, Account Settings Edit | Delete only the exact live inventory |
 
 The routine process never loads the cleanup credential and has no
@@ -124,15 +137,15 @@ their results; the account boundary is the hard production isolation.
 | Boundary | Review ownership and proof |
 | --- | --- |
 | Source/Workers | Exact approved SHA on three fixed review Workers; annotations and bundle digests agree; deploy core, publisher, rendezvous |
-| D1/DO | One review D1 ledger and the review core's two namespaces; ledger must already equal checked-in migrations |
+| D1/DO | One application D1 ledger, one separately provisioned coordination D1, and the review core's two namespaces; the application ledger must already equal checked-in migrations and coordination uses only the exact `review-coordination-v1` schema |
 | Service Bindings | Publisher/rendezvous bind only to the named review core entrypoints |
 | R2/static | Three private review buckets, `r2.dev` disabled; verify objects through provider readback, not a public static hostname |
-| Analytics/rates | Two exact datasets and five unique rate namespaces, with exact owner/binding pairs and no production reuse |
+| Analytics/rates | Two exact datasets and five unique numeric namespace IDs (`2006`, `2007`, `2101`, `2201`, `2202`) with exact owner/binding and `simple.limit`/`simple.period` policies and no production reuse |
 | Secrets | Canary-only cache/source-tag values and review-only key IDs; values are write-only, never build-readable or copied |
-| Host/TLS/Access | Three stable review `workers.dev` hosts, provider TLS, three Access applications; no Custom Domain, zone WAF, cache rule, route, or preview URL |
+| Host/TLS/Access | Three stable review `workers.dev` hosts, provider TLS, one account-scoped `all_workers` Access application; no Custom Domain, zone WAF, cache rule, route, or preview URL |
 | Data | No production/live-request copies; fresh ephemeral nonproduction signing keys and certificates per run; no real identity or rendezvous state |
 | Schedules/logs | No cron; private Worker logs with repository redaction and no external destination |
-| Retention/cost | One cohort: 3 Workers, 1 D1, 2 DO namespaces, 3 R2 buckets, 2 datasets, 5 rate namespaces, 0 custom hosts, 3 Access apps; 20-minute supervised run, at most 15 mutation minutes and a five-minute live window, seven-day evidence |
+| Retention/cost | One cohort: 3 Workers, 2 D1 databases, 2 DO namespaces, 3 R2 buckets, 2 datasets, 5 rate namespaces, 0 custom hosts, 1 Access app; 20-minute supervised run, at most 15 mutation minutes and a five-minute live window, seven-day evidence; Analytics Engine may retain synthetic rows for 90 days and native rate counters expire on provider cadence |
 
 The protocol identity is the fresh certificate hash; it is not forced into a
 text prefix. The fixture record separately carries the
@@ -148,22 +161,36 @@ Every remote operation requires readback before the next:
 
 1. Validate both contracts and complete repository tests without credentials.
    Prove the approved GitHub branch/SHA and clean detached checkout.
-2. Load only live-account credentials, acquire the atomic expiring D1 lease,
-   and reprove source authority before mutation.
+2. Load only live-account credentials and acquire the atomic expiring lease in
+   the separate coordination D1. Its singleton row contains source SHA, run
+   UUID, monotonically increasing generation, expiry, fixture namespace, and
+   state. Every forward mutation CAS-renews the exact UUID/generation and
+   reproves source authority. An expired lease may be reclaimed only after
+   exact-cohort disabled-circuit readback and a 60-second drain.
 3. Inventory exact resources and ceilings; reject missing, duplicate, unknown,
    production-matching, or unowned objects. Disable/read back all circuits.
-4. Require the migration ledger to be exact. A pending migration stops for the
-   migration operator. Generate ephemeral signing keys/certificates and unique
-   fresh fixture metadata; reject any unexpired collision.
+4. Require the application migration ledger to be exact. A pending migration
+   stops for the migration operator. Generate ephemeral signing
+   keys/certificates and unique fresh fixture metadata, seed it directly in
+   application D1, and reject any unexpired collision. The coordination schema
+   is independently provisioned and is never appended to the application ledger.
 5. Resolve all bundles, deploy core then publisher then rendezvous, and read
    back scripts, bindings, identifiers, routes/subdomains, schedules, secret
    names, observability, and entrypoint exports.
-6. For at most five minutes, test signed Classic v1/v2 and Game publication,
-   Service Binding rejection, native admission, WebSocket rendezvous, replay,
-   migration compatibility, R2 object generation/expiry, and redaction. The
-   Access credential is never placed in URLs, bodies, logs, or evidence.
-7. Disable/read back all circuits, expire fixtures, discard keys, release the
-   lease, and retain only closed outcomes/digests/counts/names for seven days.
+6. For at most five minutes, use intentionally invalid signed Classic v1/v2
+   and Game requests to prove publisher routing, Service Binding traversal,
+   authentication rejection, native admission, and redaction without an
+   accepted publish. Use the directly seeded identities for positive WebSocket
+   rendezvous and replay checks, and verify private R2 bindings through provider
+   readback only. Cron stays disabled and no publisher success may nudge
+   `DirectoryBuilder`; prove there is no directory outbox, pending build, or
+   alarm. The Access credential is never placed in URLs, bodies, logs, or evidence.
+7. At every enabled stage, inject force-push, branch-deletion, and lease-expiry
+   failures. Prove they prohibit forward work while exact-cohort fail-safe
+   circuit closure remains authorized.
+8. Disable/read back all circuits, expire direct D1 fixtures, discard keys,
+   wait the 60-second rendezvous/DO drain, CAS-release the lease, and retain only
+   closed outcomes/digests/counts/names for seven days.
 
 An ambiguous deploy/readback is possible mutation. Recovery always inspects and
 proves the disabled core. Partial runs record their completed prefix and may be
@@ -188,10 +215,16 @@ resumed only after exact SHA and lease proof.
 Normal completion disables circuits, expires fixtures, discards keys, and
 retains the singleton. Full teardown is separately authorized and preview-first:
 verify exact account/inventory/prefix, no production identifier, disabled
-circuits, and no unowned resource; detach the three Access applications,
+circuits, and no unowned resource; detach the `all_workers` Access application,
 delete callers before core, delete the named state resources, then disable the
 live account's `workers.dev` subdomain. On failure, stop, preserve disabled
 circuits, record the completed prefix, and retry from readback.
+
+Analytics Engine datasets are provider-created on first write and may retain
+the synthetic rows for 90 days; teardown stops writes and removes bindings but
+does not claim dataset deletion. Rate-limit namespaces are binding IDs rather
+than deletable resources; teardown removes the bindings and lets counters
+expire. Both residuals are recorded separately from seven-day review evidence.
 
 ## Provider references
 

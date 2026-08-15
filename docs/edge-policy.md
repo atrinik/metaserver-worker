@@ -306,7 +306,7 @@ DNS-only while a positive max age may remain cached.
 The Git-backed review topology is specified in
 [`review-environment.md`](review-environment.md). Its automatic branch check is
 build-only and creates no edge. The optional live cohort uses only
-three stable review-account `workers.dev` hosts and three Access applications;
+three stable review-account `workers.dev` hosts and one `all_workers` Access application;
 it has no zone, Custom Domain, WAF/cache rule, production DNS, route, purge, or
 observability authority. Preview URLs remain disabled. Access protects
 reviewers and automated/WebSocket clients, but the URLs are not secrets. These

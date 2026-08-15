@@ -122,10 +122,13 @@ The accepted review design is
 [`deployment/workers-builds-review.json`](deployment/workers-builds-review.json)
 and its rationale/runbook is
 [`docs/review-environment.md`](docs/review-environment.md). The production
-connection above has one non-production trigger for same-repository non-`main`
-branches. It runs only `npm run review:branch` and the local contract validator;
-it owns no binding, route, protected input, live Worker version, or URL. Its
-separate dedicated-nonhuman user token has `User Details:Read`, no personal
+project above remains `main`-only. A separate inert
+`atrinik-metaserver-review-check` project in the same Cloudflare account reuses
+the account's repository connection for same-repository non-`main` branches.
+Its absent production sentinel can never select `main`. It runs only `npm run
+review:branch` and the local contract validator and owns no binding, route,
+protected input, live Worker version, or URL. Its separate dedicated-nonhuman
+user token has `User Details:Read`, no personal
 data, and no account/zone permission or resource selector. #56 must prove that zero-resource token works before
 enabling the trigger; never substitute the production token. Fork refs do not
 exist in the connected repository and receive ordinary GitHub validation only.
@@ -140,8 +143,8 @@ pre-applied migration ledger, generate fresh ephemeral signing fixtures,
 deploy core then callers, read back same-cohort Service Bindings, run bounded
 Access-protected canaries, and leave
 all circuits disabled. Every Worker, D1/DO namespace, R2 bucket, Analytics
-dataset, rate namespace, secret value/epoch, `workers.dev` hostname, Access
-application, log destination, and credential is review-only. There is no
+dataset, rate namespace, secret value/epoch, `workers.dev` hostname, the
+account-scoped `all_workers` Access application, log destination, and credential is review-only. There is no
 review Custom Domain, zone WAF/cache rule, parent-DNS authority, or public
 static origin; stable URLs name the mutable cohort, not the commit or a secret.
 
