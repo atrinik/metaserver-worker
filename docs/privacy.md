@@ -59,19 +59,20 @@ Worker runtime bindings and are never available to application requests.
 
 Automatic non-`main` review builds are a separate trust boundary. Their
 trigger contains no protected input, binding, route, Worker upload, production
-identifier, or live-canary credential. They emit only the public branch, source
-SHA, build UUID, closed check outcome, and bounded output size. Fork code is not
-replayed through that connection. The build-check project is in a dedicated
-account containing neither production nor live-canary resources, no zone, and
-no enabled `workers.dev` subdomain. Same-repository branch code can see the
-provider-managed token for that empty account; account separation, not process
-environment sanitization, is the production/live confidentiality boundary.
+resource permission, or live-canary credential. They emit only the public
+branch, source SHA, build UUID, closed check outcome, bounded output size, and
+Cloudflare's native PR status comment/history. Fork code is not replayed
+through that connection. The non-production trigger shares the one supported
+production-account GitHub connection, but its distinct dedicated-nonhuman user
+token contains no personal data and has only `User Details:Read` plus empty
+account/zone permissions and selectors. #56 must
+prove representative production reads and writes fail before enabling it.
 
-An explicitly requested live review uses only deterministic nonproduction
-fixtures and a distinct canary secret pair, D1/DO state, R2, Analytics
+An explicitly requested live review uses fresh ephemeral nonproduction signing
+keys/certificates and a distinct canary secret pair, D1/DO state, R2, Analytics
 datasets, rate counters, hosts, and logs. It never imports production rows,
 requests, server identities, rendezvous state, credentials, tags, or secret
-values. Private evidence is limited to the public source SHA, build/deployable
+values. Private evidence is limited to the public source SHA, run/deployable
 digests, resource names, counts, durations, and closed outcomes and expires
 within seven days; fixture state expires within 24 hours. Stable review URLs
 are not a secret boundary. Access credentials and raw provider responses stay

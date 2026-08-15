@@ -27,20 +27,21 @@ function changed(change) {
 
 test("accepts the checked-in isolated review contract", async () => {
   assert.equal((await validateCheckedInContract()).selectedMode,
-    "build-only-plus-explicit-reusable-live-canary");
+    "single-connection-build-only-plus-operator-live-canary");
 });
 
 test("reserves main exclusively for the production contract", () => {
   assert.equal(production.productionBranch, "main");
   assert.equal(production.deployCommand, "npm run deploy:production");
   assert.ok(review.automaticReview.previewBranchExcludes.includes("main"));
-  assert.notEqual(review.liveCanary.productionBranch, "main");
+  assert.equal(review.liveCanary.source.branch, "same-repository-non-main");
   for (const candidate of [
-    changed((value) => value.automaticReview.previewBranchExcludes = ["review-build-only-sentinel"]),
-    changed((value) => value.liveCanary.productionBranch = "main"),
-    changed((value) => value.automaticReview.productionDeployCommand = "npm run deploy:production"),
-    changed((value) => value.automaticReview.accountBoundary.productionAccountReuse = true),
-    changed((value) => value.automaticReview.maximumBuildMinutes = 60),
+    changed((value) => value.automaticReview.previewBranchExcludes = []),
+    changed((value) => value.liveCanary.source.branch = "main"),
+    changed((value) => value.automaticReview.productionDeployCommand = "npm run review:validate"),
+    changed((value) => value.automaticReview.accountBoundary.productionAccountReuse = false),
+    changed((value) => value.automaticReview.providerBuildTimeoutMinutes = 30),
+    changed((value) => value.automaticReview.checkCommandTimeoutMinutes = 20),
   ]) assert.throws(() => validateContract(candidate, production, configurations), ReviewEnvironmentError);
 });
 
@@ -52,6 +53,8 @@ test("automatic review has no bindings, routes, secrets, or deployable version",
     (value) => value.protectedInputs.push("CLOUDFLARE_API_TOKEN"),
     (value) => value.result.workerVersion = true,
     (value) => value.result.reviewUrl = "https://public.workers.dev",
+    (value) => value.tokenAuthority.accountPermissions.push("Workers Scripts:Read"),
+    (value) => value.tokenAuthority.productionRead = true,
   ]) {
     const value = structuredClone(review.automaticReview);
     mutate(value);
@@ -61,27 +64,29 @@ test("automatic review has no bindings, routes, secrets, or deployable version",
 
 test("same-repository non-main source coordinates are exact", () => {
   const valid = { branch: "feat/review-safe", sha: "a".repeat(40),
-    buildUuid: "11111111-1111-4111-8111-111111111111", event: "push", fork: false };
+    buildUuid: "11111111-1111-4111-8111-111111111111" };
   assert.deepEqual(validateSourceCoordinates(valid), {
     branch: valid.branch, sha: valid.sha, buildUuid: valid.buildUuid,
   });
   for (const patch of [
     { branch: "main" },
-    { branch: "review-build-only-sentinel" },
     { branch: "../main" },
     { sha: "not-a-sha" },
     { buildUuid: "not-a-uuid" },
-    { event: "pull_request" },
-    { fork: true },
   ]) assert.throws(() => validateSourceCoordinates({ ...valid, ...patch }), ReviewEnvironmentError);
 });
 
-test("live review requires an explicit matching SHA and rejects forks/main", () => {
-  const valid = { branch: "fix/live-proof", sha: "b".repeat(40), approvedSha: "b".repeat(40), fork: false };
-  assert.deepEqual(validateLiveApproval(valid), { branch: valid.branch, sha: valid.sha });
+test("live review requires an exact clean GitHub SHA", () => {
+  const valid = { branch: "fix/live-proof", sha: "b".repeat(40),
+    runUuid: "22222222-2222-4222-8222-222222222222", githubMatches: true,
+    checkoutClean: true };
+  assert.deepEqual(validateLiveApproval(valid), {
+    branch: valid.branch, sha: valid.sha, runUuid: valid.runUuid,
+  });
   for (const patch of [
-    { branch: "main" }, { branch: "review-live-canary-sentinel" },
-    { approvedSha: "c".repeat(40) }, { fork: true },
+    { branch: "main" },
+    { sha: "not-a-sha" }, { runUuid: "not-a-uuid" },
+    { githubMatches: false }, { checkoutClean: false },
   ]) assert.throws(() => validateLiveApproval({ ...valid, ...patch }), ReviewEnvironmentError);
 });
 
@@ -106,7 +111,9 @@ test("requires every isolated owner, resource ceiling, circuit, and cleanup guar
   for (const candidate of [
     changed((value) => value.liveCanary.maximumConcurrentCohorts = 2),
     changed((value) => value.liveCanary.maximumLiveWindowMinutes = 60),
+    changed((value) => value.liveCanary.maximumMutationMinutes = 20),
     changed((value) => value.liveCanary.accountBoundary.productionAccountReuse = true),
+    changed((value) => value.liveCanary.credentialBoundary.productionAccount = true),
     changed((value) => value.liveCanary.resourceCeilings.rateLimitNamespaces = 4),
     changed((value) => value.liveCanary.resources.rendezvousClientRateLimit.productionNamespaceReuse = true),
     changed((value) => value.liveCanary.resources.secrets.productionValueReuse = true),
@@ -114,6 +121,12 @@ test("requires every isolated owner, resource ceiling, circuit, and cleanup guar
     changed((value) => value.liveCanary.resources.observability.destinations = ["production-tail"]),
     changed((value) => value.liveCanary.dataPolicy.productionCopies = true),
     changed((value) => value.liveCanary.cleanup.guards.pop()),
+    changed((value) => value.liveCanary.resources.analytics[0].owner = "publisher"),
+    changed((value) => value.liveCanary.resources.analytics[0].binding = "WRONG"),
+    changed((value) => value.liveCanary.resources.rateLimits[0].owner = "rendezvous"),
+    changed((value) => value.liveCanary.resources.rateLimits[0].binding = "WRONG"),
+    changed((value) => value.liveCanary.resources.rendezvousClientRateLimit.owner = "core"),
+    changed((value) => value.liveCanary.resources.rendezvousClientRateLimit.binding = "WRONG"),
   ]) assert.throws(() => validateContract(candidate, production, configurations), ReviewEnvironmentError);
 });
 

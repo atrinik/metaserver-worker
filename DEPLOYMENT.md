@@ -122,26 +122,28 @@ The accepted review design is
 [`deployment/workers-builds-review.json`](deployment/workers-builds-review.json)
 and its rationale/runbook is
 [`docs/review-environment.md`](docs/review-environment.md). The production
-connection above continues to reject every non-`main` branch. A distinct inert
-review-check project includes same-repository non-`main` branches but runs only
-`npm run review:branch`; it owns no binding, route, secret, protected
-configuration, live Worker version, or URL. Its provider production branch is
-the absent `review-build-only-sentinel`, automatic production pushes are
-disabled, and the sentinel command always stops. Forks never enter Workers
-Builds with credentials. This project lives in a dedicated empty build-check
-account. The live cohort lives in a second dedicated review account, and both
-are distinct from production; account-scoped tokens therefore cannot cross
-from arbitrary branch code into live canary or production resources.
+connection above has one non-production trigger for same-repository non-`main`
+branches. It runs only `npm run review:branch` and the local contract validator;
+it owns no binding, route, protected input, live Worker version, or URL. Its
+separate dedicated-nonhuman user token has `User Details:Read`, no personal
+data, and no account/zone permission or resource selector. #56 must prove that zero-resource token works before
+enabling the trigger; never substitute the production token. Fork refs do not
+exist in the connected repository and receive ordinary GitHub validation only.
+Cloudflare emits its native check and PR status comment/history without a
+preview URL.
 
-Live evidence is a separate manual exact-commit request against one serialized
-canary-only cohort. It must prove an exact same-repository non-`main` SHA and
-approval, acquire the singleton lease, stage disabled circuits, verify the
-independent migration ledger and fixtures, deploy core then callers, read back
-same-cohort Service Bindings, run bounded Access-protected canaries, and leave
+Live evidence is a separate operator-supervised exact-commit run against one
+serialized cohort in a dedicated account with no GitHub connection or zone. It
+must prove an explicitly approved same-repository non-`main` SHA and clean
+checkout before loading credentials, acquire the singleton lease, stage disabled circuits, verify the
+pre-applied migration ledger, generate fresh ephemeral signing fixtures,
+deploy core then callers, read back same-cohort Service Bindings, run bounded
+Access-protected canaries, and leave
 all circuits disabled. Every Worker, D1/DO namespace, R2 bucket, Analytics
-dataset, rate namespace, secret value/epoch, hostname, Access/WAF/cache rule,
-log destination, and credential is review-only. Stable URLs name the mutable
-cohort, not the commit and not a secret boundary.
+dataset, rate namespace, secret value/epoch, `workers.dev` hostname, Access
+application, log destination, and credential is review-only. There is no
+review Custom Domain, zone WAF/cache rule, parent-DNS authority, or public
+static origin; stable URLs name the mutable cohort, not the commit or a secret.
 
 This design does not authorize provisioning. Until issue #56 supplies and
 validates the exact provider resources, `npm run deploy:review-canary` fails

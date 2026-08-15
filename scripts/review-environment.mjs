@@ -10,7 +10,7 @@ const contractPath = resolve(root, "deployment/workers-builds-review.json");
 const productionContractPath = resolve(root, "deployment/workers-builds-production.json");
 const shaPattern = /^[0-9a-f]{40}$/u;
 const uuidPattern = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/u;
-const safeBranchPattern = /^(?!main$)(?!review-(?:build-only|live-canary)-sentinel$)[A-Za-z0-9][A-Za-z0-9._/-]{0,199}$/u;
+const safeBranchPattern = /^(?!main$)[A-Za-z0-9][A-Za-z0-9._/-]{0,199}$/u;
 
 export class ReviewEnvironmentError extends Error {}
 
@@ -101,42 +101,57 @@ export function validateAutomaticReview(value) {
     "accountBoundary", "project", "rootDirectory", "productionBranch", "productionAutomaticPush",
     "productionDeployCommand", "previewBranchIncludes", "previewBranchExcludes",
     "pathIncludes", "pathExcludes", "installCommand", "buildCommand", "deployCommand",
-    "maximumBuildMinutes", "buildEnvironment", "protectedInputs", "bindings", "routes", "result", "forkPolicy",
+    "providerBuildTimeoutMinutes", "checkCommandTimeoutMinutes", "buildEnvironment", "protectedInputs", "bindings", "routes", "result", "forkPolicy",
     "tokenAuthority",
   ], "automatic review");
   exactKeys(value.accountBoundary, [
-    "mode", "productionAccountReuse", "liveCanaryAccountReuse", "zones",
-    "workersDevSubdomainEnabled", "resources",
+    "mode", "productionAccountReuse", "liveCanaryAccountReuse", "githubAccountConnections",
+    "connectedWorker",
   ], "review account boundary");
-  exactValue(value.accountBoundary.mode, "dedicated-build-check-account", "review account mode");
-  exactValue(value.accountBoundary.productionAccountReuse, false, "review production account isolation");
+  exactValue(value.accountBoundary.mode, "production-connection-zero-resource-preview-token", "review account mode");
+  exactValue(value.accountBoundary.productionAccountReuse, true, "review production connection");
   exactValue(value.accountBoundary.liveCanaryAccountReuse, false, "review live account isolation");
-  exactArray(value.accountBoundary.zones, [], "review account zones");
-  exactValue(value.accountBoundary.workersDevSubdomainEnabled, false, "review account workers.dev");
-  exactArray(value.accountBoundary.resources, ["atrinik-metaserver-review-check-build-project"], "review account resources");
-  exactValue(value.project, "atrinik-metaserver-review-check", "review project");
+  exactValue(value.accountBoundary.githubAccountConnections, 1, "review GitHub connection count");
+  exactValue(value.accountBoundary.connectedWorker, "atrinik-metaserver", "review connected Worker");
+  exactValue(value.project, "atrinik-metaserver", "review project");
   exactValue(value.rootDirectory, "", "review root");
-  exactValue(value.productionBranch, "review-build-only-sentinel", "review sentinel");
-  exactValue(value.productionAutomaticPush, false, "review automatic production push");
-  exactValue(value.productionDeployCommand, "npm run review:reject-sentinel", "review sentinel command");
+  exactValue(value.productionBranch, "main", "review production branch");
+  exactValue(value.productionAutomaticPush, true, "review automatic production push");
+  exactValue(value.productionDeployCommand, "npm run deploy:production", "review production command");
   exactArray(value.previewBranchIncludes, ["*"], "review branch includes");
-  exactArray(value.previewBranchExcludes, ["main", "review-build-only-sentinel"], "review branch excludes");
+  exactArray(value.previewBranchExcludes, ["main"], "review branch excludes");
   exactArray(value.pathIncludes, ["*"], "review path includes");
   exactArray(value.pathExcludes, [], "review path excludes");
   exactValue(value.buildCommand, "npm run review:branch", "review build command");
   exactValue(value.deployCommand, "npm run review:validate", "review deploy command");
-  exactValue(value.maximumBuildMinutes, 15, "review build duration");
+  exactValue(value.providerBuildTimeoutMinutes, 20, "review provider build timeout");
+  exactValue(value.checkCommandTimeoutMinutes, 15, "review check command timeout");
   exactKeys(value.buildEnvironment, ["SKIP_DEPENDENCY_INSTALL"], "review build environment");
   exactValue(value.buildEnvironment.SKIP_DEPENDENCY_INSTALL, "1", "review dependency policy");
   exactArray(value.protectedInputs, [], "review protected inputs");
   exactArray(value.bindings, [], "review bindings");
   exactArray(value.routes, [], "review routes");
-  exactKeys(value.result, ["githubCheck", "githubComment", "reviewUrl", "workerVersion", "workerLogs"], "review result");
+  exactKeys(value.result, ["githubCheck", "githubComment", "githubCommentHistory", "reviewUrl", "workerVersion", "workerLogs"], "review result");
   if (JSON.stringify(value.result) !== JSON.stringify({
-    githubCheck: true, githubComment: false, reviewUrl: null, workerVersion: false, workerLogs: false,
+    githubCheck: true, githubComment: true, githubCommentHistory: true,
+    reviewUrl: null, workerVersion: false, workerLogs: false,
   })) fail("review result drift");
-  exactValue(value.forkPolicy, "github-repository-validation-only-no-workers-build", "fork policy");
-  exactValue(value.tokenAuthority, "dedicated-build-check-account-only", "review token authority");
+  exactValue(value.forkPolicy, "fork-ref-is-not-in-connected-repository-github-validation-only", "fork policy");
+  exactKeys(value.tokenAuthority, [
+    "tokenReuse", "tokenType", "tokenIdentity", "userPermissions", "accountPermissions", "zonePermissions",
+    "accountResources", "zoneResources", "productionRead", "productionWrite", "provisioningGate",
+  ], "review token authority");
+  exactValue(value.tokenAuthority.tokenReuse, false, "review token reuse");
+  exactValue(value.tokenAuthority.tokenType, "user-api-token", "review token type");
+  exactValue(value.tokenAuthority.tokenIdentity, "dedicated-nonhuman-no-personal-data", "review token identity");
+  exactArray(value.tokenAuthority.userPermissions, ["User Details:Read"], "review user token permissions");
+  for (const key of ["accountPermissions", "zonePermissions", "accountResources", "zoneResources"])
+    exactArray(value.tokenAuthority[key], [], `review token ${key}`);
+  exactValue(value.tokenAuthority.productionRead, false, "review production read authority");
+  exactValue(value.tokenAuthority.productionWrite, false, "review production write authority");
+  exactValue(value.tokenAuthority.provisioningGate,
+    "prove-build-and-local-no-op-deploy-succeed-with-no-account-or-zone-resource-permissions",
+    "review token provisioning gate");
   if (!value.installCommand.includes("env -i") || !value.installCommand.includes("--ignore-scripts") ||
       !value.installCommand.includes("npm@11.16.0")) fail("review install boundary drift");
 }
@@ -163,13 +178,13 @@ function validateResources(resources) {
   exactArray(resources.workers[0].serviceBindings, [], "core service bindings");
   exactArray(resources.workers[1].serviceBindings, ["COORDINATOR:atrinik-metaserver-review-canary#PublisherCoordinator"], "publisher binding");
   exactArray(resources.workers[2].serviceBindings, ["COORDINATOR:atrinik-metaserver-review-canary#RendezvousCoordinator"], "rendezvous binding");
-  exactKeys(resources.d1, ["owner", "name", "binding", "migrationLedger", "reset", "fixtureSources"], "review D1");
+  exactKeys(resources.d1, ["owner", "name", "binding", "migrationLedger", "reset", "referenceVectorSources"], "review D1");
   exactValue(resources.d1.name, "atrinik-metaserver-review-canary", "review D1 name");
   exactValue(resources.d1.owner, "core", "review D1 owner");
   exactValue(resources.d1.binding, "DB", "review D1 binding");
   exactValue(resources.d1.migrationLedger, "independent-exact-checked-in-ledger", "review migration ledger");
   exactValue(resources.d1.reset, "fresh-d1-or-reviewed-expiry-only-no-bulk-production-copy", "review reset plan");
-  exactArray(resources.d1.fixtureSources, [
+  exactArray(resources.d1.referenceVectorSources, [
     "test/fixtures/metaserver-publisher-v1.json",
     "test/fixtures/metaserver-classic-publisher-v2.json",
     "test/fixtures/metaserver-game-publisher-v1.json",
@@ -204,6 +219,7 @@ function validateResources(resources) {
   exactArray(resources.analytics.map(({ binding }) => binding), [
     "RENDEZVOUS_METRICS", "DIRECTORY_METRICS",
   ], "review analytics bindings");
+  exactArray(resources.analytics.map(({ owner }) => owner), ["core", "core"], "review analytics owners");
   for (const item of resources.analytics)
     exactKeys(item, ["owner", "binding", "name"], "review analytics");
   for (const item of resources.rateLimits)
@@ -212,13 +228,22 @@ function validateResources(resources) {
     "review-canary-core-publish", "review-canary-core-rendezvous-server",
     "review-canary-publisher-global", "review-canary-rendezvous-global",
   ], "review rate namespaces");
+  exactArray(resources.rateLimits.map(({ owner }) => owner), [
+    "core", "core", "publisher", "rendezvous",
+  ], "review rate owners");
+  exactArray(resources.rateLimits.map(({ binding }) => binding), [
+    "PUBLISH_IDENTITY_RATE_LIMITER", "RENDEZVOUS_SERVER_RATE_LIMITER",
+    "GLOBAL_RATE_LIMITER", "GLOBAL_RATE_LIMITER",
+  ], "review rate bindings");
   for (const rate of [...resources.rateLimits, resources.rendezvousClientRateLimit])
     exactValue(rate.productionNamespaceReuse, false, "review rate namespace isolation");
   exactKeys(resources.rendezvousClientRateLimit, [
-    "owner", "binding", "namespace", "sharesRendezvousGlobalCeiling", "productionNamespaceReuse",
+    "owner", "binding", "namespace", "countedWithinRateLimitNamespaceCeiling", "productionNamespaceReuse",
   ], "review client rate limit");
+  exactValue(resources.rendezvousClientRateLimit.owner, "rendezvous", "review client rate owner");
+  exactValue(resources.rendezvousClientRateLimit.binding, "RENDEZVOUS_CLIENT_RATE_LIMITER", "review client rate binding");
   exactValue(resources.rendezvousClientRateLimit.namespace, "review-canary-rendezvous-client", "review client rate namespace");
-  exactValue(resources.rendezvousClientRateLimit.sharesRendezvousGlobalCeiling, true, "review rate ceiling accounting");
+  exactValue(resources.rendezvousClientRateLimit.countedWithinRateLimitNamespaceCeiling, true, "review rate ceiling accounting");
   exactKeys(resources.secrets, ["owner", "names", "epochIds", "productionValueReuse", "buildReadable"], "review secrets");
   exactArray(resources.secrets.names, ["DIRECTORY_CACHE_PURGE_TOKEN", "SOURCE_TAG_KEY_CURRENT", "SOURCE_TAG_KEY_PREVIOUS"], "review secret bindings");
   exactArray(resources.secrets.epochIds, ["review-canary-current", "review-canary-previous"], "review secret epochs");
@@ -229,19 +254,20 @@ function validateResources(resources) {
     "zone", "static", "dynamic", "workersDev", "previewUrls", "productionDnsAuthority",
     "productionRouteAuthority", "productionCachePurgeAuthority",
   ], "review hostnames");
-  exactArray(resources.hostnames.static, [
-    "classic-directory.review.meta.atrinik.org", "game-directory.review.meta.atrinik.org",
-  ], "review static hosts");
+  exactArray(resources.hostnames.static, [], "review static hosts");
   exactArray(resources.hostnames.dynamic, [
-    "publish.review.meta.atrinik.org", "rendezvous.review.meta.atrinik.org",
+    "atrinik-metaserver-publisher-review-canary.<private-subdomain>.workers.dev",
+    "atrinik-metaserver-rendezvous-review-canary.<private-subdomain>.workers.dev",
   ], "review dynamic hosts");
-  exactValue(resources.hostnames.zone, "review.meta.atrinik.org", "review hostname zone");
-  for (const key of ["workersDev", "previewUrls", "productionDnsAuthority", "productionRouteAuthority", "productionCachePurgeAuthority"])
+  exactValue(resources.hostnames.zone, null, "review hostname zone");
+  exactValue(resources.hostnames.workersDev, true, "review workers.dev hostnames");
+  for (const key of ["previewUrls", "productionDnsAuthority", "productionRouteAuthority", "productionCachePurgeAuthority"])
     exactValue(resources.hostnames[key], false, `review hostname ${key}`);
   exactKeys(resources.edgePolicy, ["owner", "tls", "waf", "cache", "access", "productionRuleAuthority"], "review edge policy");
   for (const [key, expected] of Object.entries({
-    owner: "review-canary-zone-only", tls: "full-strict", waf: "review-host-exact-envelopes",
-    cache: "review-static-hosts-only", access: "single-review-canary-application",
+    owner: "review-canary-workers-dev-only", tls: "provider-managed-workers-dev",
+    waf: "none-production-waf-not-proven", cache: "none-static-r2-readback-is-provider-api-only",
+    access: "three-review-canary-applications",
   })) exactValue(resources.edgePolicy[key], expected, `review edge ${key}`);
   exactValue(resources.edgePolicy.productionRuleAuthority, false, "review edge authority");
   exactKeys(resources.cron, ["enabled", "maintenance"], "review cron");
@@ -263,32 +289,76 @@ function validateResources(resources) {
 
 export function validateLiveCanary(value) {
   exactKeys(value, [
-    "accountBoundary", "automatic", "invocation", "project", "productionBranch", "automaticPush",
-    "approvedGateVariable", "requestedCommitVariable", "deployCommand",
-    "maximumBuildMinutes", "maximumLiveWindowMinutes", "maximumConcurrentCohorts", "lease", "stalePolicy", "deploymentOrder", "circuits",
+    "accountBoundary", "automatic", "invocation", "command", "source", "actors", "credentialBoundary",
+    "maximumRunMinutes", "maximumMutationMinutes", "maximumLiveWindowMinutes", "maximumConcurrentCohorts", "lease", "stalePolicy", "deploymentOrder", "circuits",
     "access", "reviewEvidence", "resourceCeilings", "resources", "dataPolicy", "testPlan", "cleanup",
   ], "live canary");
   exactKeys(value.accountBoundary, [
-    "mode", "productionAccountReuse", "buildCheckAccountReuse", "zone", "parentDnsAuthority",
+    "mode", "productionAccountReuse", "automaticReviewAccountReuse", "zone",
+    "workersDevSubdomainEnabled", "parentDnsAuthority",
   ], "live account boundary");
   exactValue(value.accountBoundary.mode, "dedicated-live-canary-account", "live account mode");
   exactValue(value.accountBoundary.productionAccountReuse, false, "live production account isolation");
-  exactValue(value.accountBoundary.buildCheckAccountReuse, false, "live build-check account isolation");
-  exactValue(value.accountBoundary.zone, "review.meta.atrinik.org", "live account zone");
+  exactValue(value.accountBoundary.automaticReviewAccountReuse, false, "live automatic-review account isolation");
+  exactValue(value.accountBoundary.zone, null, "live account zone");
+  exactValue(value.accountBoundary.workersDevSubdomainEnabled, true, "live workers.dev namespace");
   exactValue(value.accountBoundary.parentDnsAuthority, false, "live parent DNS authority");
   exactValue(value.automatic, false, "live automatic execution");
-  exactValue(value.invocation, "manual-workers-builds-api-exact-commit", "live invocation");
-  exactValue(value.project, "atrinik-metaserver-review-canary-core", "live project");
-  exactValue(value.productionBranch, "review-live-canary-sentinel", "live sentinel");
-  exactValue(value.automaticPush, false, "live automatic push");
-  exactValue(value.approvedGateVariable, "ATRINIK_REVIEW_APPROVED_SHA", "live approval variable");
-  exactValue(value.requestedCommitVariable, "WORKERS_CI_COMMIT_SHA", "live source variable");
-  exactValue(value.deployCommand, "npm run deploy:review-canary", "live deploy command");
-  exactValue(value.maximumBuildMinutes, 30, "live build duration");
-  exactValue(value.maximumLiveWindowMinutes, 30, "live test window");
+  exactValue(value.invocation, "operator-supervised-clean-exact-commit", "live invocation");
+  exactValue(value.command, "npm run deploy:review-canary -- --source-sha <sha>", "live command");
+  exactKeys(value.source, [
+    "repository", "branch", "commit", "checkout", "githubProof", "approval",
+  ], "live source");
+  const expectedSource = {
+    repository: "atrinik/metaserver-worker", branch: "same-repository-non-main",
+    commit: "full-40-lowercase-hex-sha", checkout: "clean-detached-exact-sha",
+    githubProof: "gh-read-only-branch-and-commit-readback-before-credentials",
+    approval: "maintainer-explicit-exact-sha-record",
+  };
+  for (const [key, expected] of Object.entries(expectedSource))
+    exactValue(value.source[key], expected, `live source ${key}`);
+  const expectedActors = [
+    ["provisioner", "issue-56-reviewed-setup-only",
+      ["Workers Scripts:Edit", "D1:Edit", "Workers R2 Storage:Edit", "Access Apps and Policies:Edit", "Account Settings:Read"],
+      ["dedicated-live-canary-account"],
+      ["live-account-resource-create", "workers-dev-subdomain", "access-policy", "runtime-secret-write"], false],
+    ["migration-operator", "reviewed-ledger-advance-only", ["D1:Edit"],
+      ["dedicated-live-canary-account"], ["live-d1-migrations-edit"], false],
+    ["live-runner", "explicit-exact-sha-run",
+      ["Workers Scripts:Edit", "D1:Edit", "Workers R2 Storage:Read", "Account Analytics:Read"],
+      ["dedicated-live-canary-account"],
+      ["live-account-workers-scripts-edit", "live-d1-lease-and-fixture-edit", "live-account-readback"], true],
+    ["access-canary", "bounded-live-window", [], ["three-review-access-applications"],
+      ["three-review-access-applications"], true],
+    ["cleanup-operator", "separately-authorized-preview-then-apply",
+      ["Workers Scripts:Edit", "D1:Edit", "Workers R2 Storage:Edit", "Access Apps and Policies:Edit", "Account Settings:Edit"],
+      ["dedicated-live-canary-account"], ["exact-live-account-resource-delete"], false],
+  ];
+  if (!Array.isArray(value.actors) || value.actors.length !== expectedActors.length)
+    fail("live actor inventory drift");
+  value.actors.forEach((actor, index) => {
+    exactKeys(actor, ["actor", "when", "permissions", "resources", "authority", "routine"], "live actor");
+    exactValue(actor.actor, expectedActors[index][0], "live actor name");
+    exactValue(actor.when, expectedActors[index][1], "live actor timing");
+    exactArray(actor.permissions, expectedActors[index][2], "live actor permissions");
+    exactArray(actor.resources, expectedActors[index][3], "live actor resources");
+    exactArray(actor.authority, expectedActors[index][4], "live actor authority");
+    exactValue(actor.routine, expectedActors[index][5], "live actor routine flag");
+  });
+  exactKeys(value.credentialBoundary, [
+    "githubConnection", "credentialsEnterRepositoryValidation", "liveAccountOnly", "productionAccount",
+    "parentDns", "runtimeSecretRead", "cleanupCredentialLoadedInRoutineRun",
+  ], "live credential boundary");
+  for (const key of ["githubConnection", "credentialsEnterRepositoryValidation", "productionAccount",
+    "parentDns", "runtimeSecretRead", "cleanupCredentialLoadedInRoutineRun"])
+    exactValue(value.credentialBoundary[key], false, `live credential ${key}`);
+  exactValue(value.credentialBoundary.liveAccountOnly, true, "live account credential isolation");
+  exactValue(value.maximumRunMinutes, 20, "live run duration");
+  exactValue(value.maximumMutationMinutes, 15, "live mutation duration");
+  exactValue(value.maximumLiveWindowMinutes, 5, "live test window");
   exactValue(value.maximumConcurrentCohorts, 1, "live concurrency");
-  exactValue(value.lease, "newest-approved-exact-sha-build-owns-single-cohort", "live lease");
-  exactValue(value.stalePolicy, "cancel-before-mutation-and-recheck-exact-sha", "live stale policy");
+  exactValue(value.lease, "atomic-live-d1-lease-exact-sha-owner-with-bounded-expiry", "live lease");
+  exactValue(value.stalePolicy, "reprove-github-branch-sha-before-every-mutation", "live stale policy");
   exactArray(value.deploymentOrder, ["core", "publisher", "rendezvous"], "live deploy order");
   exactKeys(value.circuits, ["staging", "final", "restoreOrder"], "live circuits");
   exactValue(value.circuits.staging, "disabled", "live staged circuit");
@@ -301,12 +371,11 @@ export function validateLiveCanary(value) {
   exactValue(value.access.public, false, "live public access");
   exactValue(value.access.urlsAreSecret, false, "live URL boundary");
   exactKeys(value.reviewEvidence, ["immutableIdentifiers", "mutableUrls", "maximumRetentionDays", "contents"], "review evidence");
-  exactArray(value.reviewEvidence.immutableIdentifiers, ["sourceCommit", "buildUuid", "deployableDigest"], "review identifiers");
+  exactArray(value.reviewEvidence.immutableIdentifiers, ["sourceCommit", "runUuid", "deployableDigest"], "review identifiers");
   exactArray(value.reviewEvidence.mutableUrls, [
-    "https://classic-directory.review.meta.atrinik.org",
-    "https://game-directory.review.meta.atrinik.org",
-    "https://publish.review.meta.atrinik.org",
-    "https://rendezvous.review.meta.atrinik.org",
+    "https://atrinik-metaserver-review-canary.<private-subdomain>.workers.dev",
+    "https://atrinik-metaserver-publisher-review-canary.<private-subdomain>.workers.dev",
+    "https://atrinik-metaserver-rendezvous-review-canary.<private-subdomain>.workers.dev",
   ], "review URLs");
   exactValue(value.reviewEvidence.maximumRetentionDays, 7, "review evidence retention");
   exactValue(value.reviewEvidence.contents, "closed-outcome-digests-counts-and-resource-names-only", "review evidence contents");
@@ -316,14 +385,14 @@ export function validateLiveCanary(value) {
     "rateLimitNamespaces", "customHostnames", "accessApplications", "cohortLifetime", "quarterlyReprovisionRequired",
   ], "review resource ceilings");
   const expectedCeilings = { workers: 3, d1Databases: 1, durableObjectNamespaces: 2, r2Buckets: 3,
-    analyticsDatasets: 2, rateLimitNamespaces: 5, customHostnames: 4, accessApplications: 1 };
+    analyticsDatasets: 2, rateLimitNamespaces: 5, customHostnames: 0, accessApplications: 3 };
   for (const [key, expected] of Object.entries(expectedCeilings)) exactValue(ceilings[key], expected, `review ${key} ceiling`);
   exactValue(ceilings.cohortLifetime, "long-lived-singleton", "review cohort lifetime");
   exactValue(ceilings.quarterlyReprovisionRequired, true, "review reprovision policy");
   validateResources(value.resources);
   exactKeys(value.dataPolicy, [
     "productionCopies", "liveRequestCopies", "credentials", "realServerIdentities",
-    "rendezvousStateCopies", "fixturePrefix", "fixtureIdentityDerivation", "fixtureMaximumAgeHours",
+    "rendezvousStateCopies", "fixturePrefix", "fixtureIdentityDerivation", "fixtureSigningKey", "fixtureMaximumAgeHours",
     "isolationBeforeEveryRun", "disableCircuitsAfterEveryRun",
   ], "review data policy");
   for (const key of ["productionCopies", "liveRequestCopies", "credentials", "realServerIdentities", "rendezvousStateCopies"])
@@ -331,17 +400,21 @@ export function validateLiveCanary(value) {
   exactValue(value.dataPolicy.isolationBeforeEveryRun, "unique-fixture-namespace-and-no-unexpired-collision", "review fixture isolation");
   exactValue(value.dataPolicy.disableCircuitsAfterEveryRun, true, "review circuit cleanup");
   exactValue(value.dataPolicy.fixturePrefix, "review-canary-fixture-", "review fixture namespace");
-  exactValue(value.dataPolicy.fixtureIdentityDerivation, "sha256(review-cohort-source-sha-build-uuid-vector-name)", "review fixture identity derivation");
+  exactValue(value.dataPolicy.fixtureIdentityDerivation,
+    "fresh-ephemeral-public-certificate-hash-plus-source-sha-run-uuid-vector-name",
+    "review fixture identity derivation");
+  exactValue(value.dataPolicy.fixtureSigningKey,
+    "ephemeral-generated-in-supervised-run-never-persisted-or-logged", "review fixture signing key");
   exactValue(value.dataPolicy.fixtureMaximumAgeHours, 24, "review fixture retention");
   exactArray(value.testPlan, [
-    "validate-source-and-approved-exact-sha-before-provider-read",
-    "acquire-single-cohort-lease-and-suppress-stale-builds",
+    "prove-clean-exact-github-sha-before-loading-live-credentials",
+    "acquire-atomic-d1-single-cohort-lease-and-suppress-stale-runs",
     "disable-all-circuits-and-read-back",
-    "prove-isolated-empty-state-and-apply-exact-migration-ledger",
-    "seed-deterministic-nonproduction-fixtures",
+    "prove-isolated-state-and-require-exact-preapplied-migration-ledger",
+    "generate-ephemeral-signing-keys-and-seed-fresh-nonproduction-fixtures",
     "deploy-core-then-publisher-then-rendezvous",
     "read-back-same-cohort-service-bindings-and-resource-identifiers",
-    "run-static-dynamic-websocket-replay-migration-and-redaction-canaries",
+    "run-private-r2-dynamic-websocket-replay-migration-and-redaction-canaries",
     "disable-all-circuits-and-prove-closed-read-back",
     "expire-fixtures-and-record-bounded-closed-evidence",
   ], "review executable test plan");
@@ -353,8 +426,9 @@ export function validateLiveCanary(value) {
   exactValue(value.cleanup.automaticOnBranchEvent, false, "review branch cleanup");
   exactValue(value.cleanup.normal, "disable-circuits-expire-fixtures-retain-singleton", "review normal cleanup");
   exactArray(value.cleanup.fullOrder, [
-    "disable-circuits", "detach-review-hostnames-and-access", "delete-caller-workers",
-    "delete-core-worker", "delete-review-r2-d1-analytics-and-rate-resources", "delete-review-build-projects",
+    "disable-circuits", "detach-workers-dev-access-applications", "delete-caller-workers",
+    "delete-core-worker", "delete-review-r2-d1-analytics-and-rate-resources",
+    "disable-live-account-workers-dev-subdomain",
   ], "review full cleanup order");
   exactArray(value.cleanup.guards, [
     "exact-review-prefix", "exact-account", "exact-resource-inventory", "no-production-identifier-match",
@@ -385,7 +459,7 @@ export function validateProductionIsolation(review, production, configurations) 
   exactValue(production.productionBranch, "main", "production branch");
   exactValue(production.deployCommand, "npm run deploy:production", "production command");
   exactValue(review.automaticReview.previewBranchExcludes.includes("main"), true, "main review exclusion");
-  exactValue(review.liveCanary.productionBranch === "main", false, "main live exclusion");
+  exactValue(review.liveCanary.source.branch, "same-repository-non-main", "main live exclusion");
   const reviewStrings = new Set(allStrings({
     automaticBindings: review.automaticReview.bindings,
     automaticRoutes: review.automaticReview.routes,
@@ -398,6 +472,8 @@ export function validateProductionIsolation(review, production, configurations) 
   const productionInputs = new Set(Object.values(production.protectedInputs));
   for (const value of review.automaticReview.protectedInputs)
     if (productionInputs.has(value)) fail("automatic review exposes a production protected input");
+  exactValue(review.liveCanary.credentialBoundary.productionAccount, false,
+    "live review production credential isolation");
   for (const worker of review.liveCanary.resources.workers)
     for (const binding of worker.serviceBindings)
       if (production.workers.some(({ name }) => binding.includes(`:${name}#`)))
@@ -413,7 +489,7 @@ export function validateContract(review, production, configurations) {
   exactValue(review.provider, "cloudflare-workers-builds", "review provider");
   exactValue(review.repository, "atrinik/metaserver-worker", "review repository");
   exactValue(review.productionContract, "deployment/workers-builds-production.json", "production contract path");
-  exactValue(review.selectedMode, "build-only-plus-explicit-reusable-live-canary", "review mode");
+  exactValue(review.selectedMode, "single-connection-build-only-plus-operator-live-canary", "review mode");
   validateAutomaticReview(review.automaticReview);
   validateLiveCanary(review.liveCanary);
   exactValue(review.automaticReview.installCommand, production.installCommand, "review pinned install command");
@@ -429,10 +505,10 @@ export function validateContract(review, production, configurations) {
     rename: "source-sha-authoritative-branch-label-updated",
     mergeOrClose: "no-live-cleanup-singleton-circuits-remain-disabled",
     reopen: "new-head-build-only-check-live-request-not-restored",
-    overlap: "newest-exact-sha-build-owns-branch-check-single-live-cohort-serialized",
+    overlap: "branch-checks-have-no-provider-authority-single-live-cohort-uses-atomic-expiring-lease",
     providerOutage: "github-validation-remains-authoritative-no-production-fallback",
     manualEscape: "run-local-build-only-check-no-cloudflare-credentials-or-live-deploy",
-    commentPolicy: "no-privileged-github-actions-comment",
+    commentPolicy: "native-cloudflare-status-comment-with-history-no-preview-url-no-privileged-github-actions-comment",
     logPolicy: "private-redacted-provider-logs-and-bounded-digest-evidence",
   };
   for (const [key, expected] of Object.entries(behavior))
@@ -440,23 +516,22 @@ export function validateContract(review, production, configurations) {
   validateProductionIsolation(review, production, configurations);
 }
 
-export function validateSourceCoordinates({ branch, sha, buildUuid, event, fork }) {
-  if (event !== "push") fail("Workers Builds review requires a same-repository push");
-  if (fork === true) fail("forks cannot enter Workers Builds review");
+export function validateSourceCoordinates({ branch, sha, buildUuid }) {
   if (typeof branch !== "string" || !safeBranchPattern.test(branch))
-    fail("review branch is main, reserved, or malformed");
+    fail("review branch is main or malformed");
   if (!shaPattern.test(sha ?? "")) fail("review source SHA is malformed");
   if (!uuidPattern.test(buildUuid ?? "")) fail("review build UUID is malformed");
   return { branch, sha, buildUuid };
 }
 
-export function validateLiveApproval({ branch, sha, approvedSha, fork }) {
-  if (fork === true) fail("forks cannot request live review");
+export function validateLiveApproval({ branch, sha, runUuid, githubMatches, checkoutClean }) {
   if (typeof branch !== "string" || !safeBranchPattern.test(branch))
-    fail("live review branch is main, reserved, or malformed");
-  if (!shaPattern.test(sha ?? "") || approvedSha !== sha)
-    fail("live review requires the exact approved source SHA");
-  return { branch, sha };
+    fail("live review branch is main or malformed");
+  if (!shaPattern.test(sha ?? "")) fail("live review source SHA is malformed");
+  if (!uuidPattern.test(runUuid ?? "")) fail("live review run UUID is malformed");
+  if (githubMatches !== true || checkoutClean !== true)
+    fail("live review requires exact GitHub and clean-checkout proof");
+  return { branch, sha, runUuid };
 }
 
 async function gitOutput(args) {
@@ -469,8 +544,6 @@ export async function runBranchCheck(environment = process.env) {
     branch: environment.WORKERS_CI_BRANCH,
     sha: environment.WORKERS_CI_COMMIT_SHA,
     buildUuid: environment.WORKERS_CI_BUILD_UUID,
-    event: environment.WORKERS_CI_EVENT ?? "push",
-    fork: environment.WORKERS_CI_FORK === "true",
   });
   const head = await gitOutput(["rev-parse", "HEAD"]);
   if (head !== source.sha) fail("review checkout does not match source SHA");
@@ -499,7 +572,7 @@ async function loadContractInputs() {
 export async function validateCheckedInContract() {
   const inputs = await loadContractInputs();
   validateContract(inputs.review, inputs.production, inputs.configurations);
-  for (const path of inputs.review.liveCanary.resources.d1.fixtureSources)
+  for (const path of inputs.review.liveCanary.resources.d1.referenceVectorSources)
     await readFile(resolve(root, path));
   return inputs.review;
 }
@@ -520,7 +593,6 @@ async function main() {
     process.stdout.write(`${JSON.stringify(await runBranchCheck())}\n`);
     return;
   }
-  if (mode === "--reject-sentinel") fail("reserved review sentinel never executes repository code");
   if (mode === "--live-not-provisioned") fail("live review provisioning is reserved for issue #56");
   fail("unknown review-environment mode");
 }

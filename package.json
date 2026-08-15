@@ -30,7 +30,6 @@
     "review:validate": "node scripts/review-environment.mjs --validate-only",
     "review:dry-run": "node scripts/review-environment.mjs --dry-run",
     "review:branch": "node scripts/review-environment.mjs --branch",
-    "review:reject-sentinel": "node scripts/review-environment.mjs --reject-sentinel",
     "deploy:review-canary": "node scripts/review-environment.mjs --live-not-provisioned"
   },
   "engines": {

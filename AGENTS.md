@@ -89,10 +89,11 @@
   counters across Workers.
 - `deployment/workers-builds-review.json` owns the non-`main` review design.
   Same-repository branch automation is build-only, has no bindings, protected
-  inputs, upload, or URL, and must reject `main`, both reserved sentinel
-  branches, and forks. Its build account is distinct from both the production
-  and live-canary accounts. Live review is an explicit exact-SHA request
-  against one serialized canary-only cohort; its production-disjoint resources, disabled
+  inputs, account/zone resource permission, upload, or URL, and must reject
+  `main`; fork refs remain outside the connected repository. It uses the one
+  production-account GitHub connection with a distinct zero-resource preview
+  token. Live review is an operator-supervised exact-SHA run in a dedicated
+  account with no GitHub connection or zone. Its production-disjoint resources, disabled
   circuits, lease, fixture retention, Access boundary, and cleanup guards must
   remain synchronized with `docs/review-environment.md` and
   `scripts/review-environment.mjs`. Provider provisioning remains reserved for

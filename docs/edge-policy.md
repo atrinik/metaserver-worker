@@ -306,13 +306,13 @@ DNS-only while a positive max age may remain cached.
 The Git-backed review topology is specified in
 [`review-environment.md`](review-environment.md). Its automatic branch check is
 build-only and creates no edge. The optional live cohort uses only
-`*.review.meta.atrinik.org`, one review-only Access application, and exact
-review-host WAF/rate/cache rules; it has no production DNS, route, rule, purge,
-or observability authority. `workers.dev` and preview URLs remain disabled.
-Access protects reviewers and automated/WebSocket clients, but the URLs are
-not secrets. These review-host checks prove the application topology and the
-review rule copies only; they do not prove production WAF, traffic, counters,
-cache state, certificates, or production control-plane ownership.
+three stable review-account `workers.dev` hosts and three Access applications;
+it has no zone, Custom Domain, WAF/cache rule, production DNS, route, purge, or
+observability authority. Preview URLs remain disabled. Access protects
+reviewers and automated/WebSocket clients, but the URLs are not secrets. These
+checks prove application topology, bindings, native limits, and Access only;
+they do not prove production WAF, traffic, cache, certificates, static public
+origins, or production control-plane ownership.
 
 Use a non-production hostname in every command below. Substitute only a
 reviewed canary hostname and never send this loop to production:
