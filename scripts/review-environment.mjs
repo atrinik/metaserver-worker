@@ -275,7 +275,7 @@ function validateResources(resources) {
   exactKeys(resources.coordinationD1, [
     "owner", "name", "schema", "schemaPath", "schemaSha256", "operationsPath", "operationsSha256",
     "controlTable", "controlColumns", "table", "columns",
-    "acquire", "renew", "release", "reclaim", "quiesce", "teardown", "leaseDurationSeconds",
+    "acquire", "renew", "release", "reclaim", "quiesce", "teardownRecovery", "teardown", "leaseDurationSeconds",
     "maximumLeaseProofAgeSeconds", "maximumForwardMutationSeconds", "minimumRecoveryReserveSeconds",
     "minimumQuiesceSeconds", "minimumDisabledDrainSeconds",
   ], "review coordination D1");
@@ -284,7 +284,7 @@ function validateResources(resources) {
     schema: "review-coordination-v1", schemaPath: "deployment/review-coordination-v1.sql",
     schemaSha256: "be6c3880c5aee7dd6c52175550913aee45e3b15aa673ba695553597bda22ffc2",
     operationsPath: "deployment/review-coordination-operations-v1.json",
-    operationsSha256: "5dec6a2ae391a933da84373d7bd3859db752db541dd1b89a65ff1a202576c9b3",
+    operationsSha256: "d8f09b63fe25b456546da0f1979cd82ea3f71eb3e45e90acfbfc46e374f9fdbe",
     controlTable: "review_environment_control",
     table: "review_runs",
     acquire: "insert-or-cas-expired-after-disabled-drain-proof",
@@ -292,6 +292,7 @@ function validateResources(resources) {
     release: "cas-run-uuid-generation-after-disabled-drain-proof",
     reclaim: "compare-lease-expires-at-to-provider-utc-after-exact-disabled-readback-and-sixty-second-drain",
     quiesce: "atomic-active-to-quiescing-transition-blocks-new-forward-proofs-while-owner-closure-and-release-remain-allowed",
+    teardownRecovery: "cleanup-only-expired-exact-owner-generation-cas-after-quiesce-horizon-and-external-disabled-socket-drain-proof",
     teardown: "atomic-quiescing-to-terminal-after-four-hundred-twenty-five-seconds-and-no-review-run-row",
   };
   for (const [key, expected] of Object.entries(coordination))
@@ -734,7 +735,7 @@ export function validateLiveCanary(value) {
   exactArray(value.cleanup.fullOrder, [
     "atomically-enter-quiescing-mode-before-circuit-closure-or-any-destructive-action",
     "wait-four-hundred-twenty-five-seconds-for-proof-operation-and-recovery-horizon-then-disable-circuits-and-read-back",
-    "accept-only-cooperative-live-runner-release-or-after-expiry-exact-disabled-readback-sixty-second-drain-and-cleanup-release",
+    "accept-only-cooperative-live-runner-release-or-after-expiry-exact-disabled-readback-sixty-second-drain-cleanup-disabled-state-cas-and-cleanup-release",
     "prove-no-review-run-row-then-atomically-enter-terminal-teardown-mode",
     "prove-terminal-teardown-mode-and-quiesce-timestamp",
     "revoke-and-delete-run-access-service-token", "delete-caller-workers",

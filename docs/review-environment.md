@@ -283,7 +283,9 @@ for the five-second proof age, 120-second operation timeout, and 300-second
 recovery reserve, then disables/read-backs circuits again. A cooperative owner
 may release only after its provider operations and readbacks finish. For an
 abandoned row, cleanup waits for lease expiry, proves exact disabled state and
-a 60-second drain, then uses the cleanup-only expired-row release. Only with no
+a 60-second drain, then uses a cleanup-only exact UUID/generation CAS to mark
+the expired `disabled`, `enabled`, or `draining` coordination row disabled and
+uses the cleanup-only expired-row release. Only with no
 run row and the quiesce horizon elapsed may one atomic statement enter terminal
 `teardown`. The operator keeps the coordination D1 through the complete
 cleanup; no runner can recreate authority after that point. It then

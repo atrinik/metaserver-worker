@@ -178,8 +178,9 @@ acquire/renew/enable/reclaim and all external forward proofs while preserving
 owner closure/release. Cleanup never releases an unexpired row: wait the
 425-second proof/operation/recovery horizon, close/read back circuits, accept a
 cooperative owner release, or wait for expiry plus the exact disabled-state and
-60-second drain proofs before the cleanup-only expired release. Only then may
-an empty run table transition to terminal `teardown`. Keep the coordination D1
+60-second drain proofs before a cleanup-only exact UUID/generation CAS marks
+the abandoned coordination row disabled and performs the expired release. Only
+then may an empty run table transition to terminal `teardown`. Keep the coordination D1
 fence through Worker/namespace absence, `workers.dev` disablement, and Access
 deletion; delete the coordination D1 last.
 
