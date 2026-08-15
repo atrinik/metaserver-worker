@@ -57,6 +57,38 @@ Wrangler receives only deployment authentication, while the
 Workers Builds lease token remains parent-only. Build secrets are distinct from
 Worker runtime bindings and are never available to application requests.
 
+Automatic non-`main` review builds are a separate trust boundary. Their
+trigger contains no protected input, binding, route, Worker upload, production
+resource permission, or live-canary credential. They emit only the public
+branch, source SHA, build UUID, closed check outcome, bounded output size, and
+Cloudflare's native PR status comment/history. Fork code is not replayed
+through that connection. A separate inert review-check project in the
+production account reuses the one supported repository connection but shares
+no production project setting or protected input. Its dedicated-nonhuman user
+token contains no personal data and has only `User Details:Read` plus empty
+account/zone permissions and selectors. #56 must
+prove representative production reads and writes fail before enabling it.
+The project's one bootstrap version is unreachable (`workers_dev` and previews
+off, no route), has no binding or log destination, and is created only by a
+separate non-build-readable provisioning credential.
+
+An explicitly requested live review uses fresh ephemeral nonproduction signing
+keys/certificates and a distinct canary secret pair, D1/DO state, R2, Analytics
+datasets, rate counters, hosts, and logs. It never imports production rows,
+requests, server identities, rendezvous state, credentials, tags, or secret
+values. Private evidence is limited to the public source SHA, run/deployable
+digests, resource names, counts, durations, and closed outcomes and expires
+within seven days; fixture and replay validity expires within 24 hours. Stable review URLs
+are not a secret boundary. Access credentials and raw provider responses stay
+out of URLs, comments, bodies, logs, and evidence. Normal completion disables
+all circuits. A replay canary's unique per-run rendezvous DO retains only its
+admission tags and cleanup alarm; active sockets drain first and later runs use
+different room identities. The tags are unusable after the 24-hour logical
+window, but provider alarm delay or exhausted retries can retain physical rows
+longer. That residual is recorded/read back, and mandatory teardown
+force-deletes both exact DO namespaces by cohort age 90 days before further
+runs, preventing unbounded retained review history.
+
 ## Source tags
 
 The Worker requires two 32-byte base64url secrets through encrypted bindings:

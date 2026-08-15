@@ -118,9 +118,31 @@ approved; staged partial cohorts remain routine fix-forward state.
 
 Production identifiers stay in bounded Cloudflare-owned secret configuration
 documents, never in Git or logs. Runtime secret values remain provisioned in
-Cloudflare and are not available to the routine build. Non-production branches use only the
-zero-mutation dry run until the separately reviewed isolated-review contract
-is enabled. See [DEPLOYMENT.md](DEPLOYMENT.md) for provider settings,
+Cloudflare and are not available to the routine build.
+
+The accepted [review-environment design](docs/review-environment.md) gives
+eligible same-repository non-`main` branches an automatic build-only check
+with no bindings, protected inputs, upload, or URL. Forks receive ordinary
+GitHub repository validation only. Changes that need live provider evidence
+use a separately requested, operator-supervised exact-SHA run against one
+serialized, Access-protected, production-disjoint canary cohort. A separate
+inert review-check project in the production account reuses the single
+supported repository connection but has its own zero-resource token and no
+production protected input or setting available to the build. Cloudflare's
+account-scoped Builds control-plane permission remains an explicit trusted
+operator user-token exception across builds, tokens, environment variables,
+connections, and triggers, never a build credential; the procedure uses only
+exact review-trigger mutations and rejects production IDs. Its one inert bootstrap version has no
+binding, route, `workers.dev` URL, preview URL, or observability, and branch
+builds create no versions. A 1,000-minute monthly review-build budget fails
+closed at its operator threshold. The live
+account has no GitHub connection and uses stable `workers.dev` hosts. Native
+Cloudflare checks and PR status comments/history contain no preview URL. That
+cohort is not
+provisioned by this repository change; `npm run deploy:review-canary` remains a
+fail-closed placeholder until issue #56. Validate the machine boundary with
+`npm run test:review`, `npm run review:validate`, and
+`npm run review:dry-run`. See [DEPLOYMENT.md](DEPLOYMENT.md) for provider settings,
 exceptional pauses, exact-SHA retry, partial failure, outage, revocation, and
 manual escape procedures.
 

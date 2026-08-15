@@ -114,9 +114,82 @@ secret-read, or destructive-resource authority.
 
 `npm run deploy:production:dry-run` validates the checked-in fixtures, resolves
 all bundles, and prints only safe digests and names. It never reads GitHub or
-Cloudflare and has no upload path. Non-production Workers Builds must use this
-command until the separate isolated-review design is merged; it cannot fall
-through to production because the production entrypoint requires `main`.
+Cloudflare and has no upload path.
+
+## Non-main review delivery
+
+The accepted review design is
+[`deployment/workers-builds-review.json`](deployment/workers-builds-review.json)
+and its rationale/runbook is
+[`docs/review-environment.md`](docs/review-environment.md). The production
+project above remains `main`-only. A separate inert
+`atrinik-metaserver-review-check` project in the same Cloudflare account reuses
+the account's repository connection for same-repository non-`main` branches.
+Its absent production sentinel can never select `main`. It runs only `npm run
+review:branch` and the local contract validator and owns no binding, route,
+protected input, branch-created Worker version, or URL. Its digest-pinned
+`deployment/review-check/wrangler.jsonc` owns one inert bootstrap version with
+`workers_dev`/previews/observability disabled and no binding or route. Its
+1,000-minute monthly budget alerts at 800 and disables the trigger at the
+threshold. Its separate dedicated-nonhuman
+user token has `User Details:Read`, no personal
+data, and no account/zone permission or resource selector. #56 must prove that zero-resource token works before
+enabling the trigger; never substitute the production token. Fork refs do not
+exist in the connected repository and receive ordinary GitHub validation only.
+Cloudflare emits its native check and PR status comment/history without a
+preview URL.
+
+The review-check build identity cannot reach production project settings.
+Cloudflare cannot project-scope `Workers CI Write` and supports it only on a
+user API token, so the dedicated-nonhuman setup/budget/recovery operator has
+explicit production-account Builds control-plane reach, including technical
+authority over builds, tokens, environment variables, connections, triggers,
+and manual builds. Its operator-secret-store-only credential may mutate only the
+exact review project/trigger IDs, must reject production IDs, and must read the
+result back. This administrative tradeoff is not a review-run permission.
+
+Live evidence is a separate operator-supervised exact-commit run against one
+serialized cohort in a dedicated account with no GitHub connection or zone. It
+must prove an explicitly approved same-repository non-`main` SHA that is not
+reachable from `main` and a clean
+checkout before loading credentials, acquire the singleton lease, stage disabled circuits, verify the
+pre-applied migration ledger, generate fresh ephemeral signing fixtures,
+deploy core then callers, read back same-cohort Service Bindings, run bounded
+Access-protected canaries, and leave
+all circuits disabled. Every Worker, D1/DO namespace, R2 bucket, Analytics
+dataset, rate namespace, secret value/epoch, `workers.dev` hostname, the
+account-scoped `all_workers` Access application, log destination, and credential is review-only. There is no
+review Custom Domain, zone WAF/cache rule, parent-DNS authority, or public
+static origin; stable URLs name the mutable cohort, not the commit or a secret.
+The exact Access application is `all_workers` with a `non_identity` policy that
+includes only the run's 60-minute service-token ID. The separately authorized
+token operator creates it after lease acquisition and revokes it after closed
+readback; full teardown keeps Access attached until every Worker and the
+account `workers.dev` subdomain are gone. All three materialized role configs
+switch their own circuits together. Lease acquire/renew/reclaim uses exactly
+1,800 seconds, with a five-second proof-age ceiling, 120-second provider
+operation timeout, and 300-second recovery reserve. Replay validity ends at 24
+hours, but alarm-based physical pruning is best effort; retained DO state is
+recorded and both exact namespaces are force-deleted and read absent by the
+mandatory 90-day cohort teardown.
+
+Irreversible teardown first atomically enters `quiescing`, blocking new
+acquire/renew/enable/reclaim and all external forward proofs while preserving
+owner closure/release. Cleanup never releases an unexpired row: wait the
+425-second proof/operation/recovery horizon, close/read back circuits, accept a
+cooperative owner release, or wait for expiry plus the exact disabled-state and
+60-second drain proofs before a cleanup-only exact UUID/generation CAS marks
+the abandoned coordination row disabled and performs the expired release. Only
+then may an empty run table transition to terminal `teardown`. Keep the coordination D1
+fence through Worker/namespace absence, `workers.dev` disablement, and Access
+deletion; delete the coordination D1 last.
+
+This design does not authorize provisioning. Until issue #56 supplies and
+validates the exact provider resources, `npm run deploy:review-canary` fails
+closed. Local manual escape is limited to `npm ci --ignore-scripts`,
+`npm run check`, and `npm run review:dry-run` without Cloudflare credentials.
+It does not prove live behavior. A provider outage or build failure never falls
+through to the production command or blocks unrelated GitHub validation.
 
 ### Pauses, retries, outages, and manual escape
 

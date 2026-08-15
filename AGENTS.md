@@ -87,6 +87,24 @@
   custom hostname, secrets, D1 database, Analytics Engine dataset, and native
   Rate Limiting namespace IDs for canaries; reused namespace IDs share
   counters across Workers.
+- `deployment/workers-builds-review.json` owns the non-`main` review design.
+  Same-repository branch automation is build-only, has no bindings, protected
+  inputs, account/zone resource permission, upload, or URL, and must reject
+  `main`; fork refs remain outside the connected repository. A separate inert
+  review-check project in the production account reuses the one repository
+  connection but has a distinct zero-resource token and no production project
+  setting or protected input available to builds. The trusted setup/budget
+  operator's account-wide Builds control-plane reach (builds, tokens,
+  environment variables, connections, triggers, and manual builds) is an
+  explicit provider limitation; its user API token is never build-readable and
+  exact review trigger ID guards must reject production mutations. Its digest-pinned inert bootstrap Worker remains
+  unreachable, and branch builds create no Worker version. Live review is an operator-supervised exact-SHA run in a dedicated
+  account with no GitHub connection or zone. Its production-disjoint resources, disabled
+  circuits, exact-duration lease, quiescing/terminal teardown fence, logical
+  versus physical fixture retention, Access boundary, and force-delete/readback cleanup guards must
+  remain synchronized with `docs/review-environment.md` and
+  `scripts/review-environment.mjs`. Provider provisioning remains reserved for
+  issue #56; `npm run deploy:review-canary` must fail closed until then.
 - Preserve the curated `request_rejected`, `blacklist_match`, and
   `unexpected_error` diagnostics with their closed, redacted schemas. Do not
   log routine success, expected `404`, rate-limit, or open-circuit traffic; use

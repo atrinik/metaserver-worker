@@ -303,6 +303,17 @@ DNS-only while a positive max age may remain cached.
 
 ## Canary and release gate
 
+The Git-backed review topology is specified in
+[`review-environment.md`](review-environment.md). Its automatic branch check is
+build-only and creates no edge. The optional live cohort uses only
+three stable review-account `workers.dev` hosts and one `all_workers` Access application;
+it has no zone, Custom Domain, WAF/cache rule, production DNS, route, purge, or
+observability authority. Preview URLs remain disabled. Access protects
+reviewers and automated/WebSocket clients, but the URLs are not secrets. These
+checks prove application topology, bindings, native limits, and Access only;
+they do not prove production WAF, traffic, cache, certificates, static public
+origins, or production control-plane ownership.
+
 Use a non-production hostname in every command below. Substitute only a
 reviewed canary hostname and never send this loop to production:
 
