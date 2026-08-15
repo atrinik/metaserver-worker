@@ -129,8 +129,11 @@ and the zero-resource review token; the production selector and token change
 together only at activation. Its separately credentialed exhaustive provider
 readback, D1-ledger proof, and local materializer write only private mode-`0600` provider
 snapshots/configurations and have no remote mutation path. A post-setup
+`npm run provision:workers-builds:verify-staged` gate proves both triggers are
+still private-sentinel-only and share only the zero-resource review token before
+activation. A post-activation
 `npm run provision:workers-builds:verify-configured` check proves the serialized
-trigger, distinct provider-token policies, digest-pinned inert review Worker,
+trigger, distinct fresh provider-token policies, clean-source-bound inert review Worker,
 environment-classification, and no-Deploy-Hook
 boundaries from those private snapshots. Exact invocation and authorization
 boundaries are in [DEPLOYMENT.md](DEPLOYMENT.md).

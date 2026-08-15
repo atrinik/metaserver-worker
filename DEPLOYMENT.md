@@ -170,6 +170,7 @@ provider responses:
 ATRINIK_CLOUDFLARE_ACCOUNT_ID_FILE=/secure/path/account-id \
 ATRINIK_WORKERS_BUILDS_API_TOKEN_FILE=/secure/path/builds-read-token \
 ATRINIK_PRODUCTION_BUILD_TOKEN_SECRET_FILE=/secure/path/production-build-token \
+ATRINIK_REVIEWED_SOURCE_SHA_FILE=/secure/path/reviewed-source-sha \
 ATRINIK_PROVIDER_SNAPSHOT_OUTPUT=/secure/new/provider-snapshot \
   npm run provision:workers-builds:readback
 ```
@@ -180,13 +181,16 @@ schedules, alternate-URL state, Builds triggers across every account Worker,
 active-build inventory and their environment classifications, Deploy Hooks,
 Custom Domains, build-token inventory, account build
 limits, and the ordered production D1 migration ledger. Every paginated
-security inventory is read to a bounded stable count and stored as a canonical
-exhaustive snapshot; incomplete, changing, or duplicated pages fail closed.
+security inventory is read in two bounded complete passes and stored as a
+canonical exhaustive snapshot; incomplete, changing, reordered, replaced, or
+duplicated pages fail closed. A fresh manifest binds the snapshot to the exact
+account, reviewed source SHA, and checked-in production/review contract digests.
 Before setup, prove the fresh no-trigger/no-Deploy-Hook/no-active-build boundary:
 
 ```sh
 ATRINIK_PROVIDER_SNAPSHOT_DIRECTORY=/secure/provider-snapshot \
 ATRINIK_CLOUDFLARE_ACCOUNT_ID_FILE=/secure/path/account-id \
+ATRINIK_REVIEWED_SOURCE_SHA_FILE=/secure/path/reviewed-source-sha \
 ATRINIK_STAGING_SENTINEL_BRANCH_FILE=/secure/path/private-random-sentinel \
 ATRINIK_STAGING_SENTINEL_REFS_FILE=/secure/path/fresh-sentinel-proof.json \
 ATRINIK_REPOSITORY_CONNECTION_OWNER_PROOF_FILE=/secure/path/connection-owner-proof.json \
@@ -206,11 +210,16 @@ only a bounded summary; raw identifiers and provider responses remain in the
 private directory. Private inputs and snapshot files are opened without
 following symbolic links and must remain owner-only regular files.
 Because the provider has no repository-connection read endpoint, preflight
-also requires a no-more-than-24-hour owner-UI proof that the exact account and
+also requires a no-more-than-five-minute owner-UI proof that the exact account and
 repository connection pre-existed and that the website remains connected. The
 proof uses source `cloudflare-owner-ui-readback`, the exact repository object,
-`connectionPreexisting: true`, and `websitePreserved: true`; it contains no
-credential or connection UUID. Rollback always retains that connection.
+`connectionPreexisting: true`, and `websitePreserved: true`. It also pins App
+85455, installation 152311798, selected-repository mode, the exact website and
+metaserver repository IDs, the governed
+`atrinik/metaserver-worker#56-private-provider-evidence` coordinate, and fresh
+read-only proof that the exact source SHA
+is still protected PR-only `main` with deletion and force-push disabled. It
+contains no credential or connection UUID. Rollback always retains that connection.
 
 Materialize the three desired production documents from that same snapshot.
 This substitutes only the read-back account, D1, cache-zone, R2, Analytics,
@@ -223,6 +232,7 @@ provider's 5 KiB limit:
 
 ```sh
 ATRINIK_CLOUDFLARE_ACCOUNT_ID_FILE=/secure/path/account-id \
+ATRINIK_REVIEWED_SOURCE_SHA_FILE=/secure/path/reviewed-source-sha \
 ATRINIK_PROVIDER_SNAPSHOT_DIRECTORY=/secure/provider-snapshot \
 ATRINIK_PRODUCTION_CONFIG_OUTPUT=/secure/new/production-configs \
   npm run provision:workers-builds:materialize-production
@@ -238,13 +248,36 @@ Worker, token, trigger, variable, build, or deployment. Those mutations remain
 behind the explicit setup authorization; migration `0010` and the first
 automatic production proof are later, separately authorized gates.
 
-After setup, take a new snapshot and prove the configured Builds boundary:
+After creating both inert triggers and their environments, take a new snapshot
+and prove the staged boundary before activating either trigger:
+
+```sh
+ATRINIK_PROVIDER_SNAPSHOT_DIRECTORY=/secure/staged-provider-snapshot \
+ATRINIK_CLOUDFLARE_ACCOUNT_ID_FILE=/secure/path/account-id \
+ATRINIK_REVIEWED_SOURCE_SHA_FILE=/secure/path/reviewed-source-sha \
+ATRINIK_STAGING_SENTINEL_BRANCH_FILE=/secure/path/private-random-sentinel \
+ATRINIK_STAGING_SENTINEL_REFS_FILE=/secure/path/fresh-sentinel-proof.json \
+ATRINIK_PRODUCTION_BUILD_TOKEN_PERMISSION_PROOF_FILE=/secure/path/production-token-policy.json \
+ATRINIK_REVIEW_BUILD_TOKEN_PERMISSION_PROOF_FILE=/secure/path/review-token-policy.json \
+ATRINIK_REVIEW_BOOTSTRAP_UPLOAD_PROOF_FILE=/secure/path/review-bootstrap-upload.json \
+ATRINIK_WORKERS_BUILDS_USAGE_PROOF_FILE=/secure/path/build-usage.json \
+  npm run provision:workers-builds:verify-staged
+```
+
+This requires both triggers to select only the same fresh private sentinel and
+use the zero-resource review token, while both exact environments are present,
+all builds are stopped, and the bootstrap/token/usage proofs are current.
+
+After activation, take another new snapshot and prove the configured boundary:
 
 ```sh
 ATRINIK_PROVIDER_SNAPSHOT_DIRECTORY=/secure/post-setup-provider-snapshot \
 ATRINIK_CLOUDFLARE_ACCOUNT_ID_FILE=/secure/path/account-id \
+ATRINIK_REVIEWED_SOURCE_SHA_FILE=/secure/path/reviewed-source-sha \
 ATRINIK_PRODUCTION_BUILD_TOKEN_PERMISSION_PROOF_FILE=/secure/path/production-token-policy.json \
 ATRINIK_REVIEW_BUILD_TOKEN_PERMISSION_PROOF_FILE=/secure/path/review-token-policy.json \
+ATRINIK_REVIEW_BOOTSTRAP_UPLOAD_PROOF_FILE=/secure/path/review-bootstrap-upload.json \
+ATRINIK_WORKERS_BUILDS_USAGE_PROOF_FILE=/secure/path/build-usage.json \
   npm run provision:workers-builds:verify-configured
 ```
 
@@ -257,10 +290,18 @@ shared exact GitHub repository connection, exact
 commands and branch/watch filters, exact environment names/classifications,
 no publisher or rendezvous trigger, and no Deploy Hook on any of the four
 projects. It also proves the review bootstrap has exactly one 100%-active
-digest-annotated version, exact inert runtime settings, no binding/route/
+annotated version tied to a fresh journaled clean-exact-source Wrangler upload,
+exact inert runtime settings, no binding/route/
 schedule/log consumer/public URL, no active build, and an account that has not
-reached its build-minute limit. Provider timestamps are accepted only as metadata; they never relax
+reached its build-minute limit and the private usage proof remains below the
+800-minute alert boundary. Provider timestamps are accepted only as metadata; they never relax
 the authored values or secret classifications.
+
+Each token-policy proof is captured from the provider no more than five minutes
+before verification and binds the exact underlying token ID, its current
+`modified_on` value, and its complete user/account/zone policy and resource
+arrays, account, and reviewed source SHA. An older proof, a future modification time, or any in-place policy
+change fails closed.
 
 ## Non-main review delivery
 
@@ -273,7 +314,7 @@ project above remains `main`-only. A separate inert
 the account's repository connection for same-repository non-`main` branches.
 Its absent production sentinel can never select `main`. It runs only `npm run
 review:branch` and the local contract validator and owns no binding, route,
-protected input, branch-created Worker version, or URL. Its digest-pinned
+protected input, branch-created Worker version, or URL. Its checked-in
 `deployment/review-check/wrangler.jsonc` owns one inert bootstrap version with
 `workers_dev`/previews/observability disabled and no binding or route. Its
 1,000-minute monthly budget alerts at 800 and disables the trigger at the

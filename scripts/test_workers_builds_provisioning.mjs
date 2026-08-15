@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
 import { chmod, lstat, mkdir, mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { resolve } from "node:path";
@@ -8,6 +9,7 @@ import {
   automaticReviewTriggerSpec,
   boundedResponseText,
   combineProviderPages,
+  combineWorkerVersionPages,
   createPrivateDirectory,
   loadSnapshot,
   materializeProductionConfigurations,
@@ -26,7 +28,10 @@ import {
   validateProductionRuntimeProof,
   validateRepositoryConnectionOwnerProof,
   validateSentinelRefAbsence,
+  validateSnapshotManifest,
   validateSetupPlan,
+  validateStableProviderPasses,
+  validateStagedBuildsSnapshot,
   validateTriggerSnapshot,
 } from "./workers-builds-provisioning.mjs";
 import { validateBuildEnvironment } from "./production-delivery.mjs";
@@ -118,6 +123,7 @@ function buildTokenInventory() {
 function freshBoundary() {
   return {
     accountId,
+    sourceSha: "a".repeat(40),
     buildTokens: envelope([]),
     accountTriggers: envelope([]),
     sentinelProof: {
@@ -132,6 +138,15 @@ function freshBoundary() {
     repositoryConnectionProof: {
       source: "cloudflare-owner-ui-readback", accountId,
       connectionPreexisting: true, websitePreserved: true,
+      githubApp: { appId: 85455, installationId: 152311798,
+        evidenceLocation: "atrinik/metaserver-worker#56-private-provider-evidence",
+        repositorySelection: "selected", selectedRepositories: [
+          { fullName: "atrinik/metaserver-worker", id: 1324297032 },
+          { fullName: "atrinik/website", id: 1327107093 },
+        ] },
+      mainProtection: { repository: "atrinik/metaserver-worker", defaultBranch: "main",
+        sha: "a".repeat(40), requiresPullRequest: true, allowsDeletion: false,
+        allowsForcePush: false },
       repository: {
         provider_account_id: "6371603", provider_account_name: "atrinik",
         provider_type: "github", repo_id: "1324297032", repo_name: "metaserver-worker",
@@ -145,6 +160,7 @@ function configuredBoundary(productionSpec, reviewSpec) {
   const versionId = "44444444-4444-4444-8444-444444444444";
   return {
     accountId,
+    sourceSha: "a".repeat(40),
     accountTriggers: envelope([productionSpec, reviewSpec]),
     reviewBootstrapConfig,
     reviewBootstrapState: {
@@ -164,13 +180,27 @@ function configuredBoundary(productionSpec, reviewSpec) {
       }, resources: { bindings: [], script_runtime: { exports: {} } } }),
       builds: envelope([]),
       buildLimits: envelope({ has_reached_build_minutes_limit: false }),
+      buildUsageProof: { source: "cloudflare-owner-build-usage-readback", accountId,
+        capturedAt: new Date().toISOString(), monthlyMinutesUsed: 0,
+        alertAtMinutes: 800, disableAtMinutes: 1000 },
+      uploadProof: { source: "wrangler-clean-reviewed-source-upload",
+        capturedAt: new Date().toISOString(), cleanCheckout: true,
+        sourceRevision: "a".repeat(40), sourceSha256: review.automaticReview.bootstrap.sourceSha256,
+        configSha256: review.automaticReview.bootstrap.configSha256, versionId,
+        command: ["node_modules/.bin/wrangler", "deploy", "--config",
+          review.automaticReview.bootstrap.configPath, "--tag", "atrinik-review-bootstrap",
+          "--message", `config=${review.automaticReview.bootstrap.configSha256} source=${review.automaticReview.bootstrap.sourceSha256}`] },
     },
     tokenAuthorityProofs: [
       { kind: "production", source: "cloudflare-owner-token-policy-readback",
+        capturedAt: new Date().toISOString(), modifiedOn: "2026-08-15T00:00:00.000Z",
+        accountId, sourceSha: "a".repeat(40),
         tokenId: "production-token-id", userPermissions: [],
         accountPermissions: ["D1:Read", "Workers Scripts:Edit"],
         accountResources: [accountId], zonePermissions: [], zoneResources: [] },
       { kind: "review", source: "cloudflare-owner-token-policy-readback",
+        capturedAt: new Date().toISOString(), modifiedOn: "2026-08-15T00:00:00.000Z",
+        accountId, sourceSha: "a".repeat(40),
         tokenId: "review-token-id", userPermissions: ["User Details:Read"],
         accountPermissions: [], accountResources: [], zonePermissions: [], zoneResources: [] },
     ],
@@ -245,6 +275,27 @@ test("combines only stable exhaustive provider pages", () => {
   ], "builds", ({ build_uuid }) => build_uuid), /duplicated/u);
 });
 
+test("normalizes the official nested Worker versions pagination shape", () => {
+  const combined = combineWorkerVersionPages([
+    { success: true, result: { items: [{ id: resourceUuid }] }, result_info: {
+      page: 1, total_pages: 2, total_count: 2 } },
+    { success: true, result: { items: [{ id: reviewTriggerUuid }] }, result_info: {
+      page: 2, total_pages: 2, total_count: 2 } },
+  ]);
+  assert.deepEqual(combined.result.map(({ id }) => id), [resourceUuid, reviewTriggerUuid]);
+  assert.equal(combined.result_info.exhaustive, true);
+  assert.throws(() => combineWorkerVersionPages([
+    { success: true, result: [{ id: resourceUuid }], result_info: {
+      page: 1, total_pages: 1, total_count: 1 } },
+  ]), /version inventory is malformed/u);
+});
+
+test("rejects equal-count provider replacement between complete passes", () => {
+  assert.throws(() => validateStableProviderPasses(
+    envelope([{ build_uuid: resourceUuid }]),
+    envelope([{ build_uuid: reviewTriggerUuid }]), "builds"), /changed between complete passes/u);
+});
+
 test("requires an exact private random absent staging ref", () => {
   const proof = freshBoundary().sentinelProof;
   assert.equal(validateSentinelRefAbsence(proof).outcome, "staging-sentinel-ref-absent");
@@ -256,13 +307,30 @@ test("requires an exact private random absent staging ref", () => {
     capturedAt: "2026-08-15T00:00:00Z" }, Date.parse("2026-08-15T00:06:00Z")), /stale/u);
 });
 
+test("binds provider snapshots to a fresh exact reviewed source", () => {
+  const sourceSha = "a".repeat(40);
+  const now = Date.parse("2026-08-15T12:00:00.000Z");
+  const productionContractSha256 = createHash("sha256")
+    .update(JSON.stringify(production)).digest("hex");
+  const reviewContractSha256 = createHash("sha256")
+    .update(JSON.stringify(review)).digest("hex");
+  const manifest = { accountId, sourceSha, productionContractSha256, reviewContractSha256,
+    startedAt: "2026-08-15T11:59:00.000Z", completedAt: "2026-08-15T12:00:00.000Z" };
+  assert.doesNotThrow(() => validateSnapshotManifest(manifest,
+    { accountId, sourceSha, production, review }, now));
+  assert.throws(() => validateSnapshotManifest({ ...manifest,
+    completedAt: "2026-08-15T11:50:00.000Z" },
+  { accountId, sourceSha, production, review }, now), /snapshot manifest is stale/u);
+});
+
 test("requires fresh owner proof for the unreadable shared repository connection", () => {
   const proof = freshBoundary().repositoryConnectionProof;
-  assert.doesNotThrow(() => validateRepositoryConnectionOwnerProof(proof, accountId));
+  assert.doesNotThrow(() => validateRepositoryConnectionOwnerProof(proof, accountId,
+    "a".repeat(40)));
   assert.throws(() => validateRepositoryConnectionOwnerProof({ ...proof,
-    websitePreserved: false }, accountId), /owner proof drift/u);
+    websitePreserved: false }, accountId, "a".repeat(40)), /owner proof drift/u);
   assert.throws(() => validateRepositoryConnectionOwnerProof({ ...proof,
-    capturedAt: "2026-08-14T00:00:00Z" }, accountId,
+    capturedAt: "2026-08-14T00:00:00Z" }, accountId, "a".repeat(40),
     Date.parse("2026-08-15T00:00:01Z")), /stale/u);
 });
 
@@ -355,7 +423,7 @@ test("proves one active production topology and an exact migration prefix", () =
     versions: [{ version_id: versionId, percentage: 100 }],
   }] }));
   const activeVersions = configurations.map((config, index) => envelope({
-    id: versionIds[index], resources: { script_runtime: {
+    id: versionIds[index], resources: { bindings: bindings(config), script_runtime: {
       compatibility_date: config.compatibility_date,
       compatibility_flags: config.compatibility_flags ?? [], exports: config.exports ?? {},
     } },
@@ -364,15 +432,31 @@ test("proves one active production topology and an exact migration prefix", () =
     `${String(index + 1).padStart(4, "0")}_migration.sql`);
   const result = validateProductionRuntimeProof({ contract: production, configurations,
     deployments, activeVersions,
-    migrationEnvelope: envelope([{ results: migrationNames.slice(0, 9).map((name) => ({ name })) }]),
+    migrationEnvelope: envelope([{ results: migrationNames.slice(0, 9)
+      .map((name, index) => ({ id: index + 1, name })) }]),
     migrationNames });
   assert.deepEqual(result.pendingMigrations, [migrationNames[9]]);
   const drift = structuredClone(activeVersions);
   drift[0].result.resources.script_runtime.exports.Unreviewed = { type: "worker" };
   assert.throws(() => validateProductionRuntimeProof({ contract: production, configurations,
     deployments, activeVersions: drift,
-    migrationEnvelope: envelope([{ results: migrationNames.slice(0, 9).map((name) => ({ name })) }]),
+    migrationEnvelope: envelope([{ results: migrationNames.slice(0, 9)
+      .map((name, index) => ({ id: index + 1, name })) }]),
     migrationNames }), /exports reconciliation/u);
+  const bindingDrift = structuredClone(activeVersions);
+  bindingDrift[0].result.resources.bindings.pop();
+  assert.throws(() => validateProductionRuntimeProof({ contract: production, configurations,
+    deployments, activeVersions: bindingDrift,
+    migrationEnvelope: envelope([{ results: migrationNames.slice(0, 9)
+      .map((name, index) => ({ id: index + 1, name })) }]),
+    migrationNames }), /binding inventory/u);
+  const wrongLedgerIds = migrationNames.slice(0, 9)
+    .map((name, index) => ({ id: index + 1, name }));
+  wrongLedgerIds[3].id = 3;
+  assert.throws(() => validateProductionRuntimeProof({ contract: production, configurations,
+    deployments, activeVersions,
+    migrationEnvelope: envelope([{ results: wrongLedgerIds }]), migrationNames }),
+  /ledger sequence/u);
 });
 
 test("pins production and build-only review trigger shapes", () => {
@@ -544,6 +628,14 @@ test("plans inert setup, separately gated activation, and ordered rollback", () 
   apiFieldDrift.setupOperations.find(({ id }) => id === "production-script")
     .produces.script_tag.sourceField = "script_tag";
   assert.throws(() => validateSetupPlan(apiFieldDrift), /producer schema/u);
+  const missingSentinel = structuredClone(plan);
+  missingSentinel.setupOperations = missingSentinel.setupOperations.filter(({ id }) =>
+    id !== "sentinel-recheck-before-production-trigger");
+  assert.throws(() => validateSetupPlan(missingSentinel), /operation set, order/u);
+  const reordered = structuredClone(plan);
+  [reordered.setupOperations[6], reordered.setupOperations[7]] =
+    [reordered.setupOperations[7], reordered.setupOperations[6]];
+  assert.throws(() => validateSetupPlan(reordered), /operation set, order/u);
 });
 
 test("proves one serialized production trigger and one isolated review trigger", () => {
@@ -562,6 +654,7 @@ test("proves one serialized production trigger and one isolated review trigger",
   const automaticEnvironment = automaticReviewEnvironmentSpec(review);
   const validArguments = () => ({
     ...configuredBoundary(productionSpec, reviewSpec),
+    sourceSha: "a".repeat(40),
     production,
     review,
     scripts: envelope([
@@ -580,6 +673,12 @@ test("proves one serialized production trigger and one isolated review trigger",
   });
   const result = validateConfiguredBuildsSnapshot(validArguments());
   assert.equal(result.mutation, false);
+  const unrelated = validArguments();
+  unrelated.accountTriggers.result.push({ trigger_uuid: "55555555-5555-4555-8555-555555555555",
+    repo_connection: { provider_type: "github", provider_account_id: "6371603",
+      repo_id: "unrelated-repository" } });
+  unrelated.accountTriggers.result_info.total_count = 3;
+  assert.doesNotThrow(() => validateConfiguredBuildsSnapshot(unrelated));
 
   for (const mutate of [
     (value) => value.reviewBootstrapState.settings.result.bindings.push({
@@ -588,11 +687,18 @@ test("proves one serialized production trigger and one isolated review trigger",
     (value) => { value.reviewBootstrapState.versions.result.push({ id: resourceUuid });
       value.reviewBootstrapState.versions.result_info.total_count = 2; },
     (value) => value.reviewBootstrapState.activeVersion.result.annotations["workers/tag"] = "wrong",
+    (value) => { value.reviewBootstrapState.uploadProof.sourceRevision = "b".repeat(40); },
     (value) => { value.reviewBootstrapState.builds.result.push({
       build_uuid: resourceUuid, status: "running" });
       value.reviewBootstrapState.builds.result_info.total_count = 1; },
     (value) => value.reviewBootstrapState.buildLimits.result.has_reached_build_minutes_limit = true,
+    (value) => { value.reviewBootstrapState.buildLimits.result.has_reached_build_minutes_limit = null; },
+    (value) => { value.reviewBootstrapState.buildUsageProof.monthlyMinutesUsed = 800; },
     (value) => value.tokenAuthorityProofs[1].accountPermissions.push("Workers Scripts:Edit"),
+    (value) => { value.tokenAuthorityProofs[1].capturedAt = "2026-08-15T00:00:00.000Z"; },
+    (value) => { value.tokenAuthorityProofs[1].modifiedOn = "2999-01-01T00:00:00.000Z"; },
+    (value) => { value.tokenAuthorityProofs[1].accountId = "b".repeat(32); },
+    (value) => { value.tokenAuthorityProofs[1].sourceSha = "b".repeat(40); },
     (value) => { value.accountTriggers.result.push({
       trigger_uuid: "55555555-5555-4555-8555-555555555555",
       repo_connection: productionSpec.repo_connection });
@@ -672,4 +778,45 @@ test("proves one serialized production trigger and one isolated review trigger",
   ]), /missing or ambiguous/u);
   assert.throws(() => validateNoDeployHooks(envelope([{ deploy_hook_uuid: resourceUuid }]),
     "production"), /Deploy Hook/u);
+});
+
+test("proves both triggers are inert before either activation", () => {
+  const sentinelProof = freshBoundary().sentinelProof;
+  const productionSpec = withConnection(productionTriggerSpec(production, {
+    ...triggerCoordinates(), buildTokenUuid: reviewTokenUuid,
+  }));
+  productionSpec.branch_includes = [sentinelProof.branch];
+  const reviewSpec = withConnection(automaticReviewTriggerSpec(review, {
+    externalScriptId: reviewScriptTag, repositoryConnectionUuid: resourceUuid,
+    buildTokenUuid: reviewTokenUuid,
+  }));
+  reviewSpec.trigger_uuid = reviewTriggerUuid;
+  reviewSpec.branch_includes = [sentinelProof.branch];
+  reviewSpec.branch_excludes = ["main"];
+  const values = Object.fromEntries(Object.values(production.protectedInputs)
+    .map((name) => [name, `${name}-value`]));
+  const productionEnvironment = productionEnvironmentSpec(production, values);
+  for (const name of Object.values(production.protectedInputs))
+    productionEnvironment[name].value = null;
+  const arguments_ = {
+    ...configuredBoundary(productionSpec, reviewSpec), production, review, sentinelProof,
+    scripts: envelope([{ id: production.workers[0].name, tag: scriptTag },
+      { id: review.automaticReview.project, tag: reviewScriptTag }]),
+    productionTriggers: envelope([productionSpec]),
+    productionEnvironment: envelope(productionEnvironment),
+    reviewTriggers: envelope([reviewSpec]),
+    reviewEnvironment: envelope(automaticReviewEnvironmentSpec(review)),
+    buildTokens: buildTokenInventory(),
+    deployHooks: [...production.workers.map(({ role }) => role), "review"]
+      .map((label) => [label, envelope([])]),
+    builds: [...production.workers.map(({ role }) => [role, envelope([])]),
+      ["review", envelope([])]],
+  };
+  assert.equal(validateStagedBuildsSnapshot(arguments_).stagedTriggerCount, 2);
+  const active = structuredClone(arguments_);
+  active.productionTriggers.result[0].branch_includes = ["main"];
+  assert.throws(() => validateStagedBuildsSnapshot(active), /trigger branch_includes drift/u);
+  const wrongToken = structuredClone(arguments_);
+  wrongToken.productionTriggers.result[0].build_token_uuid = resourceUuid;
+  assert.throws(() => validateStagedBuildsSnapshot(wrongToken), /zero-resource review token/u);
 });
