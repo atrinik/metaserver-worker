@@ -93,7 +93,8 @@
   `main`; fork refs remain outside the connected repository. A separate inert
   review-check project in the production account reuses the one repository
   connection but has a distinct zero-resource token and no production project
-  setting or protected input. Live review is an operator-supervised exact-SHA run in a dedicated
+  setting or protected input. Its digest-pinned inert bootstrap Worker remains
+  unreachable, and branch builds create no Worker version. Live review is an operator-supervised exact-SHA run in a dedicated
   account with no GitHub connection or zone. Its production-disjoint resources, disabled
   circuits, lease, fixture retention, Access boundary, and cleanup guards must
   remain synchronized with `docs/review-environment.md` and

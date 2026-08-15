@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import { resolve } from "node:path";
+import { DatabaseSync } from "node:sqlite";
 import test from "node:test";
 import {
   ReviewEnvironmentError,
@@ -19,6 +20,9 @@ const production = JSON.parse(await readFile(resolve(root, "deployment/workers-b
 const configurations = await Promise.all([
   "wrangler.jsonc", "wrangler.publisher.jsonc", "wrangler.rendezvous.jsonc",
 ].map(async (path) => JSON.parse(await readFile(resolve(root, path), "utf8"))));
+const coordinationSchema = await readFile(resolve(root, "deployment/review-coordination-v1.sql"), "utf8");
+const coordinationOperations = JSON.parse(await readFile(resolve(root,
+  "deployment/review-coordination-operations-v1.json"), "utf8"));
 
 function changed(change) {
   const value = structuredClone(review);
@@ -53,10 +57,13 @@ test("automatic review has no bindings, routes, secrets, or deployable version",
     (value) => value.bindings.push("DB"),
     (value) => value.routes.push("review.example"),
     (value) => value.protectedInputs.push("CLOUDFLARE_API_TOKEN"),
-    (value) => value.result.workerVersion = true,
+    (value) => value.result.branchCreatesWorkerVersion = true,
     (value) => value.result.reviewUrl = "https://public.workers.dev",
     (value) => value.tokenAuthority.accountPermissions.push("Workers Scripts:Read"),
     (value) => value.tokenAuthority.productionRead = true,
+    (value) => value.bootstrap.workersDev = true,
+    (value) => value.bootstrap.configSha256 = "0".repeat(64),
+    (value) => value.costPolicy.maximumMonthlyReviewBuildMinutes = 3000,
   ]) {
     const value = structuredClone(review.automaticReview);
     mutate(value);
@@ -125,6 +132,9 @@ test("requires every isolated owner, resource ceiling, circuit, and cleanup guar
     changed((value) => value.liveCanary.resources.secrets.productionValueReuse = true),
     changed((value) => value.liveCanary.resources.hostnames.productionDnsAuthority = true),
     changed((value) => value.liveCanary.resources.observability.destinations = ["production-tail"]),
+    changed((value) => value.liveCanary.access.policy.decision = "allow"),
+    changed((value) => value.liveCanary.access.serviceToken.duration = "forever"),
+    changed((value) => value.liveCanary.configurationMaterialization.core.workersDev = false),
     changed((value) => value.liveCanary.dataPolicy.productionCopies = true),
     changed((value) => value.liveCanary.dataPolicy.rendezvousDoMaximumRetentionHours = 25),
     changed((value) => value.liveCanary.cleanup.guards.pop()),
@@ -139,6 +149,39 @@ test("requires every isolated owner, resource ceiling, circuit, and cleanup guar
     changed((value) => value.liveCanary.resources.rendezvousClientRateLimit.owner = "core"),
     changed((value) => value.liveCanary.resources.rendezvousClientRateLimit.binding = "WRONG"),
   ]) assert.throws(() => validateContract(candidate, production, configurations), ReviewEnvironmentError);
+});
+
+test("coordination SQL enforces acquisition, generation, state, expiry, and release CAS", () => {
+  const database = new DatabaseSync(":memory:");
+  database.exec(coordinationSchema);
+  const statements = Object.fromEntries(Object.entries(coordinationOperations.statements)
+    .map(([name, sql]) => [name, database.prepare(sql)]));
+  const shaA = "a".repeat(40);
+  const shaB = "b".repeat(40);
+  const runA = "11111111-1111-4111-8111-111111111111";
+  const runB = "22222222-2222-4222-8222-222222222222";
+  const namespaceA = `review-canary-fixture-${shaA}-${runA}`;
+  const namespaceB = `review-canary-fixture-${shaB}-${runB}`;
+  assert.equal(statements.acquireFresh.all(shaA, runA, namespaceA, 1800).length, 1);
+  assert.equal(statements.acquireFresh.all(shaB, runB, namespaceB, 1800).length, 0);
+  assert.equal(statements.enable.all(runA, 1).length, 1);
+  assert.equal(statements.renew.all(runA, 0, 1800).length, 0);
+  const renewed = statements.renew.all(runA, 1, 1800);
+  assert.equal(renewed[0].lease_generation, 2);
+  assert.equal(statements.release.all(runA, 2).length, 0);
+  assert.equal(statements.beginDrain.all(runA, 2).length, 1);
+  assert.equal(statements.proveDisabled.all(runA, 2).length, 1);
+  assert.equal(statements.release.all(runA, 1).length, 0);
+  assert.equal(statements.release.all(runA, 2).length, 1);
+  assert.throws(() => statements.acquireFresh.all(shaA, "not-a-valid-uuid-value-at-all-000000", namespaceA, 1800));
+  assert.equal(statements.acquireFresh.all(shaA, runA, namespaceA, 1801).length, 0);
+  assert.equal(statements.acquireFresh.all(shaA, runA, namespaceA, 1).length, 1);
+  database.exec("UPDATE review_runs SET lease_expires_at = unixepoch() - 1");
+  const reclaimed = statements.reclaimExpired.all(shaB, runB, namespaceB, 1800);
+  assert.equal(reclaimed.length, 1);
+  assert.equal(reclaimed[0].run_uuid, runB);
+  assert.equal(reclaimed[0].lease_generation, 2);
+  database.close();
 });
 
 test("defines executable migration, fixture, binding, stale, canary, and cleanup boundaries", () => {

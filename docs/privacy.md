@@ -68,6 +68,9 @@ no production project setting or protected input. Its dedicated-nonhuman user
 token contains no personal data and has only `User Details:Read` plus empty
 account/zone permissions and selectors. #56 must
 prove representative production reads and writes fail before enabling it.
+The project's one bootstrap version is unreachable (`workers_dev` and previews
+off, no route), has no binding or log destination, and is created only by a
+separate non-build-readable provisioning credential.
 
 An explicitly requested live review uses fresh ephemeral nonproduction signing
 keys/certificates and a distinct canary secret pair, D1/DO state, R2, Analytics

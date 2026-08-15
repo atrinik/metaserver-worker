@@ -53,7 +53,12 @@ Cloudflare account reuses its repository connection for the separate inert
 Worker/project `atrinik-metaserver-review-check`. That project's absent
 production branch is `review-build-only-sentinel`; automatic production pushes
 are disabled and its production command always stops. Its non-production
-trigger includes all branches except `main` and the sentinel, runs the
+trigger root is `deployment/review-check`, whose digest-pinned Wrangler file
+names the exact inert Worker and keeps `workers_dev`, preview URLs, bindings,
+routes, and observability disabled. #56 creates its one required bootstrap
+version/tag with a separate non-build-readable provisioning credential. The
+trigger includes all branches except `main` and the sentinel, changes to the
+repository root, runs the
 lifecycle-disabled pinned install and `npm run review:branch`, then the local
 no-op `npm run review:validate`. Neither its commands nor its settings are
 shared with the production project.
@@ -93,6 +98,13 @@ reports only the allowlisted stage, exit/signal/timeout/output-limit class, and
 stdout/stderr byte counts. It never emits captured child output or environment
 values.
 
+The persistent review-check Worker counts as one production-account resource,
+but has no reachable URL. #56 records the account plan and current build usage.
+Review automation has a 1,000-minute monthly budget, alerts at 800 minutes, and
+is disabled/read back at the threshold. Newer same-branch results supersede old
+results; the operator cancels any observed still-running stale build using a
+separate Workers CI Write credential that is never build-readable.
+
 ## Live source and authority boundary
 
 The live cohort is in a dedicated nonproduction Cloudflare account with no
@@ -121,8 +133,9 @@ The authority matrix is exact:
 | Provisioner | No; #56 setup only | Workers Scripts Edit, D1 Edit, Workers R2 Storage Edit, Access Apps and Policies Edit, Account Settings Read | Create named resources, enable `workers.dev`, configure one `all_workers` Access application, and write runtime secrets |
 | Migration operator | No; reviewed ledger advance only | D1 Edit | Apply pending migrations |
 | Live runner | Yes, explicit exact-SHA run | Workers Scripts Edit, D1 Edit, Workers R2 Storage Read, Account Analytics Read | Deploy three Workers, execute allowlisted lease/fixture SQL, and read back live state |
+| Access token operator | No; after lease and after closed readback | Access Service Tokens Write; Access Apps and Policies Edit | Create the exact 60-minute per-run token, bind the policy to only its ID, transfer it only to the supervisor, then delete it |
 | Access canary | Yes, five-minute window | No Cloudflare API permission; one service token scoped to the review `all_workers` application | Reach only review endpoints |
-| Cleanup operator | No; separate preview/apply | Workers Scripts Edit, D1 Edit, Workers R2 Storage Edit, Access Apps and Policies Edit, Account Settings Edit | Delete only the exact live inventory |
+| Cleanup operator | No; separate preview/apply | Workers Scripts Edit, D1 Edit, Workers R2 Storage Edit, Access Apps and Policies Edit, Access Service Tokens Write, Account Settings Edit | Delete only the exact live inventory |
 
 The routine process never loads the cleanup credential and has no
 production-account, parent-DNS, or runtime-secret-read authority. It never
@@ -155,6 +168,15 @@ discarded after circuits close. Requests use current bounded timestamps, so
 the fixed checked-in signed fixtures are reference vectors only and are never
 reused as live valid publications.
 
+The machine contract pins the raw SHA-256 of all three checked-in role
+configurations and permits only its enumerated review overrides. Those exact
+overrides name every Worker, D1/R2/Analytics/rate binding, Service Binding,
+review hostname, source-tag epoch, circuit, no-zone placeholder origin/cache
+ID, schedule, `workers_dev`, preview, route, and observability setting. #56 may
+substitute only provider-issued private resource IDs and the read-back account
+`workers.dev` subdomain; every other parsed value remains equivalent to the
+digest-pinned source.
+
 ## Executable live plan
 
 Every remote operation requires readback before the next:
@@ -165,8 +187,12 @@ Every remote operation requires readback before the next:
    the separate coordination D1. Its singleton row contains source SHA, run
    UUID, monotonically increasing generation, expiry, fixture namespace, and
    state. Every forward mutation CAS-renews the exact UUID/generation and
-   reproves source authority. An expired lease may be reclaimed only after
-   exact-cohort disabled-circuit readback and a 60-second drain.
+   reproves source authority. The digest-pinned operations file supplies each
+   parameterized, single-statement D1 CAS and exactly-one-row success predicate;
+   SQLite provider UTC is the clock and no renewal exceeds 1,800 seconds. An
+   expired lease may be reclaimed only after exact-cohort disabled-circuit
+   readback, explicit close acknowledgement for every canary server/client
+   socket, an offline read through the same DO, and a 60-second teardown drain.
 3. Inventory exact resources and ceilings; reject missing, duplicate, unknown,
    production-matching, or unowned objects. Disable/read back all circuits.
 4. Require the application migration ledger to be exact. A pending migration
@@ -184,12 +210,18 @@ Every remote operation requires readback before the next:
    rendezvous and replay checks, and verify private R2 bindings through provider
    readback only. Cron stays disabled and no publisher success may nudge
    `DirectoryBuilder`; prove there is no directory outbox, pending build, or
-   alarm. The Access credential is never placed in URLs, bodies, logs, or evidence.
+   alarm. Before this window, the Access token operator creates one exact
+   `60m` token and an exact-precedence Service Auth policy includes only its ID.
+   The canary sends its ID/secret only in `CF-Access-Client-Id` and
+   `CF-Access-Client-Secret` headers, including WebSocket upgrades. The
+   credential is never placed in URLs, bodies, logs, or evidence.
 7. At every enabled stage, inject force-push, branch-deletion, and lease-expiry
    failures. Prove they prohibit forward work while exact-cohort fail-safe
    circuit closure remains authorized.
 8. Disable/read back all circuits, expire direct D1 fixtures, discard keys,
-   wait 60 seconds for active rendezvous sockets and teardown retries to drain,
+   explicitly close every rendezvous server/client socket, wait for close
+   acknowledgements, prove a new same-room client observes offline, then wait
+   60 seconds for active rendezvous sockets and teardown retries to drain,
    CAS-release the lease, and retain only closed outcomes/digests/counts/names
    for seven days. A successfully claimed replay admission is deliberately kept
    by the uniquely named per-run room and its cleanup alarm for no more than the
@@ -219,9 +251,10 @@ resumed only after exact SHA and lease proof.
 Normal completion disables circuits, expires fixtures, discards keys, and
 retains the singleton. Full teardown is separately authorized and preview-first:
 verify exact account/inventory/prefix, no production identifier, disabled
-circuits, and no unowned resource; detach the `all_workers` Access application,
-delete callers before core, delete the named state resources, then disable the
-live account's `workers.dev` subdomain. On failure, stop, preserve disabled
+circuits, and no unowned resource; revoke/delete the exact run service token,
+delete callers before core, delete the named state resources, disable the live
+account's `workers.dev` subdomain, and only then delete the still-protective
+`all_workers` Access application. On failure, stop, preserve disabled
 circuits, record the completed prefix, and retry from readback.
 
 Analytics Engine datasets are provider-created on first write and may retain

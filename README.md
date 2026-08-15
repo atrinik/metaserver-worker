@@ -128,7 +128,10 @@ use a separately requested, operator-supervised exact-SHA run against one
 serialized, Access-protected, production-disjoint canary cohort. A separate
 inert review-check project in the production account reuses the single
 supported repository connection but has its own zero-resource token and no
-production protected input or setting; the live
+production protected input or setting. Its one inert bootstrap version has no
+binding, route, `workers.dev` URL, preview URL, or observability, and branch
+builds create no versions. A 1,000-minute monthly review-build budget fails
+closed at its operator threshold. The live
 account has no GitHub connection and uses stable `workers.dev` hosts. Native
 Cloudflare checks and PR status comments/history contain no preview URL. That
 cohort is not

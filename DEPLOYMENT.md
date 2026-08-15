@@ -127,7 +127,11 @@ project above remains `main`-only. A separate inert
 the account's repository connection for same-repository non-`main` branches.
 Its absent production sentinel can never select `main`. It runs only `npm run
 review:branch` and the local contract validator and owns no binding, route,
-protected input, live Worker version, or URL. Its separate dedicated-nonhuman
+protected input, branch-created Worker version, or URL. Its digest-pinned
+`deployment/review-check/wrangler.jsonc` owns one inert bootstrap version with
+`workers_dev`/previews/observability disabled and no binding or route. Its
+1,000-minute monthly budget alerts at 800 and disables the trigger at the
+threshold. Its separate dedicated-nonhuman
 user token has `User Details:Read`, no personal
 data, and no account/zone permission or resource selector. #56 must prove that zero-resource token works before
 enabling the trigger; never substitute the production token. Fork refs do not
@@ -137,7 +141,8 @@ preview URL.
 
 Live evidence is a separate operator-supervised exact-commit run against one
 serialized cohort in a dedicated account with no GitHub connection or zone. It
-must prove an explicitly approved same-repository non-`main` SHA and clean
+must prove an explicitly approved same-repository non-`main` SHA that is not
+reachable from `main` and a clean
 checkout before loading credentials, acquire the singleton lease, stage disabled circuits, verify the
 pre-applied migration ledger, generate fresh ephemeral signing fixtures,
 deploy core then callers, read back same-cohort Service Bindings, run bounded
@@ -147,6 +152,11 @@ dataset, rate namespace, secret value/epoch, `workers.dev` hostname, the
 account-scoped `all_workers` Access application, log destination, and credential is review-only. There is no
 review Custom Domain, zone WAF/cache rule, parent-DNS authority, or public
 static origin; stable URLs name the mutable cohort, not the commit or a secret.
+The exact Access application is `all_workers` with a `non_identity` policy that
+includes only the run's 60-minute service-token ID. The separately authorized
+token operator creates it after lease acquisition and revokes it after closed
+readback; full teardown keeps Access attached until every Worker and the
+account `workers.dev` subdomain are gone.
 
 This design does not authorize provisioning. Until issue #56 supplies and
 validates the exact provider resources, `npm run deploy:review-canary` fails
