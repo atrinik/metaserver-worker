@@ -25,7 +25,7 @@ const maximumPrivateDocumentBytes = 64 * 1024;
 const maximumProviderPages = 100;
 const stagingBranchPattern = /^review-build-only-sentinel-[0-9a-f]{32}$/u;
 const gitShaPattern = /^[0-9a-f]{40}$/u;
-const expectedSetupPlanSha256 = "06ec6da538be0dd3f33ce47b1715845a661afaeebb06fe80e89c3af15aeed5ee";
+const expectedSetupPlanSha256 = "d970b8c539771b16f3de1ac56b5ef8d9d155373e56f83f4a6b2591d9979fea68";
 const githubRepository = Object.freeze({
   provider_account_id: "6371603",
   provider_account_name: "atrinik",
@@ -376,6 +376,7 @@ export function provisioningSetupPlan(production, review) {
       "ATRINIK_WORKERS_BUILDS_USAGE_PROOF_FILE",
       "ATRINIK_STAGED_PROOF_OUTPUT_FILE",
       "ATRINIK_STAGED_PROOF_FILE",
+      "ATRINIK_PRODUCTION_ACTIVATION_PROOF_OUTPUT_FILE",
       "ATRINIK_PRODUCTION_BUILD_TOKEN_SECRET_FILE",
       "ATRINIK_PRODUCTION_BUILD_TOKEN_ID_FILE",
       "ATRINIK_PRODUCTION_BUILD_TOKEN_PERMISSION_PROOF_FILE",
@@ -529,9 +530,10 @@ export function provisioningSetupPlan(production, review) {
       gate: "production-trigger-activation",
       precondition: {
         sentinel: "repeat-exact-private-random-sentinel-ref-absence-proof-immediately-before-atomic-patch",
-        stagedProof: resultReference("staged-readback", "proof_digest"),
+        reviewPath: "review-trigger-activated-and-disposable-review-proof-complete",
+        productionProof: "fresh-live-review-active-production-staged-proof-digest",
       },
-      preconditionCommand: "npm run provision:workers-builds:verify-staged-proof",
+      preconditionCommand: "npm run provision:workers-builds:verify-production-activation",
       request: { method: "PATCH",
         path: apiPathReference("/builds/triggers/{trigger_uuid}",
           "production-trigger-staged", "trigger_uuid"),
@@ -939,11 +941,11 @@ export function validateConfiguredBuildsSnapshot({ production, review, scripts,
   };
 }
 
-export function validateStagedBuildsSnapshot({ production, review, scripts,
+function validateActivationSnapshot({ production, review, scripts,
   productionTriggers, productionEnvironment, reviewTriggers, reviewEnvironment,
   nonEntrypointTriggers, deployHooks, builds, buildTokens, accountTriggers, reviewBootstrapState,
   reviewBootstrapConfig, accountId, tokenAuthorityProofs, sourceSha, sentinelProof,
-  snapshotManifest }) {
+  snapshotManifest }, { reviewActive }) {
   validateSentinelRefAbsence(sentinelProof);
   const scriptRows = requireEnvelope(scripts, "scripts");
   const productionScript = scriptRows.find(({ id }) => id === production.workers[0].name);
@@ -982,8 +984,10 @@ export function validateStagedBuildsSnapshot({ production, review, scripts,
     repositoryConnectionUuid: reviewRows[0].repo_connection?.repo_connection_uuid,
     buildTokenUuid: reviewToken.build_token_uuid,
   });
-  reviewExpected.branch_includes = [sentinelProof.branch];
-  reviewExpected.branch_excludes = ["main"];
+  if (!reviewActive) {
+    reviewExpected.branch_includes = [sentinelProof.branch];
+    reviewExpected.branch_excludes = ["main"];
+  }
   validateTriggerSnapshot(productionRows[0], productionExpected, "staged production");
   validateTriggerSnapshot(reviewRows[0], reviewExpected, "staged review");
   if (productionRows[0].repo_connection.repo_connection_uuid !==
@@ -1023,8 +1027,17 @@ export function validateStagedBuildsSnapshot({ production, review, scripts,
     productionTriggers, productionEnvironment, reviewTriggers, reviewEnvironment,
     nonEntrypointTriggers, deployHooks, builds, buildTokens, accountTriggers,
     reviewBootstrapState, tokenAuthorityProofs });
-  return { outcome: "workers-builds-staged-snapshot-valid", mutation: false,
+  return { outcome: reviewActive ? "workers-builds-production-activation-snapshot-valid" :
+    "workers-builds-staged-snapshot-valid", mutation: false,
     stagedTriggerCount: 2, accountId, sourceSha, capturedAt, proof_digest };
+}
+
+export function validateStagedBuildsSnapshot(arguments_) {
+  return validateActivationSnapshot(arguments_, { reviewActive: false });
+}
+
+export function validateProductionActivationSnapshot(arguments_) {
+  return validateActivationSnapshot(arguments_, { reviewActive: true });
 }
 
 export function validateStagedProof(proof, current, now = Date.now()) {
@@ -1046,6 +1059,12 @@ export function validateStagedProof(proof, current, now = Date.now()) {
     fail("current staged activation readback is stale or malformed");
   return { outcome: "workers-builds-staged-activation-proof-valid", mutation: false,
     proof_digest: proof.proof_digest };
+}
+
+export function publicStagedProofSummary(proof) {
+  return { outcome: proof.outcome, mutation: false,
+    ...(proof.stagedTriggerCount === 2 ? { stagedTriggerCount: 2 } : {}),
+    sourceSha: proof.sourceSha, proof_digest: proof.proof_digest };
 }
 
 export function materializeProductionConfiguration({
@@ -1741,7 +1760,8 @@ async function validateConfiguredSnapshotDirectory({ snapshotDirectory, producti
 }
 
 async function validateStagedSnapshotDirectory({ snapshotDirectory, production, review,
-  reviewBootstrapConfig, accountId, tokenAuthorityProofs, sourceSha }) {
+  reviewBootstrapConfig, accountId, tokenAuthorityProofs, sourceSha },
+{ reviewActive = false } = {}) {
   const snapshotManifest = await loadSnapshot(snapshotDirectory, "snapshot-manifest.json");
   validateSnapshotManifest(snapshotManifest, { accountId, sourceSha, production, review });
   const core = production.workers[0];
@@ -1790,12 +1810,14 @@ async function validateStagedSnapshotDirectory({ snapshotDirectory, production, 
   const sentinelProof = await readPrivateJson(process.env.ATRINIK_STAGING_SENTINEL_REFS_FILE,
     "staging sentinel refs");
   if (sentinelProof.branch !== branch) fail("staging sentinel proof branch drift");
-  return validateStagedBuildsSnapshot({ production, review, scripts, productionTriggers,
+  const arguments_ = { production, review, scripts, productionTriggers,
     productionEnvironment, reviewTriggers, reviewEnvironment, nonEntrypointTriggers,
     deployHooks, builds, buildTokens,
     accountTriggers: await loadSnapshot(snapshotDirectory, "account-triggers.json"),
     reviewBootstrapState, reviewBootstrapConfig, accountId, tokenAuthorityProofs, sourceSha,
-    sentinelProof, snapshotManifest });
+    sentinelProof, snapshotManifest };
+  return reviewActive ? validateProductionActivationSnapshot(arguments_) :
+    validateStagedBuildsSnapshot(arguments_);
 }
 
 async function validateFreshSnapshotDirectory({ snapshotDirectory, production, review,
@@ -1928,7 +1950,7 @@ async function main() {
       production, review, reviewBootstrapConfig, accountId, tokenAuthorityProofs, sourceSha,
     });
     await writePrivateProof(process.env.ATRINIK_STAGED_PROOF_OUTPUT_FILE, stagedProof);
-    process.stdout.write(`${JSON.stringify(stagedProof)}\n`);
+    process.stdout.write(`${JSON.stringify(publicStagedProofSummary(stagedProof))}\n`);
     return;
   }
   if (mode === "--verify-staged-proof") {
@@ -1956,6 +1978,31 @@ async function main() {
     const proof = await readPrivateJson(process.env.ATRINIK_STAGED_PROOF_FILE,
       "staged activation proof");
     process.stdout.write(`${JSON.stringify(validateStagedProof(proof, current))}\n`);
+    return;
+  }
+  if (mode === "--verify-production-activation") {
+    const accountId = await readPrivateValue(process.env.ATRINIK_CLOUDFLARE_ACCOUNT_ID_FILE,
+      "Cloudflare account ID", accountIdPattern);
+    const token = await readPrivateValue(process.env.ATRINIK_WORKERS_BUILDS_API_TOKEN_FILE,
+      "Workers Builds API token");
+    const productionReadToken = await readPrivateValue(
+      process.env.ATRINIK_PRODUCTION_BUILD_TOKEN_SECRET_FILE,
+      "production D1 read API token");
+    const tokenAuthorityProofs = [
+      await readPrivateJson(process.env.ATRINIK_PRODUCTION_BUILD_TOKEN_PERMISSION_PROOF_FILE,
+        "production build token permission proof"),
+      await readPrivateJson(process.env.ATRINIK_REVIEW_BUILD_TOKEN_PERMISSION_PROOF_FILE,
+        "review build token permission proof"),
+    ];
+    const sourceSha = await reviewedCurrentMainSha();
+    const outputDirectory = process.env.ATRINIK_PROVIDER_SNAPSHOT_OUTPUT;
+    await readProviderSnapshot({ accountId, token, productionReadToken, outputDirectory,
+      production, review, sourceSha });
+    const proof = await validateStagedSnapshotDirectory({ snapshotDirectory: outputDirectory,
+      production, review, reviewBootstrapConfig, accountId, tokenAuthorityProofs, sourceSha,
+    }, { reviewActive: true });
+    await writePrivateProof(process.env.ATRINIK_PRODUCTION_ACTIVATION_PROOF_OUTPUT_FILE, proof);
+    process.stdout.write(`${JSON.stringify(publicStagedProofSummary(proof))}\n`);
     return;
   }
   if (mode === "--verify-configured") {

@@ -15,6 +15,7 @@ import {
   materializeProductionConfigurations,
   productionEnvironmentSpec,
   productionTriggerSpec,
+  publicStagedProofSummary,
   provisioningSetupPlan,
   readPrivateValue,
   validateAutomaticReviewEnvironment,
@@ -25,6 +26,7 @@ import {
   validateNoActiveBuilds,
   validateNoDeployHooks,
   validateProductionControlPlane,
+  validateProductionActivationSnapshot,
   validateProductionRuntimeProof,
   validateRepositoryConnectionOwnerProof,
   validateReviewedSourceCoordinates,
@@ -850,6 +852,7 @@ test("proves both triggers are inert before either activation", () => {
   const stagedProof = validateStagedBuildsSnapshot(arguments_);
   assert.equal(stagedProof.stagedTriggerCount, 2);
   assert.match(stagedProof.proof_digest, /^[0-9a-f]{64}$/u);
+  assert.equal(Object.hasOwn(publicStagedProofSummary(stagedProof), "accountId"), false);
   assert.equal(validateStagedProof(stagedProof, stagedProof).proof_digest,
     stagedProof.proof_digest);
   assert.throws(() => validateStagedProof({ ...stagedProof, proof_digest: "0".repeat(64) },
@@ -874,4 +877,15 @@ test("proves both triggers are inert before either activation", () => {
   callerTrigger.nonEntrypointTriggers[0][1].result_info.total_count = 1;
   assert.throws(() => validateStagedBuildsSnapshot(callerTrigger),
     /independent staged Builds trigger/u);
+  const reviewActive = structuredClone(arguments_);
+  const finalReview = withConnection(automaticReviewTriggerSpec(review, {
+    externalScriptId: reviewScriptTag, repositoryConnectionUuid: resourceUuid,
+    buildTokenUuid: reviewTokenUuid,
+  }));
+  finalReview.trigger_uuid = reviewTriggerUuid;
+  reviewActive.reviewTriggers = envelope([finalReview]);
+  assert.throws(() => validateStagedBuildsSnapshot(reviewActive), /branch_includes drift/u);
+  const productionProof = validateProductionActivationSnapshot(reviewActive);
+  assert.equal(productionProof.outcome, "workers-builds-production-activation-snapshot-valid");
+  assert.match(productionProof.proof_digest, /^[0-9a-f]{64}$/u);
 });

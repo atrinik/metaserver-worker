@@ -282,15 +282,26 @@ The command writes a new owner-only proof containing a deterministic SHA-256 of
 the fresh manifest and exact staged trigger/environment/token/bootstrap/
 hook/build evidence. Immediately before each activation PATCH, set
 `ATRINIK_STAGED_PROOF_FILE` to that record and run
-`npm run provision:workers-builds:verify-staged-proof` with the read token,
+`npm run provision:workers-builds:verify-staged-proof` immediately before the
+review activation, with the read token,
 production D1-read token, and a new `ATRINIK_PROVIDER_SNAPSHOT_OUTPUT`
 directory. It performs two new complete provider sweeps, requires the original
 proof to be no more than five minutes old and the live sweep no more than 30
 seconds old, and
 rejects any coordinate or digest mismatch. The setup plan makes the original
-command produce this private staged-proof digest and makes both activation
-PATCHes consume a successful fresh revalidation, so neither activation is reachable
-when staged verification is skipped, stale, or replayed. The complete setup/activation/
+command produce this private staged-proof digest and makes the review PATCH
+consume a successful fresh revalidation.
+
+After the review trigger is active and its disposable branch proof succeeds,
+run `npm run provision:workers-builds:verify-production-activation` with a new
+snapshot output and `ATRINIK_PRODUCTION_ACTIVATION_PROOF_OUTPUT_FILE`. This
+phase-specific live verifier requires the review trigger to have its exact
+final non-main configuration while the production trigger still has the private
+sentinel and zero-resource token. Only that fresh digest authorizes the separate
+production PATCH. Consequently neither activation is reachable when its own
+phase proof is skipped, stale, replayed, or based on the other phase. Both
+commands print only safe source/digest summaries; the account-bound proof stays
+in its owner-only file. The complete setup/activation/
 rollback request document is digest-pinned by the validator, not merely its
 operation names.
 
