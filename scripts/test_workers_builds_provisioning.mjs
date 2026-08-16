@@ -13,11 +13,12 @@ import {
   createPrivateDirectory,
   loadSnapshot,
   materializeProductionConfigurations,
-  normalizeDeployHookPage,
+  normalizeBuildsListPage,
   productionEnvironmentSpec,
   productionTriggerSpec,
   publicStagedProofSummary,
   provisioningSetupPlan,
+  readProviderSnapshot,
   readPrivateValue,
   validateAutomaticReviewEnvironment,
   validateBuildTokenInventory,
@@ -287,21 +288,110 @@ test("combines only stable exhaustive provider pages", () => {
   ], "builds", ({ build_uuid }) => build_uuid), /duplicated/u);
 });
 
-test("normalizes only the provider's empty first Deploy Hooks page without metadata", () => {
+test("normalizes only an empty first Workers Builds page without metadata", () => {
   const rawEmpty = { success: true, result: [], errors: [], messages: [] };
-  const normalized = normalizeDeployHookPage(rawEmpty, "deploy hooks", 1);
+  const normalized = normalizeBuildsListPage(rawEmpty, "triggers", 1);
   assert.deepEqual(normalized.result_info, { page: 1, total_pages: 1, total_count: 0 });
-  assert.deepEqual(combineProviderPages([normalized], "deploy hooks",
-    ({ deploy_hook_uuid: id }) => id).result, []);
+  assert.deepEqual(combineProviderPages([normalized], "triggers",
+    ({ trigger_uuid: id }) => id).result, []);
   const paginated = { ...rawEmpty,
     result_info: { page: 1, total_pages: 1, total_count: 0 } };
-  assert.equal(normalizeDeployHookPage(paginated, "deploy hooks", 1), paginated);
-  assert.throws(() => normalizeDeployHookPage({ ...rawEmpty,
-    result: [{ deploy_hook_uuid: resourceUuid }] }, "deploy hooks", 1),
-  /Deploy Hook pagination metadata is malformed/u);
-  assert.throws(() => normalizeDeployHookPage(rawEmpty, "deploy hooks", 2),
-    /Deploy Hook pagination metadata is malformed/u);
+  assert.equal(normalizeBuildsListPage(paginated, "build tokens", 1), paginated);
+  assert.throws(() => normalizeBuildsListPage({ ...rawEmpty,
+    result: [{ trigger_uuid: resourceUuid }] }, "triggers", 1),
+  /Builds pagination metadata is malformed/u);
+  assert.throws(() => normalizeBuildsListPage(rawEmpty, "builds", 2),
+    /Builds pagination metadata is malformed/u);
+  assert.throws(() => normalizeBuildsListPage({ success: true, result: null },
+    "build tokens", 1), /provider readback failed/u);
 });
+
+test("routes every Builds inventory through the empty-page adapter in each provider sweep",
+  async () => {
+    const workerNames = [...production.workers.map(({ name }) => name),
+      review.automaticReview.project];
+    const workerConfigs = new Map([
+      ...production.workers.map((worker, index) => [worker.name, bases[index]]),
+      [review.automaticReview.project, reviewBootstrapConfig],
+    ]);
+    const workerTags = new Map(workerNames.map((name, index) =>
+      [name, String(index + 1).repeat(32)]));
+    const buildsReads = new Map();
+    const providerPage = (result) => ({ success: true, result, errors: [], messages: [],
+      result_info: { page: 1, total_pages: 1, total_count: result.length } });
+    const fetchFixture = ({ malformedEndpoint } = {}) => async (rawUrl, init = {}) => {
+      const url = new URL(rawUrl);
+      const accountPrefix = `/client/v4/accounts/${accountId}`;
+      assert.equal(url.pathname.startsWith(accountPrefix), true);
+      const path = url.pathname.slice(accountPrefix.length);
+      let body;
+      if (init.method === "POST") {
+        assert.match(path, /^\/d1\/database\/[^/]+\/query$/u);
+        body = { success: true, result: [{ results: [] }] };
+      } else if (path === "/workers/scripts") {
+        body = { success: true, result: workerNames.map((name) => ({
+          id: name, tag: workerTags.get(name),
+        })) };
+      } else if (/\/settings$/u.test(path)) {
+        const name = decodeURIComponent(path.split("/")[3]);
+        body = envelope({ bindings: bindings(workerConfigs.get(name)) });
+      } else if (/\/subdomain$/u.test(path)) {
+        body = envelope({ enabled: false, previews_enabled: false });
+      } else if (/\/schedules$/u.test(path)) {
+        body = envelope({ schedules: [] });
+      } else if (/\/environments\/production\/routes$/u.test(path)) {
+        body = envelope([]);
+      } else if (/\/script-settings$/u.test(path)) {
+        body = envelope({ logpush: null, tail_consumers: [] });
+      } else if (/\/deployments$/u.test(path)) {
+        body = envelope({ deployments: [{ versions: [{
+          percentage: 100, version_id: resourceUuid,
+        }] }] });
+      } else if (/\/versions\/[0-9a-f-]+$/u.test(path)) {
+        body = envelope({ id: resourceUuid });
+      } else if (/\/versions$/u.test(path)) {
+        body = malformedEndpoint === "versions"
+          ? { success: true, result: { items: [] } }
+          : { success: true, result: { items: [] }, result_info: {
+            page: 1, count: 0, per_page: 50, total_count: 0,
+          } };
+      } else if (/^\/builds\/workers\/[^/]+\/(deploy_hooks|triggers|builds)$/u.test(path) ||
+          path === "/builds/tokens") {
+        buildsReads.set(path, (buildsReads.get(path) ?? 0) + 1);
+        body = { success: true, result: [], errors: [], messages: [] };
+      } else if (path === "/workers/domains") {
+        body = malformedEndpoint === "domains"
+          ? { success: true, result: [] }
+          : providerPage([]);
+      } else if (path === "/builds/account/limits") {
+        body = envelope({ has_reached_build_minutes_limit: false });
+      } else {
+        assert.fail(`unexpected provider fixture path: ${path}`);
+      }
+      return new Response(JSON.stringify(body), { status: 200,
+        headers: { "content-type": "application/json" } });
+    };
+    const runReadback = async (suffix, fixture) => {
+      const temporary = await mkdtemp(resolve(tmpdir(), `atrinik-builds-readback-${suffix}-`));
+      try {
+        return await readProviderSnapshot({ accountId, token: "test-token",
+          productionReadToken: "test-read-token", outputDirectory: resolve(temporary, "snapshot"),
+          production, review, sourceSha: "a".repeat(40), fetchImpl: fixture });
+      } finally { await rm(temporary, { recursive: true, force: true }); }
+    };
+    const result = await runReadback("valid", fetchFixture());
+    assert.equal(result.mutation, false);
+    for (const name of workerNames) {
+      assert.equal(buildsReads.get(`/builds/workers/${name}/deploy_hooks`), 3);
+      assert.equal(buildsReads.get(`/builds/workers/${workerTags.get(name)}/builds`), 3);
+      assert.equal(buildsReads.get(`/builds/workers/${workerTags.get(name)}/triggers`), 9);
+    }
+    assert.equal(buildsReads.get("/builds/tokens"), 3);
+    await assert.rejects(runReadback("domains", fetchFixture({ malformedEndpoint: "domains" })),
+      /domains.*pagination metadata is malformed/u);
+    await assert.rejects(runReadback("versions", fetchFixture({ malformedEndpoint: "versions" })),
+      /version pagination metadata is malformed/u);
+  });
 
 test("normalizes the official nested Worker versions pagination shape", () => {
   const combined = combineWorkerVersionPages([

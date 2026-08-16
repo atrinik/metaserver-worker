@@ -1411,8 +1411,9 @@ export async function boundedResponseText(response, label) {
   return new TextDecoder("utf-8", { fatal: true }).decode(Buffer.concat(chunks));
 }
 
-async function providerGet({ accountId, token, outputDirectory }, label, path) {
-  const response = await fetch(`https://api.cloudflare.com/client/v4/accounts/${accountId}${path}`, {
+async function providerGet({ accountId, token, outputDirectory, fetchImpl = fetch }, label, path) {
+  const response = await fetchImpl(
+    `https://api.cloudflare.com/client/v4/accounts/${accountId}${path}`, {
     method: "GET", redirect: "error",
     headers: { Authorization: `Bearer ${token}`, Accept: "application/json" },
     signal: AbortSignal.timeout(20_000),
@@ -1425,8 +1426,10 @@ async function providerGet({ accountId, token, outputDirectory }, label, path) {
   return body;
 }
 
-async function providerPost({ accountId, token, outputDirectory }, label, path, requestBody) {
-  const response = await fetch(`https://api.cloudflare.com/client/v4/accounts/${accountId}${path}`, {
+async function providerPost({ accountId, token, outputDirectory, fetchImpl = fetch }, label, path,
+  requestBody) {
+  const response = await fetchImpl(
+    `https://api.cloudflare.com/client/v4/accounts/${accountId}${path}`, {
     method: "POST", redirect: "error",
     headers: { Authorization: `Bearer ${token}`, Accept: "application/json",
       "Content-Type": "application/json" },
@@ -1498,11 +1501,11 @@ export function combineProviderPages(envelopes, label, identity) {
   } };
 }
 
-export function normalizeDeployHookPage(envelope, label, page) {
+export function normalizeBuildsListPage(envelope, label, page) {
   const rows = requireEnvelope(envelope, label);
   if (envelope.result_info !== undefined) return envelope;
   if (page !== 1 || rows.length !== 0)
-    fail(`${label} provider Deploy Hook pagination metadata is malformed`);
+    fail(`${label} provider Builds pagination metadata is malformed`);
   return { ...envelope, result_info: { page: 1, total_pages: 1, total_count: 0 } };
 }
 
@@ -1581,6 +1584,11 @@ async function providerGetPaginated(context, label, path, identity, perPage = 50
   return second;
 }
 
+async function providerGetBuildsList(context, label, path, identity, perPage = 50) {
+  return providerGetPaginated(context, label, path, identity, perPage,
+    normalizeBuildsListPage);
+}
+
 async function providerGetWorkerVersionsPass(context, label, path, perPage) {
   const pages = [];
   for (let page = 1; page <= maximumProviderPages; page += 1) {
@@ -1633,11 +1641,11 @@ async function verifyCompleteProviderSweep(context) {
   }
 }
 
-async function readProviderSnapshot({ accountId, token, productionReadToken, outputDirectory,
-  production, review, sourceSha }) {
+export async function readProviderSnapshot({ accountId, token, productionReadToken,
+  outputDirectory, production, review, sourceSha, fetchImpl = fetch }) {
   const startedAt = new Date().toISOString();
   await createPrivateDirectory(outputDirectory);
-  const context = { accountId, token, outputDirectory, stableReadbacks: [] };
+  const context = { accountId, token, outputDirectory, stableReadbacks: [], fetchImpl };
   const scriptsFirst = await providerGet(context, "scripts.pass-1", "/workers/scripts");
   const scripts = await providerGet(context, "scripts.pass-2", "/workers/scripts");
   if (!same(scriptsFirst.result, scripts.result))
@@ -1695,13 +1703,13 @@ async function readProviderSnapshot({ accountId, token, productionReadToken, out
       fail(`${name} active deployment changed during version readback`);
     await providerGetWorkerVersions(context, `${name}.versions`,
       `/workers/scripts/${encodeURIComponent(name)}/versions`);
-    await providerGetPaginated(context, `${name}.deploy-hooks`,
+    await providerGetBuildsList(context, `${name}.deploy-hooks`,
       `/builds/workers/${encodeURIComponent(name)}/deploy_hooks`,
-      ({ deploy_hook_uuid: id }) => id, 50, normalizeDeployHookPage);
-    const triggers = await providerGetPaginated(context, `${name}.triggers`,
+      ({ deploy_hook_uuid: id }) => id);
+    const triggers = await providerGetBuildsList(context, `${name}.triggers`,
       `/builds/workers/${encodeURIComponent(script.tag)}/triggers`,
       ({ trigger_uuid: id }) => id);
-    await providerGetPaginated(context, `${name}.builds`,
+    await providerGetBuildsList(context, `${name}.builds`,
       `/builds/workers/${encodeURIComponent(script.tag)}/builds`,
       ({ build_uuid: id }) => id, 200);
     for (const trigger of triggers.result ?? []) {
@@ -1715,7 +1723,7 @@ async function readProviderSnapshot({ accountId, token, productionReadToken, out
     const rows = [];
     for (const [index, script] of scriptRows.entries()) {
       if (!scriptTagPattern.test(script.tag ?? "")) fail("account Worker tag is malformed");
-      const triggerInventory = await providerGetPaginated(context,
+      const triggerInventory = await providerGetBuildsList(context,
         `account-trigger-pass-${pass}-script-${index}`,
         `/builds/workers/${encodeURIComponent(script.tag)}/triggers`,
         ({ trigger_uuid: id }) => id);
@@ -1735,7 +1743,7 @@ async function readProviderSnapshot({ accountId, token, productionReadToken, out
   await writePrivateJson(resolve(outputDirectory, "account-triggers.json"), accountTriggers);
   await providerGetPaginated(context, "domains", "/workers/domains",
     ({ hostname, service }) => `${hostname}\0${service}`);
-  await providerGetPaginated(context, "build-tokens", "/builds/tokens",
+  await providerGetBuildsList(context, "build-tokens", "/builds/tokens",
     ({ build_token_uuid: id }) => id);
   await providerGetStable(context, "build-limits", "/builds/account/limits");
   if (!productionDatabaseId) fail("production D1 database identity is unavailable");
