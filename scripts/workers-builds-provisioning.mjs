@@ -1498,12 +1498,31 @@ export function combineProviderPages(envelopes, label, identity) {
   } };
 }
 
+function normalizeWorkerVersionPage(envelope, label) {
+  const result = requireEnvelope(envelope, label);
+  const info = envelope.result_info ?? {};
+  if (!result || !Array.isArray(result.items) || !Number.isSafeInteger(info.page) ||
+      !Number.isSafeInteger(info.count) || !Number.isSafeInteger(info.per_page) ||
+      !Number.isSafeInteger(info.total_count) || info.page < 1 || info.count < 0 ||
+      info.per_page < 1 || info.total_count < 0 || info.count !== result.items.length)
+    fail(`${label} provider version pagination metadata is malformed`);
+  const derivedTotalPages = Math.max(1, Math.ceil(info.total_count / info.per_page));
+  if (info.page > derivedTotalPages ||
+      (info.total_pages !== undefined &&
+       (!Number.isSafeInteger(info.total_pages) || info.total_pages !== derivedTotalPages)))
+    fail(`${label} provider version pagination metadata is malformed`);
+  return { ...envelope, result_info: { ...info, total_pages: derivedTotalPages } };
+}
+
 export function combineWorkerVersionPages(envelopes, label = "Worker versions") {
   if (!Array.isArray(envelopes)) fail(`${label} provider pagination is unbounded`);
-  return combineProviderPages(envelopes.map((envelope, index) => {
+  let perPage;
+  return combineProviderPages(envelopes.map((rawEnvelope, index) => {
+    const envelope = normalizeWorkerVersionPage(rawEnvelope, `${label} page ${index + 1}`);
     const result = requireEnvelope(envelope, `${label} page ${index + 1}`);
-    if (!result || !Array.isArray(result.items))
-      fail(`${label} provider version inventory is malformed`);
+    perPage ??= envelope.result_info.per_page;
+    if (envelope.result_info.per_page !== perPage)
+      fail(`${label} provider version pagination metadata changed during readback`);
     return { ...envelope, result: result.items };
   }), label, ({ id }) => id);
 }
@@ -1549,8 +1568,9 @@ async function providerGetWorkerVersionsPass(context, label, path, perPage) {
   const pages = [];
   for (let page = 1; page <= maximumProviderPages; page += 1) {
     const separator = path.includes("?") ? "&" : "?";
-    const envelope = await providerGet(context, `${label}.page-${page}`,
-      `${path}${separator}page=${page}&per_page=${perPage}`);
+    const envelope = normalizeWorkerVersionPage(await providerGet(context,
+      `${label}.page-${page}`, `${path}${separator}page=${page}&per_page=${perPage}`),
+    `${label} page ${page}`);
     pages.push(envelope);
     const totalPages = envelope.result_info?.total_pages;
     if (!Number.isSafeInteger(totalPages) || totalPages < 1 ||
