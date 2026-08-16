@@ -39,6 +39,7 @@ import {
   validateReviewActivationSnapshot,
   validateReviewStagedEnvironmentReadback,
   validateReviewStagingRootAbsence,
+  validateReviewStagingRootProofSequence,
   validateProductionRuntimeProof,
   validateRepositoryConnectionOwnerProof,
   validateRollbackTriggerInventory,
@@ -686,6 +687,7 @@ test("requires fresh complete per-branch absence proof for a private review stag
   const rootDirectory = `/review-build-only-staging-${"b".repeat(32)}`;
   const proof = {
     source: "github-complete-branch-root-absence-readback",
+    phase: "create",
     repository: { provider_account_id: "6371603", provider_account_name: "atrinik",
       provider_type: "github", repo_id: "1324297032", repo_name: "metaserver-worker" },
     rootDirectory, currentMainSha: sourceSha, capturedAt: new Date().toISOString(),
@@ -699,23 +701,39 @@ test("requires fresh complete per-branch absence proof for a private review stag
         path: rootDirectory.slice(1), status: 404 },
     ],
   };
-  assert.match(validateReviewStagingRootAbsence(proof, rootDirectory, sourceSha).proof_digest,
+  assert.match(validateReviewStagingRootAbsence(proof, rootDirectory, sourceSha,
+    "create").proof_digest,
     /^[0-9a-f]{64}$/u);
   assert.throws(() => validateReviewStagingRootAbsence(proof,
-    "/deployment/review-check", sourceSha), /identity is malformed/u);
+    "/deployment/review-check", sourceSha, "create"), /identity is malformed/u);
   assert.throws(() => validateReviewStagingRootAbsence({ ...proof,
-    capturedAt: "2026-08-15T00:00:00Z" }, rootDirectory, sourceSha,
+    capturedAt: "2026-08-15T00:00:00Z" }, rootDirectory, sourceSha, "create",
   Date.parse("2026-08-15T00:06:00Z")), /stale/u);
   assert.throws(() => validateReviewStagingRootAbsence({ ...proof,
-    currentMainSha: "d".repeat(40) }, rootDirectory, sourceSha), /identity is malformed/u);
+    currentMainSha: "d".repeat(40) }, rootDirectory, sourceSha, "create"),
+  /identity is malformed/u);
   assert.throws(() => validateReviewStagingRootAbsence({ ...proof,
-    absenceChecks: [] }, rootDirectory, sourceSha), /incomplete or reordered/u);
+    absenceChecks: [] }, rootDirectory, sourceSha, "create"), /incomplete or reordered/u);
   assert.throws(() => validateReviewStagingRootAbsence({ ...proof,
-    pagination: { ...proof.pagination, hasNextPage: true } }, rootDirectory, sourceSha),
+    pagination: { ...proof.pagination, hasNextPage: true } }, rootDirectory, sourceSha, "create"),
   /pagination is incomplete/u);
   assert.throws(() => validateReviewStagingRootAbsence({ ...proof,
     branches: [...proof.branches, { ref: "refs/heads/other", sha: "d".repeat(40) }] },
-  rootDirectory, sourceSha), /pagination is incomplete/u);
+  rootDirectory, sourceSha, "create"), /pagination is incomplete/u);
+  assert.throws(() => validateReviewStagingRootAbsence(proof, rootDirectory, sourceSha,
+    "activation"), /identity is malformed/u);
+  const activationProof = { ...proof, phase: "activation",
+    capturedAt: new Date(Date.parse(proof.capturedAt) + 1000).toISOString() };
+  assert.equal(validateReviewStagingRootAbsence(activationProof, rootDirectory, sourceSha,
+    "activation").phase, "activation");
+  const createResult = validateReviewStagingRootAbsence(proof, rootDirectory, sourceSha, "create");
+  const activationResult = validateReviewStagingRootAbsence(activationProof,
+    rootDirectory, sourceSha, "activation");
+  assert.equal(validateReviewStagingRootProofSequence(createResult, activationResult).outcome,
+    "review-staging-root-proof-sequence-valid");
+  assert.throws(() => validateReviewStagingRootProofSequence(createResult, {
+    ...activationResult, capturedAt: createResult.capturedAt,
+  }), /replayed/u);
 });
 
 test("requires stable canonical environment before final review trigger activation", () => {
@@ -1189,6 +1207,10 @@ test("plans inert setup, separately gated activation, and ordered rollback", () 
   });
   assert.equal(reviewEnvironmentReadback.id,
     "review-environment-readback-before-activation");
+  assert.equal(reviewEnvironmentReadback.command,
+    "npm run provision:workers-builds:verify-review-staged-environment");
+  assert.equal(reviewEnvironmentReadback.stability,
+    "two-complete-identical-passes-plus-final-identical-sweep");
   assert.equal(reviewActivationRootProof.id, "review-root-recheck-before-activation");
   assert.equal(reviewActivate.id, "review-trigger-activate");
   assert.equal(reviewActivate.request.method, "PATCH");
@@ -1231,6 +1253,7 @@ test("plans inert setup, separately gated activation, and ordered rollback", () 
   assert.match(plan.partialFailure.productionWorkerPolicy, /never-delete/u);
   const productionRollback = plan.rollbackOperations.find(({ id }) =>
     id === "restore-production-trigger-to-inert-sentinel");
+  assert.match(productionRollback.condition, /only-if-production-trigger-staged/u);
   assert.equal(productionRollback.precondition.productionSentinelProof.resultReference,
     "sentinel-recheck-before-production-rollback.proof_digest");
   assert.deepEqual(productionRollback.request.body.branch_includes,
@@ -1265,6 +1288,8 @@ test("plans inert setup, separately gated activation, and ordered rollback", () 
   assert.ok(plan.privateInputs.includes("ATRINIK_REVIEW_STAGING_ROOT_DIRECTORY_FILE"));
   assert.ok(plan.privateInputs.includes("ATRINIK_REVIEW_STAGING_ROOT_CREATE_PROOF_FILE"));
   assert.ok(plan.privateInputs.includes("ATRINIK_REVIEW_STAGING_ROOT_ACTIVATION_PROOF_FILE"));
+  assert.ok(plan.privateInputs.includes(
+    "ATRINIK_REVIEW_STAGED_ENVIRONMENT_PROOF_OUTPUT_FILE"));
   assert.ok(plan.setupOperations.filter(({ mutation }) => mutation)
     .every(({ actor, action }) => actor && action));
   assert.equal(validateSetupPlan(plan), plan);

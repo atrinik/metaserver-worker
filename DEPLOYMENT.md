@@ -393,6 +393,17 @@ and nonsecret. The final trigger PATCH consumes both that readback digest and
 the second fresh root-absence digest; either missing or ambiguous proof stops
 before activation.
 
+```sh
+ATRINIK_PROVIDER_SNAPSHOT_OUTPUT=/secure/review-staged-provider-snapshot \
+ATRINIK_REVIEW_STAGED_ENVIRONMENT_PROOF_OUTPUT_FILE=/secure/private/review-staged-environment-proof.json \
+  npm run provision:workers-builds:verify-review-staged-environment
+```
+
+Use the same account, exact-current-source, provider read token, production D1
+read token, token-policy proofs, and private staging-root inputs as the adjacent
+staged commands. The verifier writes the full account-bound proof only to the
+owner-only output file and prints a safe source/digest summary.
+
 Run that review-phase readback with the same account, reviewed-source, provider
 read token, token-policy proofs, and usage proof used by the staged verifier,
 plus a new output directory and proof destination:
