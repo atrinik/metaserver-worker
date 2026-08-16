@@ -1411,8 +1411,9 @@ export async function boundedResponseText(response, label) {
   return new TextDecoder("utf-8", { fatal: true }).decode(Buffer.concat(chunks));
 }
 
-async function providerGet({ accountId, token, outputDirectory }, label, path) {
-  const response = await fetch(`https://api.cloudflare.com/client/v4/accounts/${accountId}${path}`, {
+async function providerGet({ accountId, token, outputDirectory, fetchImpl = fetch }, label, path) {
+  const response = await fetchImpl(
+    `https://api.cloudflare.com/client/v4/accounts/${accountId}${path}`, {
     method: "GET", redirect: "error",
     headers: { Authorization: `Bearer ${token}`, Accept: "application/json" },
     signal: AbortSignal.timeout(20_000),
@@ -1425,8 +1426,10 @@ async function providerGet({ accountId, token, outputDirectory }, label, path) {
   return body;
 }
 
-async function providerPost({ accountId, token, outputDirectory }, label, path, requestBody) {
-  const response = await fetch(`https://api.cloudflare.com/client/v4/accounts/${accountId}${path}`, {
+async function providerPost({ accountId, token, outputDirectory, fetchImpl = fetch }, label, path,
+  requestBody) {
+  const response = await fetchImpl(
+    `https://api.cloudflare.com/client/v4/accounts/${accountId}${path}`, {
     method: "POST", redirect: "error",
     headers: { Authorization: `Bearer ${token}`, Accept: "application/json",
       "Content-Type": "application/json" },
@@ -1638,11 +1641,11 @@ async function verifyCompleteProviderSweep(context) {
   }
 }
 
-async function readProviderSnapshot({ accountId, token, productionReadToken, outputDirectory,
-  production, review, sourceSha }) {
+export async function readProviderSnapshot({ accountId, token, productionReadToken,
+  outputDirectory, production, review, sourceSha, fetchImpl = fetch }) {
   const startedAt = new Date().toISOString();
   await createPrivateDirectory(outputDirectory);
-  const context = { accountId, token, outputDirectory, stableReadbacks: [] };
+  const context = { accountId, token, outputDirectory, stableReadbacks: [], fetchImpl };
   const scriptsFirst = await providerGet(context, "scripts.pass-1", "/workers/scripts");
   const scripts = await providerGet(context, "scripts.pass-2", "/workers/scripts");
   if (!same(scriptsFirst.result, scripts.result))
