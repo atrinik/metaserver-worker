@@ -127,7 +127,7 @@ export function validateAutomaticReview(value) {
   exactValue(value.accountBoundary.trustedOperatorProductionBuildsControlPlaneReach, true,
     "review trusted operator control-plane reach");
   exactValue(value.project, "atrinik-metaserver-review-check", "review project");
-  exactValue(value.rootDirectory, "deployment/review-check", "review root");
+  exactValue(value.rootDirectory, "/deployment/review-check", "review root");
   exactValue(value.productionBranch, "review-build-only-sentinel", "review sentinel branch");
   exactValue(value.productionAutomaticPush, false, "review automatic production push");
   exactValue(value.productionDeployCommand, "cd ../.. && npm run review:reject-sentinel", "review sentinel command");

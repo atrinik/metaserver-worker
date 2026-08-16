@@ -53,7 +53,8 @@ Cloudflare account reuses its repository connection for the separate inert
 Worker/project `atrinik-metaserver-review-check`. That project's absent
 production branch is `review-build-only-sentinel`; automatic production pushes
 are disabled and its production command always stops. Its non-production
-trigger root is `deployment/review-check`, whose digest-pinned Wrangler file
+trigger root is the provider-canonical `/deployment/review-check`, whose
+digest-pinned Wrangler file
 names the exact inert Worker and keeps `workers_dev`, preview URLs, bindings,
 routes, and observability disabled. #56 creates its one required bootstrap
 version/tag with a separate non-build-readable provisioning credential. The

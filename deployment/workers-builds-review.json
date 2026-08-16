@@ -16,7 +16,7 @@
       "trustedOperatorProductionBuildsControlPlaneReach": true
     },
     "project": "atrinik-metaserver-review-check",
-    "rootDirectory": "deployment/review-check",
+    "rootDirectory": "/deployment/review-check",
     "productionBranch": "review-build-only-sentinel",
     "productionAutomaticPush": false,
     "productionDeployCommand": "cd ../.. && npm run review:reject-sentinel",

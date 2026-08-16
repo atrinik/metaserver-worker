@@ -394,6 +394,12 @@ exist in the connected repository and receive ordinary GitHub validation only.
 Cloudflare emits its native check and PR status comment/history without a
 preview URL.
 
+The Builds trigger request uses `/deployment/review-check` as its exact
+provider-canonical repository root. The leading slash is part of the reviewed
+API representation; the rejected relative form `deployment/review-check` must
+never be submitted. Builds still runs the checked-in commands from that
+directory, and their `cd ../..` prefix returns to the repository root.
+
 The review-check build identity cannot reach production project settings.
 Cloudflare cannot project-scope `Workers CI Write` and supports it only on a
 user API token, so the dedicated-nonhuman setup/budget/recovery operator has

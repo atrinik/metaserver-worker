@@ -855,6 +855,7 @@ test("pins production and build-only review trigger shapes", () => {
   assert.deepEqual(productionSpec.path_includes, ["*"]);
   assert.deepEqual(reviewSpec.branch_includes, ["*"]);
   assert.deepEqual(reviewSpec.branch_excludes, ["main", "review-build-only-sentinel"]);
+  assert.equal(reviewSpec.root_directory, "/deployment/review-check");
   assert.doesNotThrow(() => validateTriggerSnapshot(withConnection(productionSpec),
     productionSpec, "production"));
   assert.doesNotThrow(() => validateTriggerSnapshot(withConnection(reviewSpec),
@@ -862,6 +863,10 @@ test("pins production and build-only review trigger shapes", () => {
   const changed = withConnection(reviewSpec);
   changed.branch_excludes = [];
   assert.throws(() => validateTriggerSnapshot(changed, reviewSpec, "review"), /branch_excludes/u);
+  const relativeRoot = withConnection(reviewSpec);
+  relativeRoot.root_directory = "deployment/review-check";
+  assert.throws(() => validateTriggerSnapshot(relativeRoot, reviewSpec, "review"),
+    /root_directory/u);
   assert.throws(() => productionTriggerSpec(production, {
     ...triggerCoordinates(), externalScriptId: resourceUuid,
   }), /script tag/u);
@@ -955,10 +960,14 @@ test("plans inert setup, separately gated activation, and ordered rollback", () 
     assert.ok(!request.body.branch_includes.includes("main"));
   }
   const productionStaged = triggerCreates.find(({ id }) => id === "production-trigger-staged");
+  const reviewStaged = triggerCreates.find(({ id }) => id === "review-trigger-staged");
   assert.equal(productionStaged.request.body.build_token_uuid.resultReference,
     "review-build-token.build_token_uuid");
+  assert.equal(reviewStaged.request.body.root_directory, "/deployment/review-check");
   assert.deepEqual(plan.reviewActivation.request.body.branch_includes,
     review.automaticReview.previewBranchIncludes);
+  assert.equal(plan.reviewActivation.request.body.root_directory,
+    "/deployment/review-check");
   assert.equal(plan.reviewActivation.request.method, "PATCH");
   assert.deepEqual(plan.reviewActivation.request.path, {
     template: "/builds/triggers/{trigger_uuid}",
