@@ -306,6 +306,32 @@ test("normalizes only an empty first Workers Builds page without metadata", () =
     "build tokens", 1), /provider readback failed/u);
 });
 
+test("normalizes only the exact empty native zero-page Workers Builds response", () => {
+  const rawEmpty = { success: true, result: [], errors: [], messages: [], result_info: {
+    page: 1, per_page: 200, count: 0, total_count: 0, total_pages: 0, next_page: false,
+  } };
+  const normalized = normalizeBuildsListPage(rawEmpty, "builds", 1);
+  assert.deepEqual(normalized.result_info, { page: 1, total_pages: 1, total_count: 0 });
+  assert.deepEqual(combineProviderPages([normalized], "builds",
+    ({ build_uuid: id }) => id).result, []);
+
+  const contradictions = [
+    { result: [{ build_uuid: resourceUuid }] },
+    { result_info: { ...rawEmpty.result_info, page: 2 } },
+    { result_info: { ...rawEmpty.result_info, count: 1 } },
+    { result_info: { ...rawEmpty.result_info, total_count: 1 } },
+    { result_info: { ...rawEmpty.result_info, next_page: true } },
+    { result_info: { ...rawEmpty.result_info, per_page: 0 } },
+    { result_info: { ...rawEmpty.result_info, unexpected: false } },
+  ];
+  for (const contradiction of contradictions) {
+    assert.throws(() => normalizeBuildsListPage({ ...rawEmpty, ...contradiction },
+      "builds", 1), /Builds pagination metadata is malformed/u);
+  }
+  assert.throws(() => normalizeBuildsListPage(rawEmpty, "builds", 2),
+    /Builds pagination metadata is malformed/u);
+});
+
 test("routes every Builds inventory through the empty-page adapter in each provider sweep",
   async () => {
     const workerNames = [...production.workers.map(({ name }) => name),
@@ -358,7 +384,10 @@ test("routes every Builds inventory through the empty-page adapter in each provi
       } else if (/^\/builds\/workers\/[^/]+\/(deploy_hooks|triggers|builds)$/u.test(path) ||
           path === "/builds/tokens") {
         buildsReads.set(path, (buildsReads.get(path) ?? 0) + 1);
-        body = { success: true, result: [], errors: [], messages: [] };
+        body = { success: true, result: [], errors: [], messages: [], result_info: {
+          page: 1, per_page: 200, count: 0, total_count: 0, total_pages: 0,
+          next_page: false,
+        } };
       } else if (path === "/workers/domains") {
         body = malformedEndpoint === "domains"
           ? { success: true, result: [] }

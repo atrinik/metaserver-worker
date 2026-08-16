@@ -1503,7 +1503,19 @@ export function combineProviderPages(envelopes, label, identity) {
 
 export function normalizeBuildsListPage(envelope, label, page) {
   const rows = requireEnvelope(envelope, label);
-  if (envelope.result_info !== undefined) return envelope;
+  if (envelope.result_info !== undefined) {
+    const info = envelope.result_info;
+    if (info?.total_pages !== 0) return envelope;
+    const zeroPageKeys = ["count", "next_page", "page", "per_page", "total_count",
+      "total_pages"];
+    if (page !== 1 || rows.length !== 0 || !info ||
+        !same(sorted(Object.keys(info)), zeroPageKeys) || info.page !== 1 ||
+        !Number.isSafeInteger(info.per_page) || info.per_page < 1 || info.count !== 0 ||
+        info.total_count !== 0 || info.next_page !== false)
+      fail(`${label} provider Builds pagination metadata is malformed`);
+    return { ...envelope,
+      result_info: { page: 1, total_pages: 1, total_count: 0 } };
+  }
   if (page !== 1 || rows.length !== 0)
     fail(`${label} provider Builds pagination metadata is malformed`);
   return { ...envelope, result_info: { page: 1, total_pages: 1, total_count: 0 } };
