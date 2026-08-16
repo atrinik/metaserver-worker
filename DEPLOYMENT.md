@@ -235,6 +235,18 @@ Materialize the three desired production documents from that same snapshot.
 This substitutes only the read-back account, D1, cache-zone, R2, Analytics,
 rate-namespace, and Service Binding coordinates into the reviewed sources;
 the checked-in desired circuits and all authored policy remain authoritative.
+For the one initial setup, the production contract also pins the exact
+predecessor state: while the review bootstrap, every Builds trigger, reserved
+build token, Deploy Hook, and active build are absent, the core may lack only
+the reviewed `CLASSIC_DIRECTORY_CUTOVER_MODE` plain-text binding and the six
+core/caller circuit bindings may retain only their exact live `enabled`
+predecessor values. The materializer still writes the reviewed
+`v4-production` and disabled-circuit values into the desired protected
+documents. No other missing, extra, or changed binding is accepted,
+and this predecessor path is not used by staged, configured, or routine
+delivery validation. The settings readback may materialize Cloudflare's
+documented top-level observability sampling default as exactly `1`; no other
+top-level value or observability drift is accepted.
 It requires exact secret names, compatibility settings, schedules,
 observability destinations, Custom Domains, and disabled `workers.dev` and
 preview URLs, then runs the production topology validator and enforces the

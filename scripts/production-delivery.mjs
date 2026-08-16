@@ -200,6 +200,7 @@ export function validateContract(contract) {
       "toolchain",
       "source",
       "protectedInputs",
+      "initialBootstrapPredecessor",
       "workers",
       "invariants",
     ],
@@ -323,6 +324,38 @@ export function validateContract(contract) {
     })
   )
     fail("protected production input contract drift");
+  if (
+    JSON.stringify(contract.initialBootstrapPredecessor) !==
+    JSON.stringify({
+      requiredPhase: "review-bootstrap-and-all-builds-triggers-absent",
+      allowedBindingDelta: [{
+        role: "core",
+        name: "CLASSIC_DIRECTORY_CUTOVER_MODE",
+        type: "plain_text",
+        live: "absent",
+        desired: "v4-production",
+      }, {
+        role: "core", name: "GAME_PUBLISH_ENABLED", type: "plain_text",
+        live: "enabled", desired: "disabled",
+      }, {
+        role: "core", name: "PUBLISH_ENABLED", type: "plain_text",
+        live: "enabled", desired: "disabled",
+      }, {
+        role: "core", name: "RENDEZVOUS_ENABLED", type: "plain_text",
+        live: "enabled", desired: "disabled",
+      }, {
+        role: "publisher", name: "GAME_PUBLISH_ENABLED", type: "plain_text",
+        live: "enabled", desired: "disabled",
+      }, {
+        role: "publisher", name: "PUBLISH_ENABLED", type: "plain_text",
+        live: "enabled", desired: "disabled",
+      }, {
+        role: "rendezvous", name: "RENDEZVOUS_ENABLED", type: "plain_text",
+        live: "enabled", desired: "disabled",
+      }],
+    })
+  )
+    fail("initial production bootstrap predecessor drift");
   if (
     !Array.isArray(contract.workers) ||
     contract.workers.length !== 3 ||

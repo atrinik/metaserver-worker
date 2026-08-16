@@ -11,6 +11,7 @@ import {
   combineProviderPages,
   combineWorkerVersionPages,
   createPrivateDirectory,
+  initialBootstrapPredecessorConfiguration,
   loadSnapshot,
   materializeProductionConfigurations,
   normalizeBuildsListPage,
@@ -26,6 +27,7 @@ import {
   validateCheckedInProvisioning,
   validateConfiguredBuildsSnapshot,
   validateFreshBuildsSnapshot,
+  validateInitialBootstrapSnapshot,
   validateNoActiveBuilds,
   validateNoDeployHooks,
   validateProductionControlPlane,
@@ -650,6 +652,59 @@ test("materializes bounded production documents only from live private coordinat
   }
 });
 
+test("permits only the exact absent-trigger initial production predecessor", () => {
+  const predecessorBases = bases.map((config, index) =>
+    initialBootstrapPredecessorConfiguration(production, config, production.workers[index]));
+  const predecessorSnapshots = predecessorBases.map(snapshot);
+  assert.throws(() => materializeProductionConfigurations({
+    contract: production, bases, snapshots: predecessorSnapshots, accountId,
+  }), /binding inventory drift/u);
+  const configurations = materializeProductionConfigurations({
+    contract: production, bases, snapshots: predecessorSnapshots, accountId,
+    initialBootstrapPredecessor: true,
+  });
+  assert.equal(configurations[0].vars.CLASSIC_DIRECTORY_CUTOVER_MODE, "v4-production");
+
+  const unexpectedMissing = structuredClone(predecessorSnapshots);
+  unexpectedMissing[0].settings.result.bindings = unexpectedMissing[0].settings.result.bindings
+    .filter(({ name }) => name !== "PUBLISH_ENABLED");
+  assert.throws(() => materializeProductionConfigurations({
+    contract: production, bases, snapshots: unexpectedMissing, accountId,
+    initialBootstrapPredecessor: true,
+  }), /binding inventory drift/u);
+  assert.throws(() => materializeProductionConfigurations({
+    contract: production, bases, snapshots: bases.map(snapshot), accountId,
+    initialBootstrapPredecessor: true,
+  }), /binding inventory drift/u);
+  const changedContract = structuredClone(production);
+  changedContract.initialBootstrapPredecessor.allowedBindingDelta[0].desired = "wrong";
+  assert.throws(() => initialBootstrapPredecessorConfiguration(
+    changedContract, bases[0], production.workers[0]), /binding delta drift/u);
+
+  const labels = production.workers.map(({ role, name }) => [role, name]);
+  const boundary = {
+    production,
+    review,
+    scripts: envelope(production.workers.map(({ name }) => ({ id: name, tag: scriptTag }))),
+    triggers: labels.map(([role]) => [role, envelope([])]),
+    deployHooks: labels.map(([role]) => [role, envelope([])]),
+    builds: labels.map(([role]) => [role, envelope([])]),
+    buildTokens: envelope([]),
+    accountTriggers: envelope([]),
+  };
+  assert.equal(validateInitialBootstrapSnapshot(boundary).mutation, false);
+  const reviewPresent = structuredClone(boundary);
+  reviewPresent.scripts.result.push({ id: review.automaticReview.project, tag: reviewScriptTag });
+  assert.throws(() => validateInitialBootstrapSnapshot(reviewPresent), /Worker inventory drift/u);
+  const triggerPresent = structuredClone(boundary);
+  triggerPresent.triggers[0][1].result.push({ trigger_uuid: resourceUuid });
+  triggerPresent.triggers[0][1].result_info.total_count = 1;
+  assert.throws(() => validateInitialBootstrapSnapshot(triggerPresent), /trigger makes/u);
+  const tokenPresent = structuredClone(boundary);
+  tokenPresent.buildTokens = envelope([{ build_token_name: "Atrinik metaserver production" }]);
+  assert.throws(() => validateInitialBootstrapSnapshot(tokenPresent), /reserved build token/u);
+});
+
 function one(values, name) {
   return values.find((value) => value.name === name);
 }
@@ -669,6 +724,16 @@ test("validates production domains, schedules, and observability boundaries", ()
   assert.doesNotThrow(() => validateProductionControlPlane({
     contract: production, configurations, snapshots, domains,
   }));
+  const providerDefault = structuredClone(snapshots);
+  for (const value of providerDefault) value.settings.result.observability.head_sampling_rate = 1;
+  assert.doesNotThrow(() => validateProductionControlPlane({
+    contract: production, configurations, snapshots: providerDefault, domains,
+  }));
+  const wrongProviderDefault = structuredClone(providerDefault);
+  wrongProviderDefault[0].settings.result.observability.head_sampling_rate = 0.5;
+  assert.throws(() => validateProductionControlPlane({
+    contract: production, configurations, snapshots: wrongProviderDefault, domains,
+  }), /observability configuration/u);
   const changed = structuredClone(snapshots);
   changed[0].settings.result.observability.logs.destinations = ["external"];
   assert.throws(() => validateProductionControlPlane({
@@ -714,6 +779,23 @@ test("proves one active production topology and an exact migration prefix", () =
       .map((name, index) => ({ id: index + 1, name })) }]),
     migrationNames });
   assert.deepEqual(result.pendingMigrations, [migrationNames[9]]);
+  const liveConfigurations = configurations.map((config, index) =>
+    initialBootstrapPredecessorConfiguration(production, config, production.workers[index]));
+  const predecessorActiveVersions = liveConfigurations.map((config, index) => envelope({
+    id: versionIds[index], resources: { bindings: bindings(config), script_runtime: {
+      compatibility_date: config.compatibility_date,
+      compatibility_flags: config.compatibility_flags ?? [], exports: configurations[index].exports ?? {},
+    } },
+  }));
+  assert.doesNotThrow(() => validateProductionRuntimeProof({ contract: production,
+    configurations, liveConfigurations, deployments, activeVersions: predecessorActiveVersions,
+    migrationEnvelope: envelope([{ results: migrationNames.slice(0, 9)
+      .map((name, index) => ({ id: index + 1, name })) }]), migrationNames }));
+  assert.throws(() => validateProductionRuntimeProof({ contract: production,
+    configurations, deployments, activeVersions: predecessorActiveVersions,
+    migrationEnvelope: envelope([{ results: migrationNames.slice(0, 9)
+      .map((name, index) => ({ id: index + 1, name })) }]), migrationNames }),
+  /binding inventory/u);
   const drift = structuredClone(activeVersions);
   drift[0].result.resources.script_runtime.exports.Unreviewed = { type: "worker" };
   assert.throws(() => validateProductionRuntimeProof({ contract: production, configurations,

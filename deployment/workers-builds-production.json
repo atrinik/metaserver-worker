@@ -94,6 +94,60 @@
     "buildsApiTokenVariable": "ATRINIK_WORKERS_BUILDS_API_TOKEN",
     "controlPlaneGateVariable": "ATRINIK_PRODUCTION_CONTROL_PLANE_READY"
   },
+  "initialBootstrapPredecessor": {
+    "requiredPhase": "review-bootstrap-and-all-builds-triggers-absent",
+    "allowedBindingDelta": [
+      {
+        "role": "core",
+        "name": "CLASSIC_DIRECTORY_CUTOVER_MODE",
+        "type": "plain_text",
+        "live": "absent",
+        "desired": "v4-production"
+      },
+      {
+        "role": "core",
+        "name": "GAME_PUBLISH_ENABLED",
+        "type": "plain_text",
+        "live": "enabled",
+        "desired": "disabled"
+      },
+      {
+        "role": "core",
+        "name": "PUBLISH_ENABLED",
+        "type": "plain_text",
+        "live": "enabled",
+        "desired": "disabled"
+      },
+      {
+        "role": "core",
+        "name": "RENDEZVOUS_ENABLED",
+        "type": "plain_text",
+        "live": "enabled",
+        "desired": "disabled"
+      },
+      {
+        "role": "publisher",
+        "name": "GAME_PUBLISH_ENABLED",
+        "type": "plain_text",
+        "live": "enabled",
+        "desired": "disabled"
+      },
+      {
+        "role": "publisher",
+        "name": "PUBLISH_ENABLED",
+        "type": "plain_text",
+        "live": "enabled",
+        "desired": "disabled"
+      },
+      {
+        "role": "rendezvous",
+        "name": "RENDEZVOUS_ENABLED",
+        "type": "plain_text",
+        "live": "enabled",
+        "desired": "disabled"
+      }
+    ]
+  },
   "workers": [
     {
       "role": "core",
