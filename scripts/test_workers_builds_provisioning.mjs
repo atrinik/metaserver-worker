@@ -14,6 +14,7 @@ import {
   loadSnapshot,
   materializeProductionConfigurations,
   normalizeBuildsListPage,
+  normalizeDomainListPage,
   productionEnvironmentSpec,
   productionTriggerSpec,
   publicStagedProofSummary,
@@ -332,6 +333,61 @@ test("normalizes only the exact empty native zero-page Workers Builds response",
     /Builds pagination metadata is malformed/u);
 });
 
+test("derives only coherent Custom Domains pagination metadata", () => {
+  const rows = Array.from({ length: 5 }, (_, index) => ({
+    hostname: `domain-${index}.invalid`, service: `worker-${index}`,
+  }));
+  const first = normalizeDomainListPage({ success: true, result: rows.slice(0, 3),
+    result_info: { page: 1, per_page: 3, count: 3, total_count: 5 } },
+  "domains page 1", 1);
+  const second = normalizeDomainListPage({ success: true, result: rows.slice(3),
+    result_info: { page: 2, per_page: 3, count: 2, total_count: 5 } },
+  "domains page 2", 2);
+  assert.equal(first.result_info.total_pages, 2);
+  assert.equal(second.result_info.total_pages, 2);
+  assert.equal(combineProviderPages([first, second], "domains",
+    ({ hostname, service }) => `${hostname}\0${service}`).result.length, 5);
+  const native = { success: true, result: rows, result_info: {
+    page: 1, per_page: 5, count: 5, total_count: 5, total_pages: 1,
+  } };
+  assert.equal(normalizeDomainListPage(native, "domains", 1).result_info.total_pages, 1);
+  assert.equal(normalizeDomainListPage({ success: true, result: [], result_info: {
+    page: 1, per_page: 50, count: 0, total_count: 0,
+  } }, "domains", 1).result_info.total_pages, 1);
+
+  const driftingPageSize = [
+    normalizeDomainListPage({ success: true, result: rows.concat(
+      Array.from({ length: 30 }, (_, index) => ({
+        hostname: `first-${index}.invalid`, service: `first-${index}`,
+      }))), result_info: { page: 1, per_page: 35, count: 35, total_count: 100 } },
+    "domains page 1", 1),
+    normalizeDomainListPage({ success: true, result: Array.from({ length: 45 }, (_, index) => ({
+      hostname: `second-${index}.invalid`, service: `second-${index}`,
+    })), result_info: { page: 2, per_page: 45, count: 45, total_count: 100 } },
+    "domains page 2", 2),
+    normalizeDomainListPage({ success: true, result: Array.from({ length: 20 }, (_, index) => ({
+      hostname: `third-${index}.invalid`, service: `third-${index}`,
+    })), result_info: { page: 3, per_page: 40, count: 20, total_count: 100 } },
+    "domains page 3", 3),
+  ];
+  assert.throws(() => combineProviderPages(driftingPageSize, "domains",
+    ({ hostname, service }) => `${hostname}\0${service}`), /changed during readback/u);
+
+  const malformed = [
+    { success: true, result: rows },
+    { ...native, result_info: { ...native.result_info, page: 2 } },
+    { ...native, result_info: { ...native.result_info, count: 4 } },
+    { ...native, result_info: { ...native.result_info, per_page: 0 } },
+    { ...native, result_info: { ...native.result_info, total_count: 6 } },
+    { ...native, result_info: { ...native.result_info, total_pages: 2 } },
+    { ...native, result_info: { ...native.result_info, unexpected: true } },
+  ];
+  for (const envelope of malformed) {
+    assert.throws(() => normalizeDomainListPage(envelope, "domains", 1),
+      /domain pagination metadata is malformed/u);
+  }
+});
+
 test("routes every Builds inventory through the empty-page adapter in each provider sweep",
   async () => {
     const workerNames = [...production.workers.map(({ name }) => name),
@@ -343,11 +399,20 @@ test("routes every Builds inventory through the empty-page adapter in each provi
     const workerTags = new Map(workerNames.map((name, index) =>
       [name, String(index + 1).repeat(32)]));
     const buildsReads = new Map();
+    const domainReads = new Map();
     const providerPage = (result) => ({ success: true, result, errors: [], messages: [],
       result_info: { page: 1, total_pages: 1, total_count: result.length } });
+    const domainRows = [
+      { hostname: "publisher.invalid", service: "publisher-worker" },
+      { hostname: "rendezvous.invalid", service: "rendezvous-worker" },
+    ];
+    const domainPage = (result) => ({ success: true, result, errors: [], messages: [],
+      result_info: { page: 1, per_page: 50, count: result.length,
+        total_count: result.length } });
     const driftPath = `/builds/workers/${workerTags.get(production.workers[0].name)}/builds`;
-    const fetchFixture = ({ malformedEndpoint, buildHistoryDriftAt,
-      localBuildsReads = new Map() } = {}) => async (rawUrl, init = {}) => {
+    const fetchFixture = ({ malformedEndpoint, buildHistoryDriftAt, domainHistoryDriftAt,
+      localBuildsReads = new Map(), localDomainReads = new Map() } = {}) =>
+      async (rawUrl, init = {}) => {
       const url = new URL(rawUrl);
       const accountPrefix = `/client/v4/accounts/${accountId}`;
       assert.equal(url.pathname.startsWith(accountPrefix), true);
@@ -394,9 +459,13 @@ test("routes every Builds inventory through the empty-page adapter in each provi
             next_page: false,
           } };
       } else if (path === "/workers/domains") {
+        domainReads.set(path, (domainReads.get(path) ?? 0) + 1);
+        localDomainReads.set(path, (localDomainReads.get(path) ?? 0) + 1);
         body = malformedEndpoint === "domains"
           ? { success: true, result: [] }
-          : providerPage([]);
+          : domainPage(localDomainReads.get(path) === domainHistoryDriftAt
+            ? [...domainRows, { hostname: "changed.invalid", service: "changed-worker" }]
+            : domainRows);
       } else if (path === "/builds/account/limits") {
         body = envelope({ has_reached_build_minutes_limit: false });
       } else {
@@ -421,14 +490,21 @@ test("routes every Builds inventory through the empty-page adapter in each provi
       assert.equal(buildsReads.get(`/builds/workers/${workerTags.get(name)}/triggers`), 9);
     }
     assert.equal(buildsReads.get("/builds/tokens"), 3);
+    assert.equal(domainReads.get("/workers/domains"), 3);
     await assert.rejects(runReadback("domains", fetchFixture({ malformedEndpoint: "domains" })),
-      /domains.*pagination metadata is malformed/u);
+      /domain pagination metadata is malformed/u);
     await assert.rejects(runReadback("versions", fetchFixture({ malformedEndpoint: "versions" })),
       /version pagination metadata is malformed/u);
     await assert.rejects(runReadback("pass-drift", fetchFixture({ buildHistoryDriftAt: 2 })),
       /builds provider inventory changed between complete passes/u);
     await assert.rejects(runReadback("sweep-drift", fetchFixture({ buildHistoryDriftAt: 3 })),
       /builds changed between complete provider sweeps/u);
+    await assert.rejects(runReadback("domain-pass-drift",
+      fetchFixture({ domainHistoryDriftAt: 2 })),
+    /domains provider inventory changed between complete passes/u);
+    await assert.rejects(runReadback("domain-sweep-drift",
+      fetchFixture({ domainHistoryDriftAt: 3 })),
+    /domains changed between complete provider sweeps/u);
   });
 
 test("normalizes the official nested Worker versions pagination shape", () => {

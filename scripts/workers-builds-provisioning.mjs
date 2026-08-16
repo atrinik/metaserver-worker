@@ -1473,6 +1473,7 @@ export function combineProviderPages(envelopes, label, identity) {
   const identities = new Set();
   let totalPages;
   let totalCount;
+  let perPage;
   for (const [index, envelope] of envelopes.entries()) {
     const pageRows = requireEnvelope(envelope, `${label} page ${index + 1}`);
     const info = envelope.result_info ?? {};
@@ -1483,6 +1484,15 @@ export function combineProviderPages(envelopes, label, identity) {
       fail(`${label} provider pagination metadata is malformed`);
     totalPages ??= info.total_pages;
     totalCount ??= info.total_count;
+    if (info.per_page !== undefined) {
+      if (!Number.isSafeInteger(info.per_page) || info.per_page < 1 ||
+          (perPage !== undefined && info.per_page !== perPage))
+        fail(`${label} provider pagination changed during readback`);
+      perPage ??= info.per_page;
+    }
+    if (info.count !== undefined &&
+        (!Number.isSafeInteger(info.count) || info.count !== pageRows.length))
+      fail(`${label} provider pagination metadata is malformed`);
     if (info.total_pages !== totalPages || info.total_count !== totalCount ||
         envelopes.length !== totalPages)
       fail(`${label} provider pagination changed during readback`);
@@ -1519,6 +1529,31 @@ export function normalizeBuildsListPage(envelope, label, page) {
   if (page !== 1 || rows.length !== 0)
     fail(`${label} provider Builds pagination metadata is malformed`);
   return { ...envelope, result_info: { page: 1, total_pages: 1, total_count: 0 } };
+}
+
+export function normalizeDomainListPage(envelope, label, page) {
+  const rows = requireEnvelope(envelope, label);
+  const info = envelope.result_info;
+  const keysWithoutTotalPages = ["count", "page", "per_page", "total_count"];
+  const keysWithTotalPages = [...keysWithoutTotalPages, "total_pages"];
+  if (!Array.isArray(rows) || !info ||
+      (!same(sorted(Object.keys(info)), keysWithoutTotalPages) &&
+       !same(sorted(Object.keys(info)), keysWithTotalPages)) ||
+      !Number.isSafeInteger(info.page) || !Number.isSafeInteger(info.count) ||
+      !Number.isSafeInteger(info.per_page) || !Number.isSafeInteger(info.total_count) ||
+      info.page !== page || info.page < 1 || info.count < 0 || info.per_page < 1 ||
+      info.total_count < 0 || info.count !== rows.length)
+    fail(`${label} provider domain pagination metadata is malformed`);
+  const derivedTotalPages = Math.max(1, Math.ceil(info.total_count / info.per_page));
+  const expectedCount = info.page < derivedTotalPages
+    ? info.per_page
+    : info.total_count - (info.per_page * (derivedTotalPages - 1));
+  if (info.page > derivedTotalPages || info.count > info.per_page ||
+      info.count !== expectedCount ||
+      (info.total_pages !== undefined &&
+       (!Number.isSafeInteger(info.total_pages) || info.total_pages !== derivedTotalPages)))
+    fail(`${label} provider domain pagination metadata is malformed`);
+  return { ...envelope, result_info: { ...info, total_pages: derivedTotalPages } };
 }
 
 function normalizeWorkerVersionPage(envelope, label) {
@@ -1754,7 +1789,7 @@ export async function readProviderSnapshot({ accountId, token, productionReadTok
     fail("account Worker inventory changed during trigger aggregation");
   await writePrivateJson(resolve(outputDirectory, "account-triggers.json"), accountTriggers);
   await providerGetPaginated(context, "domains", "/workers/domains",
-    ({ hostname, service }) => `${hostname}\0${service}`);
+    ({ hostname, service }) => `${hostname}\0${service}`, 50, normalizeDomainListPage);
   await providerGetBuildsList(context, "build-tokens", "/builds/tokens",
     ({ build_token_uuid: id }) => id);
   await providerGetStable(context, "build-limits", "/builds/account/limits");
