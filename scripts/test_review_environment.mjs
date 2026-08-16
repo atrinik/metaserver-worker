@@ -115,11 +115,13 @@ test("review trigger delegates to the exact sanitized repository entrypoint", ()
 
 test("review-root package delegates validation and sentinel rejection", async () => {
   const reviewRoot = resolve(root, "deployment/review-check");
-  await execFileAsync("npm", ["run", "validate"],
+  const validated = await execFileAsync("npm", ["run", "validate"],
     { cwd: reviewRoot, encoding: "utf8" });
+  assert.match(validated.stdout, /"outcome":"review-contract-valid"/u);
   await assert.rejects(execFileAsync("npm", ["run", "reject-sentinel"],
     { cwd: reviewRoot, encoding: "utf8" }), (error) => {
     assert.equal(error.code, 1);
+    assert.match(error.stderr, /"reason":"reserved review sentinel never executes repository code"/u);
     return true;
   });
 });
