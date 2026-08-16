@@ -131,8 +131,7 @@ npm run provision:workers-builds:plan-setup
 `plan-setup` emits a value-free, non-executable mutation plan. It records the
 exact GitHub repository connection, actor boundaries, private-file inputs,
 request/result dependencies, separate control-plane/build/lease token authority,
-dedicated non-build-readable review-bootstrap authority, separately gated
-activation, an owner-only mutation journal, ambiguous-response readback, and
+separately gated activation, an owner-only mutation journal, ambiguous-response readback, and
 ordered exact-resource rollback. Cloudflare exposes repository-connection
 upsert and delete but no read/list operation, so rollback always retains the
 shared exact GitHub connection; configured trigger readback proves the returned
@@ -161,10 +160,14 @@ ref also protects the staged production secrets. The fixed
 `review-build-only-sentinel` name is not used.
 
 The retained issue-66 journal records Cloudflare error `12002` after accepting
-the production trigger and environment but rejecting a second trigger that
-reused the same repository connection and staged selector. That overlapping
-selector request is not retried. Equality, proof/selector swaps, fixed names,
-and fallback to an unreviewed request all fail before setup mutation.
+the production trigger and environment but rejecting the exact second trigger
+on a different Worker that reused the repository connection. That
+one-connection/two-Worker request is forbidden and is never retried or varied.
+The replacement uses Cloudflare's documented maximum-two-trigger model on the
+single production core Worker: one production trigger and one preview trigger,
+with distinct per-trigger tokens, commands, and environments. Equality,
+proof/selector swaps, fixed names, a second connected Worker, and fallback to
+an unreviewed request all fail before setup mutation.
 
 The production activation initially retains the `routine` control-plane gate.
 Its first automatic `main` build must therefore fail closed if the existing
@@ -224,8 +227,8 @@ ATRINIK_REPOSITORY_CONNECTION_OWNER_PROOF_FILE=/secure/path/connection-owner-pro
   npm run provision:workers-builds:verify-preflight
 ```
 
-The readback accepts an absent review-check bootstrap, and the fresh preflight
-requires that absence so it cannot adopt unproven Worker bytes. A journal-bound
+The fresh preflight requires exactly the three existing production Workers and
+no Builds trigger; it never creates or adopts a review Worker. A journal-bound
 partial setup uses exact recovery readback instead of the fresh verifier. The
 readback never accepts an absent production Worker. Each sentinel proof
 contains the exact repository object, its private selector, an empty `refs`
@@ -255,7 +258,7 @@ This substitutes only the read-back account, D1, cache-zone, R2, Analytics,
 rate-namespace, and Service Binding coordinates into the reviewed sources;
 the checked-in desired circuits and all authored policy remain authoritative.
 For the one initial setup, the production contract also pins the exact
-predecessor state: while the review bootstrap, every Builds trigger, reserved
+predecessor state: while every Builds trigger, reserved
 build token, Deploy Hook, and active build are absent, the core may lack only
 the reviewed `CLASSIC_DIRECTORY_CUTOVER_MODE` plain-text binding and the six
 core/caller circuit bindings may retain only their exact live `enabled`
@@ -302,7 +305,6 @@ ATRINIK_REVIEW_STAGING_SENTINEL_BRANCH_FILE=/secure/path/private-random-review-s
 ATRINIK_REVIEW_STAGING_SENTINEL_REFS_FILE=/secure/path/fresh-review-sentinel-proof.json \
 ATRINIK_PRODUCTION_BUILD_TOKEN_PERMISSION_PROOF_FILE=/secure/path/production-token-policy.json \
 ATRINIK_REVIEW_BUILD_TOKEN_PERMISSION_PROOF_FILE=/secure/path/review-token-policy.json \
-ATRINIK_REVIEW_BOOTSTRAP_UPLOAD_PROOF_FILE=/secure/path/review-bootstrap-upload.json \
 ATRINIK_WORKERS_BUILDS_USAGE_PROOF_FILE=/secure/path/build-usage.json \
 ATRINIK_STAGED_PROOF_OUTPUT_FILE=/secure/private/staged-proof.json \
   npm run provision:workers-builds:verify-staged
@@ -311,9 +313,9 @@ ATRINIK_STAGED_PROOF_OUTPUT_FILE=/secure/private/staged-proof.json \
 This requires each trigger to select only its own fresh, distinct private
 sentinel and use the zero-resource review token, while both exact environments
 are present,
-all builds are stopped, and the bootstrap/token/usage proofs are current.
+all builds are stopped, and the token/usage proofs are current.
 The command writes a new owner-only proof containing a deterministic SHA-256 of
-the fresh manifest and exact staged trigger/environment/token/bootstrap/
+the fresh manifest and exact staged trigger/environment/token/
 hook/build evidence. Immediately before each activation PATCH, set
 `ATRINIK_STAGED_PROOF_FILE` to that record and run
 `npm run provision:workers-builds:verify-staged-proof` immediately before the
@@ -341,7 +343,7 @@ one completed successful check from App 85455 whose exact SHA and dashboard URL
 link the live build UUID, an empty matching-ref result, and a comparison proving
 the review commit is neither equal to nor reachable from current `main`.
 The verifier corroborates that exact build in the exhaustive live review-build
-inventory and the build-only cleanup policy against the already exact bootstrap
+inventory and the build-only cleanup policy against the unchanged production
 version/binding/route/URL/resource readback; empty, failed, cancelled, manual,
 API-triggered, stale, wrong-trigger, wrong-branch, wrong-SHA, wrong-App,
 duplicate-check, fabricated-link, live-ref, or main-reachable evidence fails
@@ -366,23 +368,20 @@ ATRINIK_CLOUDFLARE_ACCOUNT_ID_FILE=/secure/path/account-id \
 ATRINIK_REVIEWED_SOURCE_SHA_FILE=/secure/path/reviewed-source-sha \
 ATRINIK_PRODUCTION_BUILD_TOKEN_PERMISSION_PROOF_FILE=/secure/path/production-token-policy.json \
 ATRINIK_REVIEW_BUILD_TOKEN_PERMISSION_PROOF_FILE=/secure/path/review-token-policy.json \
-ATRINIK_REVIEW_BOOTSTRAP_UPLOAD_PROOF_FILE=/secure/path/review-bootstrap-upload.json \
 ATRINIK_WORKERS_BUILDS_USAGE_PROOF_FILE=/secure/path/build-usage.json \
   npm run provision:workers-builds:verify-configured
 ```
 
-This requires exactly one production trigger on the core project and one
-isolated trigger on the review-check project, distinct script/build-token/
-trigger identities, each selected build token appearing exactly once as a
+This requires exactly one production trigger and one isolated preview trigger
+on the core project, one shared script tag, distinct build-token/trigger
+identities, each selected build token appearing exactly once as a
 user-owned provider token, distinct underlying token IDs, exact private
 owner-policy readbacks for the production and zero-resource review tokens, one
 shared exact GitHub repository connection, exact
 commands and branch/watch filters, exact environment names/classifications,
-no publisher or rendezvous trigger, and no Deploy Hook on any of the four
-projects. It also proves the review bootstrap has exactly one 100%-active
-annotated version tied to a fresh journaled clean-exact-source Wrangler upload,
-exact inert runtime settings, no binding/route/
-schedule/log consumer/public URL, no active build, and an account that has not
+no publisher or rendezvous trigger, and no Deploy Hook on any of the three
+production Workers. It also proves review execution created no Worker version,
+binding, route, schedule, log consumer, public URL, or active build, and that the account has not
 reached its build-minute limit and the private usage proof remains below the
 800-minute alert boundary. Provider timestamps are accepted only as metadata; they never relax
 the authored values or secret classifications.
@@ -399,14 +398,14 @@ The accepted review design is
 [`deployment/workers-builds-review.json`](deployment/workers-builds-review.json)
 and its rationale/runbook is
 [`docs/review-environment.md`](docs/review-environment.md). The production
-project above remains `main`-only. A separate inert
-`atrinik-metaserver-review-check` project in the same Cloudflare account reuses
-the account's repository connection for same-repository non-`main` branches.
-Its absent production sentinel can never select `main`. It runs only `npm run
-review:branch` and the local contract validator and owns no binding, route,
-protected input, branch-created Worker version, or URL. Its checked-in
-`deployment/review-check/wrangler.jsonc` owns one inert bootstrap version with
-`workers_dev`/previews/observability disabled and no binding or route. Its
+project has Cloudflare's provider-native production and preview triggers. The
+production trigger selects only `main`; the preview trigger selects every
+non-`main` branch and runs only `npm run review:branch` plus the local contract
+validator. The preview trigger has its own zero-resource build token and an
+exact one-variable nonsecret environment, with no production protected input,
+binding, route, branch-created Worker version, or URL. The checked-in
+`deployment/review-check/wrangler.jsonc` is a local dry-run validation input,
+not a deployed bootstrap Worker. Its
 1,000-minute monthly budget alerts at 800 and disables the trigger at the
 threshold. Its separate dedicated-nonhuman
 user token has `User Details:Read`, no personal
@@ -419,8 +418,8 @@ preview URL.
 The Builds trigger request uses `/deployment/review-check` as its exact
 provider-canonical repository root. The leading slash is part of the reviewed
 API representation; the rejected relative form `deployment/review-check` must
-never be submitted. Builds runs the conventional `npm run build`, `npm run
-validate`, and fail-closed `npm run reject-sentinel` commands from that
+never be submitted. Builds runs the conventional `npm run build` and `npm run
+validate` commands from that
 directory. The private checked-in `deployment/review-check/package.json`
 delegates each command to the immutable repository-root scripts with `npm
 --prefix ../..`; provider request fields never contain parent-directory shell
@@ -431,13 +430,15 @@ ceiling. Retained setup evidence showed both the prior 233-byte inline command
 and the later `cd ../..` request representation were rejected with provider
 error `12002`; never retry either representation.
 
-The review-check build identity cannot reach production project settings.
+The review build identity cannot reach the production trigger's environment or
+build token. Cloudflare documents environment variables and build tokens as
+trigger fields in this two-trigger topology.
 Cloudflare cannot project-scope `Workers CI Write` and supports it only on a
 user API token, so the dedicated-nonhuman setup/budget/recovery operator has
 explicit production-account Builds control-plane reach, including technical
 authority over builds, tokens, environment variables, connections, triggers,
 and manual builds. Its operator-secret-store-only credential may mutate only the
-exact review project/trigger IDs, must reject production IDs, and must read the
+exact core preview-trigger ID, must reject the production-trigger ID, and must read the
 result back. This administrative tradeoff is not a review-run permission.
 
 Live evidence is a separate operator-supervised exact-commit run against one

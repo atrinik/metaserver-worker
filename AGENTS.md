@@ -90,15 +90,15 @@
 - `deployment/workers-builds-review.json` owns the non-`main` review design.
   Same-repository branch automation is build-only, has no bindings, protected
   inputs, account/zone resource permission, upload, or URL, and must reject
-  `main`; fork refs remain outside the connected repository. A separate inert
-  review-check project in the production account reuses the one repository
-  connection but has a distinct zero-resource token and no production project
-  setting or protected input available to builds. The trusted setup/budget
+  `main`; fork refs remain outside the connected repository. The provider-native
+  preview trigger shares the production core Worker and repository connection
+  but has a distinct zero-resource token and a separate nonsecret environment;
+  no production trigger setting or protected input is available to review builds. The trusted setup/budget
   operator's account-wide Builds control-plane reach (builds, tokens,
   environment variables, connections, triggers, and manual builds) is an
   explicit provider limitation; its user API token is never build-readable and
-  exact review trigger ID guards must reject production mutations. Its digest-pinned inert bootstrap Worker remains
-  unreachable, and branch builds create no Worker version. Live review is an operator-supervised exact-SHA run in a dedicated
+  exact review trigger ID guards must reject production-trigger mutations.
+  Branch builds create no Worker version. Live review is an operator-supervised exact-SHA run in a dedicated
   account with no GitHub connection or zone. Its production-disjoint resources, disabled
   circuits, exact-duration lease, quiescing/terminal teardown fence, logical
   versus physical fixture retention, Access boundary, and force-delete/readback cleanup guards must

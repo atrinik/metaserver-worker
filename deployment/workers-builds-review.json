@@ -3,25 +3,33 @@
   "provider": "cloudflare-workers-builds",
   "repository": "atrinik/metaserver-worker",
   "productionContract": "deployment/workers-builds-production.json",
-  "selectedMode": "single-connection-build-only-plus-operator-live-canary",
+  "selectedMode": "single-core-project-production-plus-build-only-preview-trigger",
   "automaticReview": {
+    "providerTopology": {
+      "mode": "one-worker-two-triggers",
+      "maximumTriggersPerWorker": 2,
+      "productionTriggerRole": "production",
+      "reviewTriggerRole": "preview",
+      "triggerEnvironmentIsolation": true,
+      "documentation": "https://developers.cloudflare.com/workers/ci-cd/builds/api-reference/",
+      "documentedContract": "each-worker-up-to-two-triggers-production-and-preview-with-per-trigger-build-token-commands-and-environment",
+      "lastVerifiedOn": "2026-08-16",
+      "retained12002Constraint": "one-repository-connection-two-workers-rejected-never-retry"
+    },
     "accountBoundary": {
-      "mode": "production-account-dedicated-zero-resource-project",
+      "mode": "production-account-core-project-trigger-isolation",
       "productionAccountReuse": true,
       "liveCanaryAccountReuse": false,
       "githubAccountConnections": 1,
       "repositoryConnectionReuse": true,
-      "connectedWorker": "atrinik-metaserver-review-check",
-      "buildIdentityProductionProjectSettingsReachable": false,
+      "connectedWorker": "atrinik-metaserver",
+      "buildIdentityProductionTriggerEnvironmentReachable": false,
       "trustedOperatorProductionBuildsControlPlaneReach": true
     },
-    "project": "atrinik-metaserver-review-check",
+    "project": "atrinik-metaserver",
     "rootDirectory": "/deployment/review-check",
-    "productionBranch": "review-build-only-sentinel",
-    "productionAutomaticPush": false,
-    "productionDeployCommand": "npm run reject-sentinel",
     "previewBranchIncludes": ["*"],
-    "previewBranchExcludes": ["main", "review-build-only-sentinel"],
+    "previewBranchExcludes": ["main"],
     "pathIncludes": ["*"],
     "pathExcludes": [],
     "buildCommand": "npm run build",
@@ -34,29 +42,24 @@
     "protectedInputs": [],
     "bindings": [],
     "routes": [],
-    "bootstrap": {
+    "localValidation": {
       "configPath": "deployment/review-check/wrangler.jsonc",
       "configSha256": "299f223ca1465512cf0016e3a4446df0bf70968b6fff77e86748b345853526b4",
       "sourcePath": "src/review-check-worker.ts",
       "sourceSha256": "b90eb0e486a6708d51c33e4b97424fa5f637c9fc354f32fb6fe79645f9ecc21f",
       "workerName": "atrinik-metaserver-review-check",
-      "existingWorkerTagRequired": true,
-      "retainedBootstrapVersions": 1,
       "workersDev": false,
       "previewUrls": false,
       "bindings": [],
       "routes": [],
-      "observability": false,
-      "provisioningActor": "issue-56-review-check-bootstrap-operator",
-      "provisioningPermissions": ["Workers Scripts:Edit"],
-      "provisioningCredentialBuildReadable": false
+      "observability": false
     },
     "costPolicy": {
-      "persistentWorkers": 1,
+      "persistentWorkers": 0,
       "maximumMonthlyReviewBuildMinutes": 1000,
       "alertAtMinutes": 800,
       "owner": "metaserver-review-environment-operator",
-      "thresholdAction": "disable-review-check-nonproduction-trigger-and-read-back",
+      "thresholdAction": "disable-core-preview-trigger-and-read-back-without-changing-production-trigger",
       "staleBuildPolicy": "older-build-may-finish-build-only-but-sha-bound-result-is-superseded-never-live-authority-counts-against-budget-and-workflow-does-not-cancel-stale-builds",
       "accountPlanAndUsageReadbackRequired": true
     },
@@ -66,7 +69,7 @@
       "githubCommentHistory": true,
       "reviewUrl": null,
       "branchCreatesWorkerVersion": false,
-      "persistentBootstrapVersions": 1,
+      "persistentBootstrapVersions": 0,
       "workerLogs": false
     },
     "forkPolicy": "fork-ref-is-not-in-connected-repository-github-validation-only",
@@ -94,9 +97,9 @@
       "providerCapabilityFamilies": ["build-read-cancel", "build-token-create-delete", "environment-variable-read-write", "repository-connection-read-write", "trigger-read-write", "manual-build-create"],
       "productionBuildsControlPlaneReach": true,
       "credentialBuildReadable": false,
-      "allowedMutations": ["exact-review-check-trigger-create-update-disable"],
-      "guards": ["exact-account", "exact-review-project-id", "exact-review-trigger-id", "reject-production-project-or-trigger-id", "read-back-after-mutation"],
-      "acceptance": "unavoidable-trusted-production-account-control-plane-authority-explicitly-accepted-for-option-three"
+      "allowedMutations": ["exact-core-preview-trigger-create-update-disable"],
+      "guards": ["exact-account", "exact-core-project-id", "exact-review-trigger-id", "reject-production-trigger-id", "read-back-after-mutation"],
+      "acceptance": "unavoidable-trusted-production-account-control-plane-authority-explicitly-accepted-for-provider-native-two-trigger-topology"
     }
   },
   "liveCanary": {

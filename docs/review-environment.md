@@ -7,10 +7,11 @@ and `npm run review:validate` is its fail-closed validator.
 
 ## Decision
 
-Use option 3: one Cloudflare account/repository connection backs two separate
-projects. The privileged production project remains #54-only; a dedicated
-inert review-check project runs build-only non-production branches with its own
-project token and environment. An explicit maintainer may run one reusable live
+Use one Cloudflare account, repository connection, and connected core Worker
+with the provider-native two-trigger model. The core Worker has one production
+trigger for `main` and one preview trigger for build-only non-production
+branches. Each trigger has its own command, build token, and environment. An
+explicit maintainer may run one reusable live
 cohort from a clean checkout of an exact same-repository non-`main` commit. The
 live account has no GitHub connection. This respects
 Cloudflare's one-GitHub-account/one-Cloudflare-account guidance and preserves
@@ -46,43 +47,52 @@ subdomain setup is Enterprise-only. The selected live account uses its stable
 
 ## Automatic trigger and GitHub feedback
 
-The privileged connected project is the production core,
-`atrinik-metaserver`; it remains exactly #54: branch `main`, all paths, and
-`npm run deploy:production`, with non-production builds disabled. The same
-Cloudflare account reuses its repository connection for the separate inert
-Worker/project `atrinik-metaserver-review-check`. That project's absent
-production branch is `review-build-only-sentinel`; automatic production pushes
-are disabled and its production command always stops. Its non-production
-trigger root is the provider-canonical `/deployment/review-check`, whose
-digest-pinned Wrangler file
-names the exact inert Worker and keeps `workers_dev`, preview URLs, bindings,
-routes, and observability disabled. #56 creates its one required bootstrap
-version/tag with a separate non-build-readable provisioning credential. The
-trigger includes all branches except `main` and the sentinel. Its 13-byte build
+The connected project is the production core, `atrinik-metaserver`. Cloudflare
+documents at most two triggers for one Worker: a production trigger and an
+optional preview trigger. The production trigger remains exactly #54: branch
+`main`, all paths, `npm run deploy:production`, the production build token, and
+the protected production environment. The preview trigger selects every branch
+except `main`, uses the provider-canonical `/deployment/review-check` root, and
+has only the distinct zero-resource review token plus the nonsecret
+`SKIP_DEPENDENCY_INSTALL=1` environment. Its 13-byte build
 command invokes the private package in the configured review root; that package
 delegates to the checked-in repository-root `npm run review:build` entrypoint.
 The root entrypoint retains the exact sanitized, lifecycle-disabled pinned
 install and `npm run review:branch`; the trigger then
 runs the local no-op `npm run review:validate`. Neither its commands nor its
-settings are shared with the production project.
+settings are never copied from the production trigger. The local Wrangler file
+under the review root is a dry-run validation asset only; setup creates no
+review Worker or bootstrap version.
+
+The provider contract is pinned in the machine document and was reverified on
+2026-08-16 against Cloudflare's
+[Builds API reference](https://developers.cloudflare.com/workers/ci-cd/builds/api-reference/),
+which defines up to two triggers per Worker and makes the build token, commands,
+branch filters, root directory, and environment variables trigger-specific.
+
+The retained #66 journal proves that reusing one repository connection across
+two different Workers was rejected with provider error `12002`. That request
+shape is a forbidden topology and is never retried or varied. The selected
+replacement is the provider-documented production-plus-preview pair on the
+single core Worker.
 
 Cloudflare's `Workers CI Write` permission is account-scoped rather than
 project-scoped and requires a user API token; account tokens are unsupported.
-The review-check build identity has no such permission, but the dedicated
+The review build identity has no such permission, but the dedicated
 nonhuman `metaserver-review-environment-operator` inevitably can read/cancel
 account builds, start builds, manage build tokens and environment variables,
 change repository connections, and mutate triggers—including production
 Builds state. Its token stays only in the operator secret store and is never
 placed in a project environment, build, or repository. Its only accepted
-mutations target the exact review project/trigger IDs;
-the procedure rejects either production ID and reads the result back. This is
-an explicit option-3 administrative tradeoff, not provider-enforced isolation.
+mutations target the exact core preview-trigger ID; the procedure rejects the
+production-trigger ID and reads the result back. This is an explicit
+administrative tradeoff, not a review-run permission.
 
 Cloudflare requires a build token even when the deploy command is a local
-validator. The entire review-check project must use a different user token from production
+validator. The preview trigger uses a different user token from production
 on a dedicated nonhuman identity with exactly `User Details:Read`, no personal
 data, empty account/zone permissions, and empty
-account/zone resource selectors. #56 must prove that the project has no
+account/zone resource selectors. #66 must prove that the trigger has no
 production protected input, that a branch build and its local deploy command
 succeed with that token, and that representative
 Cloudflare account/zone reads and writes fail. If Cloudflare will not accept
@@ -113,8 +123,8 @@ reports only the allowlisted stage, exit/signal/timeout/output-limit class, and
 stdout/stderr byte counts. It never emits captured child output or environment
 values.
 
-The persistent review-check Worker counts as one production-account resource,
-but has no reachable URL. #56 records the account plan and current build usage.
+The review path adds no persistent Worker or reachable URL. #66 records the
+account plan and current build usage.
 Review automation has a 1,000-minute monthly budget, alerts at 800 minutes, and
 is disabled/read back at the threshold. Newer same-branch results supersede old
 results. An older build may finish its credential-free build-only work and

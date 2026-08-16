@@ -105,34 +105,48 @@ async function readJsonc(path) {
 
 export function validateAutomaticReview(value) {
   exactKeys(value, [
-    "accountBoundary", "project", "rootDirectory", "productionBranch", "productionAutomaticPush",
-    "productionDeployCommand", "previewBranchIncludes", "previewBranchExcludes",
+    "providerTopology", "accountBoundary", "project", "rootDirectory",
+    "previewBranchIncludes", "previewBranchExcludes",
     "pathIncludes", "pathExcludes", "buildCommand", "deployCommand",
-    "providerBuildTimeoutMinutes", "checkCommandTimeoutMinutes", "buildEnvironment", "protectedInputs", "bindings", "routes", "bootstrap", "costPolicy", "result", "forkPolicy",
+    "providerBuildTimeoutMinutes", "checkCommandTimeoutMinutes", "buildEnvironment", "protectedInputs", "bindings", "routes", "localValidation", "costPolicy", "result", "forkPolicy",
     "tokenAuthority", "controlPlaneOperator",
   ], "automatic review");
+  exactKeys(value.providerTopology, [
+    "mode", "maximumTriggersPerWorker", "productionTriggerRole", "reviewTriggerRole",
+    "triggerEnvironmentIsolation", "documentation", "documentedContract", "lastVerifiedOn",
+    "retained12002Constraint",
+  ], "review provider topology");
+  const topology = {
+    mode: "one-worker-two-triggers", maximumTriggersPerWorker: 2,
+    productionTriggerRole: "production", reviewTriggerRole: "preview",
+    triggerEnvironmentIsolation: true,
+    documentation: "https://developers.cloudflare.com/workers/ci-cd/builds/api-reference/",
+    documentedContract:
+      "each-worker-up-to-two-triggers-production-and-preview-with-per-trigger-build-token-commands-and-environment",
+    lastVerifiedOn: "2026-08-16",
+    retained12002Constraint: "one-repository-connection-two-workers-rejected-never-retry",
+  };
+  for (const [key, expected] of Object.entries(topology))
+    exactValue(value.providerTopology[key], expected, `review provider topology ${key}`);
   exactKeys(value.accountBoundary, [
     "mode", "productionAccountReuse", "liveCanaryAccountReuse", "githubAccountConnections",
-    "repositoryConnectionReuse", "connectedWorker", "buildIdentityProductionProjectSettingsReachable",
+    "repositoryConnectionReuse", "connectedWorker", "buildIdentityProductionTriggerEnvironmentReachable",
     "trustedOperatorProductionBuildsControlPlaneReach",
   ], "review account boundary");
-  exactValue(value.accountBoundary.mode, "production-account-dedicated-zero-resource-project", "review account mode");
+  exactValue(value.accountBoundary.mode, "production-account-core-project-trigger-isolation", "review account mode");
   exactValue(value.accountBoundary.productionAccountReuse, true, "review account reuse");
   exactValue(value.accountBoundary.liveCanaryAccountReuse, false, "review live account isolation");
   exactValue(value.accountBoundary.githubAccountConnections, 1, "review GitHub connection count");
   exactValue(value.accountBoundary.repositoryConnectionReuse, true, "review repository connection reuse");
-  exactValue(value.accountBoundary.connectedWorker, "atrinik-metaserver-review-check", "review connected Worker");
-  exactValue(value.accountBoundary.buildIdentityProductionProjectSettingsReachable, false,
-    "review build identity production project isolation");
+  exactValue(value.accountBoundary.connectedWorker, "atrinik-metaserver", "review connected Worker");
+  exactValue(value.accountBoundary.buildIdentityProductionTriggerEnvironmentReachable, false,
+    "review build identity production trigger isolation");
   exactValue(value.accountBoundary.trustedOperatorProductionBuildsControlPlaneReach, true,
     "review trusted operator control-plane reach");
-  exactValue(value.project, "atrinik-metaserver-review-check", "review project");
+  exactValue(value.project, "atrinik-metaserver", "review project");
   exactValue(value.rootDirectory, "/deployment/review-check", "review root");
-  exactValue(value.productionBranch, "review-build-only-sentinel", "review sentinel branch");
-  exactValue(value.productionAutomaticPush, false, "review automatic production push");
-  exactValue(value.productionDeployCommand, "npm run reject-sentinel", "review sentinel command");
   exactArray(value.previewBranchIncludes, ["*"], "review branch includes");
-  exactArray(value.previewBranchExcludes, ["main", "review-build-only-sentinel"], "review branch excludes");
+  exactArray(value.previewBranchExcludes, ["main"], "review branch excludes");
   exactArray(value.pathIncludes, ["*"], "review path includes");
   exactArray(value.pathExcludes, [], "review path excludes");
   exactValue(value.buildCommand,
@@ -148,36 +162,30 @@ export function validateAutomaticReview(value) {
   exactArray(value.protectedInputs, [], "review protected inputs");
   exactArray(value.bindings, [], "review bindings");
   exactArray(value.routes, [], "review routes");
-  exactKeys(value.bootstrap, [
+  exactKeys(value.localValidation, [
     "configPath", "configSha256", "sourcePath", "sourceSha256", "workerName",
-    "existingWorkerTagRequired", "retainedBootstrapVersions", "workersDev", "previewUrls",
-    "bindings", "routes", "observability", "provisioningActor", "provisioningPermissions",
-    "provisioningCredentialBuildReadable",
-  ], "review bootstrap");
-  const bootstrap = {
+    "workersDev", "previewUrls", "bindings", "routes", "observability",
+  ], "review local validation");
+  const localValidation = {
     configPath: "deployment/review-check/wrangler.jsonc",
     configSha256: "299f223ca1465512cf0016e3a4446df0bf70968b6fff77e86748b345853526b4",
     sourcePath: "src/review-check-worker.ts",
     sourceSha256: "b90eb0e486a6708d51c33e4b97424fa5f637c9fc354f32fb6fe79645f9ecc21f",
-    workerName: "atrinik-metaserver-review-check", existingWorkerTagRequired: true,
-    retainedBootstrapVersions: 1, workersDev: false, previewUrls: false,
-    observability: false, provisioningActor: "issue-56-review-check-bootstrap-operator",
-    provisioningCredentialBuildReadable: false,
+    workerName: "atrinik-metaserver-review-check", workersDev: false,
+    previewUrls: false, observability: false,
   };
-  for (const [key, expected] of Object.entries(bootstrap))
-    exactValue(value.bootstrap[key], expected, `review bootstrap ${key}`);
-  exactArray(value.bootstrap.bindings, [], "review bootstrap bindings");
-  exactArray(value.bootstrap.routes, [], "review bootstrap routes");
-  exactArray(value.bootstrap.provisioningPermissions, ["Workers Scripts:Edit"],
-    "review bootstrap permissions");
+  for (const [key, expected] of Object.entries(localValidation))
+    exactValue(value.localValidation[key], expected, `review local validation ${key}`);
+  exactArray(value.localValidation.bindings, [], "review local validation bindings");
+  exactArray(value.localValidation.routes, [], "review local validation routes");
   exactKeys(value.costPolicy, [
     "persistentWorkers", "maximumMonthlyReviewBuildMinutes", "alertAtMinutes", "owner",
     "thresholdAction", "staleBuildPolicy", "accountPlanAndUsageReadbackRequired",
   ], "review cost policy");
   const cost = {
-    persistentWorkers: 1, maximumMonthlyReviewBuildMinutes: 1000, alertAtMinutes: 800,
+    persistentWorkers: 0, maximumMonthlyReviewBuildMinutes: 1000, alertAtMinutes: 800,
     owner: "metaserver-review-environment-operator",
-    thresholdAction: "disable-review-check-nonproduction-trigger-and-read-back",
+    thresholdAction: "disable-core-preview-trigger-and-read-back-without-changing-production-trigger",
     staleBuildPolicy: "older-build-may-finish-build-only-but-sha-bound-result-is-superseded-never-live-authority-counts-against-budget-and-workflow-does-not-cancel-stale-builds",
     accountPlanAndUsageReadbackRequired: true,
   };
@@ -189,7 +197,7 @@ export function validateAutomaticReview(value) {
   ], "review result");
   if (JSON.stringify(value.result) !== JSON.stringify({
     githubCheck: true, githubComment: true, githubCommentHistory: true,
-    reviewUrl: null, branchCreatesWorkerVersion: false, persistentBootstrapVersions: 1,
+    reviewUrl: null, branchCreatesWorkerVersion: false, persistentBootstrapVersions: 0,
     workerLogs: false,
   })) fail("review result drift");
   exactValue(value.forkPolicy, "fork-ref-is-not-in-connected-repository-github-validation-only", "fork policy");
@@ -223,7 +231,7 @@ export function validateAutomaticReview(value) {
     resourceScope: "production-account-all-workers-builds-control-plane-resources-provider-cannot-scope-to-project",
     productionBuildsControlPlaneReach: true,
     credentialBuildReadable: false,
-    acceptance: "unavoidable-trusted-production-account-control-plane-authority-explicitly-accepted-for-option-three",
+    acceptance: "unavoidable-trusted-production-account-control-plane-authority-explicitly-accepted-for-provider-native-two-trigger-topology",
   };
   for (const [key, expected] of Object.entries(operator))
     exactValue(value.controlPlaneOperator[key], expected, `review control-plane operator ${key}`);
@@ -232,10 +240,10 @@ export function validateAutomaticReview(value) {
     "repository-connection-read-write", "trigger-read-write", "manual-build-create",
   ], "review operator provider capabilities");
   exactArray(value.controlPlaneOperator.allowedMutations,
-    ["exact-review-check-trigger-create-update-disable"], "review operator mutations");
+    ["exact-core-preview-trigger-create-update-disable"], "review operator mutations");
   exactArray(value.controlPlaneOperator.guards, [
-    "exact-account", "exact-review-project-id", "exact-review-trigger-id",
-    "reject-production-project-or-trigger-id", "read-back-after-mutation",
+    "exact-account", "exact-core-project-id", "exact-review-trigger-id",
+    "reject-production-trigger-id", "read-back-after-mutation",
   ], "review operator guards");
 }
 
@@ -857,7 +865,8 @@ export function validateContract(review, production, configurations) {
   exactValue(review.provider, "cloudflare-workers-builds", "review provider");
   exactValue(review.repository, "atrinik/metaserver-worker", "review repository");
   exactValue(review.productionContract, "deployment/workers-builds-production.json", "production contract path");
-  exactValue(review.selectedMode, "single-connection-build-only-plus-operator-live-canary", "review mode");
+  exactValue(review.selectedMode,
+    "single-core-project-production-plus-build-only-preview-trigger", "review mode");
   validateAutomaticReview(review.automaticReview);
   validateLiveCanary(review.liveCanary);
   if (!Array.isArray(configurations) || configurations.length !== 3)
@@ -990,9 +999,10 @@ export async function validateCheckedInContract() {
   const operations = await readFile(resolve(root, coordination.operationsPath));
   if (createHash("sha256").update(operations).digest("hex") !== coordination.operationsSha256)
     fail("review coordination operations digest drift");
-  const bootstrap = inputs.review.automaticReview.bootstrap;
+  const localValidation = inputs.review.automaticReview.localValidation;
   for (const [path, digest] of [
-    [bootstrap.configPath, bootstrap.configSha256], [bootstrap.sourcePath, bootstrap.sourceSha256],
+    [localValidation.configPath, localValidation.configSha256],
+    [localValidation.sourcePath, localValidation.sourceSha256],
     ...inputs.review.liveCanary.configurationMaterialization.sources
       .map(({ path, sha256 }) => [path, sha256]),
   ]) {
