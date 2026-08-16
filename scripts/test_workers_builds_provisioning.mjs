@@ -300,6 +300,11 @@ test("normalizes the official nested Worker versions pagination shape", () => {
       page: 1, count: 1, per_page: 50, total_count: 1 } },
   ]);
   assert.deepEqual(onePage.result.map(({ id }) => id), [resourceUuid]);
+  const empty = combineWorkerVersionPages([
+    { success: true, result: { items: [] }, result_info: {
+      page: 1, count: 0, per_page: 50, total_count: 0 } },
+  ]);
+  assert.deepEqual(empty.result, []);
   assert.throws(() => combineWorkerVersionPages([
     { success: true, result: [{ id: resourceUuid }], result_info: {
       page: 1, count: 1, per_page: 50, total_count: 1 } },
@@ -311,6 +316,24 @@ test("normalizes the official nested Worker versions pagination shape", () => {
   assert.throws(() => combineWorkerVersionPages([
     { success: true, result: { items: [{ id: resourceUuid }] }, result_info: {
       page: 1, count: 1, per_page: 50, total_count: 1, total_pages: 2 } },
+  ]), /pagination metadata is malformed/u);
+  assert.throws(() => combineWorkerVersionPages([
+    { success: true, result: { items: [] }, result_info: {
+      page: 1, count: 0, per_page: 1, total_count: 2 } },
+    { success: true, result: { items: [{ id: resourceUuid }, { id: reviewTriggerUuid }] },
+      result_info: { page: 2, count: 2, per_page: 1, total_count: 2 } },
+  ]), /pagination metadata is malformed/u);
+  assert.throws(() => combineWorkerVersionPages([
+    { success: true, result: { items: [{ id: resourceUuid }] }, result_info: {
+      page: 1, count: 1, per_page: 2, total_count: 3 } },
+    { success: true, result: { items: [{ id: reviewTriggerUuid }, { id: reviewTokenUuid }] },
+      result_info: { page: 2, count: 2, per_page: 2, total_count: 3 } },
+  ]), /pagination metadata is malformed/u);
+  assert.throws(() => combineWorkerVersionPages([
+    { success: true, result: { items: [{ id: resourceUuid }, { id: reviewTriggerUuid }] },
+      result_info: { page: 1, count: 2, per_page: 2, total_count: 3 } },
+    { success: true, result: { items: [] }, result_info: {
+      page: 2, count: 0, per_page: 2, total_count: 3 } },
   ]), /pagination metadata is malformed/u);
 });
 

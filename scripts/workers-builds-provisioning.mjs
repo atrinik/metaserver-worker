@@ -1507,7 +1507,11 @@ function normalizeWorkerVersionPage(envelope, label) {
       info.per_page < 1 || info.total_count < 0 || info.count !== result.items.length)
     fail(`${label} provider version pagination metadata is malformed`);
   const derivedTotalPages = Math.max(1, Math.ceil(info.total_count / info.per_page));
+  const expectedCount = info.page < derivedTotalPages
+    ? info.per_page
+    : info.total_count - (info.per_page * (derivedTotalPages - 1));
   if (info.page > derivedTotalPages ||
+      info.count > info.per_page || info.count !== expectedCount ||
       (info.total_pages !== undefined &&
        (!Number.isSafeInteger(info.total_pages) || info.total_pages !== derivedTotalPages)))
     fail(`${label} provider version pagination metadata is malformed`);
