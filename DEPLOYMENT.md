@@ -118,7 +118,8 @@ Cloudflare and has no upload path.
 
 ### Workers Builds provisioning preflight
 
-Issue #56 composes the production and review contracts through
+Issue #56 historically delivered the checked-in composition; replacement
+execution authority #66 now composes the production and review contracts through
 `scripts/workers-builds-provisioning.mjs`. The validator and dry run are
 credential-free and have no provider mutation path:
 
@@ -227,8 +228,9 @@ ATRINIK_REPOSITORY_CONNECTION_OWNER_PROOF_FILE=/secure/path/connection-owner-pro
   npm run provision:workers-builds:verify-preflight
 ```
 
-The fresh preflight requires exactly the three existing production Workers and
-no Builds trigger; it never creates or adopts a review Worker. A journal-bound
+The fresh preflight requires exactly the three existing production Workers,
+proves the retired `atrinik-metaserver-review-check` Worker is absent, and
+requires no Builds trigger; it never creates or adopts a review Worker. A journal-bound
 partial setup uses exact recovery readback instead of the fresh verifier. The
 readback never accepts an absent production Worker. Each sentinel proof
 contains the exact repository object, its private selector, an empty `refs`
@@ -248,7 +250,7 @@ proof uses source `cloudflare-owner-ui-readback`, the exact repository object,
 `connectionPreexisting: true`, and `websitePreserved: true`. It also pins App
 85455, installation 152311798, selected-repository mode, the exact website and
 metaserver repository IDs, the governed
-`atrinik/metaserver-worker#56-private-provider-evidence` coordinate, and fresh
+`atrinik/metaserver-worker#66-private-provider-evidence` coordinate, and fresh
 read-only proof that the exact source SHA
 is still protected PR-only `main` with deletion and force-push disabled. It
 contains no credential or connection UUID. Rollback always retains that connection.
@@ -332,7 +334,7 @@ After the review trigger is active and its disposable branch proof succeeds,
 retain a no-more-than-five-minute owner-only
 `ATRINIK_REVIEW_RESULT_PROOF_FILE`. It binds the exact review trigger/token,
 terminal successful Cloudflare build UUID, same-repository
-`review/issue-56-*` branch and commit, provider-trusted build creation/stop
+`review/issue-66-*` branch and commit, provider-trusted build creation/stop
 times and automatic `push` source, complete embedded trigger/command snapshot,
 and the governed private-evidence coordinate. Capture the raw results of
 `gh api repos/atrinik/metaserver-worker/commits/<review-sha>/check-runs`,
@@ -409,7 +411,7 @@ not a deployed bootstrap Worker. Its
 1,000-minute monthly budget alerts at 800 and disables the trigger at the
 threshold. Its separate dedicated-nonhuman
 user token has `User Details:Read`, no personal
-data, and no account/zone permission or resource selector. #56 must prove that zero-resource token works before
+data, and no account/zone permission or resource selector. #66 must prove that zero-resource token works before
 enabling the trigger; never substitute the production token. Fork refs do not
 exist in the connected repository and receive ordinary GitHub validation only.
 Cloudflare emits its native check and PR status comment/history without a
@@ -477,8 +479,9 @@ then may an empty run table transition to terminal `teardown`. Keep the coordina
 fence through Worker/namespace absence, `workers.dev` disablement, and Access
 deletion; delete the coordination D1 last.
 
-This design does not authorize provisioning. Until issue #56 supplies and
-validates the exact provider resources, `npm run deploy:review-canary` fails
+This design does not authorize live-canary provisioning. Until a maintainer
+separately authorizes and validates the exact live provider resources,
+`npm run deploy:review-canary` fails
 closed. Local manual escape is limited to `npm ci --ignore-scripts`,
 `npm run check`, and `npm run review:dry-run` without Cloudflare credentials.
 It does not prove live behavior. A provider outage or build failure never falls

@@ -156,7 +156,7 @@ function freshBoundary() {
       source: "cloudflare-owner-ui-readback", accountId,
       connectionPreexisting: true, websitePreserved: true,
       githubApp: { appId: 85455, installationId: 152311798,
-        evidenceLocation: "atrinik/metaserver-worker#56-private-provider-evidence",
+        evidenceLocation: "atrinik/metaserver-worker#66-private-provider-evidence",
         repositorySelection: "selected", selectedRepositories: [
           { fullName: "atrinik/metaserver-worker", id: 1324297032 },
           { fullName: "atrinik/website", id: 1327107093 },
@@ -389,6 +389,7 @@ test("routes every Builds inventory through the empty-page adapter in each provi
         total_count: result.length } });
     const driftPath = `/builds/workers/${workerTags.get(production.workers[0].name)}/builds`;
     const fetchFixture = ({ malformedEndpoint, buildHistoryDriftAt, domainHistoryDriftAt,
+      retiredReviewWorker = false,
       localBuildsReads = new Map(), localDomainReads = new Map() } = {}) =>
       async (rawUrl, init = {}) => {
       const url = new URL(rawUrl);
@@ -400,9 +401,11 @@ test("routes every Builds inventory through the empty-page adapter in each provi
         assert.match(path, /^\/d1\/database\/[^/]+\/query$/u);
         body = { success: true, result: [{ results: [] }] };
       } else if (path === "/workers/scripts") {
-        body = { success: true, result: workerNames.map((name) => ({
-          id: name, tag: workerTags.get(name),
-        })) };
+        body = { success: true, result: [
+          ...workerNames.map((name) => ({ id: name, tag: workerTags.get(name) })),
+          ...(retiredReviewWorker ? [{ id: review.automaticReview.localValidation.workerName,
+            tag: "d".repeat(32) }] : []),
+        ] };
       } else if (/\/settings$/u.test(path)) {
         const name = decodeURIComponent(path.split("/")[3]);
         body = envelope({ bindings: bindings(workerConfigs.get(name)) });
@@ -473,6 +476,8 @@ test("routes every Builds inventory through the empty-page adapter in each provi
       /domain pagination metadata is malformed/u);
     await assert.rejects(runReadback("versions", fetchFixture({ malformedEndpoint: "versions" })),
       /version pagination metadata is malformed/u);
+    await assert.rejects(runReadback("retired-review-worker",
+      fetchFixture({ retiredReviewWorker: true })), /retired review Worker/u);
     await assert.rejects(runReadback("pass-drift", fetchFixture({ buildHistoryDriftAt: 2 })),
       /builds provider inventory changed between complete passes/u);
     await assert.rejects(runReadback("sweep-drift", fetchFixture({ buildHistoryDriftAt: 3 })),
@@ -741,8 +746,9 @@ test("permits only the exact absent-trigger initial production predecessor", () 
   };
   assert.equal(validateInitialBootstrapSnapshot(boundary).mutation, false);
   const reviewPresent = structuredClone(boundary);
-  reviewPresent.scripts.result.push({ id: review.automaticReview.project, tag: "d".repeat(32) });
-  assert.throws(() => validateInitialBootstrapSnapshot(reviewPresent), /Worker inventory drift/u);
+  reviewPresent.scripts.result.push({ id: review.automaticReview.localValidation.workerName,
+    tag: "d".repeat(32) });
+  assert.throws(() => validateInitialBootstrapSnapshot(reviewPresent), /retired review Worker/u);
   const triggerPresent = structuredClone(boundary);
   triggerPresent.triggers[0][1].result.push({ trigger_uuid: resourceUuid });
   triggerPresent.triggers[0][1].result_info.total_count = 1;
@@ -954,14 +960,15 @@ test("proves a fresh setup has no competing trigger, Deploy Hook, or active buil
   assert.equal(result.reviewPersistentWorkerCount, 0);
   const scriptsWithReview = structuredClone(envelope(production.workers.map(({ name }, index) =>
     ({ id: name, tag: String(index + 1).repeat(32) }))));
-  scriptsWithReview.result.push({ id: review.automaticReview.project, tag: "d".repeat(32) });
+  scriptsWithReview.result.push({ id: review.automaticReview.localValidation.workerName,
+    tag: "d".repeat(32) });
   assert.throws(() => validateFreshBuildsSnapshot({
     ...freshBoundary(),
     production, review, scripts: scriptsWithReview,
     triggers: projects.map((label) => [label, envelope([])]),
     deployHooks: projects.map((label) => [label, envelope([])]),
     builds: projects.map((label) => [label, envelope([])]),
-  }), /required production Worker/u);
+  }), /retired review Worker/u);
   assert.throws(() => validateNoActiveBuilds(envelope([
     { status: "running", build_uuid: resourceUuid },
   ]), "core"), /active Workers Build/u);
@@ -1203,6 +1210,8 @@ test("proves one serialized production trigger and one isolated review trigger",
       trigger_uuid: "55555555-5555-4555-8555-555555555555",
       repo_connection: productionSpec.repo_connection });
       value.accountTriggers.result_info.total_count = 3; },
+    (value) => value.scripts.result.push({ id: review.automaticReview.localValidation.workerName,
+      tag: "d".repeat(32) }),
   ]) {
     const changed = validArguments();
     mutate(changed);
@@ -1310,6 +1319,10 @@ test("proves both triggers are inert before either activation", () => {
   active.productionTriggers.result[0].branch_includes = ["main"];
   active.reviewTriggers = structuredClone(active.productionTriggers);
   assert.throws(() => validateStagedBuildsSnapshot(active), /trigger branch_includes drift/u);
+  const retiredWorker = structuredClone(arguments_);
+  retiredWorker.scripts.result.push({ id: review.automaticReview.localValidation.workerName,
+    tag: "d".repeat(32) });
+  assert.throws(() => validateStagedBuildsSnapshot(retiredWorker), /retired review Worker/u);
   const wrongToken = structuredClone(arguments_);
   wrongToken.productionTriggers.result[0].build_token_uuid = resourceUuid;
   wrongToken.reviewTriggers = structuredClone(wrongToken.productionTriggers);
@@ -1349,7 +1362,7 @@ test("proves both triggers are inert before either activation", () => {
     /disposable review result proof/u);
   const buildUuid = "77777777-7777-4777-8777-777777777777";
   const reviewCommitSha = "b".repeat(40);
-  const branch = "review/issue-56-provider-proof";
+  const branch = "review/issue-66-provider-proof";
   const evidenceNow = Date.now();
   const createdOn = new Date(evidenceNow - 120_000).toISOString();
   const stoppedOn = new Date(evidenceNow - 60_000).toISOString();
@@ -1370,7 +1383,7 @@ test("proves both triggers are inert before either activation", () => {
     productionMainSha: "a".repeat(40),
     triggerUuid: reviewTriggerUuid, buildTokenUuid: reviewTokenUuid,
     cleanupPolicy: "build-only-no-version-binding-route-url-or-resource-created",
-    evidenceLocation: "atrinik/metaserver-worker#56-private-provider-evidence",
+    evidenceLocation: "atrinik/metaserver-worker#66-private-provider-evidence",
     capturedAt, githubEvidence: { capturedAt, refs: [], comparison: { status: "behind",
       base_commit: { sha: reviewCommitSha }, head_commit: { sha: "a".repeat(40) } },
       checkRuns: { total_count: 1, check_runs: [{ id: 123456, name: "Cloudflare Workers Builds",

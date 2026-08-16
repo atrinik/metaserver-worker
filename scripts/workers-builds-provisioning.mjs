@@ -214,7 +214,7 @@ export function validateRepositoryConnectionOwnerProof(proof, accountId, sourceS
   const expectedKeys = ["accountId", "capturedAt", "connectionPreexisting", "repository",
     "source", "websitePreserved", "githubApp", "mainProtection"];
   const expectedApp = { appId: 85455, installationId: 152311798,
-    evidenceLocation: "atrinik/metaserver-worker#56-private-provider-evidence",
+    evidenceLocation: "atrinik/metaserver-worker#66-private-provider-evidence",
     repositorySelection: "selected", selectedRepositories: [
       { fullName: "atrinik/metaserver-worker", id: 1324297032 },
       { fullName: "atrinik/website", id: 1327107093 },
@@ -831,12 +831,25 @@ export function validateNoActiveBuilds(envelope, label) {
     fail(`${label} has an active Workers Build`);
 }
 
+function validateRetiredReviewWorkerAbsent(scriptRows, review, label) {
+  const retiredName = review?.automaticReview?.localValidation?.workerName;
+  if (review?.automaticReview?.costPolicy?.persistentWorkers !== 0 ||
+      typeof retiredName !== "string" || !retiredName ||
+      retiredName === review?.automaticReview?.project)
+    fail("retired review Worker contract is malformed");
+  const count = scriptRows.filter(({ id }) => id === retiredName).length;
+  if (count !== 0) fail(`${label} contains the retired review Worker`);
+  return count;
+}
+
 export function validateFreshBuildsSnapshot({ production, review, scripts,
   triggers, deployHooks, builds, buildTokens, accountTriggers,
   productionSentinelProof, reviewSentinelProof, repositoryConnectionProof, accountId,
   sourceSha }) {
   const scriptRows = requireEnvelope(scripts, "scripts");
   if (!Array.isArray(scriptRows)) fail("script inventory is invalid");
+  const reviewPersistentWorkerCount = validateRetiredReviewWorkerAbsent(
+    scriptRows, review, "fresh Worker inventory");
   const requiredNames = production.workers.map(({ name }) => name);
   for (const name of requiredNames) {
     const matches = scriptRows.filter(({ id }) => id === name);
@@ -870,7 +883,7 @@ export function validateFreshBuildsSnapshot({ production, review, scripts,
   validateRepositoryConnectionOwnerProof(repositoryConnectionProof, accountId, sourceSha);
   return { outcome: "workers-builds-fresh-preflight-valid", mutation: false,
     productionProjectCount: production.workers.length,
-    reviewPersistentWorkerCount: 0, repositoryConnectionInventory: "provider-not-readable" };
+    reviewPersistentWorkerCount, repositoryConnectionInventory: "provider-not-readable" };
 }
 
 export function validateInitialBootstrapSnapshot({ production, review, scripts,
@@ -882,6 +895,7 @@ export function validateInitialBootstrapSnapshot({ production, review, scripts,
   if (!Array.isArray(scriptRows) || production.workers.some(({ name }) =>
     scriptRows.filter(({ id }) => id === name).length !== 1))
     fail("initial bootstrap Worker inventory drift");
+  validateRetiredReviewWorkerAbsent(scriptRows, review, "initial bootstrap Worker inventory");
   const expectedLabels = production.workers.map(({ role }) => role);
   for (const [label, envelope] of exactLabeledInventories(triggers,
     expectedLabels, "initial bootstrap trigger")) {
@@ -1006,6 +1020,7 @@ export function validateConfiguredBuildsSnapshot({ production, review, scripts,
   reviewBuildState, accountId, tokenAuthorityProofs, sourceSha }) {
   const scriptRows = requireEnvelope(scripts, "scripts");
   if (!Array.isArray(scriptRows)) fail("script inventory is invalid");
+  validateRetiredReviewWorkerAbsent(scriptRows, review, "configured Worker inventory");
   const matches = scriptRows.filter(({ id }) => id === production.workers[0].name);
   if (matches.length !== 1 || review.automaticReview.project !== production.workers[0].name ||
       !scriptTagPattern.test(matches[0].tag ?? ""))
@@ -1113,12 +1128,12 @@ export function validateReviewResultProof({ proof, reviewTrigger, reviewToken, b
       proof.source !== "cloudflare-github-disposable-review-readback" ||
       proof.repository !== "atrinik/metaserver-worker" ||
       proof.productionMainSha !== mainSha || proof.reviewCommitSha === mainSha ||
-      !/^review\/issue-56-[a-z0-9-]{1,40}$/u.test(proof.branch ?? "") ||
+      !/^review\/issue-66-[a-z0-9-]{1,40}$/u.test(proof.branch ?? "") ||
       !gitShaPattern.test(proof.reviewCommitSha ?? "") || !uuidPattern.test(proof.buildUuid ?? "") ||
       proof.triggerUuid !== reviewTrigger.trigger_uuid ||
       proof.buildTokenUuid !== reviewToken.build_token_uuid ||
       proof.cleanupPolicy !== "build-only-no-version-binding-route-url-or-resource-created" ||
-      proof.evidenceLocation !== "atrinik/metaserver-worker#56-private-provider-evidence" ||
+      proof.evidenceLocation !== "atrinik/metaserver-worker#66-private-provider-evidence" ||
       !Number.isFinite(captured) || captured > now + 30_000 || now - captured > 5 * 60_000 ||
       matches.length !== 1 || row.status !== "stopped" || row.build_outcome !== "success" ||
       row.trigger?.trigger_uuid !== proof.triggerUuid || metadata.branch !== proof.branch ||
@@ -1160,6 +1175,8 @@ function validateActivationSnapshot({ production, review, scripts,
   snapshotManifest, reviewResultProof }, { reviewActive }) {
   validateDistinctSentinelRefAbsence(productionSentinelProof, reviewSentinelProof);
   const scriptRows = requireEnvelope(scripts, "scripts");
+  if (!Array.isArray(scriptRows)) fail("script inventory is invalid");
+  validateRetiredReviewWorkerAbsent(scriptRows, review, "staged Worker inventory");
   const matches = scriptRows.filter(({ id }) => id === production.workers[0].name);
   if (matches.length !== 1 || review.automaticReview.project !== production.workers[0].name ||
       !scriptTagPattern.test(matches[0].tag ?? ""))
@@ -1883,6 +1900,8 @@ export async function readProviderSnapshot({ accountId, token, productionReadTok
   const scriptRows = requireEnvelope(scripts, "scripts");
   if (!Array.isArray(scriptRows) || scriptRows.length > 1000)
     fail("account Worker inventory is invalid or unbounded");
+  const reviewPersistentWorkerCount = validateRetiredReviewWorkerAbsent(
+    scriptRows, review, "provider Worker inventory");
   const names = [...new Set(production.workers.map(({ name }) => name))];
   let productionDatabaseId;
   for (const name of names) {
@@ -1979,7 +1998,7 @@ export async function readProviderSnapshot({ accountId, token, productionReadTok
   });
   return { outcome: "workers-builds-private-readback-complete", mutation: false,
     productionWorkers: production.workers.length,
-    reviewPersistentWorkerCount: 0 };
+    reviewPersistentWorkerCount };
 }
 
 export async function loadSnapshot(directory, name) {

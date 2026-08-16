@@ -588,7 +588,7 @@ export function validateLiveCanary(value) {
   for (const [key, expected] of Object.entries(expectedSource))
     exactValue(value.source[key], expected, `live source ${key}`);
   const expectedActors = [
-    ["provisioner", "issue-56-reviewed-setup-only",
+    ["provisioner", "separately-authorized-reviewed-setup-only",
       ["Workers Scripts:Edit", "D1:Edit", "Workers R2 Storage:Edit", "Access Apps and Policies:Edit", "Account Settings:Read"],
       ["dedicated-live-canary-account"],
       ["live-account-resource-create", "workers-dev-subdomain", "all-workers-access-policy", "runtime-secret-write"], false],
@@ -1030,7 +1030,8 @@ async function main() {
     return;
   }
   if (mode === "--reject-sentinel") fail("reserved review sentinel never executes repository code");
-  if (mode === "--live-not-provisioned") fail("live review provisioning is reserved for issue #56");
+  if (mode === "--live-not-provisioned")
+    fail("live review provisioning requires separate maintainer authorization");
   fail("unknown review-environment mode");
 }
 

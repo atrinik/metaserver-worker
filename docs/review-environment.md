@@ -1,7 +1,7 @@
 # Isolated review environment decision
 
-Status: accepted design; provider provisioning remains unauthorized until
-issue #56. The machine contract is
+Status: accepted design; live-canary provider provisioning remains unprovisioned
+and requires separate maintainer authorization. The machine contract is
 [`deployment/workers-builds-review.json`](../deployment/workers-builds-review.json),
 and `npm run review:validate` is its fail-closed validator.
 
@@ -60,7 +60,7 @@ delegates to the checked-in repository-root `npm run review:build` entrypoint.
 The root entrypoint retains the exact sanitized, lifecycle-disabled pinned
 install and `npm run review:branch`; the trigger then
 runs the local no-op `npm run review:validate`. Neither its commands nor its
-settings are never copied from the production trigger. The local Wrangler file
+settings are copied from the production trigger. The local Wrangler file
 under the review root is a dry-run validation asset only; setup creates no
 review Worker or bootstrap version.
 
@@ -144,7 +144,7 @@ npm run check
 npm run deploy:review-canary -- --source-sha <40-lowercase-hex-sha>
 ```
 
-The eventual #56 entrypoint must first use read-only `gh` access to prove the
+Any separately authorized live-canary entrypoint must first use read-only `gh` access to prove the
 commit is the head of a same-repository non-`main` branch, is not reachable
 from live `main`, matches the explicit maintainer approval record, and equals the clean checkout. Only then may it
 load live-account credentials. It generates a UUID for the run and acquires an
@@ -157,7 +157,7 @@ The authority matrix is exact:
 
 | Actor | Routine | Exact live-account permission template | Authority |
 | --- | --- | --- | --- |
-| Provisioner | No; #56 setup only | Workers Scripts Edit, D1 Edit, Workers R2 Storage Edit, Access Apps and Policies Edit, Account Settings Read | Create named resources, enable `workers.dev`, configure one `all_workers` Access application, and write runtime secrets |
+| Provisioner | No; separately authorized reviewed setup only | Workers Scripts Edit, D1 Edit, Workers R2 Storage Edit, Access Apps and Policies Edit, Account Settings Read | Create named resources, enable `workers.dev`, configure one `all_workers` Access application, and write runtime secrets |
 | Migration operator | No; reviewed ledger advance only | D1 Edit | Apply pending migrations |
 | Live runner | Yes, explicit exact-SHA run | Workers Scripts Edit, D1 Edit, Workers R2 Storage Read, Account Analytics Read | Deploy three Workers, execute allowlisted lease/fixture SQL, and read back live state |
 | Access token operator | No; after lease and after closed readback | Access Service Tokens Write; Access Apps and Policies Edit | Create the exact 60-minute per-run token, bind the policy to only its ID, transfer it only to the supervisor, then delete it |
@@ -168,7 +168,7 @@ The routine process never loads the cleanup credential and has no
 production-account, parent-DNS, or runtime-secret-read authority. It never
 applies migrations: a mismatch
 stops and names the migration operator as the next gate. Provider permissions
-cannot distinguish arbitrary D1 SQL from migration SQL, so #56 must place the
+cannot distinguish arbitrary D1 SQL from migration SQL, so the authorized live runner must place the
 runner's lease/fixture statements behind an exact command allowlist and audit
 their results; the account boundary is the hard production isolation.
 
@@ -199,7 +199,8 @@ The machine contract pins the raw SHA-256 of all three checked-in role
 configurations and permits only its enumerated review overrides. Those exact
 overrides name every Worker, D1/R2/Analytics/rate binding, Service Binding,
 review hostname, source-tag epoch, every core and caller circuit, no-zone placeholder origin/cache
-ID, schedule, `workers_dev`, preview, route, and observability setting. #56 may
+ID, schedule, `workers_dev`, preview, route, and observability setting. The
+separately authorized materializer may
 substitute only provider-issued private resource IDs and the read-back account
 `workers.dev` subdomain; every other parsed value remains equivalent to the
 digest-pinned source.
@@ -334,4 +335,5 @@ after circuit closure, socket/offline proof, and a no-builder-work check.
 - [Preview URLs](https://developers.cloudflare.com/workers/configuration/previews/)
 
 These references describe behavior, not authorization. This issue mutates no
-Cloudflare or GitHub setting; #56 owns reviewed provisioning and live proof.
+Cloudflare or GitHub setting; a separately authorized delivery owns reviewed
+live provisioning and proof.

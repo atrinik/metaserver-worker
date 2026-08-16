@@ -125,7 +125,7 @@
     "actors": [
       {
         "actor": "provisioner",
-        "when": "issue-56-reviewed-setup-only",
+        "when": "separately-authorized-reviewed-setup-only",
         "permissions": ["Workers Scripts:Edit", "D1:Edit", "Workers R2 Storage:Edit", "Access Apps and Policies:Edit", "Account Settings:Read"],
         "resources": ["dedicated-live-canary-account"],
         "authority": ["live-account-resource-create", "workers-dev-subdomain", "all-workers-access-policy", "runtime-secret-write"],

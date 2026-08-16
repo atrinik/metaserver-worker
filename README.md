@@ -119,7 +119,8 @@ approved; staged partial cohorts remain routine fix-forward state.
 Production identifiers stay in bounded Cloudflare-owned secret configuration
 documents, never in Git or logs. Runtime secret values remain provisioned in
 Cloudflare and are not available to the routine build.
-Issue #56's fail-closed composition can be checked without credentials using
+The fail-closed composition historically delivered by #56 and now executed
+under replacement authority #66 can be checked without credentials using
 `npm run provision:workers-builds:validate` and
 `npm run provision:workers-builds:dry-run`. The value-free
 `npm run provision:workers-builds:plan-setup` output additionally pins inert
@@ -159,7 +160,8 @@ account has no GitHub connection and uses stable `workers.dev` hosts. Native
 Cloudflare checks and PR status comments/history contain no preview URL. That
 cohort is not
 provisioned by this repository change; `npm run deploy:review-canary` remains a
-fail-closed placeholder until issue #56. Validate the machine boundary with
+fail-closed placeholder until a maintainer separately authorizes the live
+cohort. Validate the machine boundary with
 `npm run test:review`, `npm run review:validate`, and
 `npm run review:dry-run`. See [DEPLOYMENT.md](DEPLOYMENT.md) for provider settings,
 exceptional pauses, exact-SHA retry, partial failure, outage, revocation, and
