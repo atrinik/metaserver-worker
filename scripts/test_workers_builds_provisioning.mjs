@@ -1054,6 +1054,11 @@ test("plans inert setup, separately gated activation, and ordered rollback", () 
   assert.equal(plan.providerTopology.mode, "one-worker-two-triggers");
   assert.equal(plan.retainedFailedRequest.error, 12002);
   assert.equal(plan.retainedFailedRequest.disposition, "forbidden-never-retry-or-vary");
+  assert.equal(plan.retainedRejectedPreviewRequest.error, 12002);
+  assert.equal(plan.retainedRejectedPreviewRequest.topology,
+    "one-worker-two-triggers-private-sentinel-preview");
+  assert.equal(plan.retainedRejectedPreviewRequest.disposition,
+    "forbidden-never-retry-or-normalize");
   assert.deepEqual(plan.repositoryConnection, {
     provider_account_id: "6371603", provider_account_name: "atrinik",
     provider_type: "github", repo_id: "1324297032", repo_name: "metaserver-worker",
@@ -1076,20 +1081,38 @@ test("plans inert setup, separately gated activation, and ordered rollback", () 
   assert.equal(productionStaged.request.body.build_token_uuid.resultReference,
     "review-build-token.build_token_uuid");
   assert.equal(plan.setupOperations.some(({ id }) => id === "review-trigger-staged"), false);
-  const reviewCreate = plan.reviewActivation.operations[0];
-  const reviewEnvironment = plan.reviewActivation.operations[1];
+  const reviewRootProof = plan.reviewActivation.operations[0];
+  const reviewCreate = plan.reviewActivation.operations[1];
+  const reviewEnvironment = plan.reviewActivation.operations[2];
+  const reviewActivationRootProof = plan.reviewActivation.operations[3];
+  const reviewActivate = plan.reviewActivation.operations[4];
+  assert.equal(reviewRootProof.id, "review-root-recheck-before-trigger");
   assert.equal(reviewCreate.id, "review-trigger-create");
   assert.equal(reviewCreate.request.method, "POST");
   assert.deepEqual(reviewCreate.request.body.branch_includes,
     review.automaticReview.previewBranchIncludes);
-  assert.equal(reviewCreate.request.body.root_directory,
-    "/deployment/review-check");
+  assert.deepEqual(reviewCreate.request.body.root_directory,
+    { privateFileEnvironment: "ATRINIK_REVIEW_STAGING_ROOT_DIRECTORY_FILE" });
+  assert.equal(reviewCreate.request.body.build_command, "exit 1");
+  assert.equal(reviewCreate.request.body.deploy_command, "exit 1");
+  assert.equal(reviewCreate.precondition.reviewRootProof.resultReference,
+    "review-root-recheck-before-trigger.proof_digest");
   assert.equal(reviewCreate.request.body.build_token_uuid.resultReference,
     "review-build-token.build_token_uuid");
   assert.deepEqual(reviewEnvironment.request.path, {
     template: "/builds/triggers/{trigger_uuid}/environment_variables",
     resultReference: "review-trigger-create.trigger_uuid",
   });
+  assert.equal(reviewActivationRootProof.id, "review-root-recheck-before-activation");
+  assert.equal(reviewActivate.id, "review-trigger-activate");
+  assert.equal(reviewActivate.request.method, "PATCH");
+  assert.deepEqual(reviewActivate.request.path, {
+    template: "/builds/triggers/{trigger_uuid}",
+    resultReference: "review-trigger-create.trigger_uuid",
+  });
+  assert.equal(reviewActivate.request.body.root_directory, "/deployment/review-check");
+  assert.equal(reviewActivate.precondition.reviewRootProof.resultReference,
+    "review-root-recheck-before-activation.proof_digest");
   assert.deepEqual(plan.productionActivation.request.body.branch_includes, ["main"]);
   assert.equal(plan.productionActivation.request.body.build_token_uuid.resultReference,
     "production-build-token.build_token_uuid");
@@ -1128,6 +1151,15 @@ test("plans inert setup, separately gated activation, and ordered rollback", () 
     "review-build-token.build_token_uuid");
   assert.equal(plan.rollbackOperations.some(({ id }) =>
     id === "restore-review-trigger-to-inert-sentinel"), false);
+  assert.ok(plan.rollbackOperations.findIndex(({ id }) =>
+    id === "delete-review-trigger-before-quiescence") <
+    plan.rollbackOperations.findIndex(({ id }) =>
+      id === "restore-production-trigger-to-inert-sentinel"));
+  assert.ok(plan.rollbackOperations.findIndex(({ id }) =>
+    id === "delete-review-trigger-before-quiescence") <
+    plan.rollbackOperations.findIndex(({ id }) => id === "prove-rollback-quiescence"));
+  assert.ok(plan.rollbackOperations.findIndex(({ id }) => id === "prove-rollback-quiescence") <
+    plan.rollbackOperations.findIndex(({ id }) => id === "delete-production-trigger"));
   assert.equal(plan.rollbackOperations.at(-1).action,
     "prove-three-production-workers-and-website-app-selection-unchanged");
   assert.match(plan.rollbackOperations.find(({ id }) =>
@@ -1142,6 +1174,8 @@ test("plans inert setup, separately gated activation, and ordered rollback", () 
   assert.equal(plan.privateInputs.includes("ATRINIK_REVIEW_BOOTSTRAP_API_TOKEN_FILE"), false);
   assert.ok(plan.privateInputs.includes("ATRINIK_PRODUCTION_STAGING_SENTINEL_REFS_FILE"));
   assert.equal(plan.privateInputs.includes("ATRINIK_REVIEW_STAGING_SENTINEL_REFS_FILE"), false);
+  assert.ok(plan.privateInputs.includes("ATRINIK_REVIEW_STAGING_ROOT_DIRECTORY_FILE"));
+  assert.ok(plan.privateInputs.includes("ATRINIK_REVIEW_STAGING_ROOT_PROOF_FILE"));
   assert.ok(plan.setupOperations.filter(({ mutation }) => mutation)
     .every(({ actor, action }) => actor && action));
   assert.equal(validateSetupPlan(plan), plan);
@@ -1170,12 +1204,16 @@ test("plans inert setup, separately gated activation, and ordered rollback", () 
     .request.body.branch_includes = ["main"];
   assert.throws(() => validateSetupPlan(unsafeSelector), /complete setup plan schema drift/u);
   const rejectedTwoWorkerTopology = structuredClone(plan);
-  rejectedTwoWorkerTopology.reviewActivation.operations[0].request.body.external_script_id =
-    { resultReference: "review-bootstrap.script_tag" };
+  rejectedTwoWorkerTopology.reviewActivation.operations.find(({ id }) =>
+    id === "review-trigger-create").request.body.external_script_id =
+      { resultReference: "review-bootstrap.script_tag" };
   assert.throws(() => validateSetupPlan(rejectedTwoWorkerTopology), /dangling or forward/u);
   const forgotten12002 = structuredClone(plan);
   forgotten12002.retainedFailedRequest.disposition = "retry";
   assert.throws(() => validateSetupPlan(forgotten12002), /retained failure constraint/u);
+  const normalizedPreview = structuredClone(plan);
+  normalizedPreview.retainedRejectedPreviewRequest.disposition = "normalize";
+  assert.throws(() => validateSetupPlan(normalizedPreview), /retained failure constraint/u);
   const unsafeActivation = structuredClone(plan);
   unsafeActivation.productionActivation.request.method = "DELETE";
   assert.throws(() => validateSetupPlan(unsafeActivation), /complete setup plan schema drift/u);
@@ -1190,9 +1228,23 @@ test("plans inert setup, separately gated activation, and ordered rollback", () 
     id === "restore-production-trigger-to-inert-sentinel").precondition;
   assert.throws(() => validateSetupPlan(missingRollbackProof), /complete setup plan schema drift/u);
   const missingReviewCreate = structuredClone(plan);
-  missingReviewCreate.reviewActivation.operations.shift();
+  missingReviewCreate.reviewActivation.operations = missingReviewCreate.reviewActivation.operations
+    .filter(({ id }) => id !== "review-trigger-create");
   assert.throws(() => validateSetupPlan(missingReviewCreate),
     /review activation operation set/u);
+  const unsafeReviewCreate = structuredClone(plan);
+  unsafeReviewCreate.reviewActivation.operations.find(({ id }) =>
+    id === "review-trigger-create").request.body.root_directory = "/deployment/review-check";
+  assert.throws(() => validateSetupPlan(unsafeReviewCreate), /complete setup plan schema drift/u);
+  const missingReviewRootProof = structuredClone(plan);
+  delete missingReviewRootProof.reviewActivation.operations.find(({ id }) =>
+    id === "review-trigger-activate").precondition;
+  assert.throws(() => validateSetupPlan(missingReviewRootProof),
+    /complete setup plan schema drift/u);
+  const unsafeRollbackOrder = structuredClone(plan);
+  [unsafeRollbackOrder.rollbackOperations[0], unsafeRollbackOrder.rollbackOperations[1]] =
+    [unsafeRollbackOrder.rollbackOperations[1], unsafeRollbackOrder.rollbackOperations[0]];
+  assert.throws(() => validateSetupPlan(unsafeRollbackOrder), /rollback operation set/u);
   const missingActivationProof = structuredClone(plan);
   delete missingActivationProof.productionActivation.precondition.productionSentinelProof;
   assert.throws(() => validateSetupPlan(missingActivationProof), /complete setup plan schema drift/u);

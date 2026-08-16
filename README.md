@@ -135,8 +135,10 @@ snapshots/configurations and have no remote mutation path. A post-setup
 `npm run provision:workers-builds:verify-staged` gate proves the production
 trigger is private-sentinel-only on the zero-resource review token and the
 review trigger remains absent before review activation. The review gate creates
-and validates the documented final preview trigger before any disposable branch
-proof. A post-activation
+the provider preview role against a freshly proven absent private root with
+fixed inert commands, writes its nonsecret environment, and only then atomically
+switches to and validates the documented final preview trigger before any
+disposable branch proof. A post-activation
 `npm run provision:workers-builds:verify-configured` check proves the serialized
 production/preview trigger pair, distinct fresh provider-token policies,
 environment-classification, and no-Deploy-Hook

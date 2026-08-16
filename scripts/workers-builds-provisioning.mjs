@@ -25,7 +25,7 @@ const maximumPrivateDocumentBytes = 64 * 1024;
 const maximumProviderPages = 100;
 const stagingBranchPattern = /^review-build-only-sentinel-[0-9a-f]{32}$/u;
 const gitShaPattern = /^[0-9a-f]{40}$/u;
-const expectedSetupPlanSha256 = "2468b0aef680132ab299f63365973150493938d42ac4ea99a71662e47cae4e4c";
+const expectedSetupPlanSha256 = "588ca250a18c3cb3eba06a0b4dad36627df7d073aca95ff1e89c6536ee0a9f2d";
 const githubRepository = Object.freeze({
   provider_account_id: "6371603",
   provider_account_name: "atrinik",
@@ -388,6 +388,12 @@ export function provisioningSetupPlan(production, review) {
   });
   const productionStaged = structuredClone(productionFinal);
   productionStaged.branch_includes = [productionSentinel];
+  const reviewStagingRoot = privateFileReference(
+    "ATRINIK_REVIEW_STAGING_ROOT_DIRECTORY_FILE");
+  const reviewStaged = structuredClone(reviewFinal);
+  reviewStaged.root_directory = reviewStagingRoot;
+  reviewStaged.build_command = "exit 1";
+  reviewStaged.deploy_command = "exit 1";
   const plan = {
     schemaVersion: 1,
     outcome: "workers-builds-reviewed-setup-plan",
@@ -397,6 +403,11 @@ export function provisioningSetupPlan(production, review) {
       error: 12002,
       topology: "one-repository-connection-two-workers",
       disposition: "forbidden-never-retry-or-vary",
+    },
+    retainedRejectedPreviewRequest: {
+      error: 12002,
+      topology: "one-worker-two-triggers-private-sentinel-preview",
+      disposition: "forbidden-never-retry-or-normalize",
     },
     repositoryConnection: structuredClone(githubRepository),
     gates: [
@@ -412,6 +423,8 @@ export function provisioningSetupPlan(production, review) {
       "ATRINIK_WORKERS_BUILDS_API_TOKEN_FILE",
       "ATRINIK_PRODUCTION_STAGING_SENTINEL_BRANCH_FILE",
       "ATRINIK_PRODUCTION_STAGING_SENTINEL_REFS_FILE",
+      "ATRINIK_REVIEW_STAGING_ROOT_DIRECTORY_FILE",
+      "ATRINIK_REVIEW_STAGING_ROOT_PROOF_FILE",
       "ATRINIK_REPOSITORY_CONNECTION_OWNER_PROOF_FILE",
       "ATRINIK_WORKERS_BUILDS_USAGE_PROOF_FILE",
       "ATRINIK_STAGED_PROOF_OUTPUT_FILE",
@@ -530,10 +543,17 @@ export function provisioningSetupPlan(production, review) {
       precondition: { stagedProof: resultReference("staged-readback", "proof_digest") },
       preconditionCommand: "npm run provision:workers-builds:verify-staged-proof",
       operations: [
+        { id: "review-root-recheck-before-trigger", actor: "github-owner-readback",
+          action: "prove-private-random-review-staging-root-absent-from-every-current-non-main-ref-outside-sandbox",
+          mutation: false, rootDirectory: reviewStagingRoot,
+          produces: { proof_digest: "fresh-review-staging-root-absence-proof-digest" } },
         { id: "review-trigger-create", actor: "workers-builds-control-plane-operator",
-          action: "post-documented-final-preview-trigger-with-zero-resource-token",
-          mutation: true, request: { method: "POST", path: "/builds/triggers",
-            body: triggerPlanSpec(reviewFinal, "production-script", "review-build-token") },
+          action: "post-preview-role-trigger-with-private-absent-root-inert-commands-and-zero-resource-token",
+          mutation: true,
+          precondition: { reviewRootProof: resultReference(
+            "review-root-recheck-before-trigger", "proof_digest") },
+          request: { method: "POST", path: "/builds/triggers",
+            body: triggerPlanSpec(reviewStaged, "production-script", "review-build-token") },
           produces: { trigger_uuid: "provider-trigger-uuid" } },
         { id: "review-environment", actor: "workers-builds-control-plane-operator",
           action: "patch-exact-nonsecret-review-environment", mutation: true,
@@ -543,6 +563,19 @@ export function provisioningSetupPlan(production, review) {
             body: Object.fromEntries(Object.entries(automaticReviewEnvironmentSpec(review))
               .map(([name, value]) => [name, { is_secret: value.is_secret,
                 valueSource: { literal: value.value } }])) } },
+        { id: "review-root-recheck-before-activation", actor: "github-owner-readback",
+          action: "repeat-private-random-review-staging-root-absence-proof-immediately-before-final-preview-patch-outside-sandbox",
+          mutation: false, rootDirectory: reviewStagingRoot,
+          produces: { proof_digest: "fresh-review-staging-root-absence-proof-digest" } },
+        { id: "review-trigger-activate", actor: "workers-builds-control-plane-operator",
+          action: "patch-preview-trigger-atomically-to-reviewed-root-and-commands",
+          mutation: true,
+          precondition: { reviewRootProof: resultReference(
+            "review-root-recheck-before-activation", "proof_digest") },
+          request: { method: "PATCH",
+            path: apiPathReference("/builds/triggers/{trigger_uuid}",
+              "review-trigger-create", "trigger_uuid"),
+            body: triggerPlanSpec(reviewFinal, "production-script", "review-build-token") } },
         { id: "review-activation-readback", actor: "workers-builds-control-plane-operator",
           action: "prove-final-review-trigger-production-staged-and-no-build-active",
           mutation: false, command: "npm run provision:workers-builds:verify-review-activation",
@@ -586,6 +619,10 @@ export function provisioningSetupPlan(production, review) {
       productionWorkerPolicy: "never-delete-or-roll-back-existing-production-workers-versions-state-or-secrets",
     },
     rollbackOperations: [
+      { id: "delete-review-trigger-before-quiescence",
+        actor: "workers-builds-control-plane-operator",
+        action: "delete-exact-journaled-review-trigger-before-any-non-main-push-can-race-quiescence",
+        mutation: true },
       { id: "sentinel-recheck-before-production-rollback", actor: "github-owner-readback",
         action: "repeat-exact-private-random-production-sentinel-ref-absence-proof-outside-sandbox",
         mutation: false, branch: productionSentinel,
@@ -602,8 +639,8 @@ export function provisioningSetupPlan(production, review) {
           body: triggerPlanSpec(productionStaged, "production-script", "review-build-token") } },
       { id: "prove-rollback-quiescence", actor: "workers-builds-control-plane-operator",
         action: "prove-no-build-or-upload-remains-active", mutation: false },
-      { id: "delete-setup-triggers", actor: "workers-builds-control-plane-operator",
-        action: "delete-journaled-production-trigger-and-review-trigger-only-if-review-gate-created-it",
+      { id: "delete-production-trigger", actor: "workers-builds-control-plane-operator",
+        action: "delete-exact-journaled-production-trigger-after-quiescence",
         mutation: true },
       { id: "delete-setup-build-tokens", actor: "workers-builds-control-plane-operator",
         action: "delete-only-the-two-recorded-build-token-uuids", mutation: true },
@@ -632,6 +669,9 @@ export function validateSetupPlan(plan) {
   }) || !same(plan?.retainedFailedRequest, {
     error: 12002, topology: "one-repository-connection-two-workers",
     disposition: "forbidden-never-retry-or-vary",
+  }) || !same(plan?.retainedRejectedPreviewRequest, {
+    error: 12002, topology: "one-worker-two-triggers-private-sentinel-preview",
+    disposition: "forbidden-never-retry-or-normalize",
   })) fail("provider trigger topology or retained failure constraint drift");
   const operations = plan?.setupOperations;
   const expectedOperations = [
@@ -702,10 +742,16 @@ export function validateSetupPlan(plan) {
   }
   const reviewOperations = plan.reviewActivation?.operations;
   const expectedReviewOperations = [
+    ["review-root-recheck-before-trigger", "github-owner-readback", false,
+      "prove-private-random-review-staging-root-absent-from-every-current-non-main-ref-outside-sandbox"],
     ["review-trigger-create", "workers-builds-control-plane-operator", true,
-      "post-documented-final-preview-trigger-with-zero-resource-token"],
+      "post-preview-role-trigger-with-private-absent-root-inert-commands-and-zero-resource-token"],
     ["review-environment", "workers-builds-control-plane-operator", true,
       "patch-exact-nonsecret-review-environment"],
+    ["review-root-recheck-before-activation", "github-owner-readback", false,
+      "repeat-private-random-review-staging-root-absence-proof-immediately-before-final-preview-patch-outside-sandbox"],
+    ["review-trigger-activate", "workers-builds-control-plane-operator", true,
+      "patch-preview-trigger-atomically-to-reviewed-root-and-commands"],
     ["review-activation-readback", "workers-builds-control-plane-operator", false,
       "prove-final-review-trigger-production-staged-and-no-build-active"],
   ];
@@ -738,14 +784,16 @@ export function validateSetupPlan(plan) {
       new Set(rollbackOperations.map(({ id }) => id)).size !== rollbackOperations.length)
     fail("rollback operation identity is incomplete or duplicated");
   const expectedRollback = [
+    ["delete-review-trigger-before-quiescence", "workers-builds-control-plane-operator", true,
+      "delete-exact-journaled-review-trigger-before-any-non-main-push-can-race-quiescence"],
     ["sentinel-recheck-before-production-rollback", "github-owner-readback", false,
       "repeat-exact-private-random-production-sentinel-ref-absence-proof-outside-sandbox"],
     ["restore-production-trigger-to-inert-sentinel", "workers-builds-control-plane-operator", true,
       "restore-production-trigger-to-its-exact-inert-production-sentinel-before-cancelling-exact-active-builds"],
     ["prove-rollback-quiescence", "workers-builds-control-plane-operator", false,
       "prove-no-build-or-upload-remains-active"],
-    ["delete-setup-triggers", "workers-builds-control-plane-operator", true,
-      "delete-journaled-production-trigger-and-review-trigger-only-if-review-gate-created-it"],
+    ["delete-production-trigger", "workers-builds-control-plane-operator", true,
+      "delete-exact-journaled-production-trigger-after-quiescence"],
     ["delete-setup-build-tokens", "workers-builds-control-plane-operator", true,
       "delete-only-the-two-recorded-build-token-uuids"],
     ["retain-repository-connection", "workers-builds-control-plane-operator", false,

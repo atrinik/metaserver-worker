@@ -160,13 +160,23 @@ never receives deploy authority; the unguessable, repeatedly absent production
 ref also protects the staged production secrets. The fixed
 `review-build-only-sentinel` name is not used.
 
-The retained issue-66 journal records Cloudflare error `12002` after accepting
-the production trigger and environment but rejecting the exact second trigger
-on a different Worker that reused the repository connection. That
-one-connection/two-Worker request is forbidden and is never retried or varied.
-The replacement uses Cloudflare's documented maximum-two-trigger model on the
-single production core Worker: one production trigger and one preview trigger,
-with distinct per-trigger tokens, commands, and environments. Equality,
+Rollback first deletes and reads back the exact journal-owned wildcard preview
+trigger, before any quiescence claim, so a new non-main push cannot enqueue work
+behind that claim. It then obtains the fresh production sentinel proof, restores
+the production trigger to the zero-resource inert shape, cancels and proves all
+builds quiescent, and only then deletes the production trigger and journal-owned
+token wrappers. The retained repository connection is never deleted.
+
+The retained issue-66 history records two distinct Cloudflare `12002` failures.
+The first accepted a production trigger and environment but rejected a second
+trigger on a different Worker that reused the repository connection; that
+one-connection/two-Worker request remains forbidden and is never retried or
+varied. The later attempt targeted the shared core Worker but used a private
+sentinel selector for the second preview trigger; that exact request is also
+forbidden and is never retried or normalized. The replacement uses Cloudflare's
+documented maximum-two-trigger model on the single production core Worker: one
+production trigger and one final-shape preview trigger, with distinct
+per-trigger tokens, commands, and environments. Equality,
 proof/selector swaps, fixed names, a second connected Worker, and fallback to
 an unreviewed request all fail before setup mutation.
 
@@ -333,9 +343,14 @@ proof to be no more than five minutes old and the live sweep no more than 30
 seconds old, and
 rejects any coordinate or digest mismatch. The setup plan makes the original
 command produce this private staged-proof digest. Only after successful fresh
-revalidation may the review gate POST the documented final preview trigger
-(`branch_includes=["*"]`, `branch_excludes=["main"]`) with the zero-resource
-review token, PATCH its exact nonsecret environment, and run
+revalidation may the review gate first prove a fresh private random staging
+root is absent from every current non-main ref, then POST the provider-classified
+preview trigger (`branch_includes=["*"]`, `branch_excludes=["main"]`) with that
+absent root, fixed `exit 1` commands, and the zero-resource review token. This
+keeps a racing non-main push away from branch-controlled dependency handling.
+After PATCHing the exact nonsecret environment, repeat the root-absence proof
+immediately before atomically PATCHing the trigger to the reviewed
+`/deployment/review-check` root and commands, and then run
 `npm run provision:workers-builds:verify-review-activation` against a new private
 snapshot. That verifier requires the final review trigger and environment, the
 still-inert production trigger, both exact token wrappers, no active build or
