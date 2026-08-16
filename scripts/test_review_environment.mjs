@@ -1,8 +1,10 @@
 import assert from "node:assert/strict";
+import { execFile } from "node:child_process";
 import { readFile } from "node:fs/promises";
 import { resolve } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import test from "node:test";
+import { promisify } from "node:util";
 import {
   ReviewEnvironmentError,
   describeBranchCheckFailure,
@@ -18,6 +20,7 @@ import {
 } from "./review-environment.mjs";
 
 const root = resolve(import.meta.dirname, "..");
+const execFileAsync = promisify(execFile);
 const review = JSON.parse(await readFile(resolve(root, "deployment/workers-builds-review.json"), "utf8"));
 const production = JSON.parse(await readFile(resolve(root, "deployment/workers-builds-production.json"), "utf8"));
 const configurations = await Promise.all([
@@ -49,6 +52,10 @@ test("reserves main exclusively for the production contract", () => {
     changed((value) => value.automaticReview.previewBranchExcludes = []),
     changed((value) => value.liveCanary.source.branch = "main"),
     changed((value) => value.automaticReview.productionDeployCommand = "npm run review:validate"),
+    changed((value) => value.automaticReview.productionDeployCommand =
+      "cd ../.. && npm run review:reject-sentinel"),
+    changed((value) => value.automaticReview.buildCommand = "cd ../.. && npm run review:build"),
+    changed((value) => value.automaticReview.deployCommand = "cd ../.. && npm run review:validate"),
     changed((value) => value.automaticReview.accountBoundary.productionAccountReuse = false),
     changed((value) => value.automaticReview.rootDirectory = "deployment/review-check"),
     changed((value) => value.automaticReview.accountBoundary.buildIdentityProductionProjectSettingsReachable = true),
@@ -104,6 +111,17 @@ test("review trigger delegates to the exact sanitized repository entrypoint", ()
   const tooLong = structuredClone(review.automaticReview);
   tooLong.buildCommand = `npm run build ${"x".repeat(64)}`;
   assert.throws(() => validateAutomaticReview(tooLong), ReviewEnvironmentError);
+});
+
+test("review-root package delegates validation and sentinel rejection", async () => {
+  const reviewRoot = resolve(root, "deployment/review-check");
+  await execFileAsync("npm", ["run", "validate"],
+    { cwd: reviewRoot, encoding: "utf8" });
+  await assert.rejects(execFileAsync("npm", ["run", "reject-sentinel"],
+    { cwd: reviewRoot, encoding: "utf8" }), (error) => {
+    assert.equal(error.code, 1);
+    return true;
+  });
 });
 
 test("same-repository non-main source coordinates are exact", () => {
