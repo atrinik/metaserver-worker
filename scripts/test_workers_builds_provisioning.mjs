@@ -672,6 +672,20 @@ test("permits only the exact absent-trigger initial production predecessor", () 
     contract: production, bases, snapshots: unexpectedMissing, accountId,
     initialBootstrapPredecessor: true,
   }), /binding inventory drift/u);
+  const unexpectedExtra = structuredClone(predecessorSnapshots);
+  unexpectedExtra[0].settings.result.bindings.push({
+    name: "CLASSIC_DIRECTORY_CUTOVER_MODE", type: "plain_text", text: "v4-production",
+  });
+  assert.throws(() => materializeProductionConfigurations({
+    contract: production, bases, snapshots: unexpectedExtra, accountId,
+    initialBootstrapPredecessor: true,
+  }), /binding inventory drift/u);
+  const unexpectedChanged = structuredClone(predecessorSnapshots);
+  one(unexpectedChanged[0].settings.result.bindings, "PUBLISH_ENABLED").text = "disabled";
+  assert.throws(() => materializeProductionConfigurations({
+    contract: production, bases, snapshots: unexpectedChanged, accountId,
+    initialBootstrapPredecessor: true,
+  }), /plain-text binding PUBLISH_ENABLED drift/u);
   assert.throws(() => materializeProductionConfigurations({
     contract: production, bases, snapshots: bases.map(snapshot), accountId,
     initialBootstrapPredecessor: true,
@@ -703,6 +717,21 @@ test("permits only the exact absent-trigger initial production predecessor", () 
   const tokenPresent = structuredClone(boundary);
   tokenPresent.buildTokens = envelope([{ build_token_name: "Atrinik metaserver production" }]);
   assert.throws(() => validateInitialBootstrapSnapshot(tokenPresent), /reserved build token/u);
+  const hookPresent = structuredClone(boundary);
+  hookPresent.deployHooks[0][1] = envelope([{ id: resourceUuid }]);
+  assert.throws(() => validateInitialBootstrapSnapshot(hookPresent), /gained a Deploy Hook/u);
+  const buildPresent = structuredClone(boundary);
+  buildPresent.builds[0][1] = envelope([{ build_uuid: resourceUuid, status: "running" }]);
+  assert.throws(() => validateInitialBootstrapSnapshot(buildPresent), /active Workers Build/u);
+  const accountTriggerPresent = structuredClone(boundary);
+  accountTriggerPresent.accountTriggers = envelope([{
+    trigger_uuid: resourceUuid,
+    repo_connection: {
+      provider_type: "github", provider_account_id: "6371603", repo_id: "1324297032",
+    },
+  }]);
+  assert.throws(() => validateInitialBootstrapSnapshot(accountTriggerPresent),
+    /repository trigger/u);
 });
 
 function one(values, name) {
