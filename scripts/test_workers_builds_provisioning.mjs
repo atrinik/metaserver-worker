@@ -345,7 +345,9 @@ test("routes every Builds inventory through the empty-page adapter in each provi
     const buildsReads = new Map();
     const providerPage = (result) => ({ success: true, result, errors: [], messages: [],
       result_info: { page: 1, total_pages: 1, total_count: result.length } });
-    const fetchFixture = ({ malformedEndpoint } = {}) => async (rawUrl, init = {}) => {
+    const driftPath = `/builds/workers/${workerTags.get(production.workers[0].name)}/builds`;
+    const fetchFixture = ({ malformedEndpoint, buildHistoryDriftAt,
+      localBuildsReads = new Map() } = {}) => async (rawUrl, init = {}) => {
       const url = new URL(rawUrl);
       const accountPrefix = `/client/v4/accounts/${accountId}`;
       assert.equal(url.pathname.startsWith(accountPrefix), true);
@@ -384,10 +386,13 @@ test("routes every Builds inventory through the empty-page adapter in each provi
       } else if (/^\/builds\/workers\/[^/]+\/(deploy_hooks|triggers|builds)$/u.test(path) ||
           path === "/builds/tokens") {
         buildsReads.set(path, (buildsReads.get(path) ?? 0) + 1);
-        body = { success: true, result: [], errors: [], messages: [], result_info: {
-          page: 1, per_page: 200, count: 0, total_count: 0, total_pages: 0,
-          next_page: false,
-        } };
+        localBuildsReads.set(path, (localBuildsReads.get(path) ?? 0) + 1);
+        body = path === driftPath && localBuildsReads.get(path) === buildHistoryDriftAt
+          ? providerPage([{ build_uuid: resourceUuid }])
+          : { success: true, result: [], errors: [], messages: [], result_info: {
+            page: 1, per_page: 200, count: 0, total_count: 0, total_pages: 0,
+            next_page: false,
+          } };
       } else if (path === "/workers/domains") {
         body = malformedEndpoint === "domains"
           ? { success: true, result: [] }
@@ -420,6 +425,10 @@ test("routes every Builds inventory through the empty-page adapter in each provi
       /domains.*pagination metadata is malformed/u);
     await assert.rejects(runReadback("versions", fetchFixture({ malformedEndpoint: "versions" })),
       /version pagination metadata is malformed/u);
+    await assert.rejects(runReadback("pass-drift", fetchFixture({ buildHistoryDriftAt: 2 })),
+      /builds provider inventory changed between complete passes/u);
+    await assert.rejects(runReadback("sweep-drift", fetchFixture({ buildHistoryDriftAt: 3 })),
+      /builds changed between complete provider sweeps/u);
   });
 
 test("normalizes the official nested Worker versions pagination shape", () => {
