@@ -1498,6 +1498,14 @@ export function combineProviderPages(envelopes, label, identity) {
   } };
 }
 
+export function normalizeDeployHookPage(envelope, label, page) {
+  const rows = requireEnvelope(envelope, label);
+  if (envelope.result_info !== undefined) return envelope;
+  if (page !== 1 || rows.length !== 0)
+    fail(`${label} provider Deploy Hook pagination metadata is malformed`);
+  return { ...envelope, result_info: { page: 1, total_pages: 1, total_count: 0 } };
+}
+
 function normalizeWorkerVersionPage(envelope, label) {
   const result = requireEnvelope(envelope, label);
   const info = envelope.result_info ?? {};
@@ -1539,12 +1547,14 @@ export function validateStableProviderPasses(first, second, label) {
   return second;
 }
 
-async function providerGetPaginatedPass(context, label, path, identity, perPage) {
+async function providerGetPaginatedPass(context, label, path, identity, perPage,
+  normalizePage = (envelope) => envelope) {
   const pages = [];
   for (let page = 1; page <= maximumProviderPages; page += 1) {
     const separator = path.includes("?") ? "&" : "?";
-    const envelope = await providerGet(context, `${label}.page-${page}`,
-      `${path}${separator}page=${page}&per_page=${perPage}`);
+    const pageLabel = `${label}.page-${page}`;
+    const envelope = normalizePage(await providerGet(context, pageLabel,
+      `${path}${separator}page=${page}&per_page=${perPage}`), pageLabel, page);
     pages.push(envelope);
     const totalPages = envelope.result_info?.total_pages;
     if (!Number.isSafeInteger(totalPages) || totalPages < 1 ||
@@ -1558,13 +1568,16 @@ async function providerGetPaginatedPass(context, label, path, identity, perPage)
   fail(`${label} provider pagination exceeded its bound`);
 }
 
-async function providerGetPaginated(context, label, path, identity, perPage = 50) {
-  const first = await providerGetPaginatedPass(context, `${label}.pass-1`, path, identity, perPage);
-  const second = await providerGetPaginatedPass(context, `${label}.pass-2`, path, identity, perPage);
+async function providerGetPaginated(context, label, path, identity, perPage = 50,
+  normalizePage = (envelope) => envelope) {
+  const first = await providerGetPaginatedPass(context, `${label}.pass-1`, path, identity,
+    perPage, normalizePage);
+  const second = await providerGetPaginatedPass(context, `${label}.pass-2`, path, identity,
+    perPage, normalizePage);
   validateStableProviderPasses(first, second, label);
   await writePrivateJson(resolve(context.outputDirectory, `${label}.json`), second);
   context.stableReadbacks.push({ kind: "paginated", label, path, identity, perPage,
-    expected: second.result });
+    normalizePage, expected: second.result });
   return second;
 }
 
@@ -1610,7 +1623,7 @@ async function verifyCompleteProviderSweep(context) {
         item.path, item.requestBody));
     else if (item.kind === "paginated")
       actual = (await providerGetPaginatedPass(context, `${item.label}.sweep-final`,
-        item.path, item.identity, item.perPage)).result;
+        item.path, item.identity, item.perPage, item.normalizePage)).result;
     else if (item.kind === "versions")
       actual = (await providerGetWorkerVersionsPass(context, `${item.label}.sweep-final`,
         item.path, item.perPage)).result;
@@ -1684,7 +1697,7 @@ async function readProviderSnapshot({ accountId, token, productionReadToken, out
       `/workers/scripts/${encodeURIComponent(name)}/versions`);
     await providerGetPaginated(context, `${name}.deploy-hooks`,
       `/builds/workers/${encodeURIComponent(name)}/deploy_hooks`,
-      ({ deploy_hook_uuid: id }) => id);
+      ({ deploy_hook_uuid: id }) => id, 50, normalizeDeployHookPage);
     const triggers = await providerGetPaginated(context, `${name}.triggers`,
       `/builds/workers/${encodeURIComponent(script.tag)}/triggers`,
       ({ trigger_uuid: id }) => id);

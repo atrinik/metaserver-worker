@@ -13,6 +13,7 @@ import {
   createPrivateDirectory,
   loadSnapshot,
   materializeProductionConfigurations,
+  normalizeDeployHookPage,
   productionEnvironmentSpec,
   productionTriggerSpec,
   publicStagedProofSummary,
@@ -284,6 +285,22 @@ test("combines only stable exhaustive provider pages", () => {
     { success: true, result: [{ build_uuid: resourceUuid }], result_info: {
       page: 2, total_pages: 2, total_count: 2 } },
   ], "builds", ({ build_uuid }) => build_uuid), /duplicated/u);
+});
+
+test("normalizes only the provider's empty first Deploy Hooks page without metadata", () => {
+  const rawEmpty = { success: true, result: [], errors: [], messages: [] };
+  const normalized = normalizeDeployHookPage(rawEmpty, "deploy hooks", 1);
+  assert.deepEqual(normalized.result_info, { page: 1, total_pages: 1, total_count: 0 });
+  assert.deepEqual(combineProviderPages([normalized], "deploy hooks",
+    ({ deploy_hook_uuid: id }) => id).result, []);
+  const paginated = { ...rawEmpty,
+    result_info: { page: 1, total_pages: 1, total_count: 0 } };
+  assert.equal(normalizeDeployHookPage(paginated, "deploy hooks", 1), paginated);
+  assert.throws(() => normalizeDeployHookPage({ ...rawEmpty,
+    result: [{ deploy_hook_uuid: resourceUuid }] }, "deploy hooks", 1),
+  /Deploy Hook pagination metadata is malformed/u);
+  assert.throws(() => normalizeDeployHookPage(rawEmpty, "deploy hooks", 2),
+    /Deploy Hook pagination metadata is malformed/u);
 });
 
 test("normalizes the official nested Worker versions pagination shape", () => {
