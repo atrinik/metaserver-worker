@@ -166,9 +166,12 @@ behind that claim. The phase-aware exhaustive readback accepts zero triggers
 when production creation never occurred, or exactly the journaled production
 trigger otherwise; it never requires an absent review-gate result and rejects
 every replacement or competing trigger. It then obtains the fresh production sentinel proof, restores
-the production trigger to the zero-resource inert shape, cancels and proves all
-builds quiescent, and only then deletes the production trigger and journal-owned
-token wrappers. The retained repository connection is never deleted.
+the production trigger to the zero-resource inert shape, and performs another
+stable exhaustive readback proving that exact journaled trigger is inert (or
+that the inventory is empty when production creation never occurred). Only
+that proof and the preview-deletion proof authorize build cancellation and
+quiescence; rollback then deletes the production trigger and journal-owned token
+wrappers. The retained repository connection is never deleted.
 
 The retained issue-66 history records two distinct Cloudflare `12002` failures.
 The first accepted a production trigger and environment but rejected a second
@@ -395,14 +398,19 @@ before activation.
 
 ```sh
 ATRINIK_PROVIDER_SNAPSHOT_OUTPUT=/secure/review-staged-provider-snapshot \
+ATRINIK_PRODUCTION_STAGED_TRIGGER_UUID_FILE=/secure/private/production-trigger-uuid \
+ATRINIK_REVIEW_STAGED_TRIGGER_UUID_FILE=/secure/private/review-trigger-uuid \
 ATRINIK_REVIEW_STAGED_ENVIRONMENT_PROOF_OUTPUT_FILE=/secure/private/review-staged-environment-proof.json \
   npm run provision:workers-builds:verify-review-staged-environment
 ```
 
 Use the same account, exact-current-source, provider read token, production D1
-read token, token-policy proofs, and private staging-root inputs as the adjacent
-staged commands. The verifier writes the full account-bound proof only to the
-owner-only output file and prints a safe source/digest summary.
+read token, token-policy proofs, private staging-root inputs, and journaled
+production/review trigger UUID files as the adjacent staged commands. The
+verifier binds both journaled trigger identities, proves the production peer is
+still exactly inert, and rejects any active build, Deploy Hook, caller trigger,
+or competing repository trigger. It writes the full account-bound proof only
+to the owner-only output file and prints a safe source/digest summary.
 
 Run that review-phase readback with the same account, reviewed-source, provider
 read token, token-policy proofs, and usage proof used by the staged verifier,

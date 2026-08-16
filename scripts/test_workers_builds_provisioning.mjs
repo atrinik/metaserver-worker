@@ -42,6 +42,7 @@ import {
   validateReviewStagingRootProofSequence,
   validateProductionRuntimeProof,
   validateRepositoryConnectionOwnerProof,
+  validateRollbackProductionTriggerReadback,
   validateRollbackTriggerInventory,
   validateReviewedSourceCoordinates,
   validateSentinelRefAbsence,
@@ -777,6 +778,24 @@ test("proves phase-aware exact rollback trigger inventory", () => {
   assert.throws(() => validateRollbackTriggerInventory(envelope([
     { trigger_uuid: reviewTriggerUuid },
   ])), /competing or unreconciled/u);
+
+  const inert = withConnection(productionTriggerSpec(production, {
+    externalScriptId: scriptTag, repositoryConnectionUuid: resourceUuid,
+    buildTokenUuid: reviewTokenUuid,
+  }));
+  inert.trigger_uuid = resourceUuid;
+  inert.branch_includes = ["review-build-only-sentinel-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"];
+  assert.match(validateRollbackProductionTriggerReadback(envelope([])).proof_digest,
+    /^[0-9a-f]{64}$/u);
+  assert.match(validateRollbackProductionTriggerReadback(envelope([inert]), {
+    productionTriggerUuid: resourceUuid, expectedTrigger: inert,
+  }).proof_digest, /^[0-9a-f]{64}$/u);
+  assert.throws(() => validateRollbackProductionTriggerReadback(envelope([{
+    ...inert, branch_includes: ["main"],
+  }]), { productionTriggerUuid: resourceUuid, expectedTrigger: inert }), /branch_includes drift/u);
+  assert.throws(() => validateRollbackProductionTriggerReadback(envelope([{
+    ...inert, build_token_uuid: "44444444-4444-4444-8444-444444444444",
+  }]), { productionTriggerUuid: resourceUuid, expectedTrigger: inert }), /build_token_uuid drift/u);
 });
 
 test("binds provider snapshots to a fresh exact reviewed source", () => {
@@ -1269,6 +1288,20 @@ test("plans inert setup, separately gated activation, and ordered rollback", () 
   assert.ok(plan.rollbackOperations.findIndex(({ id }) =>
     id === "delete-review-trigger-before-quiescence") <
     plan.rollbackOperations.findIndex(({ id }) => id === "prove-rollback-quiescence"));
+  const productionInertReadback = plan.rollbackOperations.find(({ id }) =>
+    id === "prove-production-trigger-inert-before-quiescence");
+  assert.equal(productionInertReadback.validator,
+    "validateRollbackProductionTriggerReadback");
+  assert.equal(plan.rollbackOperations.find(({ id }) =>
+    id === "prove-rollback-quiescence").precondition.productionInertProof.resultReference,
+  "prove-production-trigger-inert-before-quiescence.proof_digest");
+  assert.ok(plan.rollbackOperations.findIndex(({ id }) =>
+    id === "restore-production-trigger-to-inert-sentinel") <
+    plan.rollbackOperations.findIndex(({ id }) =>
+      id === "prove-production-trigger-inert-before-quiescence"));
+  assert.ok(plan.rollbackOperations.findIndex(({ id }) =>
+    id === "prove-production-trigger-inert-before-quiescence") <
+    plan.rollbackOperations.findIndex(({ id }) => id === "prove-rollback-quiescence"));
   assert.ok(plan.rollbackOperations.findIndex(({ id }) => id === "prove-rollback-quiescence") <
     plan.rollbackOperations.findIndex(({ id }) => id === "delete-production-trigger"));
   assert.equal(plan.rollbackOperations.at(-1).action,
@@ -1341,6 +1374,12 @@ test("plans inert setup, separately gated activation, and ordered rollback", () 
   delete missingRollbackProof.rollbackOperations.find(({ id }) =>
     id === "restore-production-trigger-to-inert-sentinel").precondition;
   assert.throws(() => validateSetupPlan(missingRollbackProof), /complete setup plan schema drift/u);
+  const missingProductionInertReadback = structuredClone(plan);
+  missingProductionInertReadback.rollbackOperations =
+    missingProductionInertReadback.rollbackOperations.filter(({ id }) =>
+      id !== "prove-production-trigger-inert-before-quiescence");
+  assert.throws(() => validateSetupPlan(missingProductionInertReadback),
+    /rollback operation set/u);
   const missingReviewCreate = structuredClone(plan);
   missingReviewCreate.reviewActivation.operations = missingReviewCreate.reviewActivation.operations
     .filter(({ id }) => id !== "review-trigger-create");
