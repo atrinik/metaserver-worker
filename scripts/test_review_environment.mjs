@@ -12,6 +12,7 @@ import {
   validateContract,
   validateLiveApproval,
   validateProductionIsolation,
+  validateReviewBuildEntrypoint,
   validateSourceCoordinates,
 } from "./review-environment.mjs";
 
@@ -73,6 +74,22 @@ test("automatic review has no bindings, routes, secrets, or deployable version",
     mutate(value);
     assert.throws(() => validateAutomaticReview(value), ReviewEnvironmentError);
   }
+});
+
+test("review trigger delegates to the exact sanitized repository entrypoint", () => {
+  assert.equal(Buffer.byteLength(review.automaticReview.buildCommand, "utf8"), 32);
+  assert.equal(review.automaticReview.buildCommand, "cd ../.. && npm run review:build");
+  const valid = { "review:build": `${production.installCommand} && npm run review:branch` };
+  validateReviewBuildEntrypoint(valid, production);
+  for (const command of [
+    "npm ci --ignore-scripts && npm run review:branch",
+    `${production.installCommand} && npm run review:validate`,
+    `${production.installCommand.replace("env -i ", "")} && npm run review:branch`,
+  ]) assert.throws(() => validateReviewBuildEntrypoint({ "review:build": command }, production),
+    ReviewEnvironmentError);
+  const tooLong = structuredClone(review.automaticReview);
+  tooLong.buildCommand = `cd ../.. && npm run review:build ${"x".repeat(64)}`;
+  assert.throws(() => validateAutomaticReview(tooLong), ReviewEnvironmentError);
 });
 
 test("same-repository non-main source coordinates are exact", () => {

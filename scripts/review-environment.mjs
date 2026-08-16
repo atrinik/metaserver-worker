@@ -136,8 +136,10 @@ export function validateAutomaticReview(value) {
   exactArray(value.pathIncludes, ["*"], "review path includes");
   exactArray(value.pathExcludes, [], "review path excludes");
   exactValue(value.buildCommand,
-    "cd ../.. && env -i PATH=\"$PATH\" npm_config_cache=/tmp/atrinik-npm-cache npm install --global --ignore-scripts npm@11.16.0 && env -i PATH=\"$PATH\" npm_config_cache=/tmp/atrinik-npm-cache npm ci --ignore-scripts && npm run review:branch",
+    "cd ../.. && npm run review:build",
     "review build command");
+  if (Buffer.byteLength(value.buildCommand, "utf8") > 64)
+    fail("review build command exceeds the retained provider-safe byte ceiling");
   exactValue(value.deployCommand, "cd ../.. && npm run review:validate", "review deploy command");
   exactValue(value.providerBuildTimeoutMinutes, 20, "review provider build timeout");
   exactValue(value.checkCommandTimeoutMinutes, 15, "review check command timeout");
@@ -235,8 +237,11 @@ export function validateAutomaticReview(value) {
     "exact-account", "exact-review-project-id", "exact-review-trigger-id",
     "reject-production-project-or-trigger-id", "read-back-after-mutation",
   ], "review operator guards");
-  if (!value.buildCommand.includes("env -i") || !value.buildCommand.includes("--ignore-scripts") ||
-      !value.buildCommand.includes("npm@11.16.0")) fail("review install boundary drift");
+}
+
+export function validateReviewBuildEntrypoint(scripts, production) {
+  exactValue(scripts?.["review:build"],
+    `${production.installCommand} && npm run review:branch`, "review build entrypoint");
 }
 
 function validateResources(resources) {
@@ -861,7 +866,7 @@ export function validateContract(review, production, configurations) {
     [undefined, undefined, "enabled"],
   ], "review inside-window materialized circuits");
   exactValue(review.automaticReview.buildCommand,
-    `cd ../.. && ${production.installCommand} && npm run review:branch`, "review pinned build command");
+    "cd ../.. && npm run review:build", "review pinned build command");
   exactKeys(review.reviewerBehavior, [
     "sameRepositoryPullRequest", "liveReview", "forkPullRequest", "rebaseOrForcePush", "rename",
     "mergeOrClose", "reopen", "overlap", "providerOutage", "manualEscape", "commentPolicy", "logPolicy",
@@ -951,6 +956,7 @@ async function loadContractInputs() {
   return {
     review: await readJson(contractPath),
     production: await readJson(productionContractPath),
+    package: await readJson(resolve(root, "package.json")),
     configurations: await Promise.all([
       "wrangler.jsonc", "wrangler.publisher.jsonc", "wrangler.rendezvous.jsonc",
     ].map((path) => readJsonc(resolve(root, path)))),
@@ -960,6 +966,7 @@ async function loadContractInputs() {
 export async function validateCheckedInContract() {
   const inputs = await loadContractInputs();
   validateContract(inputs.review, inputs.production, inputs.configurations);
+  validateReviewBuildEntrypoint(inputs.package.scripts, inputs.production);
   for (const path of inputs.review.liveCanary.resources.d1.referenceVectorSources)
     await readFile(resolve(root, path));
   const coordination = inputs.review.liveCanary.resources.coordinationD1;

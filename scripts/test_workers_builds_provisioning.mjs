@@ -856,6 +856,8 @@ test("pins production and build-only review trigger shapes", () => {
   assert.deepEqual(reviewSpec.branch_includes, ["*"]);
   assert.deepEqual(reviewSpec.branch_excludes, ["main", "review-build-only-sentinel"]);
   assert.equal(reviewSpec.root_directory, "/deployment/review-check");
+  assert.equal(reviewSpec.build_command, "cd ../.. && npm run review:build");
+  assert.equal(Buffer.byteLength(reviewSpec.build_command, "utf8"), 32);
   assert.doesNotThrow(() => validateTriggerSnapshot(withConnection(productionSpec),
     productionSpec, "production"));
   assert.doesNotThrow(() => validateTriggerSnapshot(withConnection(reviewSpec),
@@ -964,6 +966,7 @@ test("plans inert setup, separately gated activation, and ordered rollback", () 
   assert.equal(productionStaged.request.body.build_token_uuid.resultReference,
     "review-build-token.build_token_uuid");
   assert.equal(reviewStaged.request.body.root_directory, "/deployment/review-check");
+  assert.equal(reviewStaged.request.body.build_command, "cd ../.. && npm run review:build");
   assert.deepEqual(plan.reviewActivation.request.body.branch_includes,
     review.automaticReview.previewBranchIncludes);
   assert.equal(plan.reviewActivation.request.body.root_directory,

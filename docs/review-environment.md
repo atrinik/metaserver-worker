@@ -58,11 +58,12 @@ digest-pinned Wrangler file
 names the exact inert Worker and keeps `workers_dev`, preview URLs, bindings,
 routes, and observability disabled. #56 creates its one required bootstrap
 version/tag with a separate non-build-readable provisioning credential. The
-trigger includes all branches except `main` and the sentinel, changes to the
-repository root, runs the
-lifecycle-disabled pinned install and `npm run review:branch`, then the local
-no-op `npm run review:validate`. Neither its commands nor its settings are
-shared with the production project.
+trigger includes all branches except `main` and the sentinel. Its 32-byte build
+command changes to the repository root and invokes the checked-in
+`npm run review:build` entrypoint. That entrypoint retains the exact sanitized,
+lifecycle-disabled pinned install and `npm run review:branch`; the trigger then
+runs the local no-op `npm run review:validate`. Neither its commands nor its
+settings are shared with the production project.
 
 Cloudflare's `Workers CI Write` permission is account-scoped rather than
 project-scoped and requires a user API token; account tokens are unsupported.
