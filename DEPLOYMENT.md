@@ -398,7 +398,13 @@ The Builds trigger request uses `/deployment/review-check` as its exact
 provider-canonical repository root. The leading slash is part of the reviewed
 API representation; the rejected relative form `deployment/review-check` must
 never be submitted. Builds still runs the checked-in commands from that
-directory, and their `cd ../..` prefix returns to the repository root.
+directory. The 32-byte build command `cd ../.. && npm run review:build`
+returns to the repository root and delegates the complete `env -i`, npm
+`11.16.0`, `npm ci --ignore-scripts`, and `npm run review:branch` sequence to
+the exact checked-in package script. Keep the provider-facing command at or
+below the contract's conservative 64-byte ceiling; the retained setup evidence
+showed the prior 233-byte inline form was rejected while the 196-byte
+production command was accepted.
 
 The review-check build identity cannot reach production project settings.
 Cloudflare cannot project-scope `Workers CI Write` and supports it only on a

@@ -31,6 +31,7 @@
     "deploy:production:validate": "node scripts/production-delivery.mjs --validate-only",
     "review:validate": "node scripts/review-environment.mjs --validate-only",
     "review:dry-run": "node scripts/review-environment.mjs --dry-run",
+    "review:build": "env -i PATH=\"$PATH\" npm_config_cache=/tmp/atrinik-npm-cache npm install --global --ignore-scripts npm@11.16.0 && env -i PATH=\"$PATH\" npm_config_cache=/tmp/atrinik-npm-cache npm ci --ignore-scripts && npm run review:branch",
     "review:branch": "node scripts/review-environment.mjs --branch",
     "review:reject-sentinel": "node scripts/review-environment.mjs --reject-sentinel",
     "deploy:review-canary": "node scripts/review-environment.mjs --live-not-provisioned",
