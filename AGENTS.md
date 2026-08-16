@@ -105,8 +105,7 @@
   remain synchronized with `docs/review-environment.md` and
   `scripts/review-environment.mjs`. `scripts/workers-builds-provisioning.mjs`
   composes both checked-in contracts, requires stable exhaustive private
-  provider inventories plus fresh distinct production/review random-sentinel
-  GitHub evidence,
+  provider inventories plus fresh production random-sentinel GitHub evidence,
   performs only readback and local protected-document materialization, and must never gain implicit
   provider mutation. Provider apply and live-canary execution remain gated by
   separate maintainer authorization; `npm run deploy:review-canary` must fail
