@@ -37,6 +37,7 @@ import {
   validateProductionControlPlane,
   validateProductionActivationSnapshot,
   validateReviewActivationSnapshot,
+  validateReviewStagedEnvironmentSnapshotDirectory,
   validateReviewStagedEnvironmentReadback,
   validateReviewStagingRootAbsence,
   validateReviewStagingRootProofSequence,
@@ -756,6 +757,101 @@ test("requires stable canonical environment before final review trigger activati
   assert.throws(() => validateReviewStagedEnvironmentReadback({ trigger: expected,
     environment: envelope({ SKIP_DEPENDENCY_INSTALL: { is_secret: false, value: "0" } }) },
   expected, review), /review trigger environment drift/u);
+});
+
+test("binds the staged review environment proof to both journaled triggers", async () => {
+  const temporary = await mkdtemp(resolve(tmpdir(), "atrinik-review-staged-proof-"));
+  const snapshot = resolve(temporary, "snapshot");
+  await chmod(temporary, 0o700);
+  await mkdir(snapshot, { mode: 0o700 });
+  const writePrivate = async (path, value) => {
+    await writeFile(path, typeof value === "string" ? `${value}\n` :
+      `${JSON.stringify(value)}\n`, { mode: 0o600 });
+    await chmod(path, 0o600);
+  };
+  const sourceSha = "a".repeat(40);
+  const boundary = freshBoundary();
+  const rootDirectory = `/review-build-only-staging-${"b".repeat(32)}`;
+  const productionActual = withConnection(productionTriggerSpec(production, {
+    externalScriptId: scriptTag, repositoryConnectionUuid: resourceUuid,
+    buildTokenUuid: reviewTokenUuid,
+  }));
+  productionActual.trigger_uuid = resourceUuid;
+  productionActual.branch_includes = [boundary.productionSentinelProof.branch];
+  const reviewActual = withConnection(automaticReviewTriggerSpec(review, {
+    externalScriptId: scriptTag, repositoryConnectionUuid: resourceUuid,
+    buildTokenUuid: reviewTokenUuid,
+  }));
+  reviewActual.trigger_uuid = reviewTriggerUuid;
+  reviewActual.root_directory = rootDirectory;
+  reviewActual.build_command = "exit 1";
+  reviewActual.deploy_command = "exit 1";
+  const now = new Date().toISOString();
+  const manifest = {
+    accountId, sourceSha,
+    productionContractSha256: createHash("sha256").update(JSON.stringify(production)).digest("hex"),
+    reviewContractSha256: createHash("sha256").update(JSON.stringify(review)).digest("hex"),
+    startedAt: now, completedAt: now,
+  };
+  const privatePaths = Object.fromEntries([
+    "production-uuid", "review-uuid", "root", "production-branch", "production-proof",
+  ].map((name) => [name, resolve(temporary, name)]));
+  const prior = Object.fromEntries(Object.keys(process.env).filter((name) => name.startsWith(
+    "ATRINIK_")).map((name) => [name, process.env[name]]));
+  const writeSnapshot = (name, value) => writePrivate(resolve(snapshot, name), value);
+  try {
+    await Promise.all([
+      writeSnapshot("snapshot-manifest.json", manifest),
+      writeSnapshot("scripts.json", envelope([{ id: production.workers[0].name,
+        tag: scriptTag }])),
+      writeSnapshot(`${production.workers[0].name}.triggers.json`,
+        envelope([productionActual, reviewActual])),
+      writeSnapshot("build-tokens.json", buildTokenInventory()),
+      writeSnapshot(`${production.workers[0].name}.trigger-${reviewTriggerUuid}.environment.json`,
+        envelope(automaticReviewEnvironmentSpec(review))),
+      writeSnapshot("account-triggers.json", envelope([productionActual, reviewActual])),
+      ...production.workers.flatMap(({ name }) => [
+        writeSnapshot(`${name}.deploy-hooks.json`, envelope([])),
+        writeSnapshot(`${name}.builds.json`, envelope([])),
+      ]),
+      ...production.workers.slice(1).map(({ name }) =>
+        writeSnapshot(`${name}.triggers.json`, envelope([]))),
+      writePrivate(privatePaths["production-uuid"], resourceUuid),
+      writePrivate(privatePaths["review-uuid"], reviewTriggerUuid),
+      writePrivate(privatePaths.root, rootDirectory),
+      writePrivate(privatePaths["production-branch"], boundary.productionSentinelProof.branch),
+      writePrivate(privatePaths["production-proof"], boundary.productionSentinelProof),
+    ]);
+    Object.assign(process.env, {
+      ATRINIK_PRODUCTION_STAGED_TRIGGER_UUID_FILE: privatePaths["production-uuid"],
+      ATRINIK_REVIEW_STAGED_TRIGGER_UUID_FILE: privatePaths["review-uuid"],
+      ATRINIK_REVIEW_STAGING_ROOT_DIRECTORY_FILE: privatePaths.root,
+      ATRINIK_PRODUCTION_STAGING_SENTINEL_BRANCH_FILE: privatePaths["production-branch"],
+      ATRINIK_PRODUCTION_STAGING_SENTINEL_REFS_FILE: privatePaths["production-proof"],
+    });
+    const arguments_ = { snapshotDirectory: snapshot, production, review, accountId, sourceSha,
+      tokenAuthorityProofs: configuredBoundary(productionActual, reviewActual).tokenAuthorityProofs };
+    const accepted = await validateReviewStagedEnvironmentSnapshotDirectory(arguments_);
+    assert.match(accepted.proof_digest, /^[0-9a-f]{64}$/u);
+
+    await writeSnapshot(`${production.workers[0].name}.triggers.json`, envelope([{
+      ...productionActual, branch_includes: ["main"],
+    }, reviewActual]));
+    await assert.rejects(validateReviewStagedEnvironmentSnapshotDirectory(arguments_),
+      /branch_includes drift/u);
+    await writeSnapshot(`${production.workers[0].name}.triggers.json`,
+      envelope([productionActual, reviewActual]));
+    await writeSnapshot(`${production.workers[0].name}.builds.json`, envelope([{
+      build_uuid: resourceUuid, status: "running",
+    }]));
+    await assert.rejects(validateReviewStagedEnvironmentSnapshotDirectory(arguments_),
+      /active Workers Build/u);
+  } finally {
+    for (const name of Object.keys(process.env).filter((key) => key.startsWith("ATRINIK_")))
+      if (!(name in prior)) delete process.env[name];
+    Object.assign(process.env, prior);
+    await rm(temporary, { recursive: true, force: true });
+  }
 });
 
 test("proves phase-aware exact rollback trigger inventory", () => {

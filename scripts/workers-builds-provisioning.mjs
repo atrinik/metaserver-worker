@@ -2451,7 +2451,7 @@ async function validateStagedSnapshotDirectory({ snapshotDirectory, production, 
     validateReviewActivationSnapshot(arguments_)) : validateStagedBuildsSnapshot(arguments_);
 }
 
-async function validateReviewStagedEnvironmentSnapshotDirectory({ snapshotDirectory,
+export async function validateReviewStagedEnvironmentSnapshotDirectory({ snapshotDirectory,
   production, review, accountId, sourceSha, tokenAuthorityProofs }) {
   const manifest = await loadSnapshot(snapshotDirectory, "snapshot-manifest.json");
   validateSnapshotManifest(manifest, { accountId, sourceSha, production, review });
