@@ -25,7 +25,7 @@ const maximumPrivateDocumentBytes = 64 * 1024;
 const maximumProviderPages = 100;
 const stagingBranchPattern = /^review-build-only-sentinel-[0-9a-f]{32}$/u;
 const gitShaPattern = /^[0-9a-f]{40}$/u;
-const expectedSetupPlanSha256 = "cd609f5d58f4e3fec527d776447ff52044a67673b3bb0fa00e2c1138a91f3dd9";
+const expectedSetupPlanSha256 = "9e494112b310f4dae9277fdbf37a6f346ebb7480123d45e6d773f2c580a161c2";
 const githubRepository = Object.freeze({
   provider_account_id: "6371603",
   provider_account_name: "atrinik",

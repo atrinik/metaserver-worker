@@ -1,0 +1,9 @@
+{
+  "name": "atrinik-metaserver-review-check-build",
+  "private": true,
+  "scripts": {
+    "build": "npm --prefix ../.. run review:build",
+    "validate": "npm --prefix ../.. run review:validate",
+    "reject-sentinel": "npm --prefix ../.. run review:reject-sentinel"
+  }
+}

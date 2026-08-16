@@ -397,14 +397,17 @@ preview URL.
 The Builds trigger request uses `/deployment/review-check` as its exact
 provider-canonical repository root. The leading slash is part of the reviewed
 API representation; the rejected relative form `deployment/review-check` must
-never be submitted. Builds still runs the checked-in commands from that
-directory. The 32-byte build command `cd ../.. && npm run review:build`
-returns to the repository root and delegates the complete `env -i`, npm
-`11.16.0`, `npm ci --ignore-scripts`, and `npm run review:branch` sequence to
-the exact checked-in package script. Keep the provider-facing command at or
-below the contract's conservative 64-byte ceiling; the retained setup evidence
-showed the prior 233-byte inline form was rejected while the 196-byte
-production command was accepted.
+never be submitted. Builds runs the conventional `npm run build`, `npm run
+validate`, and fail-closed `npm run reject-sentinel` commands from that
+directory. The private checked-in `deployment/review-check/package.json`
+delegates each command to the immutable repository-root scripts with `npm
+--prefix ../..`; provider request fields never contain parent-directory shell
+traversal. The root `review:build` entrypoint still owns the complete `env -i`,
+npm `11.16.0`, `npm ci --ignore-scripts`, and `review:branch` sequence. Keep the
+provider-facing build command at or below the contract's conservative 64-byte
+ceiling. Retained setup evidence showed both the prior 233-byte inline command
+and the later `cd ../..` request representation were rejected with provider
+error `12002`; never retry either representation.
 
 The review-check build identity cannot reach production project settings.
 Cloudflare cannot project-scope `Workers CI Write` and supports it only on a

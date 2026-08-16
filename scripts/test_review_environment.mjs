@@ -1,8 +1,10 @@
 import assert from "node:assert/strict";
+import { execFile } from "node:child_process";
 import { readFile } from "node:fs/promises";
 import { resolve } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import test from "node:test";
+import { promisify } from "node:util";
 import {
   ReviewEnvironmentError,
   describeBranchCheckFailure,
@@ -13,10 +15,12 @@ import {
   validateLiveApproval,
   validateProductionIsolation,
   validateReviewBuildEntrypoint,
+  validateReviewRootEntrypoint,
   validateSourceCoordinates,
 } from "./review-environment.mjs";
 
 const root = resolve(import.meta.dirname, "..");
+const execFileAsync = promisify(execFile);
 const review = JSON.parse(await readFile(resolve(root, "deployment/workers-builds-review.json"), "utf8"));
 const production = JSON.parse(await readFile(resolve(root, "deployment/workers-builds-production.json"), "utf8"));
 const configurations = await Promise.all([
@@ -25,6 +29,8 @@ const configurations = await Promise.all([
 const coordinationSchema = await readFile(resolve(root, "deployment/review-coordination-v1.sql"), "utf8");
 const coordinationOperations = JSON.parse(await readFile(resolve(root,
   "deployment/review-coordination-operations-v1.json"), "utf8"));
+const reviewRootPackage = JSON.parse(await readFile(resolve(root,
+  "deployment/review-check/package.json"), "utf8"));
 
 function changed(change) {
   const value = structuredClone(review);
@@ -46,6 +52,10 @@ test("reserves main exclusively for the production contract", () => {
     changed((value) => value.automaticReview.previewBranchExcludes = []),
     changed((value) => value.liveCanary.source.branch = "main"),
     changed((value) => value.automaticReview.productionDeployCommand = "npm run review:validate"),
+    changed((value) => value.automaticReview.productionDeployCommand =
+      "cd ../.. && npm run review:reject-sentinel"),
+    changed((value) => value.automaticReview.buildCommand = "cd ../.. && npm run review:build"),
+    changed((value) => value.automaticReview.deployCommand = "cd ../.. && npm run review:validate"),
     changed((value) => value.automaticReview.accountBoundary.productionAccountReuse = false),
     changed((value) => value.automaticReview.rootDirectory = "deployment/review-check"),
     changed((value) => value.automaticReview.accountBoundary.buildIdentityProductionProjectSettingsReachable = true),
@@ -77,8 +87,19 @@ test("automatic review has no bindings, routes, secrets, or deployable version",
 });
 
 test("review trigger delegates to the exact sanitized repository entrypoint", () => {
-  assert.equal(Buffer.byteLength(review.automaticReview.buildCommand, "utf8"), 32);
-  assert.equal(review.automaticReview.buildCommand, "cd ../.. && npm run review:build");
+  assert.equal(Buffer.byteLength(review.automaticReview.buildCommand, "utf8"), 13);
+  assert.equal(review.automaticReview.buildCommand, "npm run build");
+  validateReviewRootEntrypoint(reviewRootPackage);
+  for (const mutate of [
+    (value) => value.scripts.build = "cd ../.. && npm run review:build",
+    (value) => value.scripts.validate = "npm run review:validate",
+    (value) => value.scripts["reject-sentinel"] = "true",
+    (value) => value.private = false,
+  ]) {
+    const value = structuredClone(reviewRootPackage);
+    mutate(value);
+    assert.throws(() => validateReviewRootEntrypoint(value), ReviewEnvironmentError);
+  }
   const valid = { "review:build": `${production.installCommand} && npm run review:branch` };
   validateReviewBuildEntrypoint(valid, production);
   for (const command of [
@@ -88,8 +109,21 @@ test("review trigger delegates to the exact sanitized repository entrypoint", ()
   ]) assert.throws(() => validateReviewBuildEntrypoint({ "review:build": command }, production),
     ReviewEnvironmentError);
   const tooLong = structuredClone(review.automaticReview);
-  tooLong.buildCommand = `cd ../.. && npm run review:build ${"x".repeat(64)}`;
+  tooLong.buildCommand = `npm run build ${"x".repeat(64)}`;
   assert.throws(() => validateAutomaticReview(tooLong), ReviewEnvironmentError);
+});
+
+test("review-root package delegates validation and sentinel rejection", async () => {
+  const reviewRoot = resolve(root, "deployment/review-check");
+  const validated = await execFileAsync("npm", ["run", "validate"],
+    { cwd: reviewRoot, encoding: "utf8" });
+  assert.match(validated.stdout, /"outcome":"review-contract-valid"/u);
+  await assert.rejects(execFileAsync("npm", ["run", "reject-sentinel"],
+    { cwd: reviewRoot, encoding: "utf8" }), (error) => {
+    assert.equal(error.code, 1);
+    assert.match(error.stderr, /"reason":"reserved review sentinel never executes repository code"/u);
+    return true;
+  });
 });
 
 test("same-repository non-main source coordinates are exact", () => {

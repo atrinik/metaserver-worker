@@ -58,10 +58,11 @@ digest-pinned Wrangler file
 names the exact inert Worker and keeps `workers_dev`, preview URLs, bindings,
 routes, and observability disabled. #56 creates its one required bootstrap
 version/tag with a separate non-build-readable provisioning credential. The
-trigger includes all branches except `main` and the sentinel. Its 32-byte build
-command changes to the repository root and invokes the checked-in
-`npm run review:build` entrypoint. That entrypoint retains the exact sanitized,
-lifecycle-disabled pinned install and `npm run review:branch`; the trigger then
+trigger includes all branches except `main` and the sentinel. Its 13-byte build
+command invokes the private package in the configured review root; that package
+delegates to the checked-in repository-root `npm run review:build` entrypoint.
+The root entrypoint retains the exact sanitized, lifecycle-disabled pinned
+install and `npm run review:branch`; the trigger then
 runs the local no-op `npm run review:validate`. Neither its commands nor its
 settings are shared with the production project.
 
