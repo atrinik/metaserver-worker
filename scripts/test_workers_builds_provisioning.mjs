@@ -355,6 +355,24 @@ test("derives only coherent Custom Domains pagination metadata", () => {
     page: 1, per_page: 50, count: 0, total_count: 0,
   } }, "domains", 1).result_info.total_pages, 1);
 
+  const driftingPageSize = [
+    normalizeDomainListPage({ success: true, result: rows.concat(
+      Array.from({ length: 30 }, (_, index) => ({
+        hostname: `first-${index}.invalid`, service: `first-${index}`,
+      }))), result_info: { page: 1, per_page: 35, count: 35, total_count: 100 } },
+    "domains page 1", 1),
+    normalizeDomainListPage({ success: true, result: Array.from({ length: 45 }, (_, index) => ({
+      hostname: `second-${index}.invalid`, service: `second-${index}`,
+    })), result_info: { page: 2, per_page: 45, count: 45, total_count: 100 } },
+    "domains page 2", 2),
+    normalizeDomainListPage({ success: true, result: Array.from({ length: 20 }, (_, index) => ({
+      hostname: `third-${index}.invalid`, service: `third-${index}`,
+    })), result_info: { page: 3, per_page: 40, count: 20, total_count: 100 } },
+    "domains page 3", 3),
+  ];
+  assert.throws(() => combineProviderPages(driftingPageSize, "domains",
+    ({ hostname, service }) => `${hostname}\0${service}`), /changed during readback/u);
+
   const malformed = [
     { success: true, result: rows },
     { ...native, result_info: { ...native.result_info, page: 2 } },

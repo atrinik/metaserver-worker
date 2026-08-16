@@ -1473,6 +1473,7 @@ export function combineProviderPages(envelopes, label, identity) {
   const identities = new Set();
   let totalPages;
   let totalCount;
+  let perPage;
   for (const [index, envelope] of envelopes.entries()) {
     const pageRows = requireEnvelope(envelope, `${label} page ${index + 1}`);
     const info = envelope.result_info ?? {};
@@ -1483,6 +1484,15 @@ export function combineProviderPages(envelopes, label, identity) {
       fail(`${label} provider pagination metadata is malformed`);
     totalPages ??= info.total_pages;
     totalCount ??= info.total_count;
+    if (info.per_page !== undefined) {
+      if (!Number.isSafeInteger(info.per_page) || info.per_page < 1 ||
+          (perPage !== undefined && info.per_page !== perPage))
+        fail(`${label} provider pagination changed during readback`);
+      perPage ??= info.per_page;
+    }
+    if (info.count !== undefined &&
+        (!Number.isSafeInteger(info.count) || info.count !== pageRows.length))
+      fail(`${label} provider pagination metadata is malformed`);
     if (info.total_pages !== totalPages || info.total_count !== totalCount ||
         envelopes.length !== totalPages)
       fail(`${label} provider pagination changed during readback`);
