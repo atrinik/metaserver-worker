@@ -323,7 +323,7 @@ environment, no review trigger or review environment, all builds stopped, and
 current token/usage proofs.
 The command writes a new owner-only proof containing a deterministic SHA-256 of
 the fresh manifest and exact staged trigger/environment/token/
-hook/build evidence. Immediately before each activation PATCH, set
+hook/build evidence. Immediately before each activation mutation, set
 `ATRINIK_STAGED_PROOF_FILE` to that record and run
 `npm run provision:workers-builds:verify-staged-proof` immediately before the
 review activation, with the read token,

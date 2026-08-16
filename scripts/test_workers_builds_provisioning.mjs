@@ -20,6 +20,7 @@ import {
   productionEnvironmentSpec,
   productionTriggerSpec,
   publicStagedProofSummary,
+  provisioningDryRunSummary,
   provisioningSetupPlan,
   readProductionSentinelProof,
   readProviderSnapshot,
@@ -1048,6 +1049,7 @@ test("proves a fresh setup has no competing trigger, Deploy Hook, or active buil
 
 test("plans inert setup, separately gated activation, and ordered rollback", () => {
   const plan = provisioningSetupPlan(production, review);
+  assert.deepEqual(provisioningDryRunSummary(production, review).gates, plan.gates);
   assert.equal(plan.mutation, false);
   assert.equal(plan.providerTopology.mode, "one-worker-two-triggers");
   assert.equal(plan.retainedFailedRequest.error, 12002);

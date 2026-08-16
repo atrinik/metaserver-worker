@@ -2227,6 +2227,20 @@ export async function validateCheckedInProvisioning() {
   return { production, review };
 }
 
+export function provisioningDryRunSummary(production, review) {
+  const setupPlan = provisioningSetupPlan(production, review);
+  return {
+    outcome: "workers-builds-provisioning-plan-valid", mutation: false,
+    production: { project: production.workers[0].name, branch: production.productionBranch,
+      triggerCount: 1, protectedInputCount: Object.keys(production.protectedInputs).length },
+    automaticReview: { project: review.automaticReview.project, triggerCount: 1,
+      protectedInputCount: review.automaticReview.protectedInputs.length },
+    setupOperationCount: setupPlan.setupOperations.length,
+    rollbackOperationCount: setupPlan.rollbackOperations.length,
+    gates: structuredClone(setupPlan.gates),
+  };
+}
+
 async function main() {
   const mode = process.argv[2] ?? "--validate-only";
   const { production, review } = await validateCheckedInProvisioning();
@@ -2235,17 +2249,7 @@ async function main() {
     return;
   }
   if (mode === "--dry-run") {
-    const setupPlan = provisioningSetupPlan(production, review);
-    process.stdout.write(`${JSON.stringify({
-      outcome: "workers-builds-provisioning-plan-valid", mutation: false,
-      production: { project: production.workers[0].name, branch: production.productionBranch,
-        triggerCount: 1, protectedInputCount: Object.keys(production.protectedInputs).length },
-      automaticReview: { project: review.automaticReview.project, triggerCount: 1,
-        protectedInputCount: review.automaticReview.protectedInputs.length },
-      setupOperationCount: setupPlan.setupOperations.length,
-      rollbackOperationCount: setupPlan.rollbackOperations.length,
-      gates: ["provider-setup-approval", "migration-0010", "initial-production-proof"],
-    })}\n`);
+    process.stdout.write(`${JSON.stringify(provisioningDryRunSummary(production, review))}\n`);
     return;
   }
   if (mode === "--plan-setup") {
