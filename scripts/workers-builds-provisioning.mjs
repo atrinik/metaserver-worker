@@ -25,7 +25,7 @@ const maximumPrivateDocumentBytes = 64 * 1024;
 const maximumProviderPages = 100;
 const stagingBranchPattern = /^review-build-only-sentinel-[0-9a-f]{32}$/u;
 const gitShaPattern = /^[0-9a-f]{40}$/u;
-const expectedSetupPlanSha256 = "bc192193e2322107942eb03cedb9ff57b3e8c0e14ea5ebd7daefe7d771a1a56e";
+const expectedSetupPlanSha256 = "7f5db89fcea903a70c3a152c77397844ad26a0a23184d377a082fc6dbf861d46";
 const githubRepository = Object.freeze({
   provider_account_id: "6371603",
   provider_account_name: "atrinik",
@@ -593,10 +593,26 @@ export function provisioningSetupPlan(production, review) {
     },
     productionActivation: {
       gate: "production-trigger-activation",
+      preconditionOperations: [
+        { id: "sentinel-recheck-before-production-activation",
+          actor: "github-owner-readback",
+          action: "repeat-exact-private-random-production-sentinel-ref-absence-proof-outside-sandbox",
+          mutation: false, branch: productionSentinel,
+          produces: { proof_digest: "fresh-production-sentinel-absence-proof-digest" } },
+        { id: "production-activation-readback",
+          actor: "workers-builds-control-plane-operator",
+          action: "prove-review-active-production-staged-and-disposable-review-result",
+          mutation: false,
+          command: "npm run provision:workers-builds:verify-production-activation",
+          precondition: { productionSentinelProof: resultReference(
+            "sentinel-recheck-before-production-activation", "proof_digest") },
+          produces: { proof_digest: "fresh-live-review-active-production-staged-proof-digest" } },
+      ],
       precondition: {
-        productionSentinel: "repeat-exact-private-random-production-sentinel-ref-absence-proof-immediately-before-atomic-patch",
+        productionSentinelProof: resultReference(
+          "sentinel-recheck-before-production-activation", "proof_digest"),
         reviewPath: "fresh-private-successful-disposable-review-build-and-cleanup-proof",
-        productionProof: "fresh-live-review-active-production-staged-proof-digest",
+        productionProof: resultReference("production-activation-readback", "proof_digest"),
       },
       preconditionCommand: "npm run provision:workers-builds:verify-production-activation",
       request: { method: "PATCH",
@@ -613,14 +629,49 @@ export function provisioningSetupPlan(production, review) {
       productionWorkerPolicy: "never-delete-or-roll-back-existing-production-workers-versions-state-or-secrets",
     },
     rollbackOperations: [
-      "restore-production-trigger-to-its-exact-inert-production-sentinel-before-cancelling-exact-active-builds",
-      "restore-review-trigger-to-its-exact-inert-review-sentinel",
-      "prove-no-build-or-upload-remains-active",
-      "delete-exact-production-and-review-triggers",
-      "delete-only-the-two-recorded-build-token-uuids",
-      "retain-shared-metaserver-repository-connection-provider-has-no-read-inventory-and-website-must-survive",
-      "delete-review-bootstrap-only-after-trigger-absence-and-exact-version-readback",
-      "prove-three-production-workers-and-website-app-selection-unchanged",
+      { id: "sentinel-recheck-before-production-rollback", actor: "github-owner-readback",
+        action: "repeat-exact-private-random-production-sentinel-ref-absence-proof-outside-sandbox",
+        mutation: false, branch: productionSentinel,
+        produces: { proof_digest: "fresh-production-sentinel-absence-proof-digest" } },
+      { id: "restore-production-trigger-to-inert-sentinel",
+        actor: "workers-builds-control-plane-operator",
+        action: "restore-production-trigger-to-its-exact-inert-production-sentinel-before-cancelling-exact-active-builds",
+        mutation: true,
+        precondition: { productionSentinelProof: resultReference(
+          "sentinel-recheck-before-production-rollback", "proof_digest") },
+        request: { method: "PATCH",
+          path: apiPathReference("/builds/triggers/{trigger_uuid}",
+            "production-trigger-staged", "trigger_uuid"),
+          body: triggerPlanSpec(productionStaged, "production-script", "review-build-token") } },
+      { id: "sentinel-recheck-before-review-rollback", actor: "github-owner-readback",
+        action: "repeat-exact-private-random-review-sentinel-ref-absence-proof-outside-sandbox",
+        mutation: false, branch: reviewSentinel,
+        produces: { proof_digest: "fresh-review-sentinel-absence-proof-digest" } },
+      { id: "restore-review-trigger-to-inert-sentinel",
+        actor: "workers-builds-control-plane-operator",
+        action: "restore-review-trigger-to-its-exact-inert-review-sentinel",
+        mutation: true,
+        precondition: { reviewSentinelProof: resultReference(
+          "sentinel-recheck-before-review-rollback", "proof_digest") },
+        request: { method: "PATCH",
+          path: apiPathReference("/builds/triggers/{trigger_uuid}",
+            "review-trigger-staged", "trigger_uuid"),
+          body: triggerPlanSpec(reviewStaged, "review-bootstrap", "review-build-token") } },
+      { id: "prove-rollback-quiescence", actor: "workers-builds-control-plane-operator",
+        action: "prove-no-build-or-upload-remains-active", mutation: false },
+      { id: "delete-setup-triggers", actor: "workers-builds-control-plane-operator",
+        action: "delete-exact-production-and-review-triggers", mutation: true },
+      { id: "delete-setup-build-tokens", actor: "workers-builds-control-plane-operator",
+        action: "delete-only-the-two-recorded-build-token-uuids", mutation: true },
+      { id: "retain-repository-connection", actor: "workers-builds-control-plane-operator",
+        action: "retain-shared-metaserver-repository-connection-provider-has-no-read-inventory-and-website-must-survive",
+        mutation: false },
+      { id: "delete-review-bootstrap", actor: "issue-56-review-check-bootstrap-operator",
+        action: "delete-review-bootstrap-only-after-trigger-absence-and-exact-version-readback",
+        mutation: true },
+      { id: "prove-production-preserved", actor: "workers-builds-control-plane-operator",
+        action: "prove-three-production-workers-and-website-app-selection-unchanged",
+        mutation: false },
     ],
   };
   validateSetupPlan(plan);
@@ -715,7 +766,55 @@ export function validateSetupPlan(plan) {
     available.set(operation.id, new Set(fields));
   }
   inspect(plan.reviewActivation);
+  const activationOperations = plan.productionActivation?.preconditionOperations;
+  const expectedActivationOperations = [
+    ["sentinel-recheck-before-production-activation", "github-owner-readback", false,
+      "repeat-exact-private-random-production-sentinel-ref-absence-proof-outside-sandbox"],
+    ["production-activation-readback", "workers-builds-control-plane-operator", false,
+      "prove-review-active-production-staged-and-disposable-review-result"],
+  ];
+  if (!Array.isArray(activationOperations) ||
+      !same(activationOperations.map(({ id, actor, mutation, action }) =>
+        [id, actor, mutation, action]), expectedActivationOperations))
+    fail("production activation proof operation set, order, or authority drift");
+  for (const operation of activationOperations) {
+    inspect(operation);
+    available.set(operation.id, new Set(Object.keys(operation.produces ?? {})));
+  }
   inspect(plan.productionActivation);
+  const rollbackOperations = plan.rollbackOperations;
+  if (!Array.isArray(rollbackOperations) ||
+      new Set(rollbackOperations.map(({ id }) => id)).size !== rollbackOperations.length)
+    fail("rollback operation identity is incomplete or duplicated");
+  const expectedRollback = [
+    ["sentinel-recheck-before-production-rollback", "github-owner-readback", false,
+      "repeat-exact-private-random-production-sentinel-ref-absence-proof-outside-sandbox"],
+    ["restore-production-trigger-to-inert-sentinel", "workers-builds-control-plane-operator", true,
+      "restore-production-trigger-to-its-exact-inert-production-sentinel-before-cancelling-exact-active-builds"],
+    ["sentinel-recheck-before-review-rollback", "github-owner-readback", false,
+      "repeat-exact-private-random-review-sentinel-ref-absence-proof-outside-sandbox"],
+    ["restore-review-trigger-to-inert-sentinel", "workers-builds-control-plane-operator", true,
+      "restore-review-trigger-to-its-exact-inert-review-sentinel"],
+    ["prove-rollback-quiescence", "workers-builds-control-plane-operator", false,
+      "prove-no-build-or-upload-remains-active"],
+    ["delete-setup-triggers", "workers-builds-control-plane-operator", true,
+      "delete-exact-production-and-review-triggers"],
+    ["delete-setup-build-tokens", "workers-builds-control-plane-operator", true,
+      "delete-only-the-two-recorded-build-token-uuids"],
+    ["retain-repository-connection", "workers-builds-control-plane-operator", false,
+      "retain-shared-metaserver-repository-connection-provider-has-no-read-inventory-and-website-must-survive"],
+    ["delete-review-bootstrap", "issue-56-review-check-bootstrap-operator", true,
+      "delete-review-bootstrap-only-after-trigger-absence-and-exact-version-readback"],
+    ["prove-production-preserved", "workers-builds-control-plane-operator", false,
+      "prove-three-production-workers-and-website-app-selection-unchanged"],
+  ];
+  if (!same(rollbackOperations.map(({ id, actor, mutation, action }) =>
+    [id, actor, mutation, action]), expectedRollback))
+    fail("rollback operation set, order, actor, or mutation boundary drift");
+  for (const operation of rollbackOperations) {
+    inspect(operation);
+    available.set(operation.id, new Set(Object.keys(operation.produces ?? {})));
+  }
   const actualDigest = digestJson(plan);
   if (actualDigest !== expectedSetupPlanSha256)
     fail(`complete setup plan schema drift (${actualDigest})`);
@@ -1498,6 +1597,27 @@ export async function readPrivateJson(path, label) {
   } finally { await handle.close(); }
 }
 
+export async function readDistinctSentinelProofs(environment = process.env, now = Date.now()) {
+  const productionBranch = await readPrivateValue(
+    environment.ATRINIK_PRODUCTION_STAGING_SENTINEL_BRANCH_FILE,
+    "production staging sentinel branch", stagingBranchPattern);
+  const productionProof = await readPrivateJson(
+    environment.ATRINIK_PRODUCTION_STAGING_SENTINEL_REFS_FILE,
+    "production staging sentinel refs");
+  if (productionProof.branch !== productionBranch)
+    fail("production staging sentinel proof branch drift");
+  const reviewBranch = await readPrivateValue(
+    environment.ATRINIK_REVIEW_STAGING_SENTINEL_BRANCH_FILE,
+    "review staging sentinel branch", stagingBranchPattern);
+  const reviewProof = await readPrivateJson(
+    environment.ATRINIK_REVIEW_STAGING_SENTINEL_REFS_FILE,
+    "review staging sentinel refs");
+  if (reviewProof.branch !== reviewBranch)
+    fail("review staging sentinel proof branch drift");
+  validateDistinctSentinelRefAbsence(productionProof, reviewProof, now);
+  return { productionSentinelProof: productionProof, reviewSentinelProof: reviewProof };
+}
+
 async function writePrivateJson(path, value) {
   const handle = await open(path, constants.O_WRONLY | constants.O_CREAT |
     constants.O_EXCL | constants.O_NOFOLLOW, 0o600);
@@ -2114,22 +2234,8 @@ async function validateStagedSnapshotDirectory({ snapshotDirectory, production, 
     uploadProof: await readPrivateJson(process.env.ATRINIK_REVIEW_BOOTSTRAP_UPLOAD_PROOF_FILE,
       "review bootstrap upload proof"),
   };
-  const productionSentinelBranch = await readPrivateValue(
-    process.env.ATRINIK_PRODUCTION_STAGING_SENTINEL_BRANCH_FILE,
-    "production staging sentinel branch", stagingBranchPattern);
-  const productionSentinelProof = await readPrivateJson(
-    process.env.ATRINIK_PRODUCTION_STAGING_SENTINEL_REFS_FILE,
-    "production staging sentinel refs");
-  if (productionSentinelProof.branch !== productionSentinelBranch)
-    fail("production staging sentinel proof branch drift");
-  const reviewSentinelBranch = await readPrivateValue(
-    process.env.ATRINIK_REVIEW_STAGING_SENTINEL_BRANCH_FILE,
-    "review staging sentinel branch", stagingBranchPattern);
-  const reviewSentinelProof = await readPrivateJson(
-    process.env.ATRINIK_REVIEW_STAGING_SENTINEL_REFS_FILE,
-    "review staging sentinel refs");
-  if (reviewSentinelProof.branch !== reviewSentinelBranch)
-    fail("review staging sentinel proof branch drift");
+  const { productionSentinelProof, reviewSentinelProof } =
+    await readDistinctSentinelProofs();
   const arguments_ = { production, review, scripts, productionTriggers,
     productionEnvironment, reviewTriggers, reviewEnvironment, nonEntrypointTriggers,
     deployHooks, builds, buildTokens,
@@ -2162,22 +2268,8 @@ async function validateFreshSnapshotDirectory({ snapshotDirectory, production, r
     [label, await loadSnapshot(snapshotDirectory, `${name}.builds.json`)]));
   const buildTokens = await loadSnapshot(snapshotDirectory, "build-tokens.json");
   const accountTriggers = await loadSnapshot(snapshotDirectory, "account-triggers.json");
-  const productionSentinelBranch = await readPrivateValue(
-    process.env.ATRINIK_PRODUCTION_STAGING_SENTINEL_BRANCH_FILE,
-    "production staging sentinel branch", stagingBranchPattern);
-  const productionSentinelProof = await readPrivateJson(
-    process.env.ATRINIK_PRODUCTION_STAGING_SENTINEL_REFS_FILE,
-    "production staging sentinel refs");
-  if (productionSentinelProof.branch !== productionSentinelBranch)
-    fail("production staging sentinel proof branch drift");
-  const reviewSentinelBranch = await readPrivateValue(
-    process.env.ATRINIK_REVIEW_STAGING_SENTINEL_BRANCH_FILE,
-    "review staging sentinel branch", stagingBranchPattern);
-  const reviewSentinelProof = await readPrivateJson(
-    process.env.ATRINIK_REVIEW_STAGING_SENTINEL_REFS_FILE,
-    "review staging sentinel refs");
-  if (reviewSentinelProof.branch !== reviewSentinelBranch)
-    fail("review staging sentinel proof branch drift");
+  const { productionSentinelProof, reviewSentinelProof } =
+    await readDistinctSentinelProofs();
   const repositoryConnectionProof = await readPrivateJson(
     process.env.ATRINIK_REPOSITORY_CONNECTION_OWNER_PROOF_FILE,
     "shared repository connection owner proof");

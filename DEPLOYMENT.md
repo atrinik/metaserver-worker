@@ -146,7 +146,11 @@ retain a fresh, exact empty matching-ref proof for each governed repository
 coordinate. Setup rechecks the production proof immediately before the
 production trigger and environment mutations, rechecks the review proof
 immediately before the review trigger and environment mutations, and binds both
-proofs into staged readback. Both staged triggers use the review token, whose
+proofs into staged readback. Rollback likewise obtains a new production proof
+immediately before its full production-trigger restore PATCH and a new review
+proof immediately before its full review-trigger restore PATCH; an expired,
+missing, or role-swapped rollback proof stops before mutation. Both restore
+requests use the zero-resource review token. Both staged triggers use the review token, whose
 provider policy has no account or zone resource. Production activation is one
 trigger PATCH that atomically replaces the private production selector and
 zero-resource token with `main` and the production token. Thus a selector race
