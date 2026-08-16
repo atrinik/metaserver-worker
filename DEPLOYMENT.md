@@ -357,6 +357,39 @@ still-inert production trigger, both exact token wrappers, no active build or
 Deploy Hook, and writes the owner-only review-activation proof. No private
 review sentinel is created or accepted.
 
+The staging root must match
+`/review-build-only-staging-<32-lowercase-hex>`. For each of the two checks,
+use `gh api` outside the sandbox to retain a complete current
+`repos/atrinik/metaserver-worker/git/matching-refs/heads/` inventory and an
+HTTP `404` contents lookup for that exact root at every non-`main` ref SHA. The
+owner-only JSON proof has the exact fields `source`, `repository`,
+`rootDirectory`, `currentMainSha`, `capturedAt`, `pagination`, `branches`, and
+`absenceChecks`; each branch is `{ref,sha}` and each non-main absence check is
+`{ref,sha,path,status:404}` in the same order. It must include current `main`,
+carry terminal GraphQL-style pagination metadata with `hasNextPage:false` and
+an exact total count, be no more than five minutes old, and contain no missing,
+extra, duplicate, or reordered branch checks. Validate the separately captured create and activation
+proofs with:
+
+```sh
+ATRINIK_REVIEWED_SOURCE_SHA_FILE=/secure/path/reviewed-source-sha \
+ATRINIK_REVIEW_STAGING_ROOT_DIRECTORY_FILE=/secure/path/private-review-root \
+ATRINIK_REVIEW_STAGING_ROOT_CREATE_PROOF_FILE=/secure/path/create-root-proof.json \
+  npm run provision:workers-builds:verify-review-staging-root-create
+
+ATRINIK_REVIEWED_SOURCE_SHA_FILE=/secure/path/reviewed-source-sha \
+ATRINIK_REVIEW_STAGING_ROOT_DIRECTORY_FILE=/secure/path/private-review-root \
+ATRINIK_REVIEW_STAGING_ROOT_ACTIVATION_PROOF_FILE=/secure/path/activation-root-proof.json \
+  npm run provision:workers-builds:verify-review-staging-root-activation
+```
+
+After the environment PATCH, two complete identical trigger/environment reads
+plus a final identical sweep must prove the created trigger still has the
+private root and inert commands and that `SKIP_DEPENDENCY_INSTALL=1` is present
+and nonsecret. The final trigger PATCH consumes both that readback digest and
+the second fresh root-absence digest; either missing or ambiguous proof stops
+before activation.
+
 Run that review-phase readback with the same account, reviewed-source, provider
 read token, token-policy proofs, and usage proof used by the staged verifier,
 plus a new output directory and proof destination:
@@ -399,9 +432,10 @@ sentinel and zero-resource token. Only that fresh digest authorizes the separate
 production PATCH. Consequently neither activation is reachable when its own
 phase proof is skipped, stale, replayed, or based on the other phase. Both
 commands print only safe source/digest summaries; the account-bound proof stays
-in its owner-only file. The complete setup/activation/
-rollback request document is digest-pinned by the validator, not merely its
-operation names.
+in its owner-only file. The complete setup/activation/rollback document,
+including journal-bound trigger/token DELETE paths, stable exhaustive absence
+readbacks, actors, result dependencies, and request bodies, is digest-pinned by
+the validator, not merely its operation names.
 
 After activation, take another new snapshot and prove the configured boundary:
 

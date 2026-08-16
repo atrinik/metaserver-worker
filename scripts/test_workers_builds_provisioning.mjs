@@ -37,6 +37,8 @@ import {
   validateProductionControlPlane,
   validateProductionActivationSnapshot,
   validateReviewActivationSnapshot,
+  validateReviewStagedEnvironmentReadback,
+  validateReviewStagingRootAbsence,
   validateProductionRuntimeProof,
   validateRepositoryConnectionOwnerProof,
   validateReviewedSourceCoordinates,
@@ -678,6 +680,64 @@ test("loads the private production sentinel branch and proof", async () => {
   }
 });
 
+test("requires fresh complete per-branch absence proof for a private review staging root", () => {
+  const sourceSha = "a".repeat(40);
+  const rootDirectory = `/review-build-only-staging-${"b".repeat(32)}`;
+  const proof = {
+    source: "github-complete-branch-root-absence-readback",
+    repository: { provider_account_id: "6371603", provider_account_name: "atrinik",
+      provider_type: "github", repo_id: "1324297032", repo_name: "metaserver-worker" },
+    rootDirectory, currentMainSha: sourceSha, capturedAt: new Date().toISOString(),
+    pagination: { hasNextPage: false, pageCount: 1, totalCount: 2 },
+    branches: [
+      { ref: "refs/heads/main", sha: sourceSha },
+      { ref: "refs/heads/review/example", sha: "c".repeat(40) },
+    ],
+    absenceChecks: [
+      { ref: "refs/heads/review/example", sha: "c".repeat(40),
+        path: rootDirectory.slice(1), status: 404 },
+    ],
+  };
+  assert.match(validateReviewStagingRootAbsence(proof, rootDirectory, sourceSha).proof_digest,
+    /^[0-9a-f]{64}$/u);
+  assert.throws(() => validateReviewStagingRootAbsence(proof,
+    "/deployment/review-check", sourceSha), /identity is malformed/u);
+  assert.throws(() => validateReviewStagingRootAbsence({ ...proof,
+    capturedAt: "2026-08-15T00:00:00Z" }, rootDirectory, sourceSha,
+  Date.parse("2026-08-15T00:06:00Z")), /stale/u);
+  assert.throws(() => validateReviewStagingRootAbsence({ ...proof,
+    currentMainSha: "d".repeat(40) }, rootDirectory, sourceSha), /identity is malformed/u);
+  assert.throws(() => validateReviewStagingRootAbsence({ ...proof,
+    absenceChecks: [] }, rootDirectory, sourceSha), /incomplete or reordered/u);
+  assert.throws(() => validateReviewStagingRootAbsence({ ...proof,
+    pagination: { ...proof.pagination, hasNextPage: true } }, rootDirectory, sourceSha),
+  /pagination is incomplete/u);
+  assert.throws(() => validateReviewStagingRootAbsence({ ...proof,
+    branches: [...proof.branches, { ref: "refs/heads/other", sha: "d".repeat(40) }] },
+  rootDirectory, sourceSha), /pagination is incomplete/u);
+});
+
+test("requires stable canonical environment before final review trigger activation", () => {
+  const rootDirectory = `/review-build-only-staging-${"b".repeat(32)}`;
+  const expected = withConnection(automaticReviewTriggerSpec(review, {
+    externalScriptId: scriptTag, repositoryConnectionUuid: resourceUuid,
+    buildTokenUuid: reviewTokenUuid,
+  }));
+  expected.trigger_uuid = reviewTriggerUuid;
+  expected.root_directory = rootDirectory;
+  expected.build_command = "exit 1";
+  expected.deploy_command = "exit 1";
+  const environment = envelope(automaticReviewEnvironmentSpec(review));
+  assert.match(validateReviewStagedEnvironmentReadback({ trigger: expected, environment },
+    expected, review).proof_digest, /^[0-9a-f]{64}$/u);
+  assert.throws(() => validateReviewStagedEnvironmentReadback({ trigger: {
+    ...expected, root_directory: "/deployment/review-check",
+  }, environment }, expected, review), /staged review trigger root_directory drift/u);
+  assert.throws(() => validateReviewStagedEnvironmentReadback({ trigger: expected,
+    environment: envelope({ SKIP_DEPENDENCY_INSTALL: { is_secret: false, value: "0" } }) },
+  expected, review), /review trigger environment drift/u);
+});
+
 test("binds provider snapshots to a fresh exact reviewed source", () => {
   const sourceSha = "a".repeat(40);
   const now = Date.parse("2026-08-15T12:00:00.000Z");
@@ -1084,8 +1144,9 @@ test("plans inert setup, separately gated activation, and ordered rollback", () 
   const reviewRootProof = plan.reviewActivation.operations[0];
   const reviewCreate = plan.reviewActivation.operations[1];
   const reviewEnvironment = plan.reviewActivation.operations[2];
-  const reviewActivationRootProof = plan.reviewActivation.operations[3];
-  const reviewActivate = plan.reviewActivation.operations[4];
+  const reviewEnvironmentReadback = plan.reviewActivation.operations[3];
+  const reviewActivationRootProof = plan.reviewActivation.operations[4];
+  const reviewActivate = plan.reviewActivation.operations[5];
   assert.equal(reviewRootProof.id, "review-root-recheck-before-trigger");
   assert.equal(reviewCreate.id, "review-trigger-create");
   assert.equal(reviewCreate.request.method, "POST");
@@ -1103,6 +1164,8 @@ test("plans inert setup, separately gated activation, and ordered rollback", () 
     template: "/builds/triggers/{trigger_uuid}/environment_variables",
     resultReference: "review-trigger-create.trigger_uuid",
   });
+  assert.equal(reviewEnvironmentReadback.id,
+    "review-environment-readback-before-activation");
   assert.equal(reviewActivationRootProof.id, "review-root-recheck-before-activation");
   assert.equal(reviewActivate.id, "review-trigger-activate");
   assert.equal(reviewActivate.request.method, "PATCH");
@@ -1113,6 +1176,8 @@ test("plans inert setup, separately gated activation, and ordered rollback", () 
   assert.equal(reviewActivate.request.body.root_directory, "/deployment/review-check");
   assert.equal(reviewActivate.precondition.reviewRootProof.resultReference,
     "review-root-recheck-before-activation.proof_digest");
+  assert.equal(reviewActivate.precondition.reviewEnvironmentProof.resultReference,
+    "review-environment-readback-before-activation.proof_digest");
   assert.deepEqual(plan.productionActivation.request.body.branch_includes, ["main"]);
   assert.equal(plan.productionActivation.request.body.build_token_uuid.resultReference,
     "production-build-token.build_token_uuid");
@@ -1175,7 +1240,8 @@ test("plans inert setup, separately gated activation, and ordered rollback", () 
   assert.ok(plan.privateInputs.includes("ATRINIK_PRODUCTION_STAGING_SENTINEL_REFS_FILE"));
   assert.equal(plan.privateInputs.includes("ATRINIK_REVIEW_STAGING_SENTINEL_REFS_FILE"), false);
   assert.ok(plan.privateInputs.includes("ATRINIK_REVIEW_STAGING_ROOT_DIRECTORY_FILE"));
-  assert.ok(plan.privateInputs.includes("ATRINIK_REVIEW_STAGING_ROOT_PROOF_FILE"));
+  assert.ok(plan.privateInputs.includes("ATRINIK_REVIEW_STAGING_ROOT_CREATE_PROOF_FILE"));
+  assert.ok(plan.privateInputs.includes("ATRINIK_REVIEW_STAGING_ROOT_ACTIVATION_PROOF_FILE"));
   assert.ok(plan.setupOperations.filter(({ mutation }) => mutation)
     .every(({ actor, action }) => actor && action));
   assert.equal(validateSetupPlan(plan), plan);
@@ -1241,10 +1307,26 @@ test("plans inert setup, separately gated activation, and ordered rollback", () 
     id === "review-trigger-activate").precondition;
   assert.throws(() => validateSetupPlan(missingReviewRootProof),
     /complete setup plan schema drift/u);
+  const missingReviewEnvironmentProof = structuredClone(plan);
+  delete missingReviewEnvironmentProof.reviewActivation.operations.find(({ id }) =>
+    id === "review-trigger-activate").precondition.reviewEnvironmentProof;
+  assert.throws(() => validateSetupPlan(missingReviewEnvironmentProof),
+    /complete setup plan schema drift/u);
   const unsafeRollbackOrder = structuredClone(plan);
   [unsafeRollbackOrder.rollbackOperations[0], unsafeRollbackOrder.rollbackOperations[1]] =
     [unsafeRollbackOrder.rollbackOperations[1], unsafeRollbackOrder.rollbackOperations[0]];
   assert.throws(() => validateSetupPlan(unsafeRollbackOrder), /rollback operation set/u);
+  const missingReviewDeletionReadback = structuredClone(plan);
+  missingReviewDeletionReadback.rollbackOperations =
+    missingReviewDeletionReadback.rollbackOperations.filter(({ id }) =>
+      id !== "prove-review-trigger-deleted-before-quiescence");
+  assert.throws(() => validateSetupPlan(missingReviewDeletionReadback),
+    /rollback operation set/u);
+  const wrongRollbackUuid = structuredClone(plan);
+  wrongRollbackUuid.rollbackOperations.find(({ id }) =>
+    id === "delete-review-trigger-before-quiescence").request.path.resultReference =
+      "production-trigger-staged.trigger_uuid";
+  assert.throws(() => validateSetupPlan(wrongRollbackUuid), /complete setup plan schema drift/u);
   const missingActivationProof = structuredClone(plan);
   delete missingActivationProof.productionActivation.precondition.productionSentinelProof;
   assert.throws(() => validateSetupPlan(missingActivationProof), /complete setup plan schema drift/u);

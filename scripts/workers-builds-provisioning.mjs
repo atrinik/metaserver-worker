@@ -24,8 +24,9 @@ const maximumProviderResponseBytes = 1024 * 1024;
 const maximumPrivateDocumentBytes = 64 * 1024;
 const maximumProviderPages = 100;
 const stagingBranchPattern = /^review-build-only-sentinel-[0-9a-f]{32}$/u;
+const reviewStagingRootPattern = /^\/review-build-only-staging-[0-9a-f]{32}$/u;
 const gitShaPattern = /^[0-9a-f]{40}$/u;
-const expectedSetupPlanSha256 = "588ca250a18c3cb3eba06a0b4dad36627df7d073aca95ff1e89c6536ee0a9f2d";
+const expectedSetupPlanSha256 = "f7d624e67d0af59f17e87d2fa539643fd2ca6c3d1e66b5d3db5851522a0f61df";
 const githubRepository = Object.freeze({
   provider_account_id: "6371603",
   provider_account_name: "atrinik",
@@ -207,6 +208,54 @@ export function validateDistinctSentinelRefAbsence(productionProof, reviewProof,
   if (production.branch === review.branch)
     fail("production and review staging sentinel branches must be distinct");
   return { production, review };
+}
+
+export function validateReviewStagingRootAbsence(proof, rootDirectory, sourceSha,
+  now = Date.now()) {
+  const keys = ["absenceChecks", "branches", "capturedAt", "currentMainSha", "pagination",
+    "repository", "rootDirectory", "source"];
+  if (!reviewStagingRootPattern.test(rootDirectory ?? "") ||
+      !proof || !same(sorted(Object.keys(proof)), sorted(keys)) ||
+      proof.source !== "github-complete-branch-root-absence-readback" ||
+      !same(proof.repository, githubRepository) || proof.rootDirectory !== rootDirectory ||
+      proof.currentMainSha !== sourceSha || !gitShaPattern.test(sourceSha ?? ""))
+    fail("review staging root absence proof identity is malformed");
+  const captured = Date.parse(proof.capturedAt ?? "");
+  if (!Number.isFinite(captured) || captured > now + 30_000 || now - captured > 5 * 60_000)
+    fail("review staging root absence proof is stale");
+  if (!Array.isArray(proof.branches) || !Array.isArray(proof.absenceChecks) ||
+      proof.branches.length < 1 || proof.branches.length > 200)
+    fail("review staging root branch inventory is incomplete");
+  if (!proof.pagination || !same(sorted(Object.keys(proof.pagination)),
+    ["hasNextPage", "pageCount", "totalCount"]) ||
+      proof.pagination.hasNextPage !== false ||
+      !Number.isSafeInteger(proof.pagination.pageCount) || proof.pagination.pageCount < 1 ||
+      proof.pagination.pageCount > 10 || proof.pagination.totalCount !== proof.branches.length)
+    fail("review staging root branch pagination is incomplete");
+  const branchKeys = ["ref", "sha"];
+  const branches = proof.branches.map((entry) => {
+    if (!entry || !same(sorted(Object.keys(entry)), branchKeys) ||
+        !/^refs\/heads\/[A-Za-z0-9._/-]{1,200}$/u.test(entry.ref ?? "") ||
+        !gitShaPattern.test(entry.sha ?? ""))
+      fail("review staging root branch inventory is malformed");
+    return entry;
+  });
+  if (new Set(branches.map(({ ref }) => ref)).size !== branches.length ||
+      branches.filter(({ ref, sha }) => ref === "refs/heads/main" && sha === sourceSha).length !== 1)
+    fail("review staging root branch inventory is incomplete");
+  const nonMain = branches.filter(({ ref }) => ref !== "refs/heads/main");
+  const expectedPath = rootDirectory.slice(1);
+  const checks = proof.absenceChecks.map((entry) => {
+    if (!entry || !same(sorted(Object.keys(entry)), ["path", "ref", "sha", "status"]) ||
+        entry.path !== expectedPath || entry.status !== 404)
+      fail("review staging root absence check is malformed");
+    return entry;
+  });
+  if (!same(checks.map(({ ref, sha }) => ({ ref, sha })),
+    nonMain.map(({ ref, sha }) => ({ ref, sha }))))
+    fail("review staging root absence checks are incomplete or reordered");
+  return { outcome: "review-staging-root-absent", mutation: false,
+    rootDirectory, sourceSha, proof_digest: digestJson(proof) };
 }
 
 export function validateRepositoryConnectionOwnerProof(proof, accountId, sourceSha,
@@ -424,7 +473,8 @@ export function provisioningSetupPlan(production, review) {
       "ATRINIK_PRODUCTION_STAGING_SENTINEL_BRANCH_FILE",
       "ATRINIK_PRODUCTION_STAGING_SENTINEL_REFS_FILE",
       "ATRINIK_REVIEW_STAGING_ROOT_DIRECTORY_FILE",
-      "ATRINIK_REVIEW_STAGING_ROOT_PROOF_FILE",
+      "ATRINIK_REVIEW_STAGING_ROOT_CREATE_PROOF_FILE",
+      "ATRINIK_REVIEW_STAGING_ROOT_ACTIVATION_PROOF_FILE",
       "ATRINIK_REPOSITORY_CONNECTION_OWNER_PROOF_FILE",
       "ATRINIK_WORKERS_BUILDS_USAGE_PROOF_FILE",
       "ATRINIK_STAGED_PROOF_OUTPUT_FILE",
@@ -546,6 +596,8 @@ export function provisioningSetupPlan(production, review) {
         { id: "review-root-recheck-before-trigger", actor: "github-owner-readback",
           action: "prove-private-random-review-staging-root-absent-from-every-current-non-main-ref-outside-sandbox",
           mutation: false, rootDirectory: reviewStagingRoot,
+          command: "npm run provision:workers-builds:verify-review-staging-root-create",
+          proof: privateFileReference("ATRINIK_REVIEW_STAGING_ROOT_CREATE_PROOF_FILE"),
           produces: { proof_digest: "fresh-review-staging-root-absence-proof-digest" } },
         { id: "review-trigger-create", actor: "workers-builds-control-plane-operator",
           action: "post-preview-role-trigger-with-private-absent-root-inert-commands-and-zero-resource-token",
@@ -563,15 +615,36 @@ export function provisioningSetupPlan(production, review) {
             body: Object.fromEntries(Object.entries(automaticReviewEnvironmentSpec(review))
               .map(([name, value]) => [name, { is_secret: value.is_secret,
                 valueSource: { literal: value.value } }])) } },
+        { id: "review-environment-readback-before-activation",
+          actor: "workers-builds-control-plane-operator",
+          action: "prove-three-stable-reads-of-private-root-inert-commands-and-exact-review-environment",
+          mutation: false,
+          requests: [
+            { method: "GET", path: apiPathReference(
+              "/builds/workers/{external_script_id}/triggers",
+              "production-script", "script_tag") },
+            { method: "GET", path: apiPathReference(
+              "/builds/triggers/{trigger_uuid}/environment_variables",
+              "review-trigger-create", "trigger_uuid") },
+          ],
+          stability: "two-complete-identical-passes-plus-final-identical-sweep",
+          validator: "exact-review-staged-trigger-and-automatic-review-environment",
+          produces: { proof_digest: "fresh-staged-review-environment-readback-digest" } },
         { id: "review-root-recheck-before-activation", actor: "github-owner-readback",
           action: "repeat-private-random-review-staging-root-absence-proof-immediately-before-final-preview-patch-outside-sandbox",
           mutation: false, rootDirectory: reviewStagingRoot,
+          command: "npm run provision:workers-builds:verify-review-staging-root-activation",
+          proof: privateFileReference("ATRINIK_REVIEW_STAGING_ROOT_ACTIVATION_PROOF_FILE"),
           produces: { proof_digest: "fresh-review-staging-root-absence-proof-digest" } },
         { id: "review-trigger-activate", actor: "workers-builds-control-plane-operator",
           action: "patch-preview-trigger-atomically-to-reviewed-root-and-commands",
           mutation: true,
-          precondition: { reviewRootProof: resultReference(
-            "review-root-recheck-before-activation", "proof_digest") },
+          precondition: {
+            reviewEnvironmentProof: resultReference(
+              "review-environment-readback-before-activation", "proof_digest"),
+            reviewRootProof: resultReference(
+              "review-root-recheck-before-activation", "proof_digest"),
+          },
           request: { method: "PATCH",
             path: apiPathReference("/builds/triggers/{trigger_uuid}",
               "review-trigger-create", "trigger_uuid"),
@@ -622,7 +695,20 @@ export function provisioningSetupPlan(production, review) {
       { id: "delete-review-trigger-before-quiescence",
         actor: "workers-builds-control-plane-operator",
         action: "delete-exact-journaled-review-trigger-before-any-non-main-push-can-race-quiescence",
-        mutation: true },
+        mutation: true, condition: "only-if-review-trigger-create-is-journal-bound-or-ambiguously-reconciled",
+        request: { method: "DELETE", path: apiPathReference(
+          "/builds/triggers/{trigger_uuid}", "review-trigger-create", "trigger_uuid") } },
+      { id: "prove-review-trigger-deleted-before-quiescence",
+        actor: "workers-builds-control-plane-operator",
+        action: "prove-exhaustive-shared-core-trigger-inventory-excludes-journaled-review-trigger",
+        mutation: false,
+        precondition: { deletedTrigger: resultReference(
+          "review-trigger-create", "trigger_uuid") },
+        request: { method: "GET", path: apiPathReference(
+          "/builds/workers/{external_script_id}/triggers",
+          "production-script", "script_tag") },
+        stability: "two-complete-identical-passes-plus-final-identical-sweep",
+        produces: { proof_digest: "fresh-review-trigger-absence-readback-digest" } },
       { id: "sentinel-recheck-before-production-rollback", actor: "github-owner-readback",
         action: "repeat-exact-private-random-production-sentinel-ref-absence-proof-outside-sandbox",
         mutation: false, branch: productionSentinel,
@@ -638,18 +724,48 @@ export function provisioningSetupPlan(production, review) {
             "production-trigger-staged", "trigger_uuid"),
           body: triggerPlanSpec(productionStaged, "production-script", "review-build-token") } },
       { id: "prove-rollback-quiescence", actor: "workers-builds-control-plane-operator",
-        action: "prove-no-build-or-upload-remains-active", mutation: false },
+        action: "prove-no-build-or-upload-remains-active", mutation: false,
+        precondition: { reviewDeletionProof: resultReference(
+          "prove-review-trigger-deleted-before-quiescence", "proof_digest") } },
       { id: "delete-production-trigger", actor: "workers-builds-control-plane-operator",
         action: "delete-exact-journaled-production-trigger-after-quiescence",
-        mutation: true },
+        mutation: true, condition: "only-if-production-trigger-staged-is-journal-bound-or-ambiguously-reconciled",
+        request: { method: "DELETE", path: apiPathReference(
+          "/builds/triggers/{trigger_uuid}", "production-trigger-staged", "trigger_uuid") } },
+      { id: "prove-setup-triggers-deleted", actor: "workers-builds-control-plane-operator",
+        action: "prove-exhaustive-shared-core-trigger-inventory-is-empty",
+        mutation: false,
+        request: { method: "GET", path: apiPathReference(
+          "/builds/workers/{external_script_id}/triggers",
+          "production-script", "script_tag") },
+        stability: "two-complete-identical-passes-plus-final-identical-sweep",
+        produces: { proof_digest: "fresh-zero-trigger-readback-digest" } },
       { id: "delete-setup-build-tokens", actor: "workers-builds-control-plane-operator",
-        action: "delete-only-the-two-recorded-build-token-uuids", mutation: true },
+        action: "delete-only-the-two-recorded-build-token-uuids", mutation: true,
+        condition: "delete-each-only-if-its-create-is-journal-bound-or-ambiguously-reconciled",
+        precondition: { triggerDeletionProof: resultReference(
+          "prove-setup-triggers-deleted", "proof_digest") },
+        requests: [
+          { method: "DELETE", path: apiPathReference(
+            "/builds/tokens/{build_token_uuid}", "production-build-token", "build_token_uuid") },
+          { method: "DELETE", path: apiPathReference(
+            "/builds/tokens/{build_token_uuid}", "review-build-token", "build_token_uuid") },
+        ] },
+      { id: "prove-setup-build-tokens-deleted", actor: "workers-builds-control-plane-operator",
+        action: "prove-exhaustive-build-token-inventory-excludes-both-journaled-token-uuids",
+        mutation: false,
+        request: { method: "GET", path: "/builds/tokens" },
+        stability: "two-complete-identical-passes-plus-final-identical-sweep",
+        produces: { proof_digest: "fresh-setup-token-absence-readback-digest" } },
       { id: "retain-repository-connection", actor: "workers-builds-control-plane-operator",
         action: "retain-shared-metaserver-repository-connection-provider-has-no-read-inventory-and-website-must-survive",
         mutation: false },
       { id: "prove-production-preserved", actor: "workers-builds-control-plane-operator",
         action: "prove-three-production-workers-and-website-app-selection-unchanged",
-        mutation: false },
+        mutation: false,
+        precondition: { tokenDeletionProof: resultReference(
+          "prove-setup-build-tokens-deleted", "proof_digest") },
+        command: "npm run provision:workers-builds:verify-preflight" },
     ],
   };
   validateSetupPlan(plan);
@@ -748,6 +864,8 @@ export function validateSetupPlan(plan) {
       "post-preview-role-trigger-with-private-absent-root-inert-commands-and-zero-resource-token"],
     ["review-environment", "workers-builds-control-plane-operator", true,
       "patch-exact-nonsecret-review-environment"],
+    ["review-environment-readback-before-activation", "workers-builds-control-plane-operator",
+      false, "prove-three-stable-reads-of-private-root-inert-commands-and-exact-review-environment"],
     ["review-root-recheck-before-activation", "github-owner-readback", false,
       "repeat-private-random-review-staging-root-absence-proof-immediately-before-final-preview-patch-outside-sandbox"],
     ["review-trigger-activate", "workers-builds-control-plane-operator", true,
@@ -786,6 +904,8 @@ export function validateSetupPlan(plan) {
   const expectedRollback = [
     ["delete-review-trigger-before-quiescence", "workers-builds-control-plane-operator", true,
       "delete-exact-journaled-review-trigger-before-any-non-main-push-can-race-quiescence"],
+    ["prove-review-trigger-deleted-before-quiescence", "workers-builds-control-plane-operator",
+      false, "prove-exhaustive-shared-core-trigger-inventory-excludes-journaled-review-trigger"],
     ["sentinel-recheck-before-production-rollback", "github-owner-readback", false,
       "repeat-exact-private-random-production-sentinel-ref-absence-proof-outside-sandbox"],
     ["restore-production-trigger-to-inert-sentinel", "workers-builds-control-plane-operator", true,
@@ -794,8 +914,12 @@ export function validateSetupPlan(plan) {
       "prove-no-build-or-upload-remains-active"],
     ["delete-production-trigger", "workers-builds-control-plane-operator", true,
       "delete-exact-journaled-production-trigger-after-quiescence"],
+    ["prove-setup-triggers-deleted", "workers-builds-control-plane-operator", false,
+      "prove-exhaustive-shared-core-trigger-inventory-is-empty"],
     ["delete-setup-build-tokens", "workers-builds-control-plane-operator", true,
       "delete-only-the-two-recorded-build-token-uuids"],
+    ["prove-setup-build-tokens-deleted", "workers-builds-control-plane-operator", false,
+      "prove-exhaustive-build-token-inventory-excludes-both-journaled-token-uuids"],
     ["retain-repository-connection", "workers-builds-control-plane-operator", false,
       "retain-shared-metaserver-repository-connection-provider-has-no-read-inventory-and-website-must-survive"],
     ["prove-production-preserved", "workers-builds-control-plane-operator", false,
@@ -827,6 +951,18 @@ export function validateAutomaticReviewEnvironment(actual, review) {
     !Object.keys(bootstrap).every((key) => ["created_on", "is_secret", "value"].includes(key))
   )
     fail("review trigger environment drift");
+}
+
+export function validateReviewStagedEnvironmentReadback({ trigger, environment },
+  expectedTrigger, review) {
+  if (!reviewStagingRootPattern.test(expectedTrigger?.root_directory ?? "") ||
+      expectedTrigger.build_command !== "exit 1" || expectedTrigger.deploy_command !== "exit 1")
+    fail("review staged trigger expectation is unsafe");
+  validateTriggerSnapshot(trigger, expectedTrigger, "staged review");
+  validateAutomaticReviewEnvironment(requireEnvelope(environment,
+    "staged review environment"), review);
+  return { outcome: "review-staged-environment-readback-valid", mutation: false,
+    proof_digest: digestJson({ trigger, environment }) };
 }
 
 export function validateNoDeployHooks(envelope, label) {
@@ -1578,6 +1714,16 @@ export async function readProductionSentinelProof(environment = process.env, now
     fail("production staging sentinel proof branch drift");
   validateSentinelRefAbsence(productionProof, now);
   return { productionSentinelProof: productionProof };
+}
+
+export async function readReviewStagingRootProof(proofVariable, environment = process.env,
+  sourceSha, now = Date.now()) {
+  const rootDirectory = await readPrivateValue(
+    environment.ATRINIK_REVIEW_STAGING_ROOT_DIRECTORY_FILE,
+    "review staging root directory", reviewStagingRootPattern);
+  const proof = await readPrivateJson(environment[proofVariable],
+    "review staging root absence proof");
+  return validateReviewStagingRootAbsence(proof, rootDirectory, sourceSha, now);
 }
 
 async function writePrivateJson(path, value) {
@@ -2357,6 +2503,17 @@ async function main() {
     });
     await writePrivateProof(process.env.ATRINIK_STAGED_PROOF_OUTPUT_FILE, stagedProof);
     process.stdout.write(`${JSON.stringify(publicStagedProofSummary(stagedProof))}\n`);
+    return;
+  }
+  if (mode === "--verify-review-staging-root-create" ||
+      mode === "--verify-review-staging-root-activation") {
+    const sourceSha = await reviewedCurrentMainSha();
+    const proofVariable = mode === "--verify-review-staging-root-create" ?
+      "ATRINIK_REVIEW_STAGING_ROOT_CREATE_PROOF_FILE" :
+      "ATRINIK_REVIEW_STAGING_ROOT_ACTIVATION_PROOF_FILE";
+    const proof = await readReviewStagingRootProof(proofVariable, process.env, sourceSha);
+    process.stdout.write(`${JSON.stringify({ outcome: proof.outcome, mutation: false,
+      sourceSha: proof.sourceSha, proof_digest: proof.proof_digest })}\n`);
     return;
   }
   if (mode === "--verify-staged-proof") {
