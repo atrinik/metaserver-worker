@@ -1521,6 +1521,31 @@ export function normalizeBuildsListPage(envelope, label, page) {
   return { ...envelope, result_info: { page: 1, total_pages: 1, total_count: 0 } };
 }
 
+export function normalizeDomainListPage(envelope, label, page) {
+  const rows = requireEnvelope(envelope, label);
+  const info = envelope.result_info;
+  const keysWithoutTotalPages = ["count", "page", "per_page", "total_count"];
+  const keysWithTotalPages = [...keysWithoutTotalPages, "total_pages"];
+  if (!Array.isArray(rows) || !info ||
+      (!same(sorted(Object.keys(info)), keysWithoutTotalPages) &&
+       !same(sorted(Object.keys(info)), keysWithTotalPages)) ||
+      !Number.isSafeInteger(info.page) || !Number.isSafeInteger(info.count) ||
+      !Number.isSafeInteger(info.per_page) || !Number.isSafeInteger(info.total_count) ||
+      info.page !== page || info.page < 1 || info.count < 0 || info.per_page < 1 ||
+      info.total_count < 0 || info.count !== rows.length)
+    fail(`${label} provider domain pagination metadata is malformed`);
+  const derivedTotalPages = Math.max(1, Math.ceil(info.total_count / info.per_page));
+  const expectedCount = info.page < derivedTotalPages
+    ? info.per_page
+    : info.total_count - (info.per_page * (derivedTotalPages - 1));
+  if (info.page > derivedTotalPages || info.count > info.per_page ||
+      info.count !== expectedCount ||
+      (info.total_pages !== undefined &&
+       (!Number.isSafeInteger(info.total_pages) || info.total_pages !== derivedTotalPages)))
+    fail(`${label} provider domain pagination metadata is malformed`);
+  return { ...envelope, result_info: { ...info, total_pages: derivedTotalPages } };
+}
+
 function normalizeWorkerVersionPage(envelope, label) {
   const result = requireEnvelope(envelope, label);
   const info = envelope.result_info ?? {};
@@ -1754,7 +1779,7 @@ export async function readProviderSnapshot({ accountId, token, productionReadTok
     fail("account Worker inventory changed during trigger aggregation");
   await writePrivateJson(resolve(outputDirectory, "account-triggers.json"), accountTriggers);
   await providerGetPaginated(context, "domains", "/workers/domains",
-    ({ hostname, service }) => `${hostname}\0${service}`);
+    ({ hostname, service }) => `${hostname}\0${service}`, 50, normalizeDomainListPage);
   await providerGetBuildsList(context, "build-tokens", "/builds/tokens",
     ({ build_token_uuid: id }) => id);
   await providerGetStable(context, "build-limits", "/builds/account/limits");
