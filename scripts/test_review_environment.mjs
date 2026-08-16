@@ -46,6 +46,7 @@ test("reserves main exclusively for the production contract", () => {
     changed((value) => value.liveCanary.source.branch = "main"),
     changed((value) => value.automaticReview.productionDeployCommand = "npm run review:validate"),
     changed((value) => value.automaticReview.accountBoundary.productionAccountReuse = false),
+    changed((value) => value.automaticReview.rootDirectory = "deployment/review-check"),
     changed((value) => value.automaticReview.accountBoundary.buildIdentityProductionProjectSettingsReachable = true),
     changed((value) => value.automaticReview.providerBuildTimeoutMinutes = 30),
     changed((value) => value.automaticReview.checkCommandTimeoutMinutes = 20),
