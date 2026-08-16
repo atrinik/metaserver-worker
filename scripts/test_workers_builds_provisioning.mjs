@@ -16,6 +16,7 @@ import {
   materializeProductionConfigurations,
   normalizeBuildsListPage,
   normalizeDomainListPage,
+  normalizeTriggerListPage,
   productionEnvironmentSpec,
   productionTriggerSpec,
   publicStagedProofSummary,
@@ -287,6 +288,47 @@ test("normalizes only an empty first Workers Builds page without metadata", () =
     "build tokens", 1), /provider readback failed/u);
 });
 
+test("normalizes only bounded metadata-free per-Worker trigger inventories", () => {
+  const trigger = (trigger_uuid) => ({ trigger_uuid });
+  const raw = (result) => ({ success: true, result, errors: [], messages: [] });
+  for (const rows of [[], [trigger(resourceUuid)],
+    [trigger(resourceUuid), trigger(reviewTriggerUuid)]]) {
+    const normalized = normalizeTriggerListPage(raw(rows), "triggers", 1, 2);
+    assert.deepEqual(normalized.result_info,
+      { page: 1, total_pages: 1, total_count: rows.length });
+    assert.deepEqual(combineProviderPages([normalized], "triggers",
+      ({ trigger_uuid: id }) => id).result, rows);
+  }
+  const native = { ...raw([trigger(resourceUuid)]), result_info: {
+    page: 1, total_pages: 1, total_count: 1,
+  } };
+  assert.equal(normalizeTriggerListPage(native, "triggers", 1, 2), native);
+  assert.throws(() => normalizeTriggerListPage({ ...native, result_info: {
+    ...native.result_info, total_count: 3,
+  } }, "triggers", 1, 2), /trigger pagination metadata is malformed/u);
+
+  const malformed = [
+    { envelope: raw([trigger(resourceUuid), trigger(reviewTriggerUuid),
+      trigger("22222222-2222-4222-8222-222222222222")]), page: 1, maximum: 2 },
+    { envelope: raw([trigger(resourceUuid)]), page: 2, maximum: 2 },
+    { envelope: { ...raw([trigger(resourceUuid)]), unexpected: true }, page: 1, maximum: 2 },
+    { envelope: { ...raw([trigger(resourceUuid)]), errors: {} }, page: 1, maximum: 2 },
+    { envelope: { ...raw([trigger(resourceUuid)]), messages: {} }, page: 1, maximum: 2 },
+    { envelope: raw([trigger(resourceUuid)]), page: 1, maximum: 3 },
+  ];
+  for (const { envelope, page, maximum } of malformed)
+    assert.throws(() => normalizeTriggerListPage(envelope, "triggers", page, maximum),
+      /trigger pagination metadata is malformed/u);
+
+  const duplicated = normalizeTriggerListPage(raw([
+    trigger(resourceUuid), trigger(resourceUuid),
+  ]), "triggers", 1, 2);
+  assert.throws(() => combineProviderPages([duplicated], "triggers",
+    ({ trigger_uuid: id }) => id), /duplicated/u);
+  assert.throws(() => normalizeBuildsListPage(raw([trigger(resourceUuid)]),
+    "builds", 1), /Builds pagination metadata is malformed/u);
+});
+
 test("normalizes only the exact empty native zero-page Workers Builds response", () => {
   const rawEmpty = { success: true, result: [], errors: [], messages: [], result_info: {
     page: 1, per_page: 200, count: 0, total_count: 0, total_pages: 0, next_page: false,
@@ -387,9 +429,12 @@ test("routes every Builds inventory through the empty-page adapter in each provi
     const domainPage = (result) => ({ success: true, result, errors: [], messages: [],
       result_info: { page: 1, per_page: 50, count: result.length,
         total_count: result.length } });
-    const driftPath = `/builds/workers/${workerTags.get(production.workers[0].name)}/builds`;
+    const coreTag = workerTags.get(production.workers[0].name);
+    const driftPath = `/builds/workers/${coreTag}/builds`;
+    const triggerPath = `/builds/workers/${coreTag}/triggers`;
     const fetchFixture = ({ malformedEndpoint, buildHistoryDriftAt, domainHistoryDriftAt,
-      retiredReviewWorker = false,
+      retiredReviewWorker = false, triggerRows = [], triggerHistoryDriftAt,
+      triggerHistoryDriftRows = [], metadataFreeNonTriggerPath,
       localBuildsReads = new Map(), localDomainReads = new Map() } = {}) =>
       async (rawUrl, init = {}) => {
       const url = new URL(rawUrl);
@@ -433,12 +478,22 @@ test("routes every Builds inventory through the empty-page adapter in each provi
           path === "/builds/tokens") {
         buildsReads.set(path, (buildsReads.get(path) ?? 0) + 1);
         localBuildsReads.set(path, (localBuildsReads.get(path) ?? 0) + 1);
-        body = path === driftPath && localBuildsReads.get(path) === buildHistoryDriftAt
+        const read = localBuildsReads.get(path);
+        if (path === triggerPath) {
+          body = { success: true,
+            result: read === triggerHistoryDriftAt ? triggerHistoryDriftRows : triggerRows,
+            errors: [], messages: [] };
+        } else if (path === metadataFreeNonTriggerPath) {
+          body = { success: true, result: [{ build_uuid: resourceUuid }],
+            errors: [], messages: [] };
+        } else body = path === driftPath && read === buildHistoryDriftAt
           ? providerPage([{ build_uuid: resourceUuid }])
           : { success: true, result: [], errors: [], messages: [], result_info: {
             page: 1, per_page: 200, count: 0, total_count: 0, total_pages: 0,
             next_page: false,
           } };
+      } else if (/^\/builds\/triggers\/[0-9a-f-]+\/environment_variables$/u.test(path)) {
+        body = envelope({});
       } else if (path === "/workers/domains") {
         domainReads.set(path, (domainReads.get(path) ?? 0) + 1);
         localDomainReads.set(path, (localDomainReads.get(path) ?? 0) + 1);
@@ -472,6 +527,31 @@ test("routes every Builds inventory through the empty-page adapter in each provi
     }
     assert.equal(buildsReads.get("/builds/tokens"), 3);
     assert.equal(domainReads.get("/workers/domains"), 3);
+    for (const rows of [
+      [{ trigger_uuid: resourceUuid }],
+      [{ trigger_uuid: resourceUuid }, { trigger_uuid: reviewTriggerUuid }],
+    ]) {
+      const reads = new Map();
+      const bounded = await runReadback(`bounded-triggers-${rows.length}`,
+        fetchFixture({ triggerRows: rows, localBuildsReads: reads }));
+      assert.equal(bounded.mutation, false);
+      assert.equal(reads.get(triggerPath), 9);
+    }
+    const orderedTriggers = [
+      { trigger_uuid: resourceUuid }, { trigger_uuid: reviewTriggerUuid },
+    ];
+    await assert.rejects(runReadback("trigger-pass-drift", fetchFixture({
+      triggerRows: orderedTriggers, triggerHistoryDriftAt: 2,
+      triggerHistoryDriftRows: [...orderedTriggers].reverse(),
+    })), /triggers provider inventory changed between complete passes/u);
+    await assert.rejects(runReadback("trigger-sweep-drift", fetchFixture({
+      triggerRows: orderedTriggers, triggerHistoryDriftAt: 7,
+      triggerHistoryDriftRows: [{ trigger_uuid: "33333333-3333-4333-8333-333333333333" },
+        orderedTriggers[1]],
+    })), /triggers changed between complete provider sweeps/u);
+    await assert.rejects(runReadback("metadata-free-non-trigger", fetchFixture({
+      metadataFreeNonTriggerPath: driftPath,
+    })), /Builds pagination metadata is malformed/u);
     await assert.rejects(runReadback("domains", fetchFixture({ malformedEndpoint: "domains" })),
       /domain pagination metadata is malformed/u);
     await assert.rejects(runReadback("versions", fetchFixture({ malformedEndpoint: "versions" })),

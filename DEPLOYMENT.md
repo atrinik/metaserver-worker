@@ -214,6 +214,14 @@ settings, deployments, active-version resources, trigger environments, build
 limits, and the D1 ledger are likewise read twice; deployments are reread after
 the active version so a mid-read activation fails closed. A fresh manifest binds the snapshot to the exact
 account, reviewed source SHA, and checked-in production/review contract digests.
+Cloudflare may omit `result_info` from a per-Worker trigger-list response even
+when that response contains triggers. Only that endpoint accepts the exact
+successful four-field provider envelope without pagination metadata, only on
+the requested first page, and only for zero, one, or the documented maximum of
+two trigger rows. It is normalized as one exhaustive page and still must match
+across both complete passes and the final sweep. Nonempty metadata-free build,
+build-token, Deploy Hook, domain, Worker Version, and account-wide inventories
+remain invalid.
 Before setup, prove the fresh no-trigger/no-Deploy-Hook/no-active-build boundary:
 
 ```sh
