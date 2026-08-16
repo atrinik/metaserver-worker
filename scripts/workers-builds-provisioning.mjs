@@ -1728,6 +1728,29 @@ export function normalizeBuildsListPage(envelope, label, page) {
   return { ...envelope, result_info: { page: 1, total_pages: 1, total_count: 0 } };
 }
 
+export function normalizeTriggerListPage(envelope, label, page,
+  maximumTriggersPerWorker) {
+  const rows = requireEnvelope(envelope, label);
+  if (maximumTriggersPerWorker !== 2)
+    fail(`${label} provider trigger pagination metadata is malformed`);
+  if (envelope.result_info !== undefined) {
+    const normalized = normalizeBuildsListPage(envelope, label, page);
+    if (Number.isSafeInteger(normalized.result_info?.total_count) &&
+        normalized.result_info.total_count > maximumTriggersPerWorker)
+      fail(`${label} provider trigger pagination metadata is malformed`);
+    return normalized;
+  }
+  const envelopeKeys = ["errors", "messages", "result", "success"];
+  if (page !== 1 ||
+      !same(sorted(Object.keys(envelope)), envelopeKeys) ||
+      !Array.isArray(envelope.errors) || !Array.isArray(envelope.messages) ||
+      !Array.isArray(rows) || rows.length > maximumTriggersPerWorker)
+    fail(`${label} provider trigger pagination metadata is malformed`);
+  return { ...envelope, result_info: {
+    page: 1, total_pages: 1, total_count: rows.length,
+  } };
+}
+
 export function normalizeDomainListPage(envelope, label, page) {
   const rows = requireEnvelope(envelope, label);
   const info = envelope.result_info;
@@ -1831,6 +1854,15 @@ async function providerGetPaginated(context, label, path, identity, perPage = 50
 async function providerGetBuildsList(context, label, path, identity, perPage = 50) {
   return providerGetPaginated(context, label, path, identity, perPage,
     normalizeBuildsListPage);
+}
+
+async function providerGetTriggerList(context, label, path, identity,
+  maximumTriggersPerWorker, perPage = 50) {
+  if (!/^\/builds\/workers\/[^/?]+\/triggers$/u.test(path))
+    fail(`${label} is not a per-Worker trigger inventory`);
+  return providerGetPaginated(context, label, path, identity, perPage,
+    (envelope, pageLabel, page) => normalizeTriggerListPage(
+      envelope, pageLabel, page, maximumTriggersPerWorker));
 }
 
 async function providerGetWorkerVersionsPass(context, label, path, perPage) {
@@ -1946,9 +1978,10 @@ export async function readProviderSnapshot({ accountId, token, productionReadTok
     await providerGetBuildsList(context, `${name}.deploy-hooks`,
       `/builds/workers/${encodeURIComponent(name)}/deploy_hooks`,
       ({ deploy_hook_uuid: id }) => id);
-    const triggers = await providerGetBuildsList(context, `${name}.triggers`,
+    const triggers = await providerGetTriggerList(context, `${name}.triggers`,
       `/builds/workers/${encodeURIComponent(script.tag)}/triggers`,
-      ({ trigger_uuid: id }) => id);
+      ({ trigger_uuid: id }) => id,
+      review.automaticReview.providerTopology.maximumTriggersPerWorker);
     await providerGetBuildsList(context, `${name}.builds`,
       `/builds/workers/${encodeURIComponent(script.tag)}/builds`,
       ({ build_uuid: id }) => id, 200);
@@ -1963,10 +1996,11 @@ export async function readProviderSnapshot({ accountId, token, productionReadTok
     const rows = [];
     for (const [index, script] of scriptRows.entries()) {
       if (!scriptTagPattern.test(script.tag ?? "")) fail("account Worker tag is malformed");
-      const triggerInventory = await providerGetBuildsList(context,
+      const triggerInventory = await providerGetTriggerList(context,
         `account-trigger-pass-${pass}-script-${index}`,
         `/builds/workers/${encodeURIComponent(script.tag)}/triggers`,
-        ({ trigger_uuid: id }) => id);
+        ({ trigger_uuid: id }) => id,
+        review.automaticReview.providerTopology.maximumTriggersPerWorker);
       rows.push(...triggerInventory.result);
     }
     return combineProviderPages([{
