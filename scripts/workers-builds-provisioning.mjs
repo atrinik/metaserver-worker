@@ -25,7 +25,7 @@ const maximumPrivateDocumentBytes = 64 * 1024;
 const maximumProviderPages = 100;
 const stagingBranchPattern = /^review-build-only-sentinel-[0-9a-f]{32}$/u;
 const gitShaPattern = /^[0-9a-f]{40}$/u;
-const expectedSetupPlanSha256 = "9e494112b310f4dae9277fdbf37a6f346ebb7480123d45e6d773f2c580a161c2";
+const expectedSetupPlanSha256 = "bc192193e2322107942eb03cedb9ff57b3e8c0e14ea5ebd7daefe7d771a1a56e";
 const githubRepository = Object.freeze({
   provider_account_id: "6371603",
   provider_account_name: "atrinik",
@@ -187,7 +187,8 @@ function requireExhaustiveEnvelope(value, label) {
   return rows;
 }
 
-export function validateSentinelRefAbsence({ repository, branch, refs, capturedAt }, now = Date.now()) {
+export function validateSentinelRefAbsence(proof, now = Date.now()) {
+  const { repository, branch, refs, capturedAt } = proof ?? {};
   if (!same(repository, githubRepository)) fail("sentinel repository identity drift");
   if (!stagingBranchPattern.test(branch ?? "")) fail("staging sentinel branch is malformed");
   if (!Array.isArray(refs) || refs.length !== 0)
@@ -197,6 +198,15 @@ export function validateSentinelRefAbsence({ repository, branch, refs, capturedA
     fail("staging sentinel branch absence proof is stale");
   return { outcome: "staging-sentinel-ref-absent", repository: "atrinik/metaserver-worker",
     branch };
+}
+
+export function validateDistinctSentinelRefAbsence(productionProof, reviewProof,
+  now = Date.now()) {
+  const production = validateSentinelRefAbsence(productionProof, now);
+  const review = validateSentinelRefAbsence(reviewProof, now);
+  if (production.branch === review.branch)
+    fail("production and review staging sentinel branches must be distinct");
+  return { production, review };
 }
 
 export function validateRepositoryConnectionOwnerProof(proof, accountId, sourceSha,
@@ -364,7 +374,10 @@ function productionEnvironmentPlan(contract) {
 export function provisioningSetupPlan(production, review) {
   const placeholderTag = "1".repeat(32);
   const placeholderUuid = "11111111-1111-4111-8111-111111111111";
-  const sentinel = privateFileReference("ATRINIK_STAGING_SENTINEL_BRANCH_FILE");
+  const productionSentinel = privateFileReference(
+    "ATRINIK_PRODUCTION_STAGING_SENTINEL_BRANCH_FILE");
+  const reviewSentinel = privateFileReference(
+    "ATRINIK_REVIEW_STAGING_SENTINEL_BRANCH_FILE");
   const productionFinal = productionTriggerSpec(production, {
     externalScriptId: placeholderTag,
     repositoryConnectionUuid: placeholderUuid,
@@ -376,9 +389,9 @@ export function provisioningSetupPlan(production, review) {
     buildTokenUuid: placeholderUuid,
   });
   const productionStaged = structuredClone(productionFinal);
-  productionStaged.branch_includes = [sentinel];
+  productionStaged.branch_includes = [productionSentinel];
   const reviewStaged = structuredClone(reviewFinal);
-  reviewStaged.branch_includes = [sentinel];
+  reviewStaged.branch_includes = [reviewSentinel];
   reviewStaged.branch_excludes = ["main"];
   const plan = {
     schemaVersion: 1,
@@ -396,8 +409,10 @@ export function provisioningSetupPlan(production, review) {
       "ATRINIK_CLOUDFLARE_ACCOUNT_ID_FILE",
       "ATRINIK_REVIEWED_SOURCE_SHA_FILE",
       "ATRINIK_WORKERS_BUILDS_API_TOKEN_FILE",
-      "ATRINIK_STAGING_SENTINEL_BRANCH_FILE",
-      "ATRINIK_STAGING_SENTINEL_REFS_FILE",
+      "ATRINIK_PRODUCTION_STAGING_SENTINEL_BRANCH_FILE",
+      "ATRINIK_PRODUCTION_STAGING_SENTINEL_REFS_FILE",
+      "ATRINIK_REVIEW_STAGING_SENTINEL_BRANCH_FILE",
+      "ATRINIK_REVIEW_STAGING_SENTINEL_REFS_FILE",
       "ATRINIK_REPOSITORY_CONNECTION_OWNER_PROOF_FILE",
       "ATRINIK_REVIEW_BOOTSTRAP_API_TOKEN_FILE",
       "ATRINIK_REVIEW_BOOTSTRAP_UPLOAD_PROOF_FILE",
@@ -455,10 +470,16 @@ export function provisioningSetupPlan(production, review) {
     },
     setupOperations: [
       { id: "preflight", actor: "workers-builds-control-plane-operator",
-        action: "require-exact-private-readback-no-competing-trigger-and-validate-private-random-sentinel-ref-absence",
+        action: "require-exact-private-readback-no-competing-trigger-and-validate-two-distinct-private-random-sentinel-ref-absences",
         mutation: false,
-        command: "gh api repos/atrinik/metaserver-worker/git/matching-refs/heads/{private-random-sentinel} outside-sandbox",
-        produces: { sentinel_branch: "private-random-branch-name", sentinel_refs: "exact-empty-array",
+        commands: [
+          "gh api repos/atrinik/metaserver-worker/git/matching-refs/heads/{private-random-production-sentinel} outside-sandbox",
+          "gh api repos/atrinik/metaserver-worker/git/matching-refs/heads/{private-random-review-sentinel} outside-sandbox",
+        ],
+        produces: { production_sentinel_branch: "private-random-branch-name",
+          production_sentinel_refs: "exact-empty-array",
+          review_sentinel_branch: "distinct-private-random-branch-name",
+          review_sentinel_refs: "exact-empty-array",
           repository_connection_owner_proof: "fresh-exact-cloudflare-owner-ui-proof" } },
       { id: "production-script", actor: "workers-builds-control-plane-operator",
         action: "select-exact-existing-production-script-tag", mutation: false,
@@ -507,33 +528,48 @@ export function provisioningSetupPlan(production, review) {
         } }, produces: { build_token_uuid: "provider-build-token-uuid",
           cloudflare_token_id: "exact-private-input-token-id" } },
       { id: "sentinel-recheck-before-production-trigger", actor: "github-owner-readback",
-        action: "repeat-exact-private-random-sentinel-ref-absence-proof-outside-sandbox",
-        mutation: false, branch: sentinel },
+        action: "repeat-exact-private-random-production-sentinel-ref-absence-proof-outside-sandbox",
+        mutation: false, branch: productionSentinel,
+        produces: { proof_digest: "fresh-production-sentinel-absence-proof-digest" } },
       { id: "production-trigger-staged", actor: "workers-builds-control-plane-operator",
         action: "post-inert-trigger-with-zero-resource-token", mutation: true,
+        precondition: { productionSentinelProof: resultReference(
+          "sentinel-recheck-before-production-trigger", "proof_digest") },
         request: { method: "POST", path: "/builds/triggers",
           body: triggerPlanSpec(productionStaged, "production-script",
             "review-build-token") },
         produces: { trigger_uuid: "provider-trigger-uuid" } },
       { id: "sentinel-recheck-before-production-environment", actor: "github-owner-readback",
-        action: "repeat-exact-private-random-sentinel-ref-absence-proof-outside-sandbox",
-        mutation: false, branch: sentinel },
+        action: "repeat-exact-private-random-production-sentinel-ref-absence-proof-outside-sandbox",
+        mutation: false, branch: productionSentinel,
+        produces: { proof_digest: "fresh-production-sentinel-absence-proof-digest" } },
       { id: "production-environment", actor: "workers-builds-control-plane-operator",
         action: "patch-exact-environment", mutation: true,
+        precondition: { productionSentinelProof: resultReference(
+          "sentinel-recheck-before-production-environment", "proof_digest") },
         request: { method: "PATCH",
           path: apiPathReference("/builds/triggers/{trigger_uuid}/environment_variables",
             "production-trigger-staged", "trigger_uuid"),
           body: productionEnvironmentPlan(production) } },
       { id: "sentinel-recheck-before-review-trigger", actor: "github-owner-readback",
-        action: "repeat-exact-private-random-sentinel-ref-absence-proof-outside-sandbox",
-        mutation: false, branch: sentinel },
+        action: "repeat-exact-private-random-review-sentinel-ref-absence-proof-outside-sandbox",
+        mutation: false, branch: reviewSentinel,
+        produces: { proof_digest: "fresh-review-sentinel-absence-proof-digest" } },
       { id: "review-trigger-staged", actor: "workers-builds-control-plane-operator",
         action: "post-inert-trigger-with-zero-resource-token", mutation: true,
+        precondition: { reviewSentinelProof: resultReference(
+          "sentinel-recheck-before-review-trigger", "proof_digest") },
         request: { method: "POST", path: "/builds/triggers",
           body: triggerPlanSpec(reviewStaged, "review-bootstrap", "review-build-token") },
         produces: { trigger_uuid: "provider-trigger-uuid" } },
+      { id: "sentinel-recheck-before-review-environment", actor: "github-owner-readback",
+        action: "repeat-exact-private-random-review-sentinel-ref-absence-proof-outside-sandbox",
+        mutation: false, branch: reviewSentinel,
+        produces: { proof_digest: "fresh-review-sentinel-absence-proof-digest" } },
       { id: "review-environment", actor: "workers-builds-control-plane-operator",
         action: "patch-exact-environment", mutation: true,
+        precondition: { reviewSentinelProof: resultReference(
+          "sentinel-recheck-before-review-environment", "proof_digest") },
         request: { method: "PATCH",
           path: apiPathReference("/builds/triggers/{trigger_uuid}/environment_variables",
             "review-trigger-staged", "trigger_uuid"),
@@ -558,7 +594,7 @@ export function provisioningSetupPlan(production, review) {
     productionActivation: {
       gate: "production-trigger-activation",
       precondition: {
-        sentinel: "repeat-exact-private-random-sentinel-ref-absence-proof-immediately-before-atomic-patch",
+        productionSentinel: "repeat-exact-private-random-production-sentinel-ref-absence-proof-immediately-before-atomic-patch",
         reviewPath: "fresh-private-successful-disposable-review-build-and-cleanup-proof",
         productionProof: "fresh-live-review-active-production-staged-proof-digest",
       },
@@ -577,8 +613,8 @@ export function provisioningSetupPlan(production, review) {
       productionWorkerPolicy: "never-delete-or-roll-back-existing-production-workers-versions-state-or-secrets",
     },
     rollbackOperations: [
-      "restore-production-trigger-to-inert-sentinel-before-cancelling-exact-active-builds",
-      "restore-review-trigger-to-inert-sentinel",
+      "restore-production-trigger-to-its-exact-inert-production-sentinel-before-cancelling-exact-active-builds",
+      "restore-review-trigger-to-its-exact-inert-review-sentinel",
       "prove-no-build-or-upload-remains-active",
       "delete-exact-production-and-review-triggers",
       "delete-only-the-two-recorded-build-token-uuids",
@@ -595,7 +631,7 @@ export function validateSetupPlan(plan) {
   const operations = plan?.setupOperations;
   const expectedOperations = [
     ["preflight", "workers-builds-control-plane-operator", false,
-      "require-exact-private-readback-no-competing-trigger-and-validate-private-random-sentinel-ref-absence"],
+      "require-exact-private-readback-no-competing-trigger-and-validate-two-distinct-private-random-sentinel-ref-absences"],
     ["production-script", "workers-builds-control-plane-operator", false,
       "select-exact-existing-production-script-tag"],
     ["review-bootstrap", "issue-56-review-check-bootstrap-operator", true,
@@ -607,17 +643,19 @@ export function validateSetupPlan(plan) {
     ["review-build-token", "workers-builds-control-plane-operator", true,
       "post-build-token-only-after-exact-list-proves-no-match-or-resume-journal-binds-one"],
     ["sentinel-recheck-before-production-trigger", "github-owner-readback", false,
-      "repeat-exact-private-random-sentinel-ref-absence-proof-outside-sandbox"],
+      "repeat-exact-private-random-production-sentinel-ref-absence-proof-outside-sandbox"],
     ["production-trigger-staged", "workers-builds-control-plane-operator", true,
       "post-inert-trigger-with-zero-resource-token"],
     ["sentinel-recheck-before-production-environment", "github-owner-readback", false,
-      "repeat-exact-private-random-sentinel-ref-absence-proof-outside-sandbox"],
+      "repeat-exact-private-random-production-sentinel-ref-absence-proof-outside-sandbox"],
     ["production-environment", "workers-builds-control-plane-operator", true,
       "patch-exact-environment"],
     ["sentinel-recheck-before-review-trigger", "github-owner-readback", false,
-      "repeat-exact-private-random-sentinel-ref-absence-proof-outside-sandbox"],
+      "repeat-exact-private-random-review-sentinel-ref-absence-proof-outside-sandbox"],
     ["review-trigger-staged", "workers-builds-control-plane-operator", true,
       "post-inert-trigger-with-zero-resource-token"],
+    ["sentinel-recheck-before-review-environment", "github-owner-readback", false,
+      "repeat-exact-private-random-review-sentinel-ref-absence-proof-outside-sandbox"],
     ["review-environment", "workers-builds-control-plane-operator", true,
       "patch-exact-environment"],
     ["staged-readback", "workers-builds-control-plane-operator", false,
@@ -629,8 +667,10 @@ export function validateSetupPlan(plan) {
     expectedOperations))
     fail("setup operation set, order, actor, or mutation boundary drift");
   const expectedProduces = new Map([
-    ["preflight", { sentinel_branch: "private-random-branch-name",
-      sentinel_refs: "exact-empty-array",
+    ["preflight", { production_sentinel_branch: "private-random-branch-name",
+      production_sentinel_refs: "exact-empty-array",
+      review_sentinel_branch: "distinct-private-random-branch-name",
+      review_sentinel_refs: "exact-empty-array",
       repository_connection_owner_proof: "fresh-exact-cloudflare-owner-ui-proof" }],
     ["production-script", { script_tag: { sourceField: "tag", pattern: "32-lowercase-hex" } }],
     ["review-bootstrap", { script_tag: { sourceField: "tag", pattern: "32-lowercase-hex" },
@@ -640,8 +680,16 @@ export function validateSetupPlan(plan) {
       cloudflare_token_id: "exact-private-input-token-id" }],
     ["review-build-token", { build_token_uuid: "provider-build-token-uuid",
       cloudflare_token_id: "exact-private-input-token-id" }],
+    ["sentinel-recheck-before-production-trigger",
+      { proof_digest: "fresh-production-sentinel-absence-proof-digest" }],
     ["production-trigger-staged", { trigger_uuid: "provider-trigger-uuid" }],
+    ["sentinel-recheck-before-production-environment",
+      { proof_digest: "fresh-production-sentinel-absence-proof-digest" }],
+    ["sentinel-recheck-before-review-trigger",
+      { proof_digest: "fresh-review-sentinel-absence-proof-digest" }],
     ["review-trigger-staged", { trigger_uuid: "provider-trigger-uuid" }],
+    ["sentinel-recheck-before-review-environment",
+      { proof_digest: "fresh-review-sentinel-absence-proof-digest" }],
     ["staged-readback", { proof_digest: "fresh-private-staged-verifier-digest" }],
   ]);
   for (const operation of operations) {
@@ -706,7 +754,8 @@ export function validateNoActiveBuilds(envelope, label) {
 
 export function validateFreshBuildsSnapshot({ production, review, scripts,
   triggers, deployHooks, builds, buildTokens, accountTriggers,
-  sentinelProof, repositoryConnectionProof, accountId, sourceSha }) {
+  productionSentinelProof, reviewSentinelProof, repositoryConnectionProof, accountId,
+  sourceSha }) {
   const scriptRows = requireEnvelope(scripts, "scripts");
   if (!Array.isArray(scriptRows)) fail("script inventory is invalid");
   const requiredNames = production.workers.map(({ name }) => name);
@@ -741,7 +790,7 @@ export function validateFreshBuildsSnapshot({ production, review, scripts,
   ]);
   if (tokenRows.some(({ build_token_name: name }) => reservedNames.has(name)))
     fail("reserved Workers Builds token name already exists");
-  validateSentinelRefAbsence(sentinelProof);
+  validateDistinctSentinelRefAbsence(productionSentinelProof, reviewSentinelProof);
   validateRepositoryConnectionOwnerProof(repositoryConnectionProof, accountId, sourceSha);
   return { outcome: "workers-builds-fresh-preflight-valid", mutation: false,
     productionProjectCount: production.workers.length,
@@ -1077,9 +1126,10 @@ export function validateReviewResultProof({ proof, reviewTrigger, reviewToken, b
 function validateActivationSnapshot({ production, review, scripts,
   productionTriggers, productionEnvironment, reviewTriggers, reviewEnvironment,
   nonEntrypointTriggers, deployHooks, builds, buildTokens, accountTriggers, reviewBootstrapState,
-  reviewBootstrapConfig, accountId, tokenAuthorityProofs, sourceSha, sentinelProof,
+  reviewBootstrapConfig, accountId, tokenAuthorityProofs, sourceSha,
+  productionSentinelProof, reviewSentinelProof,
   snapshotManifest, reviewResultProof }, { reviewActive }) {
-  validateSentinelRefAbsence(sentinelProof);
+  validateDistinctSentinelRefAbsence(productionSentinelProof, reviewSentinelProof);
   const scriptRows = requireEnvelope(scripts, "scripts");
   const productionScript = scriptRows.find(({ id }) => id === production.workers[0].name);
   const reviewScript = scriptRows.find(({ id }) => id === review.automaticReview.project);
@@ -1111,14 +1161,14 @@ function validateActivationSnapshot({ production, review, scripts,
     repositoryConnectionUuid: productionRows[0].repo_connection?.repo_connection_uuid,
     buildTokenUuid: reviewToken.build_token_uuid,
   });
-  productionExpected.branch_includes = [sentinelProof.branch];
+  productionExpected.branch_includes = [productionSentinelProof.branch];
   const reviewExpected = automaticReviewTriggerSpec(review, {
     externalScriptId: reviewScript.tag,
     repositoryConnectionUuid: reviewRows[0].repo_connection?.repo_connection_uuid,
     buildTokenUuid: reviewToken.build_token_uuid,
   });
   if (!reviewActive) {
-    reviewExpected.branch_includes = [sentinelProof.branch];
+    reviewExpected.branch_includes = [reviewSentinelProof.branch];
     reviewExpected.branch_excludes = ["main"];
   }
   validateTriggerSnapshot(productionRows[0], productionExpected, "staged production");
@@ -1157,9 +1207,13 @@ function validateActivationSnapshot({ production, review, scripts,
     sourceSha: snapshotManifest.sourceSha,
     productionContractSha256: snapshotManifest.productionContractSha256,
     reviewContractSha256: snapshotManifest.reviewContractSha256 };
-  const sentinelCoordinate = { repository: sentinelProof.repository, branch: sentinelProof.branch,
-    refs: sentinelProof.refs };
-  const proof_digest = digestJson({ snapshotCoordinate, sentinelCoordinate, scripts,
+  const sentinelCoordinates = {
+    production: { repository: productionSentinelProof.repository,
+      branch: productionSentinelProof.branch, refs: productionSentinelProof.refs },
+    review: { repository: reviewSentinelProof.repository,
+      branch: reviewSentinelProof.branch, refs: reviewSentinelProof.refs },
+  };
+  const proof_digest = digestJson({ snapshotCoordinate, sentinelCoordinates, scripts,
     productionTriggers, productionEnvironment, reviewTriggers, reviewEnvironment,
     nonEntrypointTriggers, deployHooks, builds, buildTokens, accountTriggers,
     reviewBootstrapState, tokenAuthorityProofs,
@@ -2060,17 +2114,28 @@ async function validateStagedSnapshotDirectory({ snapshotDirectory, production, 
     uploadProof: await readPrivateJson(process.env.ATRINIK_REVIEW_BOOTSTRAP_UPLOAD_PROOF_FILE,
       "review bootstrap upload proof"),
   };
-  const branch = await readPrivateValue(process.env.ATRINIK_STAGING_SENTINEL_BRANCH_FILE,
-    "staging sentinel branch", stagingBranchPattern);
-  const sentinelProof = await readPrivateJson(process.env.ATRINIK_STAGING_SENTINEL_REFS_FILE,
-    "staging sentinel refs");
-  if (sentinelProof.branch !== branch) fail("staging sentinel proof branch drift");
+  const productionSentinelBranch = await readPrivateValue(
+    process.env.ATRINIK_PRODUCTION_STAGING_SENTINEL_BRANCH_FILE,
+    "production staging sentinel branch", stagingBranchPattern);
+  const productionSentinelProof = await readPrivateJson(
+    process.env.ATRINIK_PRODUCTION_STAGING_SENTINEL_REFS_FILE,
+    "production staging sentinel refs");
+  if (productionSentinelProof.branch !== productionSentinelBranch)
+    fail("production staging sentinel proof branch drift");
+  const reviewSentinelBranch = await readPrivateValue(
+    process.env.ATRINIK_REVIEW_STAGING_SENTINEL_BRANCH_FILE,
+    "review staging sentinel branch", stagingBranchPattern);
+  const reviewSentinelProof = await readPrivateJson(
+    process.env.ATRINIK_REVIEW_STAGING_SENTINEL_REFS_FILE,
+    "review staging sentinel refs");
+  if (reviewSentinelProof.branch !== reviewSentinelBranch)
+    fail("review staging sentinel proof branch drift");
   const arguments_ = { production, review, scripts, productionTriggers,
     productionEnvironment, reviewTriggers, reviewEnvironment, nonEntrypointTriggers,
     deployHooks, builds, buildTokens,
     accountTriggers: await loadSnapshot(snapshotDirectory, "account-triggers.json"),
     reviewBootstrapState, reviewBootstrapConfig, accountId, tokenAuthorityProofs, sourceSha,
-    sentinelProof, snapshotManifest, reviewResultProof };
+    productionSentinelProof, reviewSentinelProof, snapshotManifest, reviewResultProof };
   return reviewActive ? validateProductionActivationSnapshot(arguments_) :
     validateStagedBuildsSnapshot(arguments_);
 }
@@ -2097,18 +2162,29 @@ async function validateFreshSnapshotDirectory({ snapshotDirectory, production, r
     [label, await loadSnapshot(snapshotDirectory, `${name}.builds.json`)]));
   const buildTokens = await loadSnapshot(snapshotDirectory, "build-tokens.json");
   const accountTriggers = await loadSnapshot(snapshotDirectory, "account-triggers.json");
-  const branch = await readPrivateValue(process.env.ATRINIK_STAGING_SENTINEL_BRANCH_FILE,
-    "staging sentinel branch", stagingBranchPattern);
-  const sentinelProof = await readPrivateJson(process.env.ATRINIK_STAGING_SENTINEL_REFS_FILE,
-    "staging sentinel refs");
-  if (sentinelProof.branch !== branch) fail("staging sentinel proof branch drift");
+  const productionSentinelBranch = await readPrivateValue(
+    process.env.ATRINIK_PRODUCTION_STAGING_SENTINEL_BRANCH_FILE,
+    "production staging sentinel branch", stagingBranchPattern);
+  const productionSentinelProof = await readPrivateJson(
+    process.env.ATRINIK_PRODUCTION_STAGING_SENTINEL_REFS_FILE,
+    "production staging sentinel refs");
+  if (productionSentinelProof.branch !== productionSentinelBranch)
+    fail("production staging sentinel proof branch drift");
+  const reviewSentinelBranch = await readPrivateValue(
+    process.env.ATRINIK_REVIEW_STAGING_SENTINEL_BRANCH_FILE,
+    "review staging sentinel branch", stagingBranchPattern);
+  const reviewSentinelProof = await readPrivateJson(
+    process.env.ATRINIK_REVIEW_STAGING_SENTINEL_REFS_FILE,
+    "review staging sentinel refs");
+  if (reviewSentinelProof.branch !== reviewSentinelBranch)
+    fail("review staging sentinel proof branch drift");
   const repositoryConnectionProof = await readPrivateJson(
     process.env.ATRINIK_REPOSITORY_CONNECTION_OWNER_PROOF_FILE,
     "shared repository connection owner proof");
   return validateFreshBuildsSnapshot({
     production, review, scripts, triggers, deployHooks, builds, buildTokens,
     accountTriggers,
-    sentinelProof, repositoryConnectionProof, accountId,
+    productionSentinelProof, reviewSentinelProof, repositoryConnectionProof, accountId,
     sourceSha,
   });
 }
