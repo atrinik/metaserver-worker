@@ -119,6 +119,24 @@ approved; staged partial cohorts remain routine fix-forward state.
 Production identifiers stay in bounded Cloudflare-owned secret configuration
 documents, never in Git or logs. Runtime secret values remain provisioned in
 Cloudflare and are not available to the routine build.
+Issue #56's fail-closed composition can be checked without credentials using
+`npm run provision:workers-builds:validate` and
+`npm run provision:workers-builds:dry-run`. The value-free
+`npm run provision:workers-builds:plan-setup` output additionally pins inert
+staging, distinct review/production activation gates, and rollback order
+without an apply path. Staging uses a private random, freshly absent GitHub ref
+and the zero-resource review token; the production selector and token change
+together only at activation. Its separately credentialed exhaustive provider
+readback, D1-ledger proof, and local materializer write only private mode-`0600` provider
+snapshots/configurations and have no remote mutation path. A post-setup
+`npm run provision:workers-builds:verify-staged` gate proves both triggers are
+still private-sentinel-only and share only the zero-resource review token before
+activation. A post-activation
+`npm run provision:workers-builds:verify-configured` check proves the serialized
+trigger, distinct fresh provider-token policies, clean-source-bound inert review Worker,
+environment-classification, and no-Deploy-Hook
+boundaries from those private snapshots. Exact invocation and authorization
+boundaries are in [DEPLOYMENT.md](DEPLOYMENT.md).
 
 The accepted [review-environment design](docs/review-environment.md) gives
 eligible same-repository non-`main` branches an automatic build-only check

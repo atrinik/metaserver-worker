@@ -1565,12 +1565,13 @@ function expectedRemoteBindings(config) {
   return bindings;
 }
 
-function validateRemoteBindings(worker, config, version) {
+export function validateRemoteBindings(worker, config, version) {
   const expected = expectedRemoteBindings(config);
+  const rows = version.resources?.bindings ?? [];
   const actual = new Map(
-    (version.resources?.bindings ?? []).map((binding) => [binding.name, binding]),
+    rows.map((binding) => [binding.name, binding]),
   );
-  if (!sameValues(actual.keys(), expected.keys()))
+  if (actual.size !== rows.length || !sameValues(actual.keys(), expected.keys()))
     fail(`${worker.role} remote binding inventory drift`);
   for (const [name, fields] of expected) {
     const binding = actual.get(name);
