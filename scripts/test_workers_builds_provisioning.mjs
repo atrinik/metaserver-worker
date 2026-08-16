@@ -13,7 +13,7 @@ import {
   createPrivateDirectory,
   loadSnapshot,
   materializeProductionConfigurations,
-  normalizeDeployHookPage,
+  normalizeBuildsListPage,
   productionEnvironmentSpec,
   productionTriggerSpec,
   publicStagedProofSummary,
@@ -287,20 +287,22 @@ test("combines only stable exhaustive provider pages", () => {
   ], "builds", ({ build_uuid }) => build_uuid), /duplicated/u);
 });
 
-test("normalizes only the provider's empty first Deploy Hooks page without metadata", () => {
+test("normalizes only an empty first Workers Builds page without metadata", () => {
   const rawEmpty = { success: true, result: [], errors: [], messages: [] };
-  const normalized = normalizeDeployHookPage(rawEmpty, "deploy hooks", 1);
+  const normalized = normalizeBuildsListPage(rawEmpty, "triggers", 1);
   assert.deepEqual(normalized.result_info, { page: 1, total_pages: 1, total_count: 0 });
-  assert.deepEqual(combineProviderPages([normalized], "deploy hooks",
-    ({ deploy_hook_uuid: id }) => id).result, []);
+  assert.deepEqual(combineProviderPages([normalized], "triggers",
+    ({ trigger_uuid: id }) => id).result, []);
   const paginated = { ...rawEmpty,
     result_info: { page: 1, total_pages: 1, total_count: 0 } };
-  assert.equal(normalizeDeployHookPage(paginated, "deploy hooks", 1), paginated);
-  assert.throws(() => normalizeDeployHookPage({ ...rawEmpty,
-    result: [{ deploy_hook_uuid: resourceUuid }] }, "deploy hooks", 1),
-  /Deploy Hook pagination metadata is malformed/u);
-  assert.throws(() => normalizeDeployHookPage(rawEmpty, "deploy hooks", 2),
-    /Deploy Hook pagination metadata is malformed/u);
+  assert.equal(normalizeBuildsListPage(paginated, "build tokens", 1), paginated);
+  assert.throws(() => normalizeBuildsListPage({ ...rawEmpty,
+    result: [{ trigger_uuid: resourceUuid }] }, "triggers", 1),
+  /Builds pagination metadata is malformed/u);
+  assert.throws(() => normalizeBuildsListPage(rawEmpty, "builds", 2),
+    /Builds pagination metadata is malformed/u);
+  assert.throws(() => normalizeBuildsListPage({ success: true, result: null },
+    "build tokens", 1), /provider readback failed/u);
 });
 
 test("normalizes the official nested Worker versions pagination shape", () => {
