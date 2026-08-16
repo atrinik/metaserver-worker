@@ -130,17 +130,17 @@ export function validateAutomaticReview(value) {
   exactValue(value.rootDirectory, "/deployment/review-check", "review root");
   exactValue(value.productionBranch, "review-build-only-sentinel", "review sentinel branch");
   exactValue(value.productionAutomaticPush, false, "review automatic production push");
-  exactValue(value.productionDeployCommand, "cd ../.. && npm run review:reject-sentinel", "review sentinel command");
+  exactValue(value.productionDeployCommand, "npm run reject-sentinel", "review sentinel command");
   exactArray(value.previewBranchIncludes, ["*"], "review branch includes");
   exactArray(value.previewBranchExcludes, ["main", "review-build-only-sentinel"], "review branch excludes");
   exactArray(value.pathIncludes, ["*"], "review path includes");
   exactArray(value.pathExcludes, [], "review path excludes");
   exactValue(value.buildCommand,
-    "cd ../.. && npm run review:build",
+    "npm run build",
     "review build command");
   if (Buffer.byteLength(value.buildCommand, "utf8") > 64)
     fail("review build command exceeds the retained provider-safe byte ceiling");
-  exactValue(value.deployCommand, "cd ../.. && npm run review:validate", "review deploy command");
+  exactValue(value.deployCommand, "npm run validate", "review deploy command");
   exactValue(value.providerBuildTimeoutMinutes, 20, "review provider build timeout");
   exactValue(value.checkCommandTimeoutMinutes, 15, "review check command timeout");
   exactKeys(value.buildEnvironment, ["SKIP_DEPENDENCY_INSTALL"], "review build environment");
@@ -242,6 +242,18 @@ export function validateAutomaticReview(value) {
 export function validateReviewBuildEntrypoint(scripts, production) {
   exactValue(scripts?.["review:build"],
     `${production.installCommand} && npm run review:branch`, "review build entrypoint");
+}
+
+export function validateReviewRootEntrypoint(value) {
+  exactKeys(value, ["name", "private", "scripts"], "review root package");
+  exactValue(value.name, "atrinik-metaserver-review-check-build", "review root package name");
+  exactValue(value.private, true, "review root package privacy");
+  exactKeys(value.scripts, ["build", "validate", "reject-sentinel"], "review root scripts");
+  exactValue(value.scripts.build, "npm --prefix ../.. run review:build", "review root build script");
+  exactValue(value.scripts.validate, "npm --prefix ../.. run review:validate",
+    "review root validation script");
+  exactValue(value.scripts["reject-sentinel"], "npm --prefix ../.. run review:reject-sentinel",
+    "review root sentinel script");
 }
 
 function validateResources(resources) {
@@ -866,7 +878,7 @@ export function validateContract(review, production, configurations) {
     [undefined, undefined, "enabled"],
   ], "review inside-window materialized circuits");
   exactValue(review.automaticReview.buildCommand,
-    "cd ../.. && npm run review:build", "review pinned build command");
+    "npm run build", "review pinned build command");
   exactKeys(review.reviewerBehavior, [
     "sameRepositoryPullRequest", "liveReview", "forkPullRequest", "rebaseOrForcePush", "rename",
     "mergeOrClose", "reopen", "overlap", "providerOutage", "manualEscape", "commentPolicy", "logPolicy",
@@ -957,6 +969,7 @@ async function loadContractInputs() {
     review: await readJson(contractPath),
     production: await readJson(productionContractPath),
     package: await readJson(resolve(root, "package.json")),
+    reviewRootPackage: await readJson(resolve(root, "deployment/review-check/package.json")),
     configurations: await Promise.all([
       "wrangler.jsonc", "wrangler.publisher.jsonc", "wrangler.rendezvous.jsonc",
     ].map((path) => readJsonc(resolve(root, path)))),
@@ -967,6 +980,7 @@ export async function validateCheckedInContract() {
   const inputs = await loadContractInputs();
   validateContract(inputs.review, inputs.production, inputs.configurations);
   validateReviewBuildEntrypoint(inputs.package.scripts, inputs.production);
+  validateReviewRootEntrypoint(inputs.reviewRootPackage);
   for (const path of inputs.review.liveCanary.resources.d1.referenceVectorSources)
     await readFile(resolve(root, path));
   const coordination = inputs.review.liveCanary.resources.coordinationD1;

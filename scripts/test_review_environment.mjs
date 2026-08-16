@@ -13,6 +13,7 @@ import {
   validateLiveApproval,
   validateProductionIsolation,
   validateReviewBuildEntrypoint,
+  validateReviewRootEntrypoint,
   validateSourceCoordinates,
 } from "./review-environment.mjs";
 
@@ -25,6 +26,8 @@ const configurations = await Promise.all([
 const coordinationSchema = await readFile(resolve(root, "deployment/review-coordination-v1.sql"), "utf8");
 const coordinationOperations = JSON.parse(await readFile(resolve(root,
   "deployment/review-coordination-operations-v1.json"), "utf8"));
+const reviewRootPackage = JSON.parse(await readFile(resolve(root,
+  "deployment/review-check/package.json"), "utf8"));
 
 function changed(change) {
   const value = structuredClone(review);
@@ -77,8 +80,19 @@ test("automatic review has no bindings, routes, secrets, or deployable version",
 });
 
 test("review trigger delegates to the exact sanitized repository entrypoint", () => {
-  assert.equal(Buffer.byteLength(review.automaticReview.buildCommand, "utf8"), 32);
-  assert.equal(review.automaticReview.buildCommand, "cd ../.. && npm run review:build");
+  assert.equal(Buffer.byteLength(review.automaticReview.buildCommand, "utf8"), 13);
+  assert.equal(review.automaticReview.buildCommand, "npm run build");
+  validateReviewRootEntrypoint(reviewRootPackage);
+  for (const mutate of [
+    (value) => value.scripts.build = "cd ../.. && npm run review:build",
+    (value) => value.scripts.validate = "npm run review:validate",
+    (value) => value.scripts["reject-sentinel"] = "true",
+    (value) => value.private = false,
+  ]) {
+    const value = structuredClone(reviewRootPackage);
+    mutate(value);
+    assert.throws(() => validateReviewRootEntrypoint(value), ReviewEnvironmentError);
+  }
   const valid = { "review:build": `${production.installCommand} && npm run review:branch` };
   validateReviewBuildEntrypoint(valid, production);
   for (const command of [
@@ -88,7 +102,7 @@ test("review trigger delegates to the exact sanitized repository entrypoint", ()
   ]) assert.throws(() => validateReviewBuildEntrypoint({ "review:build": command }, production),
     ReviewEnvironmentError);
   const tooLong = structuredClone(review.automaticReview);
-  tooLong.buildCommand = `cd ../.. && npm run review:build ${"x".repeat(64)}`;
+  tooLong.buildCommand = `npm run build ${"x".repeat(64)}`;
   assert.throws(() => validateAutomaticReview(tooLong), ReviewEnvironmentError);
 });
 
