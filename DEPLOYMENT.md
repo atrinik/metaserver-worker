@@ -139,17 +139,32 @@ shared exact GitHub connection; configured trigger readback proves the returned
 connection identity. Existing production
 Workers, versions, state, and runtime secrets are never rollback targets.
 Because Cloudflare requires a trigger UUID before its environment can be
-written, the operator generates a private random
-`review-build-only-sentinel-<32-lowercase-hex>` selector and uses `gh api`
-outside the sandbox to retain a fresh, exact empty matching-ref proof for the
-governed repository. Setup rechecks that proof immediately before both trigger
-creates, before installing the production environment, and before production
-activation. Both staged triggers use the review token, whose provider policy
-has no account or zone resource. Production activation is one trigger PATCH
-that atomically replaces both the private selector and zero-resource token with
-`main` and the production token. Thus a selector race never receives deploy
-authority; the unguessable, repeatedly absent ref also protects the staged
-production secrets. The fixed `review-build-only-sentinel` name is not used.
+written, the operator independently generates two distinct private random
+`review-build-only-sentinel-<32-lowercase-hex>` selectors, one for production
+staging and one for review staging, and uses `gh api` outside the sandbox to
+retain a fresh, exact empty matching-ref proof for each governed repository
+coordinate. Setup rechecks the production proof immediately before the
+production trigger and environment mutations, rechecks the review proof
+immediately before the review trigger and environment mutations, and binds both
+proofs into staged readback. Rollback likewise obtains a new production proof
+immediately before its full production-trigger restore PATCH and a new review
+proof immediately before its full review-trigger restore PATCH; an expired,
+missing, or role-swapped rollback proof stops before mutation. Both restore
+requests use the zero-resource review token. Both staged triggers use the
+review token, whose provider policy has no account or zone resource. Production
+activation is one trigger PATCH that atomically replaces the private production
+selector and zero-resource token with `main` and the production token. Its
+provider activation readback runs first; the fresh production-selector GitHub
+absence proof is the final operation immediately before that PATCH. Thus a selector race
+never receives deploy authority; the unguessable, repeatedly absent production
+ref also protects the staged production secrets. The fixed
+`review-build-only-sentinel` name is not used.
+
+The retained issue-66 journal records Cloudflare error `12002` after accepting
+the production trigger and environment but rejecting a second trigger that
+reused the same repository connection and staged selector. That overlapping
+selector request is not retried. Equality, proof/selector swaps, fixed names,
+and fallback to an unreviewed request all fail before setup mutation.
 
 The production activation initially retains the `routine` control-plane gate.
 Its first automatic `main` build must therefore fail closed if the existing
@@ -201,8 +216,10 @@ Before setup, prove the fresh no-trigger/no-Deploy-Hook/no-active-build boundary
 ATRINIK_PROVIDER_SNAPSHOT_DIRECTORY=/secure/provider-snapshot \
 ATRINIK_CLOUDFLARE_ACCOUNT_ID_FILE=/secure/path/account-id \
 ATRINIK_REVIEWED_SOURCE_SHA_FILE=/secure/path/reviewed-source-sha \
-ATRINIK_STAGING_SENTINEL_BRANCH_FILE=/secure/path/private-random-sentinel \
-ATRINIK_STAGING_SENTINEL_REFS_FILE=/secure/path/fresh-sentinel-proof.json \
+ATRINIK_PRODUCTION_STAGING_SENTINEL_BRANCH_FILE=/secure/path/private-random-production-sentinel \
+ATRINIK_PRODUCTION_STAGING_SENTINEL_REFS_FILE=/secure/path/fresh-production-sentinel-proof.json \
+ATRINIK_REVIEW_STAGING_SENTINEL_BRANCH_FILE=/secure/path/private-random-review-sentinel \
+ATRINIK_REVIEW_STAGING_SENTINEL_REFS_FILE=/secure/path/fresh-review-sentinel-proof.json \
 ATRINIK_REPOSITORY_CONNECTION_OWNER_PROOF_FILE=/secure/path/connection-owner-proof.json \
   npm run provision:workers-builds:verify-preflight
 ```
@@ -210,11 +227,13 @@ ATRINIK_REPOSITORY_CONNECTION_OWNER_PROOF_FILE=/secure/path/connection-owner-pro
 The readback accepts an absent review-check bootstrap, and the fresh preflight
 requires that absence so it cannot adopt unproven Worker bytes. A journal-bound
 partial setup uses exact recovery readback instead of the fresh verifier. The
-readback never accepts an absent production Worker. The sentinel proof contains
-the exact repository object, private selector, empty `refs` array, and an RFC
-3339 `capturedAt` no more than five minutes old. It is produced from the exact
+readback never accepts an absent production Worker. Each sentinel proof
+contains the exact repository object, its private selector, an empty `refs`
+array, and an RFC 3339 `capturedAt` no more than five minutes old. Each is
+produced from the exact
 `gh api repos/atrinik/metaserver-worker/git/matching-refs/heads/<selector>`
-result outside the sandbox. Readback performs only bounded, timed provider
+result outside the sandbox, and the selectors must differ. Readback performs
+only bounded, timed provider
 reads (including the read-only D1 ledger query) and emits
 only a bounded summary; raw identifiers and provider responses remain in the
 private directory. Private inputs and snapshot files are opened without
@@ -277,8 +296,10 @@ and prove the staged boundary before activating either trigger:
 ATRINIK_PROVIDER_SNAPSHOT_DIRECTORY=/secure/staged-provider-snapshot \
 ATRINIK_CLOUDFLARE_ACCOUNT_ID_FILE=/secure/path/account-id \
 ATRINIK_REVIEWED_SOURCE_SHA_FILE=/secure/path/reviewed-source-sha \
-ATRINIK_STAGING_SENTINEL_BRANCH_FILE=/secure/path/private-random-sentinel \
-ATRINIK_STAGING_SENTINEL_REFS_FILE=/secure/path/fresh-sentinel-proof.json \
+ATRINIK_PRODUCTION_STAGING_SENTINEL_BRANCH_FILE=/secure/path/private-random-production-sentinel \
+ATRINIK_PRODUCTION_STAGING_SENTINEL_REFS_FILE=/secure/path/fresh-production-sentinel-proof.json \
+ATRINIK_REVIEW_STAGING_SENTINEL_BRANCH_FILE=/secure/path/private-random-review-sentinel \
+ATRINIK_REVIEW_STAGING_SENTINEL_REFS_FILE=/secure/path/fresh-review-sentinel-proof.json \
 ATRINIK_PRODUCTION_BUILD_TOKEN_PERMISSION_PROOF_FILE=/secure/path/production-token-policy.json \
 ATRINIK_REVIEW_BUILD_TOKEN_PERMISSION_PROOF_FILE=/secure/path/review-token-policy.json \
 ATRINIK_REVIEW_BOOTSTRAP_UPLOAD_PROOF_FILE=/secure/path/review-bootstrap-upload.json \
@@ -287,8 +308,9 @@ ATRINIK_STAGED_PROOF_OUTPUT_FILE=/secure/private/staged-proof.json \
   npm run provision:workers-builds:verify-staged
 ```
 
-This requires both triggers to select only the same fresh private sentinel and
-use the zero-resource review token, while both exact environments are present,
+This requires each trigger to select only its own fresh, distinct private
+sentinel and use the zero-resource review token, while both exact environments
+are present,
 all builds are stopped, and the bootstrap/token/usage proofs are current.
 The command writes a new owner-only proof containing a deterministic SHA-256 of
 the fresh manifest and exact staged trigger/environment/token/bootstrap/
