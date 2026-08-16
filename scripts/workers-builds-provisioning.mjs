@@ -46,6 +46,17 @@ function same(left, right) {
   return JSON.stringify(left) === JSON.stringify(right);
 }
 
+function sameCanonical(left, right) {
+  const canonical = (value) => {
+    if (Array.isArray(value)) return value.map(canonical);
+    if (value && typeof value === "object") return Object.fromEntries(
+      Object.entries(value).sort(([leftKey], [rightKey]) => leftKey.localeCompare(rightKey))
+        .map(([key, item]) => [key, canonical(item)]));
+    return value;
+  };
+  return JSON.stringify(canonical(left)) === JSON.stringify(canonical(right));
+}
+
 function sorted(values) {
   return [...values].sort((left, right) => left.localeCompare(right));
 }
@@ -142,6 +153,23 @@ function expectedBindingInventory(config) {
       ({ name, type: "durable_object_namespace" })),
     ...(config.services ?? []).map(({ binding: name }) => ({ name, type: "service" })),
   ].sort((left, right) => `${left.name}:${left.type}`.localeCompare(`${right.name}:${right.type}`));
+}
+
+export function initialBootstrapPredecessorConfiguration(contract, config, worker) {
+  const predecessor = structuredClone(config);
+  const policy = contract.initialBootstrapPredecessor;
+  if (policy?.requiredPhase !== "review-bootstrap-and-all-builds-triggers-absent" ||
+      !Array.isArray(policy.allowedBindingDelta))
+    fail("initial production bootstrap predecessor is malformed");
+  for (const delta of policy.allowedBindingDelta.filter(({ role }) => role === worker.role)) {
+    if (!same(sorted(Object.keys(delta)), ["desired", "live", "name", "role", "type"]) ||
+        delta.type !== "plain_text" || typeof delta.live !== "string" ||
+        predecessor.vars?.[delta.name] !== delta.desired)
+      fail("initial production bootstrap predecessor binding delta drift");
+    if (delta.live === "absent") delete predecessor.vars[delta.name];
+    else predecessor.vars[delta.name] = delta.live;
+  }
+  return predecessor;
 }
 
 function requireEnvelope(value, label) {
@@ -720,6 +748,41 @@ export function validateFreshBuildsSnapshot({ production, review, scripts,
     reviewBootstrapPresent: false, repositoryConnectionInventory: "provider-not-readable" };
 }
 
+export function validateInitialBootstrapSnapshot({ production, review, scripts,
+  triggers, deployHooks, builds, buildTokens, accountTriggers }) {
+  if (production.initialBootstrapPredecessor?.requiredPhase !==
+      "review-bootstrap-and-all-builds-triggers-absent")
+    fail("initial production bootstrap predecessor phase drift");
+  const scriptRows = requireEnvelope(scripts, "initial bootstrap scripts");
+  if (!Array.isArray(scriptRows) || production.workers.some(({ name }) =>
+    scriptRows.filter(({ id }) => id === name).length !== 1) ||
+    scriptRows.some(({ id }) => id === review.automaticReview.project))
+    fail("initial bootstrap Worker inventory drift");
+  const expectedLabels = production.workers.map(({ role }) => role);
+  for (const [label, envelope] of exactLabeledInventories(triggers,
+    expectedLabels, "initial bootstrap trigger")) {
+    if (requireExhaustiveEnvelope(envelope, `${label} triggers`).length !== 0)
+      fail(`${label} trigger makes the initial bootstrap predecessor unavailable`);
+  }
+  for (const [label, envelope] of exactLabeledInventories(deployHooks,
+    expectedLabels, "initial bootstrap Deploy Hook")) validateNoDeployHooks(envelope, label);
+  for (const [label, envelope] of exactLabeledInventories(builds,
+    expectedLabels, "initial bootstrap build")) validateNoActiveBuilds(envelope, label);
+  const allTriggers = requireExhaustiveEnvelope(accountTriggers, "initial bootstrap account triggers")
+    .filter(({ repo_connection: connection }) => connection?.provider_type === "github" &&
+      connection.provider_account_id === githubRepository.provider_account_id &&
+      connection.repo_id === githubRepository.repo_id);
+  if (allTriggers.length !== 0)
+    fail("repository trigger makes the initial bootstrap predecessor unavailable");
+  const reservedNames = new Set([
+    "Atrinik metaserver production", "Atrinik metaserver review check",
+  ]);
+  if (requireExhaustiveEnvelope(buildTokens, "initial bootstrap build tokens")
+    .some(({ build_token_name: name }) => reservedNames.has(name)))
+    fail("reserved build token makes the initial bootstrap predecessor unavailable");
+  return { outcome: "initial-production-bootstrap-predecessor-proven", mutation: false };
+}
+
 function exactLabeledInventories(actual, expectedLabels, label) {
   if (!Array.isArray(actual) || actual.some((entry) =>
     !Array.isArray(entry) || entry.length !== 2) ||
@@ -1142,7 +1205,7 @@ export function publicStagedProofSummary(proof) {
 }
 
 export function materializeProductionConfiguration({
-  base, worker, settingsEnvelope, subdomainEnvelope, accountId,
+  base, liveBase = base, worker, settingsEnvelope, subdomainEnvelope, accountId,
 }) {
   if (!accountIdPattern.test(accountId ?? "")) fail("production account ID is malformed");
   const settings = requireEnvelope(settingsEnvelope, `${worker.role} settings`);
@@ -1150,8 +1213,8 @@ export function materializeProductionConfiguration({
   if (subdomain.enabled !== false || subdomain.previews_enabled !== false)
     fail(`${worker.role} enables an alternate production URL`);
   if (
-    base.compatibility_date !== settings.compatibility_date ||
-    !same(base.compatibility_flags ?? [], settings.compatibility_flags ?? [])
+    liveBase.compatibility_date !== settings.compatibility_date ||
+    !same(liveBase.compatibility_flags ?? [], settings.compatibility_flags ?? [])
   ) fail(`${worker.role} compatibility settings drift`);
 
   const config = structuredClone(base);
@@ -1159,7 +1222,7 @@ export function materializeProductionConfiguration({
   if (!Array.isArray(bindings)) fail(`${worker.role} binding inventory is malformed`);
   const actualBindingInventory = bindings.map(({ name, type }) => ({ name, type }))
     .sort((left, right) => `${left.name}:${left.type}`.localeCompare(`${right.name}:${right.type}`));
-  if (!same(actualBindingInventory, expectedBindingInventory(base)))
+  if (!same(actualBindingInventory, expectedBindingInventory(liveBase)))
     fail(`${worker.role} binding inventory drift`);
   config.account_id = accountId;
   config.workers_dev = false;
@@ -1169,7 +1232,7 @@ export function materializeProductionConfiguration({
     const live = oneBinding(bindings, "DIRECTORY_CACHE_ZONE_ID", "plain_text");
     config.vars.DIRECTORY_CACHE_ZONE_ID = live.text;
   }
-  for (const [name, expected] of Object.entries(config.vars ?? {})) {
+  for (const [name, expected] of Object.entries(liveBase.vars ?? {})) {
     if (name === "DIRECTORY_CACHE_ZONE_ID") continue;
     if (oneBinding(bindings, name, "plain_text").text !== expected)
       fail(`${worker.role} plain-text binding ${name} drift`);
@@ -1211,13 +1274,18 @@ export function materializeProductionConfiguration({
 }
 
 export function materializeProductionConfigurations({
-  contract, bases, snapshots, accountId,
+  contract, bases, snapshots, accountId, initialBootstrapPredecessor = false,
 }) {
   if (!Array.isArray(bases) || bases.length !== 3 || !Array.isArray(snapshots) || snapshots.length !== 3)
     fail("exactly three production configuration snapshots are required");
+  const liveConfigurations = contract.workers.map((worker, index) =>
+    initialBootstrapPredecessor
+      ? initialBootstrapPredecessorConfiguration(contract, bases[index], worker)
+      : bases[index]);
   const configurations = contract.workers.map((worker, index) =>
     materializeProductionConfiguration({
-      base: bases[index], worker, settingsEnvelope: snapshots[index].settings,
+      base: bases[index], liveBase: liveConfigurations[index], worker,
+      settingsEnvelope: snapshots[index].settings,
       subdomainEnvelope: snapshots[index].subdomain, accountId,
     }));
   validateTopology(contract, configurations, { production: true });
@@ -1258,15 +1326,20 @@ export function validateProductionControlPlane({ contract, configurations, snaps
     for (const channel of [observability?.logs, observability?.traces])
       if ((channel?.destinations ?? []).length !== 0)
         fail(`${contract.workers[index].role} gained an observability destination`);
-    if (!same(observability, configurations[index].observability))
+    const expectedObservability = structuredClone(configurations[index].observability);
+    if (observability?.head_sampling_rate === 1 &&
+        expectedObservability.head_sampling_rate === undefined)
+      expectedObservability.head_sampling_rate = 1;
+    if (!sameCanonical(observability, expectedObservability))
       fail(`${contract.workers[index].role} observability configuration drift`);
   }
 }
 
 export function validateProductionRuntimeProof({ contract, configurations, deployments,
-  activeVersions, migrationEnvelope, migrationNames }) {
+  activeVersions, migrationEnvelope, migrationNames, liveConfigurations = configurations }) {
   if (!Array.isArray(deployments) || deployments.length !== contract.workers.length ||
-      !Array.isArray(activeVersions) || activeVersions.length !== contract.workers.length)
+      !Array.isArray(activeVersions) || activeVersions.length !== contract.workers.length ||
+      !Array.isArray(liveConfigurations) || liveConfigurations.length !== contract.workers.length)
     fail("production runtime proof inventory is incomplete");
   for (const [index, worker] of contract.workers.entries()) {
     const rows = requireEnvelope(deployments[index], `${worker.role} deployments`).deployments;
@@ -1279,7 +1352,7 @@ export function validateProductionRuntimeProof({ contract, configurations, deplo
     if (runtime.compatibility_date !== configurations[index].compatibility_date ||
         !same(runtime.compatibility_flags ?? [], configurations[index].compatibility_flags ?? []))
       fail(`${worker.role} active runtime configuration drift`);
-    validateRemoteBindings(worker, configurations[index], active);
+    validateRemoteBindings(worker, liveConfigurations[index], active);
     validateRuntimeExports(worker, configurations[index], runtime.exports ?? {});
   }
   const queryResults = requireEnvelope(migrationEnvelope, "production migration ledger");
@@ -1846,8 +1919,22 @@ async function materializeSnapshot({ snapshotDirectory, outputDirectory, account
     scriptSettings: await loadSnapshot(snapshotDirectory, `${name}.script-settings.json`),
   })));
   const domains = await loadSnapshot(snapshotDirectory, "domains.json");
+  const projects = production.workers.map(({ role, name }) => [role, name]);
+  const bootstrap = validateInitialBootstrapSnapshot({
+    production,
+    review,
+    scripts: await loadSnapshot(snapshotDirectory, "scripts.json"),
+    triggers: await Promise.all(projects.map(async ([role, name]) =>
+      [role, await loadSnapshot(snapshotDirectory, `${name}.triggers.json`)])),
+    deployHooks: await Promise.all(projects.map(async ([role, name]) =>
+      [role, await loadSnapshot(snapshotDirectory, `${name}.deploy-hooks.json`)])),
+    builds: await Promise.all(projects.map(async ([role, name]) =>
+      [role, await loadSnapshot(snapshotDirectory, `${name}.builds.json`)])),
+    buildTokens: await loadSnapshot(snapshotDirectory, "build-tokens.json"),
+    accountTriggers: await loadSnapshot(snapshotDirectory, "account-triggers.json"),
+  });
   const configurations = materializeProductionConfigurations({
-    contract: production, bases, snapshots, accountId,
+    contract: production, bases, snapshots, accountId, initialBootstrapPredecessor: true,
   });
   validateProductionControlPlane({ contract: production, configurations, snapshots, domains });
   const deployments = await Promise.all(production.workers.map(({ name }) =>
@@ -1858,6 +1945,8 @@ async function materializeSnapshot({ snapshotDirectory, outputDirectory, account
   const migrationNames = (await readdir(resolve(root, "migrations")))
     .filter((name) => /^\d{4}_.+\.sql$/u.test(name)).sort();
   const runtime = validateProductionRuntimeProof({ contract: production, configurations,
+    liveConfigurations: production.workers.map((worker, index) =>
+      initialBootstrapPredecessorConfiguration(production, configurations[index], worker)),
     deployments, activeVersions, migrationEnvelope, migrationNames });
   await createPrivateDirectory(outputDirectory);
   const results = [];
@@ -1867,7 +1956,7 @@ async function materializeSnapshot({ snapshotDirectory, outputDirectory, account
     results.push({ role: worker.role, bytes });
   }
   return { outcome: "production-protected-documents-materialized", mutation: false, results,
-    runtime };
+    bootstrap, runtime };
 }
 
 async function validateConfiguredSnapshotDirectory({ snapshotDirectory, production, review,

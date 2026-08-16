@@ -111,6 +111,20 @@ test("accepts the checked-in production trigger and topology", () => {
   assert.doesNotThrow(() => validateTopology(contract, configs));
 });
 
+test("pins the one exact initial bootstrap predecessor", () => {
+  for (const changed of [
+    changedContract((value) => {
+      value.initialBootstrapPredecessor.allowedBindingDelta[0].name = "PUBLISH_ENABLED";
+    }),
+    changedContract((value) => {
+      value.initialBootstrapPredecessor.allowedBindingDelta[0].live = "changed";
+    }),
+    changedContract((value) => {
+      value.initialBootstrapPredecessor.requiredPhase = "any";
+    }),
+  ]) assert.throws(() => validateContract(changed), /bootstrap predecessor drift/u);
+});
+
 test("requires every main push to use the one repository entrypoint", () => {
   for (const changed of [
     changedContract((value) => {
