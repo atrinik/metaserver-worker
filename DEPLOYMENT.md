@@ -150,10 +150,12 @@ proofs into staged readback. Rollback likewise obtains a new production proof
 immediately before its full production-trigger restore PATCH and a new review
 proof immediately before its full review-trigger restore PATCH; an expired,
 missing, or role-swapped rollback proof stops before mutation. Both restore
-requests use the zero-resource review token. Both staged triggers use the review token, whose
-provider policy has no account or zone resource. Production activation is one
-trigger PATCH that atomically replaces the private production selector and
-zero-resource token with `main` and the production token. Thus a selector race
+requests use the zero-resource review token. Both staged triggers use the
+review token, whose provider policy has no account or zone resource. Production
+activation is one trigger PATCH that atomically replaces the private production
+selector and zero-resource token with `main` and the production token. Its
+provider activation readback runs first; the fresh production-selector GitHub
+absence proof is the final operation immediately before that PATCH. Thus a selector race
 never receives deploy authority; the unguessable, repeatedly absent production
 ref also protects the staged production secrets. The fixed
 `review-build-only-sentinel` name is not used.

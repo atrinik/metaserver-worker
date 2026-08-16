@@ -1060,10 +1060,9 @@ test("plans inert setup, separately gated activation, and ordered rollback", () 
   });
   assert.equal(plan.productionActivation.request.body.root_directory, "/");
   assert.equal(plan.productionActivation.preconditionOperations[0].id,
+    "production-activation-readback");
+  assert.equal(plan.productionActivation.preconditionOperations[1].id,
     "sentinel-recheck-before-production-activation");
-  assert.equal(plan.productionActivation.preconditionOperations[1].precondition
-    .productionSentinelProof.resultReference,
-  "sentinel-recheck-before-production-activation.proof_digest");
   assert.equal(plan.productionActivation.precondition.productionSentinelProof.resultReference,
     "sentinel-recheck-before-production-activation.proof_digest");
   assert.equal(plan.productionActivation.precondition.productionProof.resultReference,
@@ -1161,6 +1160,10 @@ test("plans inert setup, separately gated activation, and ordered rollback", () 
   const missingActivationProof = structuredClone(plan);
   delete missingActivationProof.productionActivation.precondition.productionSentinelProof;
   assert.throws(() => validateSetupPlan(missingActivationProof), /complete setup plan schema drift/u);
+  const reorderedActivationProof = structuredClone(plan);
+  reorderedActivationProof.productionActivation.preconditionOperations.reverse();
+  assert.throws(() => validateSetupPlan(reorderedActivationProof),
+    /production activation proof operation set/u);
 });
 
 test("proves one serialized production trigger and one isolated review trigger", () => {

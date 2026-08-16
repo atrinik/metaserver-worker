@@ -25,7 +25,7 @@ const maximumPrivateDocumentBytes = 64 * 1024;
 const maximumProviderPages = 100;
 const stagingBranchPattern = /^review-build-only-sentinel-[0-9a-f]{32}$/u;
 const gitShaPattern = /^[0-9a-f]{40}$/u;
-const expectedSetupPlanSha256 = "7f5db89fcea903a70c3a152c77397844ad26a0a23184d377a082fc6dbf861d46";
+const expectedSetupPlanSha256 = "4c70471ec18bfec855347fea28711dc213b9d74eacc1a64b8ad2f62605d8d764";
 const githubRepository = Object.freeze({
   provider_account_id: "6371603",
   provider_account_name: "atrinik",
@@ -594,19 +594,17 @@ export function provisioningSetupPlan(production, review) {
     productionActivation: {
       gate: "production-trigger-activation",
       preconditionOperations: [
-        { id: "sentinel-recheck-before-production-activation",
-          actor: "github-owner-readback",
-          action: "repeat-exact-private-random-production-sentinel-ref-absence-proof-outside-sandbox",
-          mutation: false, branch: productionSentinel,
-          produces: { proof_digest: "fresh-production-sentinel-absence-proof-digest" } },
         { id: "production-activation-readback",
           actor: "workers-builds-control-plane-operator",
           action: "prove-review-active-production-staged-and-disposable-review-result",
           mutation: false,
           command: "npm run provision:workers-builds:verify-production-activation",
-          precondition: { productionSentinelProof: resultReference(
-            "sentinel-recheck-before-production-activation", "proof_digest") },
           produces: { proof_digest: "fresh-live-review-active-production-staged-proof-digest" } },
+        { id: "sentinel-recheck-before-production-activation",
+          actor: "github-owner-readback",
+          action: "repeat-exact-private-random-production-sentinel-ref-absence-proof-outside-sandbox",
+          mutation: false, branch: productionSentinel,
+          produces: { proof_digest: "fresh-production-sentinel-absence-proof-digest" } },
       ],
       precondition: {
         productionSentinelProof: resultReference(
@@ -768,10 +766,10 @@ export function validateSetupPlan(plan) {
   inspect(plan.reviewActivation);
   const activationOperations = plan.productionActivation?.preconditionOperations;
   const expectedActivationOperations = [
-    ["sentinel-recheck-before-production-activation", "github-owner-readback", false,
-      "repeat-exact-private-random-production-sentinel-ref-absence-proof-outside-sandbox"],
     ["production-activation-readback", "workers-builds-control-plane-operator", false,
       "prove-review-active-production-staged-and-disposable-review-result"],
+    ["sentinel-recheck-before-production-activation", "github-owner-readback", false,
+      "repeat-exact-private-random-production-sentinel-ref-absence-proof-outside-sandbox"],
   ];
   if (!Array.isArray(activationOperations) ||
       !same(activationOperations.map(({ id, actor, mutation, action }) =>
