@@ -119,7 +119,8 @@ approved; staged partial cohorts remain routine fix-forward state.
 Production identifiers stay in bounded Cloudflare-owned secret configuration
 documents, never in Git or logs. Runtime secret values remain provisioned in
 Cloudflare and are not available to the routine build.
-Issue #56's fail-closed composition can be checked without credentials using
+The fail-closed composition historically delivered by #56 and now executed
+under replacement authority #66 can be checked without credentials using
 `npm run provision:workers-builds:validate` and
 `npm run provision:workers-builds:dry-run`. The value-free
 `npm run provision:workers-builds:plan-setup` output additionally pins inert
@@ -134,7 +135,7 @@ snapshots/configurations and have no remote mutation path. A post-setup
 still private-sentinel-only and share only the zero-resource review token before
 activation. A post-activation
 `npm run provision:workers-builds:verify-configured` check proves the serialized
-trigger, distinct fresh provider-token policies, clean-source-bound inert review Worker,
+production/preview trigger pair, distinct fresh provider-token policies,
 environment-classification, and no-Deploy-Hook
 boundaries from those private snapshots. Exact invocation and authorization
 boundaries are in [DEPLOYMENT.md](DEPLOYMENT.md).
@@ -144,22 +145,23 @@ eligible same-repository non-`main` branches an automatic build-only check
 with no bindings, protected inputs, upload, or URL. Forks receive ordinary
 GitHub repository validation only. Changes that need live provider evidence
 use a separately requested, operator-supervised exact-SHA run against one
-serialized, Access-protected, production-disjoint canary cohort. A separate
-inert review-check project in the production account reuses the single
-supported repository connection but has its own zero-resource token and no
-production protected input or setting available to the build. Cloudflare's
+serialized, Access-protected, production-disjoint canary cohort. The production
+core project uses Cloudflare's documented production-plus-preview trigger pair;
+the preview trigger has its own zero-resource token and a one-variable nonsecret
+environment, so no production protected input or credential enters the build. Cloudflare's
 account-scoped Builds control-plane permission remains an explicit trusted
 operator user-token exception across builds, tokens, environment variables,
 connections, and triggers, never a build credential; the procedure uses only
-exact review-trigger mutations and rejects production IDs. Its one inert bootstrap version has no
-binding, route, `workers.dev` URL, preview URL, or observability, and branch
-builds create no versions. A 1,000-minute monthly review-build budget fails
+exact preview-trigger mutations and rejects the production-trigger ID. Review
+builds create no version, binding, route, `workers.dev` URL, or preview URL. A
+1,000-minute monthly review-build budget fails
 closed at its operator threshold. The live
 account has no GitHub connection and uses stable `workers.dev` hosts. Native
 Cloudflare checks and PR status comments/history contain no preview URL. That
 cohort is not
 provisioned by this repository change; `npm run deploy:review-canary` remains a
-fail-closed placeholder until issue #56. Validate the machine boundary with
+fail-closed placeholder until a maintainer separately authorizes the live
+cohort. Validate the machine boundary with
 `npm run test:review`, `npm run review:validate`, and
 `npm run review:dry-run`. See [DEPLOYMENT.md](DEPLOYMENT.md) for provider settings,
 exceptional pauses, exact-SHA retry, partial failure, outage, revocation, and

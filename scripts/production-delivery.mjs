@@ -327,7 +327,7 @@ export function validateContract(contract) {
   if (
     JSON.stringify(contract.initialBootstrapPredecessor) !==
     JSON.stringify({
-      requiredPhase: "review-bootstrap-and-all-builds-triggers-absent",
+      requiredPhase: "all-builds-triggers-absent",
       allowedBindingDelta: [{
         role: "core",
         name: "CLASSIC_DIRECTORY_CUTOVER_MODE",

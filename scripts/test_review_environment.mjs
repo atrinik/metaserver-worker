@@ -40,7 +40,7 @@ function changed(change) {
 
 test("accepts the checked-in isolated review contract", async () => {
   assert.equal((await validateCheckedInContract()).selectedMode,
-    "single-connection-build-only-plus-operator-live-canary");
+    "single-core-project-production-plus-build-only-preview-trigger");
 });
 
 test("reserves main exclusively for the production contract", () => {
@@ -51,14 +51,14 @@ test("reserves main exclusively for the production contract", () => {
   for (const candidate of [
     changed((value) => value.automaticReview.previewBranchExcludes = []),
     changed((value) => value.liveCanary.source.branch = "main"),
-    changed((value) => value.automaticReview.productionDeployCommand = "npm run review:validate"),
-    changed((value) => value.automaticReview.productionDeployCommand =
-      "cd ../.. && npm run review:reject-sentinel"),
     changed((value) => value.automaticReview.buildCommand = "cd ../.. && npm run review:build"),
     changed((value) => value.automaticReview.deployCommand = "cd ../.. && npm run review:validate"),
     changed((value) => value.automaticReview.accountBoundary.productionAccountReuse = false),
     changed((value) => value.automaticReview.rootDirectory = "deployment/review-check"),
-    changed((value) => value.automaticReview.accountBoundary.buildIdentityProductionProjectSettingsReachable = true),
+    changed((value) => value.automaticReview.accountBoundary.buildIdentityProductionTriggerEnvironmentReachable = true),
+    changed((value) => value.automaticReview.providerTopology.mode = "two-workers"),
+    changed((value) => value.automaticReview.providerTopology.maximumTriggersPerWorker = 1),
+    changed((value) => value.automaticReview.project = "atrinik-metaserver-review-check"),
     changed((value) => value.automaticReview.providerBuildTimeoutMinutes = 30),
     changed((value) => value.automaticReview.checkCommandTimeoutMinutes = 20),
   ]) assert.throws(() => validateContract(candidate, production, configurations), ReviewEnvironmentError);
@@ -74,8 +74,8 @@ test("automatic review has no bindings, routes, secrets, or deployable version",
     (value) => value.result.reviewUrl = "https://public.workers.dev",
     (value) => value.tokenAuthority.accountPermissions.push("Workers Scripts:Read"),
     (value) => value.tokenAuthority.productionRead = true,
-    (value) => value.bootstrap.workersDev = true,
-    (value) => value.bootstrap.configSha256 = "0".repeat(64),
+    (value) => value.localValidation.workersDev = true,
+    (value) => value.localValidation.configSha256 = "0".repeat(64),
     (value) => value.costPolicy.maximumMonthlyReviewBuildMinutes = 3000,
     (value) => value.controlPlaneOperator.credentialBuildReadable = true,
     (value) => value.controlPlaneOperator.guards.pop(),

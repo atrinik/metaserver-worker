@@ -95,7 +95,7 @@
     "controlPlaneGateVariable": "ATRINIK_PRODUCTION_CONTROL_PLANE_READY"
   },
   "initialBootstrapPredecessor": {
-    "requiredPhase": "review-bootstrap-and-all-builds-triggers-absent",
+    "requiredPhase": "all-builds-triggers-absent",
     "allowedBindingDelta": [
       {
         "role": "core",

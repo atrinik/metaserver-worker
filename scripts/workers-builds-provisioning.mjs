@@ -25,7 +25,7 @@ const maximumPrivateDocumentBytes = 64 * 1024;
 const maximumProviderPages = 100;
 const stagingBranchPattern = /^review-build-only-sentinel-[0-9a-f]{32}$/u;
 const gitShaPattern = /^[0-9a-f]{40}$/u;
-const expectedSetupPlanSha256 = "4c70471ec18bfec855347fea28711dc213b9d74eacc1a64b8ad2f62605d8d764";
+const expectedSetupPlanSha256 = "be0810d287c1a2e3e6571328ea57627955c9a4570ba65e781d2404a74dc8ffd3";
 const githubRepository = Object.freeze({
   provider_account_id: "6371603",
   provider_account_name: "atrinik",
@@ -158,7 +158,7 @@ function expectedBindingInventory(config) {
 export function initialBootstrapPredecessorConfiguration(contract, config, worker) {
   const predecessor = structuredClone(config);
   const policy = contract.initialBootstrapPredecessor;
-  if (policy?.requiredPhase !== "review-bootstrap-and-all-builds-triggers-absent" ||
+  if (policy?.requiredPhase !== "all-builds-triggers-absent" ||
       !Array.isArray(policy.allowedBindingDelta))
     fail("initial production bootstrap predecessor is malformed");
   for (const delta of policy.allowedBindingDelta.filter(({ role }) => role === worker.role)) {
@@ -214,7 +214,7 @@ export function validateRepositoryConnectionOwnerProof(proof, accountId, sourceS
   const expectedKeys = ["accountId", "capturedAt", "connectionPreexisting", "repository",
     "source", "websitePreserved", "githubApp", "mainProtection"];
   const expectedApp = { appId: 85455, installationId: 152311798,
-    evidenceLocation: "atrinik/metaserver-worker#56-private-provider-evidence",
+    evidenceLocation: "atrinik/metaserver-worker#66-private-provider-evidence",
     repositorySelection: "selected", selectedRepositories: [
       { fullName: "atrinik/metaserver-worker", id: 1324297032 },
       { fullName: "atrinik/website", id: 1327107093 },
@@ -324,7 +324,7 @@ export function productionEnvironmentSpec(contract, values) {
 
 export function automaticReviewEnvironmentSpec(review) {
   if (!same(review.automaticReview.buildEnvironment, { SKIP_DEPENDENCY_INSTALL: "1" }))
-    fail("review bootstrap environment drift");
+    fail("review trigger environment drift");
   return { SKIP_DEPENDENCY_INSTALL: { is_secret: false, value: "1" } };
 }
 
@@ -397,6 +397,12 @@ export function provisioningSetupPlan(production, review) {
     schemaVersion: 1,
     outcome: "workers-builds-reviewed-setup-plan",
     mutation: false,
+    providerTopology: structuredClone(review.automaticReview.providerTopology),
+    retainedFailedRequest: {
+      error: 12002,
+      topology: "one-repository-connection-two-workers",
+      disposition: "forbidden-never-retry-or-vary",
+    },
     repositoryConnection: structuredClone(githubRepository),
     gates: [
       "provider-setup-authorization",
@@ -414,8 +420,6 @@ export function provisioningSetupPlan(production, review) {
       "ATRINIK_REVIEW_STAGING_SENTINEL_BRANCH_FILE",
       "ATRINIK_REVIEW_STAGING_SENTINEL_REFS_FILE",
       "ATRINIK_REPOSITORY_CONNECTION_OWNER_PROOF_FILE",
-      "ATRINIK_REVIEW_BOOTSTRAP_API_TOKEN_FILE",
-      "ATRINIK_REVIEW_BOOTSTRAP_UPLOAD_PROOF_FILE",
       "ATRINIK_WORKERS_BUILDS_USAGE_PROOF_FILE",
       "ATRINIK_STAGED_PROOF_OUTPUT_FILE",
       "ATRINIK_STAGED_PROOF_FILE",
@@ -441,13 +445,6 @@ export function provisioningSetupPlan(production, review) {
           "Workers Scripts:Read",
         ],
         credentialBuildReadable: false,
-      },
-      reviewBootstrapToken: {
-        accountPermissions: structuredClone(
-          review.automaticReview.bootstrap.provisioningPermissions),
-        purpose: "upload-readback-and-if-proven-setup-owned-delete-inert-review-worker",
-        credentialBuildReadable:
-          review.automaticReview.bootstrap.provisioningCredentialBuildReadable,
       },
       productionBuildToken: {
         accountPermissions: ["Workers Scripts:Edit", "D1:Read"],
@@ -485,25 +482,6 @@ export function provisioningSetupPlan(production, review) {
         action: "select-exact-existing-production-script-tag", mutation: false,
         expected: { worker: production.workers[0].name },
         produces: { script_tag: { sourceField: "tag", pattern: "32-lowercase-hex" } } },
-      { id: "review-bootstrap", actor: "issue-56-review-check-bootstrap-operator",
-        action: "upload-exact-inert-review-worker", mutation: true,
-        credential: privateFileReference("ATRINIK_REVIEW_BOOTSTRAP_API_TOKEN_FILE"),
-        config: review.automaticReview.bootstrap.configPath,
-        command: { executable: "node_modules/.bin/wrangler", argv: ["deploy", "--config",
-          review.automaticReview.bootstrap.configPath, "--tag", "atrinik-review-bootstrap",
-          "--message", `config=${review.automaticReview.bootstrap.configSha256} source=${review.automaticReview.bootstrap.sourceSha256}`],
-        environment: { CLOUDFLARE_API_TOKEN:
-          privateFileReference("ATRINIK_REVIEW_BOOTSTRAP_API_TOKEN_FILE") } },
-        expected: { worker: review.automaticReview.project, retainedVersions: 1,
-          workersDev: false, previewUrls: false, bindings: [], routes: [],
-          configSha256: review.automaticReview.bootstrap.configSha256,
-          sourceSha256: review.automaticReview.bootstrap.sourceSha256,
-          versionAnnotations: {
-            "workers/tag": "atrinik-review-bootstrap",
-            "workers/message": `config=${review.automaticReview.bootstrap.configSha256} source=${review.automaticReview.bootstrap.sourceSha256}`,
-          } },
-        produces: { script_tag: { sourceField: "tag", pattern: "32-lowercase-hex" },
-          version_id: { sourceField: "id", pattern: "provider-uuid" } } },
       { id: "repository-connection", actor: "workers-builds-control-plane-operator",
         action: "put-or-reuse-exact-repository-connection-and-always-retain-on-rollback", mutation: true,
         request: { method: "PUT", path: "/builds/repos/connections",
@@ -560,7 +538,7 @@ export function provisioningSetupPlan(production, review) {
         precondition: { reviewSentinelProof: resultReference(
           "sentinel-recheck-before-review-trigger", "proof_digest") },
         request: { method: "POST", path: "/builds/triggers",
-          body: triggerPlanSpec(reviewStaged, "review-bootstrap", "review-build-token") },
+          body: triggerPlanSpec(reviewStaged, "production-script", "review-build-token") },
         produces: { trigger_uuid: "provider-trigger-uuid" } },
       { id: "sentinel-recheck-before-review-environment", actor: "github-owner-readback",
         action: "repeat-exact-private-random-review-sentinel-ref-absence-proof-outside-sandbox",
@@ -588,7 +566,7 @@ export function provisioningSetupPlan(production, review) {
       request: { method: "PATCH",
         path: apiPathReference("/builds/triggers/{trigger_uuid}",
           "review-trigger-staged", "trigger_uuid"),
-        body: triggerPlanSpec(reviewFinal, "review-bootstrap", "review-build-token") },
+        body: triggerPlanSpec(reviewFinal, "production-script", "review-build-token") },
       proof: "disposable-same-repository-non-main-build-only-branch",
     },
     productionActivation: {
@@ -654,7 +632,7 @@ export function provisioningSetupPlan(production, review) {
         request: { method: "PATCH",
           path: apiPathReference("/builds/triggers/{trigger_uuid}",
             "review-trigger-staged", "trigger_uuid"),
-          body: triggerPlanSpec(reviewStaged, "review-bootstrap", "review-build-token") } },
+          body: triggerPlanSpec(reviewStaged, "production-script", "review-build-token") } },
       { id: "prove-rollback-quiescence", actor: "workers-builds-control-plane-operator",
         action: "prove-no-build-or-upload-remains-active", mutation: false },
       { id: "delete-setup-triggers", actor: "workers-builds-control-plane-operator",
@@ -664,9 +642,6 @@ export function provisioningSetupPlan(production, review) {
       { id: "retain-repository-connection", actor: "workers-builds-control-plane-operator",
         action: "retain-shared-metaserver-repository-connection-provider-has-no-read-inventory-and-website-must-survive",
         mutation: false },
-      { id: "delete-review-bootstrap", actor: "issue-56-review-check-bootstrap-operator",
-        action: "delete-review-bootstrap-only-after-trigger-absence-and-exact-version-readback",
-        mutation: true },
       { id: "prove-production-preserved", actor: "workers-builds-control-plane-operator",
         action: "prove-three-production-workers-and-website-app-selection-unchanged",
         mutation: false },
@@ -677,14 +652,25 @@ export function provisioningSetupPlan(production, review) {
 }
 
 export function validateSetupPlan(plan) {
+  if (!same(plan?.providerTopology, {
+    mode: "one-worker-two-triggers", maximumTriggersPerWorker: 2,
+    productionTriggerRole: "production", reviewTriggerRole: "preview",
+    triggerEnvironmentIsolation: true,
+    documentation: "https://developers.cloudflare.com/workers/ci-cd/builds/api-reference/",
+    documentedContract:
+      "each-worker-up-to-two-triggers-production-and-preview-with-per-trigger-build-token-commands-and-environment",
+    lastVerifiedOn: "2026-08-16",
+    retained12002Constraint: "one-repository-connection-two-workers-rejected-never-retry",
+  }) || !same(plan?.retainedFailedRequest, {
+    error: 12002, topology: "one-repository-connection-two-workers",
+    disposition: "forbidden-never-retry-or-vary",
+  })) fail("provider trigger topology or retained failure constraint drift");
   const operations = plan?.setupOperations;
   const expectedOperations = [
     ["preflight", "workers-builds-control-plane-operator", false,
       "require-exact-private-readback-no-competing-trigger-and-validate-two-distinct-private-random-sentinel-ref-absences"],
     ["production-script", "workers-builds-control-plane-operator", false,
       "select-exact-existing-production-script-tag"],
-    ["review-bootstrap", "issue-56-review-check-bootstrap-operator", true,
-      "upload-exact-inert-review-worker"],
     ["repository-connection", "workers-builds-control-plane-operator", true,
       "put-or-reuse-exact-repository-connection-and-always-retain-on-rollback"],
     ["production-build-token", "workers-builds-control-plane-operator", true,
@@ -722,8 +708,6 @@ export function validateSetupPlan(plan) {
       review_sentinel_refs: "exact-empty-array",
       repository_connection_owner_proof: "fresh-exact-cloudflare-owner-ui-proof" }],
     ["production-script", { script_tag: { sourceField: "tag", pattern: "32-lowercase-hex" } }],
-    ["review-bootstrap", { script_tag: { sourceField: "tag", pattern: "32-lowercase-hex" },
-      version_id: { sourceField: "id", pattern: "provider-uuid" } }],
     ["repository-connection", { repo_connection_uuid: "provider-repository-connection-uuid" }],
     ["production-build-token", { build_token_uuid: "provider-build-token-uuid",
       cloudflare_token_id: "exact-private-input-token-id" }],
@@ -801,8 +785,6 @@ export function validateSetupPlan(plan) {
       "delete-only-the-two-recorded-build-token-uuids"],
     ["retain-repository-connection", "workers-builds-control-plane-operator", false,
       "retain-shared-metaserver-repository-connection-provider-has-no-read-inventory-and-website-must-survive"],
-    ["delete-review-bootstrap", "issue-56-review-check-bootstrap-operator", true,
-      "delete-review-bootstrap-only-after-trigger-absence-and-exact-version-readback"],
     ["prove-production-preserved", "workers-builds-control-plane-operator", false,
       "prove-three-production-workers-and-website-app-selection-unchanged"],
   ];
@@ -831,7 +813,7 @@ export function validateAutomaticReviewEnvironment(actual, review) {
       !/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?Z$/u.test(bootstrap.created_on)) ||
     !Object.keys(bootstrap).every((key) => ["created_on", "is_secret", "value"].includes(key))
   )
-    fail("review bootstrap environment drift");
+    fail("review trigger environment drift");
 }
 
 export function validateNoDeployHooks(envelope, label) {
@@ -849,21 +831,31 @@ export function validateNoActiveBuilds(envelope, label) {
     fail(`${label} has an active Workers Build`);
 }
 
+function validateRetiredReviewWorkerAbsent(scriptRows, review, label) {
+  const retiredName = review?.automaticReview?.localValidation?.workerName;
+  if (review?.automaticReview?.costPolicy?.persistentWorkers !== 0 ||
+      typeof retiredName !== "string" || !retiredName ||
+      retiredName === review?.automaticReview?.project)
+    fail("retired review Worker contract is malformed");
+  const count = scriptRows.filter(({ id }) => id === retiredName).length;
+  if (count !== 0) fail(`${label} contains the retired review Worker`);
+  return count;
+}
+
 export function validateFreshBuildsSnapshot({ production, review, scripts,
   triggers, deployHooks, builds, buildTokens, accountTriggers,
   productionSentinelProof, reviewSentinelProof, repositoryConnectionProof, accountId,
   sourceSha }) {
   const scriptRows = requireEnvelope(scripts, "scripts");
   if (!Array.isArray(scriptRows)) fail("script inventory is invalid");
+  const reviewPersistentWorkerCount = validateRetiredReviewWorkerAbsent(
+    scriptRows, review, "fresh Worker inventory");
   const requiredNames = production.workers.map(({ name }) => name);
   for (const name of requiredNames) {
     const matches = scriptRows.filter(({ id }) => id === name);
     if (matches.length !== 1 || !scriptTagPattern.test(matches[0].tag ?? ""))
       fail(`required production Worker ${name} is missing or ambiguous`);
   }
-  const reviewRows = scriptRows.filter(({ id }) => id === review.automaticReview.project);
-  if (reviewRows.length !== 0)
-    fail("fresh setup cannot adopt a pre-existing review bootstrap Worker");
   const expectedLabels = production.workers.map(({ role }) => role);
   for (const [label, envelope] of exactLabeledInventories(triggers,
     expectedLabels, "fresh trigger")) {
@@ -891,19 +883,19 @@ export function validateFreshBuildsSnapshot({ production, review, scripts,
   validateRepositoryConnectionOwnerProof(repositoryConnectionProof, accountId, sourceSha);
   return { outcome: "workers-builds-fresh-preflight-valid", mutation: false,
     productionProjectCount: production.workers.length,
-    reviewBootstrapPresent: false, repositoryConnectionInventory: "provider-not-readable" };
+    reviewPersistentWorkerCount, repositoryConnectionInventory: "provider-not-readable" };
 }
 
 export function validateInitialBootstrapSnapshot({ production, review, scripts,
   triggers, deployHooks, builds, buildTokens, accountTriggers }) {
   if (production.initialBootstrapPredecessor?.requiredPhase !==
-      "review-bootstrap-and-all-builds-triggers-absent")
+      "all-builds-triggers-absent")
     fail("initial production bootstrap predecessor phase drift");
   const scriptRows = requireEnvelope(scripts, "initial bootstrap scripts");
   if (!Array.isArray(scriptRows) || production.workers.some(({ name }) =>
-    scriptRows.filter(({ id }) => id === name).length !== 1) ||
-    scriptRows.some(({ id }) => id === review.automaticReview.project))
+    scriptRows.filter(({ id }) => id === name).length !== 1))
     fail("initial bootstrap Worker inventory drift");
+  validateRetiredReviewWorkerAbsent(scriptRows, review, "initial bootstrap Worker inventory");
   const expectedLabels = production.workers.map(({ role }) => role);
   for (const [label, envelope] of exactLabeledInventories(triggers,
     expectedLabels, "initial bootstrap trigger")) {
@@ -995,58 +987,9 @@ export function validateTokenAuthorityProofs({ production, review, accountId, pr
   if (production.workers.length !== 3) fail("production token resource boundary drift");
 }
 
-export function validateReviewBootstrapState({ review, config, script, settings, subdomain,
-  schedules, routes, scriptSettings, deployments, versions, activeVersion, builds,
-  buildLimits, buildUsageProof, uploadProof, sourceSha, accountId }, now = Date.now()) {
-  const bootstrap = review.automaticReview.bootstrap;
-  const liveSettings = requireEnvelope(settings, "review bootstrap settings");
-  if (liveSettings.compatibility_date !== config.compatibility_date ||
-      !same(liveSettings.compatibility_flags ?? [], config.compatibility_flags ?? []) ||
-      !same(liveSettings.bindings ?? [], []) ||
-      !same(liveSettings.observability ?? {}, config.observability))
-    fail("review bootstrap runtime settings drift");
-  const liveSubdomain = requireEnvelope(subdomain, "review bootstrap subdomain");
-  if (liveSubdomain.enabled !== false || liveSubdomain.previews_enabled !== false)
-    fail("review bootstrap exposes a public or preview URL");
-  if (!same(requireEnvelope(schedules, "review bootstrap schedules").schedules ?? [], []) ||
-      !same(requireEnvelope(routes, "review bootstrap routes"), []))
-    fail("review bootstrap gained a route or schedule");
-  const auxiliary = requireEnvelope(scriptSettings, "review bootstrap script settings");
-  if (auxiliary.logpush === true || (auxiliary.tail_consumers ?? []).length !== 0)
-    fail("review bootstrap gained an external log consumer");
-  const deploymentRows = requireEnvelope(deployments, "review bootstrap deployments").deployments;
-  const versionRows = requireExhaustiveEnvelope(versions, "review bootstrap versions");
-  if (!Array.isArray(deploymentRows) || deploymentRows.length !== 1 ||
-      versionRows.length !== bootstrap.retainedBootstrapVersions)
-    fail("review bootstrap retained deployment/version inventory drift");
-  const deploymentVersions = deploymentRows[0].versions ?? [];
-  if (deploymentVersions.length !== 1 || deploymentVersions[0].percentage !== 100 ||
-      deploymentVersions[0].version_id !== versionRows[0].id ||
-      versionRows[0].id !== activeVersion?.result?.id || !scriptTagPattern.test(script.tag ?? ""))
-    fail("review bootstrap active version identity drift");
-  const expectedAnnotations = {
-    "workers/tag": "atrinik-review-bootstrap",
-    "workers/message": `config=${bootstrap.configSha256} source=${bootstrap.sourceSha256}`,
-  };
-  const version = requireEnvelope(activeVersion, "review bootstrap active version");
-  if (!same(version.annotations, expectedAnnotations) ||
-      !same(version.resources?.bindings ?? [], []) ||
-      !same(version.resources?.script_runtime?.exports ?? {}, {}))
-    fail("review bootstrap digest, binding, or export proof drift");
-  const proofKeys = ["capturedAt", "cleanCheckout", "command", "configSha256", "source",
-    "sourceRevision", "sourceSha256", "versionId"];
-  const captured = Date.parse(uploadProof?.capturedAt ?? "");
-  if (!uploadProof || !same(sorted(Object.keys(uploadProof)), sorted(proofKeys)) ||
-      uploadProof.source !== "wrangler-clean-reviewed-source-upload" ||
-      uploadProof.cleanCheckout !== true || uploadProof.sourceRevision !== sourceSha ||
-      uploadProof.sourceSha256 !== bootstrap.sourceSha256 ||
-      uploadProof.configSha256 !== bootstrap.configSha256 || uploadProof.versionId !== version.id ||
-      !same(uploadProof.command, ["node_modules/.bin/wrangler", "deploy", "--config",
-        bootstrap.configPath, "--tag", "atrinik-review-bootstrap", "--message",
-        `config=${bootstrap.configSha256} source=${bootstrap.sourceSha256}`]) ||
-      !Number.isFinite(captured) || captured > now + 30_000 || now - captured > 5 * 60_000)
-    fail("review bootstrap clean-source upload proof drift");
-  validateNoActiveBuilds(builds, "review bootstrap");
+export function validateReviewBuildBoundary({ review, builds, buildLimits,
+  buildUsageProof, accountId }, now = Date.now()) {
+  validateNoActiveBuilds(builds, "review trigger");
   const limits = requireEnvelope(buildLimits, "Workers Builds account limits");
   if (typeof limits.has_reached_build_minutes_limit !== "boolean" ||
       (limits.build_minutes_refresh_on !== undefined &&
@@ -1074,20 +1017,25 @@ export function validateReviewBootstrapState({ review, config, script, settings,
 export function validateConfiguredBuildsSnapshot({ production, review, scripts,
   productionTriggers, productionEnvironment, reviewTriggers, reviewEnvironment,
   nonEntrypointTriggers, deployHooks, buildTokens, accountTriggers,
-  reviewBootstrapState, reviewBootstrapConfig, accountId, tokenAuthorityProofs, sourceSha }) {
+  reviewBuildState, accountId, tokenAuthorityProofs, sourceSha }) {
   const scriptRows = requireEnvelope(scripts, "scripts");
   if (!Array.isArray(scriptRows)) fail("script inventory is invalid");
-  const productionScript = scriptRows.find(({ id }) => id === production.workers[0].name);
-  const reviewScript = scriptRows.find(({ id }) => id === review.automaticReview.project);
-  if (!scriptTagPattern.test(productionScript?.tag ?? "") ||
-      !scriptTagPattern.test(reviewScript?.tag ?? ""))
-    fail("configured Builds scripts are missing or malformed");
-  if (productionScript.tag === reviewScript.tag)
-    fail("production and review Builds projects share one script tag");
-  const productionRows = requireExhaustiveEnvelope(productionTriggers, "production triggers");
-  const reviewRows = requireExhaustiveEnvelope(reviewTriggers, "review triggers");
+  validateRetiredReviewWorkerAbsent(scriptRows, review, "configured Worker inventory");
+  const matches = scriptRows.filter(({ id }) => id === production.workers[0].name);
+  if (matches.length !== 1 || review.automaticReview.project !== production.workers[0].name ||
+      !scriptTagPattern.test(matches[0].tag ?? ""))
+    fail("configured shared Builds project is missing or malformed");
+  const productionScript = matches[0];
+  const reviewScript = matches[0];
+  const sharedRows = requireExhaustiveEnvelope(productionTriggers, "shared core triggers");
+  if (!same(productionTriggers, reviewTriggers) || sharedRows.length !== 2)
+    fail("configured core project does not have exactly two shared triggers");
+  const productionRows = sharedRows.filter(({ trigger_name: name }) =>
+    name === "Atrinik automatic production main");
+  const reviewRows = sharedRows.filter(({ trigger_name: name }) =>
+    name === "Atrinik build-only review");
   if (productionRows.length !== 1 || reviewRows.length !== 1)
-    fail("configured trigger inventory is not exactly one per Builds project");
+    fail("configured production/preview trigger roles are missing or ambiguous");
   for (const [label, envelope] of exactLabeledInventories(nonEntrypointTriggers,
     production.workers.slice(1).map(({ role }) => role), "non-entrypoint trigger")) {
     const rows = requireExhaustiveEnvelope(envelope, `${label} triggers`);
@@ -1137,16 +1085,15 @@ export function validateConfiguredBuildsSnapshot({ production, review, scripts,
   if (allTriggers.length !== 2 || !same(sorted(allTriggers.map(({ trigger_uuid: id }) => id)),
     sorted([productionActual.trigger_uuid, reviewActual.trigger_uuid])))
     fail("account has a competing or missing Workers Builds trigger");
-  validateReviewBootstrapState({ review, config: reviewBootstrapConfig,
-    script: reviewScript, ...reviewBootstrapState, sourceSha, accountId });
+  validateReviewBuildBoundary({ review, ...reviewBuildState, accountId });
   for (const [label, envelope] of exactLabeledInventories(deployHooks,
-    [...production.workers.map(({ role }) => role), "review"], "Deploy Hook"))
+    production.workers.map(({ role }) => role), "Deploy Hook"))
     validateNoDeployHooks(envelope, label);
   return {
     outcome: "workers-builds-configured-snapshot-valid",
     mutation: false,
-    productionTriggerCount: productionRows.length,
-    reviewTriggerCount: reviewRows.length,
+    productionTriggerCount: 1,
+    reviewTriggerCount: 1,
     deployHookCount: 0,
   };
 }
@@ -1181,12 +1128,12 @@ export function validateReviewResultProof({ proof, reviewTrigger, reviewToken, b
       proof.source !== "cloudflare-github-disposable-review-readback" ||
       proof.repository !== "atrinik/metaserver-worker" ||
       proof.productionMainSha !== mainSha || proof.reviewCommitSha === mainSha ||
-      !/^review\/issue-56-[a-z0-9-]{1,40}$/u.test(proof.branch ?? "") ||
+      !/^review\/issue-66-[a-z0-9-]{1,40}$/u.test(proof.branch ?? "") ||
       !gitShaPattern.test(proof.reviewCommitSha ?? "") || !uuidPattern.test(proof.buildUuid ?? "") ||
       proof.triggerUuid !== reviewTrigger.trigger_uuid ||
       proof.buildTokenUuid !== reviewToken.build_token_uuid ||
       proof.cleanupPolicy !== "build-only-no-version-binding-route-url-or-resource-created" ||
-      proof.evidenceLocation !== "atrinik/metaserver-worker#56-private-provider-evidence" ||
+      proof.evidenceLocation !== "atrinik/metaserver-worker#66-private-provider-evidence" ||
       !Number.isFinite(captured) || captured > now + 30_000 || now - captured > 5 * 60_000 ||
       matches.length !== 1 || row.status !== "stopped" || row.build_outcome !== "success" ||
       row.trigger?.trigger_uuid !== proof.triggerUuid || metadata.branch !== proof.branch ||
@@ -1222,21 +1169,29 @@ export function validateReviewResultProof({ proof, reviewTrigger, reviewToken, b
 
 function validateActivationSnapshot({ production, review, scripts,
   productionTriggers, productionEnvironment, reviewTriggers, reviewEnvironment,
-  nonEntrypointTriggers, deployHooks, builds, buildTokens, accountTriggers, reviewBootstrapState,
-  reviewBootstrapConfig, accountId, tokenAuthorityProofs, sourceSha,
+  nonEntrypointTriggers, deployHooks, builds, buildTokens, accountTriggers, reviewBuildState,
+  accountId, tokenAuthorityProofs, sourceSha,
   productionSentinelProof, reviewSentinelProof,
   snapshotManifest, reviewResultProof }, { reviewActive }) {
   validateDistinctSentinelRefAbsence(productionSentinelProof, reviewSentinelProof);
   const scriptRows = requireEnvelope(scripts, "scripts");
-  const productionScript = scriptRows.find(({ id }) => id === production.workers[0].name);
-  const reviewScript = scriptRows.find(({ id }) => id === review.automaticReview.project);
-  if (!scriptTagPattern.test(productionScript?.tag ?? "") ||
-      !scriptTagPattern.test(reviewScript?.tag ?? ""))
-    fail("staged Builds scripts are missing or malformed");
-  const productionRows = requireExhaustiveEnvelope(productionTriggers, "staged production triggers");
-  const reviewRows = requireExhaustiveEnvelope(reviewTriggers, "staged review triggers");
+  if (!Array.isArray(scriptRows)) fail("script inventory is invalid");
+  validateRetiredReviewWorkerAbsent(scriptRows, review, "staged Worker inventory");
+  const matches = scriptRows.filter(({ id }) => id === production.workers[0].name);
+  if (matches.length !== 1 || review.automaticReview.project !== production.workers[0].name ||
+      !scriptTagPattern.test(matches[0].tag ?? ""))
+    fail("staged shared Builds project is missing or malformed");
+  const productionScript = matches[0];
+  const reviewScript = matches[0];
+  const sharedRows = requireExhaustiveEnvelope(productionTriggers, "staged shared core triggers");
+  if (!same(productionTriggers, reviewTriggers) || sharedRows.length !== 2)
+    fail("staged core project does not have exactly two shared triggers");
+  const productionRows = sharedRows.filter(({ trigger_name: name }) =>
+    name === "Atrinik automatic production main");
+  const reviewRows = sharedRows.filter(({ trigger_name: name }) =>
+    name === "Atrinik build-only review");
   if (productionRows.length !== 1 || reviewRows.length !== 1)
-    fail("staged trigger inventory is not exactly one per Builds project");
+    fail("staged production/preview trigger roles are missing or ambiguous");
   const tokenRows = requireExhaustiveEnvelope(buildTokens, "build tokens");
   const reviewToken = tokenRows.find(({ build_token_uuid: id }) =>
     id === reviewRows[0].build_token_uuid);
@@ -1288,16 +1243,15 @@ function validateActivationSnapshot({ production, review, scripts,
   if (!same(sorted(metaserverTriggers.map(({ trigger_uuid: id }) => id)),
     sorted([productionRows[0].trigger_uuid, reviewRows[0].trigger_uuid])))
     fail("staged account trigger inventory drift");
-  const stagedLabels = [...production.workers.map(({ role }) => role), "review"];
+  const stagedLabels = production.workers.map(({ role }) => role);
   for (const [label, envelope] of exactLabeledInventories(deployHooks, stagedLabels,
     "staged Deploy Hook")) validateNoDeployHooks(envelope, label);
   for (const [label, envelope] of exactLabeledInventories(builds, stagedLabels,
     "staged build")) validateNoActiveBuilds(envelope, label);
-  validateReviewBootstrapState({ review, config: reviewBootstrapConfig,
-    script: reviewScript, ...reviewBootstrapState, sourceSha, accountId });
+  validateReviewBuildBoundary({ review, ...reviewBuildState, accountId });
   if (reviewActive) validateReviewResultProof({ proof: reviewResultProof,
     reviewTrigger: reviewRows[0], reviewToken,
-    builds: reviewBootstrapState.builds, mainSha: sourceSha });
+    builds: reviewBuildState.builds, mainSha: sourceSha });
   validateSnapshotManifest(snapshotManifest, { accountId, sourceSha, production, review });
   const capturedAt = new Date().toISOString();
   const snapshotCoordinate = { accountId: snapshotManifest.accountId,
@@ -1313,7 +1267,7 @@ function validateActivationSnapshot({ production, review, scripts,
   const proof_digest = digestJson({ snapshotCoordinate, sentinelCoordinates, scripts,
     productionTriggers, productionEnvironment, reviewTriggers, reviewEnvironment,
     nonEntrypointTriggers, deployHooks, builds, buildTokens, accountTriggers,
-    reviewBootstrapState, tokenAuthorityProofs,
+    reviewBuildState, tokenAuthorityProofs,
     ...(reviewActive ? { reviewResultProof } : {}) });
   return { outcome: reviewActive ? "workers-builds-production-activation-snapshot-valid" :
     "workers-builds-staged-snapshot-valid", mutation: false,
@@ -1529,11 +1483,9 @@ async function checkedInInputs() {
   const bases = await Promise.all([
     "wrangler.jsonc", "wrangler.publisher.jsonc", "wrangler.rendezvous.jsonc",
   ].map(async (path) => JSON.parse(await readFile(resolve(root, path), "utf8"))));
-  const reviewBootstrapConfig = JSON.parse(await readFile(resolve(root,
-    review.automaticReview.bootstrap.configPath), "utf8"));
   validateProductionContract(production);
   await validateReviewContract();
-  return { production, review, bases, reviewBootstrapConfig };
+  return { production, review, bases };
 }
 
 export async function createPrivateDirectory(path) {
@@ -1948,17 +1900,13 @@ export async function readProviderSnapshot({ accountId, token, productionReadTok
   const scriptRows = requireEnvelope(scripts, "scripts");
   if (!Array.isArray(scriptRows) || scriptRows.length > 1000)
     fail("account Worker inventory is invalid or unbounded");
-  const names = [...production.workers.map(({ name }) => name), review.automaticReview.project];
+  const reviewPersistentWorkerCount = validateRetiredReviewWorkerAbsent(
+    scriptRows, review, "provider Worker inventory");
+  const names = [...new Set(production.workers.map(({ name }) => name))];
   let productionDatabaseId;
   for (const name of names) {
     const script = (scripts.result ?? []).find(({ id }) => id === name);
     if (!script) {
-      if (name === review.automaticReview.project) {
-        await writePrivateJson(resolve(outputDirectory, `${name}.absent.json`), {
-          success: true, result: { absent: true },
-        });
-        continue;
-      }
       fail(`required production Worker ${name} is absent`);
     }
     if (!scriptTagPattern.test(script.tag ?? "")) fail(`${name} script tag is malformed`);
@@ -2050,7 +1998,7 @@ export async function readProviderSnapshot({ accountId, token, productionReadTok
   });
   return { outcome: "workers-builds-private-readback-complete", mutation: false,
     productionWorkers: production.workers.length,
-    reviewBootstrapPresent: (scripts.result ?? []).some(({ id }) => id === review.automaticReview.project) };
+    reviewPersistentWorkerCount };
 }
 
 export async function loadSnapshot(directory, name) {
@@ -2132,7 +2080,7 @@ async function materializeSnapshot({ snapshotDirectory, outputDirectory, account
 }
 
 async function validateConfiguredSnapshotDirectory({ snapshotDirectory, production, review,
-  reviewBootstrapConfig, accountId, tokenAuthorityProofs, sourceSha }) {
+  accountId, tokenAuthorityProofs, sourceSha }) {
   validateSnapshotManifest(await loadSnapshot(snapshotDirectory, "snapshot-manifest.json"),
     { accountId, sourceSha, production, review });
   const [core, publisher, rendezvous] = production.workers;
@@ -2140,14 +2088,17 @@ async function validateConfiguredSnapshotDirectory({ snapshotDirectory, producti
   const scripts = await loadSnapshot(snapshotDirectory, "scripts.json");
   const buildTokens = await loadSnapshot(snapshotDirectory, "build-tokens.json");
   const productionTriggers = await loadSnapshot(snapshotDirectory, `${core.name}.triggers.json`);
-  const reviewTriggers = await loadSnapshot(snapshotDirectory, `${reviewProject}.triggers.json`);
-  const productionRows = requireEnvelope(productionTriggers, "production triggers");
-  const reviewRows = requireEnvelope(reviewTriggers, "review triggers");
-  if (!Array.isArray(productionRows) || productionRows.length !== 1 ||
-      !Array.isArray(reviewRows) || reviewRows.length !== 1)
-    fail("configured trigger inventory is not exactly one per Builds project");
-  for (const trigger of [...productionRows, ...reviewRows])
+  const reviewTriggers = productionTriggers;
+  const rows = requireEnvelope(productionTriggers, "shared core triggers");
+  if (!Array.isArray(rows) || rows.length !== 2)
+    fail("configured core trigger inventory is not exactly two");
+  for (const trigger of rows)
     if (!uuidPattern.test(trigger.trigger_uuid ?? "")) fail("configured trigger UUID is malformed");
+  const productionRows = rows.filter(({ trigger_name: name }) =>
+    name === "Atrinik automatic production main");
+  const reviewRows = rows.filter(({ trigger_name: name }) => name === "Atrinik build-only review");
+  if (productionRows.length !== 1 || reviewRows.length !== 1)
+    fail("configured production/preview trigger roles are missing or ambiguous");
   const productionEnvironment = await loadSnapshot(snapshotDirectory,
     `${core.name}.trigger-${productionRows[0].trigger_uuid}.environment.json`);
   const reviewEnvironment = await loadSnapshot(snapshotDirectory,
@@ -2156,38 +2107,28 @@ async function validateConfiguredSnapshotDirectory({ snapshotDirectory, producti
     worker.role,
     await loadSnapshot(snapshotDirectory, `${worker.name}.triggers.json`),
   ]));
-  const deployHooks = await Promise.all([...production.workers.map(({ role, name }) =>
-    [role, name]), ["review", reviewProject]].map(async ([label, name]) => [
+  const deployHooks = await Promise.all(production.workers.map(({ role, name }) =>
+    [role, name]).map(async ([label, name]) => [
     label,
     await loadSnapshot(snapshotDirectory, `${name}.deploy-hooks.json`),
   ]));
   const accountTriggers = await loadSnapshot(snapshotDirectory, "account-triggers.json");
-  const reviewBootstrapState = {
-    settings: await loadSnapshot(snapshotDirectory, `${reviewProject}.settings.json`),
-    subdomain: await loadSnapshot(snapshotDirectory, `${reviewProject}.subdomain.json`),
-    schedules: await loadSnapshot(snapshotDirectory, `${reviewProject}.schedules.json`),
-    routes: await loadSnapshot(snapshotDirectory, `${reviewProject}.routes.json`),
-    scriptSettings: await loadSnapshot(snapshotDirectory, `${reviewProject}.script-settings.json`),
-    deployments: await loadSnapshot(snapshotDirectory, `${reviewProject}.deployments.json`),
-    versions: await loadSnapshot(snapshotDirectory, `${reviewProject}.versions.json`),
-    activeVersion: await loadSnapshot(snapshotDirectory, `${reviewProject}.active-version.json`),
+  const reviewBuildState = {
     builds: await loadSnapshot(snapshotDirectory, `${reviewProject}.builds.json`),
     buildLimits: await loadSnapshot(snapshotDirectory, "build-limits.json"),
     buildUsageProof: await readPrivateJson(process.env.ATRINIK_WORKERS_BUILDS_USAGE_PROOF_FILE,
       "Workers Builds usage proof"),
-    uploadProof: await readPrivateJson(process.env.ATRINIK_REVIEW_BOOTSTRAP_UPLOAD_PROOF_FILE,
-      "review bootstrap upload proof"),
   };
   return validateConfiguredBuildsSnapshot({
     production, review, scripts, productionTriggers, productionEnvironment,
     reviewTriggers, reviewEnvironment, nonEntrypointTriggers, deployHooks, buildTokens,
-    accountTriggers, reviewBootstrapState, reviewBootstrapConfig,
+    accountTriggers, reviewBuildState,
     accountId, tokenAuthorityProofs, sourceSha,
   });
 }
 
 async function validateStagedSnapshotDirectory({ snapshotDirectory, production, review,
-  reviewBootstrapConfig, accountId, tokenAuthorityProofs, sourceSha },
+  accountId, tokenAuthorityProofs, sourceSha },
 { reviewActive = false, reviewResultProof = undefined } = {}) {
   const snapshotManifest = await loadSnapshot(snapshotDirectory, "snapshot-manifest.json");
   validateSnapshotManifest(snapshotManifest, { accountId, sourceSha, production, review });
@@ -2196,41 +2137,34 @@ async function validateStagedSnapshotDirectory({ snapshotDirectory, production, 
   const scripts = await loadSnapshot(snapshotDirectory, "scripts.json");
   const buildTokens = await loadSnapshot(snapshotDirectory, "build-tokens.json");
   const productionTriggers = await loadSnapshot(snapshotDirectory, `${core.name}.triggers.json`);
-  const reviewTriggers = await loadSnapshot(snapshotDirectory, `${reviewProject}.triggers.json`);
-  const productionRows = requireExhaustiveEnvelope(productionTriggers, "staged production triggers");
-  const reviewRows = requireExhaustiveEnvelope(reviewTriggers, "staged review triggers");
-  if (productionRows.length !== 1 || reviewRows.length !== 1)
-    fail("staged trigger inventory is not exactly one per Builds project");
-  for (const trigger of [...productionRows, ...reviewRows])
+  const reviewTriggers = productionTriggers;
+  const rows = requireExhaustiveEnvelope(productionTriggers, "staged shared core triggers");
+  if (rows.length !== 2) fail("staged core trigger inventory is not exactly two");
+  for (const trigger of rows)
     if (!uuidPattern.test(trigger.trigger_uuid ?? "")) fail("staged trigger UUID is malformed");
+  const productionRows = rows.filter(({ trigger_name: name }) =>
+    name === "Atrinik automatic production main");
+  const reviewRows = rows.filter(({ trigger_name: name }) => name === "Atrinik build-only review");
+  if (productionRows.length !== 1 || reviewRows.length !== 1)
+    fail("staged production/preview trigger roles are missing or ambiguous");
   const productionEnvironment = await loadSnapshot(snapshotDirectory,
     `${core.name}.trigger-${productionRows[0].trigger_uuid}.environment.json`);
   const reviewEnvironment = await loadSnapshot(snapshotDirectory,
     `${reviewProject}.trigger-${reviewRows[0].trigger_uuid}.environment.json`);
-  const deployHooks = await Promise.all([...production.workers.map(({ role, name }) =>
-    [role, name]), ["review", reviewProject]].map(async ([label, name]) =>
+  const deployHooks = await Promise.all(production.workers.map(({ role, name }) =>
+    [role, name]).map(async ([label, name]) =>
     [label, await loadSnapshot(snapshotDirectory, `${name}.deploy-hooks.json`)]));
-  const builds = await Promise.all([...production.workers.map(({ role, name }) => [role, name]),
-    ["review", reviewProject]].map(async ([label, name]) =>
+  const builds = await Promise.all(production.workers.map(({ role, name }) => [role, name])
+    .map(async ([label, name]) =>
       [label, await loadSnapshot(snapshotDirectory, `${name}.builds.json`)]));
   const nonEntrypointTriggers = await Promise.all(production.workers.slice(1)
     .map(async ({ role, name }) =>
       [role, await loadSnapshot(snapshotDirectory, `${name}.triggers.json`)]));
-  const reviewBootstrapState = {
-    settings: await loadSnapshot(snapshotDirectory, `${reviewProject}.settings.json`),
-    subdomain: await loadSnapshot(snapshotDirectory, `${reviewProject}.subdomain.json`),
-    schedules: await loadSnapshot(snapshotDirectory, `${reviewProject}.schedules.json`),
-    routes: await loadSnapshot(snapshotDirectory, `${reviewProject}.routes.json`),
-    scriptSettings: await loadSnapshot(snapshotDirectory, `${reviewProject}.script-settings.json`),
-    deployments: await loadSnapshot(snapshotDirectory, `${reviewProject}.deployments.json`),
-    versions: await loadSnapshot(snapshotDirectory, `${reviewProject}.versions.json`),
-    activeVersion: await loadSnapshot(snapshotDirectory, `${reviewProject}.active-version.json`),
+  const reviewBuildState = {
     builds: await loadSnapshot(snapshotDirectory, `${reviewProject}.builds.json`),
     buildLimits: await loadSnapshot(snapshotDirectory, "build-limits.json"),
     buildUsageProof: await readPrivateJson(process.env.ATRINIK_WORKERS_BUILDS_USAGE_PROOF_FILE,
       "Workers Builds usage proof"),
-    uploadProof: await readPrivateJson(process.env.ATRINIK_REVIEW_BOOTSTRAP_UPLOAD_PROOF_FILE,
-      "review bootstrap upload proof"),
   };
   const { productionSentinelProof, reviewSentinelProof } =
     await readDistinctSentinelProofs();
@@ -2238,7 +2172,7 @@ async function validateStagedSnapshotDirectory({ snapshotDirectory, production, 
     productionEnvironment, reviewTriggers, reviewEnvironment, nonEntrypointTriggers,
     deployHooks, builds, buildTokens,
     accountTriggers: await loadSnapshot(snapshotDirectory, "account-triggers.json"),
-    reviewBootstrapState, reviewBootstrapConfig, accountId, tokenAuthorityProofs, sourceSha,
+    reviewBuildState, accountId, tokenAuthorityProofs, sourceSha,
     productionSentinelProof, reviewSentinelProof, snapshotManifest, reviewResultProof };
   return reviewActive ? validateProductionActivationSnapshot(arguments_) :
     validateStagedBuildsSnapshot(arguments_);
@@ -2280,7 +2214,7 @@ async function validateFreshSnapshotDirectory({ snapshotDirectory, production, r
 }
 
 export async function validateCheckedInProvisioning() {
-  const { production, review, reviewBootstrapConfig } = await checkedInInputs();
+  const { production, review } = await checkedInInputs();
   const id = "11111111-1111-4111-8111-111111111111";
   const tag = "1".repeat(32);
   productionTriggerSpec(production, {
@@ -2291,12 +2225,12 @@ export async function validateCheckedInProvisioning() {
   });
   automaticReviewEnvironmentSpec(review);
   provisioningSetupPlan(production, review);
-  return { production, review, reviewBootstrapConfig };
+  return { production, review };
 }
 
 async function main() {
   const mode = process.argv[2] ?? "--validate-only";
-  const { production, review, reviewBootstrapConfig } = await validateCheckedInProvisioning();
+  const { production, review } = await validateCheckedInProvisioning();
   if (mode === "--validate-only") {
     process.stdout.write(`${JSON.stringify({ outcome: "workers-builds-provisioning-valid" })}\n`);
     return;
@@ -2368,7 +2302,7 @@ async function main() {
     const sourceSha = await reviewedCurrentMainSha();
     const stagedProof = await validateStagedSnapshotDirectory({
       snapshotDirectory: process.env.ATRINIK_PROVIDER_SNAPSHOT_DIRECTORY,
-      production, review, reviewBootstrapConfig, accountId, tokenAuthorityProofs, sourceSha,
+      production, review, accountId, tokenAuthorityProofs, sourceSha,
     });
     await writePrivateProof(process.env.ATRINIK_STAGED_PROOF_OUTPUT_FILE, stagedProof);
     process.stdout.write(`${JSON.stringify(publicStagedProofSummary(stagedProof))}\n`);
@@ -2394,7 +2328,7 @@ async function main() {
       outputDirectory: activationSnapshotDirectory, production, review, sourceSha });
     const current = await validateStagedSnapshotDirectory({
       snapshotDirectory: activationSnapshotDirectory,
-      production, review, reviewBootstrapConfig, accountId, tokenAuthorityProofs, sourceSha,
+      production, review, accountId, tokenAuthorityProofs, sourceSha,
     });
     const proof = await readPrivateJson(process.env.ATRINIK_STAGED_PROOF_FILE,
       "staged activation proof");
@@ -2422,7 +2356,7 @@ async function main() {
     const reviewResultProof = await readPrivateJson(
       process.env.ATRINIK_REVIEW_RESULT_PROOF_FILE, "disposable review result proof");
     const proof = await validateStagedSnapshotDirectory({ snapshotDirectory: outputDirectory,
-      production, review, reviewBootstrapConfig, accountId, tokenAuthorityProofs, sourceSha,
+      production, review, accountId, tokenAuthorityProofs, sourceSha,
     }, { reviewActive: true, reviewResultProof });
     await writePrivateProof(process.env.ATRINIK_PRODUCTION_ACTIVATION_PROOF_OUTPUT_FILE, proof);
     process.stdout.write(`${JSON.stringify(publicStagedProofSummary(proof))}\n`);
@@ -2440,7 +2374,7 @@ async function main() {
     const sourceSha = await reviewedCurrentMainSha();
     process.stdout.write(`${JSON.stringify(await validateConfiguredSnapshotDirectory({
       snapshotDirectory: process.env.ATRINIK_PROVIDER_SNAPSHOT_DIRECTORY,
-      production, review, reviewBootstrapConfig, accountId, tokenAuthorityProofs, sourceSha,
+      production, review, accountId, tokenAuthorityProofs, sourceSha,
     }))}\n`);
     return;
   }

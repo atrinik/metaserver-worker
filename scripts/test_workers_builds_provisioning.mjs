@@ -55,11 +55,8 @@ const review = JSON.parse(await readFile(resolve(root,
 const bases = await Promise.all([
   "wrangler.jsonc", "wrangler.publisher.jsonc", "wrangler.rendezvous.jsonc",
 ].map(async (path) => JSON.parse(await readFile(resolve(root, path), "utf8"))));
-const reviewBootstrapConfig = JSON.parse(await readFile(resolve(root,
-  review.automaticReview.bootstrap.configPath), "utf8"));
 const accountId = "a".repeat(32);
 const scriptTag = "b".repeat(32);
-const reviewScriptTag = "d".repeat(32);
 const resourceUuid = "11111111-1111-4111-8111-111111111111";
 const reviewTriggerUuid = "22222222-2222-4222-8222-222222222222";
 const reviewTokenUuid = "33333333-3333-4333-8333-333333333333";
@@ -159,7 +156,7 @@ function freshBoundary() {
       source: "cloudflare-owner-ui-readback", accountId,
       connectionPreexisting: true, websitePreserved: true,
       githubApp: { appId: 85455, installationId: 152311798,
-        evidenceLocation: "atrinik/metaserver-worker#56-private-provider-evidence",
+        evidenceLocation: "atrinik/metaserver-worker#66-private-provider-evidence",
         repositorySelection: "selected", selectedRepositories: [
           { fullName: "atrinik/metaserver-worker", id: 1324297032 },
           { fullName: "atrinik/website", id: 1327107093 },
@@ -177,39 +174,16 @@ function freshBoundary() {
 }
 
 function configuredBoundary(productionSpec, reviewSpec) {
-  const versionId = "44444444-4444-4444-8444-444444444444";
   return {
     accountId,
     sourceSha: "a".repeat(40),
     accountTriggers: envelope([productionSpec, reviewSpec]),
-    reviewBootstrapConfig,
-    reviewBootstrapState: {
-      settings: envelope({ compatibility_date: reviewBootstrapConfig.compatibility_date,
-        compatibility_flags: [], bindings: [], observability: { enabled: false } }),
-      subdomain: envelope({ enabled: false, previews_enabled: false }),
-      schedules: envelope({ schedules: [] }),
-      routes: envelope([]),
-      scriptSettings: envelope({ logpush: null, tail_consumers: [] }),
-      deployments: envelope({ deployments: [{ versions: [
-        { version_id: versionId, percentage: 100 },
-      ] }] }),
-      versions: envelope([{ id: versionId }]),
-      activeVersion: envelope({ id: versionId, annotations: {
-        "workers/tag": "atrinik-review-bootstrap",
-        "workers/message": `config=${review.automaticReview.bootstrap.configSha256} source=${review.automaticReview.bootstrap.sourceSha256}`,
-      }, resources: { bindings: [], script_runtime: { exports: {} } } }),
+    reviewBuildState: {
       builds: envelope([]),
       buildLimits: envelope({ has_reached_build_minutes_limit: false }),
       buildUsageProof: { source: "cloudflare-owner-build-usage-readback", accountId,
         capturedAt: new Date().toISOString(), monthlyMinutesUsed: 0,
         alertAtMinutes: 800, disableAtMinutes: 1000 },
-      uploadProof: { source: "wrangler-clean-reviewed-source-upload",
-        capturedAt: new Date().toISOString(), cleanCheckout: true,
-        sourceRevision: "a".repeat(40), sourceSha256: review.automaticReview.bootstrap.sourceSha256,
-        configSha256: review.automaticReview.bootstrap.configSha256, versionId,
-        command: ["node_modules/.bin/wrangler", "deploy", "--config",
-          review.automaticReview.bootstrap.configPath, "--tag", "atrinik-review-bootstrap",
-          "--message", `config=${review.automaticReview.bootstrap.configSha256} source=${review.automaticReview.bootstrap.sourceSha256}`] },
     },
     tokenAuthorityProofs: [
       { kind: "production", source: "cloudflare-owner-token-policy-readback",
@@ -396,11 +370,9 @@ test("derives only coherent Custom Domains pagination metadata", () => {
 
 test("routes every Builds inventory through the empty-page adapter in each provider sweep",
   async () => {
-    const workerNames = [...production.workers.map(({ name }) => name),
-      review.automaticReview.project];
+    const workerNames = production.workers.map(({ name }) => name);
     const workerConfigs = new Map([
       ...production.workers.map((worker, index) => [worker.name, bases[index]]),
-      [review.automaticReview.project, reviewBootstrapConfig],
     ]);
     const workerTags = new Map(workerNames.map((name, index) =>
       [name, String(index + 1).repeat(32)]));
@@ -417,6 +389,7 @@ test("routes every Builds inventory through the empty-page adapter in each provi
         total_count: result.length } });
     const driftPath = `/builds/workers/${workerTags.get(production.workers[0].name)}/builds`;
     const fetchFixture = ({ malformedEndpoint, buildHistoryDriftAt, domainHistoryDriftAt,
+      retiredReviewWorker = false,
       localBuildsReads = new Map(), localDomainReads = new Map() } = {}) =>
       async (rawUrl, init = {}) => {
       const url = new URL(rawUrl);
@@ -428,9 +401,11 @@ test("routes every Builds inventory through the empty-page adapter in each provi
         assert.match(path, /^\/d1\/database\/[^/]+\/query$/u);
         body = { success: true, result: [{ results: [] }] };
       } else if (path === "/workers/scripts") {
-        body = { success: true, result: workerNames.map((name) => ({
-          id: name, tag: workerTags.get(name),
-        })) };
+        body = { success: true, result: [
+          ...workerNames.map((name) => ({ id: name, tag: workerTags.get(name) })),
+          ...(retiredReviewWorker ? [{ id: review.automaticReview.localValidation.workerName,
+            tag: "d".repeat(32) }] : []),
+        ] };
       } else if (/\/settings$/u.test(path)) {
         const name = decodeURIComponent(path.split("/")[3]);
         body = envelope({ bindings: bindings(workerConfigs.get(name)) });
@@ -501,6 +476,8 @@ test("routes every Builds inventory through the empty-page adapter in each provi
       /domain pagination metadata is malformed/u);
     await assert.rejects(runReadback("versions", fetchFixture({ malformedEndpoint: "versions" })),
       /version pagination metadata is malformed/u);
+    await assert.rejects(runReadback("retired-review-worker",
+      fetchFixture({ retiredReviewWorker: true })), /retired review Worker/u);
     await assert.rejects(runReadback("pass-drift", fetchFixture({ buildHistoryDriftAt: 2 })),
       /builds provider inventory changed between complete passes/u);
     await assert.rejects(runReadback("sweep-drift", fetchFixture({ buildHistoryDriftAt: 3 })),
@@ -769,8 +746,9 @@ test("permits only the exact absent-trigger initial production predecessor", () 
   };
   assert.equal(validateInitialBootstrapSnapshot(boundary).mutation, false);
   const reviewPresent = structuredClone(boundary);
-  reviewPresent.scripts.result.push({ id: review.automaticReview.project, tag: reviewScriptTag });
-  assert.throws(() => validateInitialBootstrapSnapshot(reviewPresent), /Worker inventory drift/u);
+  reviewPresent.scripts.result.push({ id: review.automaticReview.localValidation.workerName,
+    tag: "d".repeat(32) });
+  assert.throws(() => validateInitialBootstrapSnapshot(reviewPresent), /retired review Worker/u);
   const triggerPresent = structuredClone(boundary);
   triggerPresent.triggers[0][1].result.push({ trigger_uuid: resourceUuid });
   triggerPresent.triggers[0][1].result_info.total_count = 1;
@@ -915,7 +893,8 @@ test("pins production and build-only review trigger shapes", () => {
   assert.deepEqual(productionSpec.branch_includes, ["main"]);
   assert.deepEqual(productionSpec.path_includes, ["*"]);
   assert.deepEqual(reviewSpec.branch_includes, ["*"]);
-  assert.deepEqual(reviewSpec.branch_excludes, ["main", "review-build-only-sentinel"]);
+  assert.deepEqual(reviewSpec.branch_excludes, ["main"]);
+  assert.equal(reviewSpec.external_script_id, productionSpec.external_script_id);
   assert.equal(reviewSpec.root_directory, "/deployment/review-check");
   assert.equal(reviewSpec.build_command, "npm run build");
   assert.equal(Buffer.byteLength(reviewSpec.build_command, "utf8"), 13);
@@ -962,7 +941,7 @@ test("keeps the automatic review build environment value-only and exact", () => 
   assert.throws(() => validateAutomaticReviewEnvironment({
     SKIP_DEPENDENCY_INSTALL: { ...expected.SKIP_DEPENDENCY_INSTALL,
       created_on: "not-a-timestamp" },
-  }, review), /bootstrap/u);
+  }, review), /trigger environment/u);
 });
 
 test("proves a fresh setup has no competing trigger, Deploy Hook, or active build", () => {
@@ -978,17 +957,18 @@ test("proves a fresh setup has no competing trigger, Deploy Hook, or active buil
       { status: "stopped", build_outcome: "success" },
     ])]),
   });
-  assert.equal(result.reviewBootstrapPresent, false);
+  assert.equal(result.reviewPersistentWorkerCount, 0);
   const scriptsWithReview = structuredClone(envelope(production.workers.map(({ name }, index) =>
     ({ id: name, tag: String(index + 1).repeat(32) }))));
-  scriptsWithReview.result.push({ id: review.automaticReview.project, tag: reviewScriptTag });
+  scriptsWithReview.result.push({ id: review.automaticReview.localValidation.workerName,
+    tag: "d".repeat(32) });
   assert.throws(() => validateFreshBuildsSnapshot({
     ...freshBoundary(),
     production, review, scripts: scriptsWithReview,
     triggers: projects.map((label) => [label, envelope([])]),
     deployHooks: projects.map((label) => [label, envelope([])]),
     builds: projects.map((label) => [label, envelope([])]),
-  }), /cannot adopt a pre-existing review bootstrap/u);
+  }), /retired review Worker/u);
   assert.throws(() => validateNoActiveBuilds(envelope([
     { status: "running", build_uuid: resourceUuid },
   ]), "core"), /active Workers Build/u);
@@ -1007,6 +987,9 @@ test("proves a fresh setup has no competing trigger, Deploy Hook, or active buil
 test("plans inert setup, separately gated activation, and ordered rollback", () => {
   const plan = provisioningSetupPlan(production, review);
   assert.equal(plan.mutation, false);
+  assert.equal(plan.providerTopology.mode, "one-worker-two-triggers");
+  assert.equal(plan.retainedFailedRequest.error, 12002);
+  assert.equal(plan.retainedFailedRequest.disposition, "forbidden-never-retry-or-vary");
   assert.deepEqual(plan.repositoryConnection, {
     provider_account_id: "6371603", provider_account_name: "atrinik",
     provider_type: "github", repo_id: "1324297032", repo_name: "metaserver-worker",
@@ -1041,6 +1024,8 @@ test("plans inert setup, separately gated activation, and ordered rollback", () 
   assert.equal(reviewStaged.request.body.root_directory, "/deployment/review-check");
   assert.equal(reviewStaged.request.body.build_command, "npm run build");
   assert.equal(reviewStaged.request.body.deploy_command, "npm run validate");
+  assert.deepEqual(reviewStaged.request.body.external_script_id,
+    productionStaged.request.body.external_script_id);
   assert.deepEqual(plan.reviewActivation.request.body.branch_includes,
     review.automaticReview.previewBranchIncludes);
   assert.equal(plan.reviewActivation.request.body.root_directory,
@@ -1074,9 +1059,6 @@ test("plans inert setup, separately gated activation, and ordered rollback", () 
     ["Workers Builds Configuration:Edit", "Workers Scripts:Read"]);
   assert.equal(plan.credentialAuthority.controlPlaneOperator.contractPermission,
     "Workers CI Write");
-  assert.deepEqual(plan.credentialAuthority.reviewBootstrapToken.accountPermissions,
-    ["Workers Scripts:Edit"]);
-  assert.equal(plan.credentialAuthority.reviewBootstrapToken.credentialBuildReadable, false);
   assert.equal(plan.credentialAuthority.reviewBuildToken.productionWrite, false);
   assert.ok(plan.credentialAuthority.productionBuildToken.forbiddenAuthority.includes("D1:Edit"));
   assert.match(plan.partialFailure.policy, /ambiguous-response/u);
@@ -1108,7 +1090,7 @@ test("plans inert setup, separately gated activation, and ordered rollback", () 
   assert.ok(requestPaths.every((path) => !path.includes("deploy_hooks") &&
     !path.includes("/builds/builds")));
   assert.ok(plan.privateInputs.every((name) => name.endsWith("_FILE")));
-  assert.ok(plan.privateInputs.includes("ATRINIK_REVIEW_BOOTSTRAP_API_TOKEN_FILE"));
+  assert.equal(plan.privateInputs.includes("ATRINIK_REVIEW_BOOTSTRAP_API_TOKEN_FILE"), false);
   assert.ok(plan.privateInputs.includes("ATRINIK_PRODUCTION_STAGING_SENTINEL_REFS_FILE"));
   assert.ok(plan.privateInputs.includes("ATRINIK_REVIEW_STAGING_SENTINEL_REFS_FILE"));
   assert.ok(plan.setupOperations.filter(({ mutation }) => mutation)
@@ -1138,6 +1120,13 @@ test("plans inert setup, separately gated activation, and ordered rollback", () 
   unsafeSelector.setupOperations.find(({ id }) => id === "production-trigger-staged")
     .request.body.branch_includes = ["main"];
   assert.throws(() => validateSetupPlan(unsafeSelector), /complete setup plan schema drift/u);
+  const rejectedTwoWorkerTopology = structuredClone(plan);
+  rejectedTwoWorkerTopology.setupOperations.find(({ id }) => id === "review-trigger-staged")
+    .request.body.external_script_id = { resultReference: "review-bootstrap.script_tag" };
+  assert.throws(() => validateSetupPlan(rejectedTwoWorkerTopology), /dangling or forward/u);
+  const forgotten12002 = structuredClone(plan);
+  forgotten12002.retainedFailedRequest.disposition = "retry";
+  assert.throws(() => validateSetupPlan(forgotten12002), /retained failure constraint/u);
   const unsafeActivation = structuredClone(plan);
   unsafeActivation.productionActivation.request.method = "DELETE";
   assert.throws(() => validateSetupPlan(unsafeActivation), /complete setup plan schema drift/u);
@@ -1169,7 +1158,7 @@ test("plans inert setup, separately gated activation, and ordered rollback", () 
 test("proves one serialized production trigger and one isolated review trigger", () => {
   const productionSpec = withConnection(productionTriggerSpec(production, triggerCoordinates()));
   const reviewSpec = withConnection(automaticReviewTriggerSpec(review, {
-    externalScriptId: reviewScriptTag,
+    externalScriptId: scriptTag,
     repositoryConnectionUuid: resourceUuid,
     buildTokenUuid: reviewTokenUuid,
   }));
@@ -1185,18 +1174,15 @@ test("proves one serialized production trigger and one isolated review trigger",
     sourceSha: "a".repeat(40),
     production,
     review,
-    scripts: envelope([
-      { id: production.workers[0].name, tag: scriptTag },
-      { id: review.automaticReview.project, tag: reviewScriptTag },
-    ]),
-    productionTriggers: envelope([productionSpec]),
+    scripts: envelope([{ id: production.workers[0].name, tag: scriptTag }]),
+    productionTriggers: envelope([productionSpec, reviewSpec]),
     productionEnvironment: envelope(productionEnvironment),
-    reviewTriggers: envelope([reviewSpec]),
+    reviewTriggers: envelope([productionSpec, reviewSpec]),
     reviewEnvironment: envelope(automaticEnvironment),
     buildTokens: buildTokenInventory(),
     nonEntrypointTriggers: production.workers.slice(1)
       .map(({ role }) => [role, envelope([])]),
-    deployHooks: [...production.workers.map(({ role }) => role), "review"]
+    deployHooks: production.workers.map(({ role }) => role)
       .map((label) => [label, envelope([])]),
   });
   const result = validateConfiguredBuildsSnapshot(validArguments());
@@ -1209,19 +1195,12 @@ test("proves one serialized production trigger and one isolated review trigger",
   assert.doesNotThrow(() => validateConfiguredBuildsSnapshot(unrelated));
 
   for (const mutate of [
-    (value) => value.reviewBootstrapState.settings.result.bindings.push({
-      name: "UNREVIEWED", type: "plain_text", text: "1" }),
-    (value) => value.reviewBootstrapState.routes.result.push({ pattern: "unexpected.example" }),
-    (value) => { value.reviewBootstrapState.versions.result.push({ id: resourceUuid });
-      value.reviewBootstrapState.versions.result_info.total_count = 2; },
-    (value) => value.reviewBootstrapState.activeVersion.result.annotations["workers/tag"] = "wrong",
-    (value) => { value.reviewBootstrapState.uploadProof.sourceRevision = "b".repeat(40); },
-    (value) => { value.reviewBootstrapState.builds.result.push({
+    (value) => { value.reviewBuildState.builds.result.push({
       build_uuid: resourceUuid, status: "running" });
-      value.reviewBootstrapState.builds.result_info.total_count = 1; },
-    (value) => value.reviewBootstrapState.buildLimits.result.has_reached_build_minutes_limit = true,
-    (value) => { value.reviewBootstrapState.buildLimits.result.has_reached_build_minutes_limit = null; },
-    (value) => { value.reviewBootstrapState.buildUsageProof.monthlyMinutesUsed = 800; },
+      value.reviewBuildState.builds.result_info.total_count = 1; },
+    (value) => value.reviewBuildState.buildLimits.result.has_reached_build_minutes_limit = true,
+    (value) => { value.reviewBuildState.buildLimits.result.has_reached_build_minutes_limit = null; },
+    (value) => { value.reviewBuildState.buildUsageProof.monthlyMinutesUsed = 800; },
     (value) => value.tokenAuthorityProofs[1].accountPermissions.push("Workers Scripts:Edit"),
     (value) => { value.tokenAuthorityProofs[1].capturedAt = "2026-08-15T00:00:00.000Z"; },
     (value) => { value.tokenAuthorityProofs[1].modifiedOn = "2999-01-01T00:00:00.000Z"; },
@@ -1231,6 +1210,8 @@ test("proves one serialized production trigger and one isolated review trigger",
       trigger_uuid: "55555555-5555-4555-8555-555555555555",
       repo_connection: productionSpec.repo_connection });
       value.accountTriggers.result_info.total_count = 3; },
+    (value) => value.scripts.result.push({ id: review.automaticReview.localValidation.workerName,
+      tag: "d".repeat(32) }),
   ]) {
     const changed = validArguments();
     mutate(changed);
@@ -1243,57 +1224,38 @@ test("proves one serialized production trigger and one isolated review trigger",
   reusedBoundary.tokenAuthorityProofs[1].tokenId = reusedBoundary.tokenAuthorityProofs[0].tokenId;
   assert.throws(() => validateConfiguredBuildsSnapshot({
     ...reusedBoundary, production, review,
-    scripts: envelope([{ id: production.workers[0].name, tag: scriptTag },
-      { id: review.automaticReview.project, tag: reviewScriptTag }]),
-    productionTriggers: envelope([productionSpec]), productionEnvironment: envelope(productionEnvironment),
-    reviewTriggers: envelope([reviewSpec]), reviewEnvironment: envelope(automaticEnvironment),
+    scripts: envelope([{ id: production.workers[0].name, tag: scriptTag }]),
+    productionTriggers: envelope([productionSpec, reviewSpec]),
+    productionEnvironment: envelope(productionEnvironment),
+    reviewTriggers: envelope([productionSpec, reviewSpec]),
+    reviewEnvironment: envelope(automaticEnvironment),
     buildTokens: reusedTokens,
     nonEntrypointTriggers: production.workers.slice(1).map(({ role }) => [role, envelope([])]),
-    deployHooks: [...production.workers.map(({ role }) => role), "review"]
+    deployHooks: production.workers.map(({ role }) => role)
       .map((label) => [label, envelope([])]),
   }), /reuse one underlying/u);
-
-  const publicBootstrap = configuredBoundary(productionSpec, reviewSpec);
-  publicBootstrap.reviewBootstrapState.subdomain.result.enabled = true;
-  assert.throws(() => validateConfiguredBuildsSnapshot({
-    ...publicBootstrap, production, review,
-    scripts: envelope([{ id: production.workers[0].name, tag: scriptTag },
-      { id: review.automaticReview.project, tag: reviewScriptTag }]),
-    productionTriggers: envelope([productionSpec]), productionEnvironment: envelope(productionEnvironment),
-    reviewTriggers: envelope([reviewSpec]), reviewEnvironment: envelope(automaticEnvironment),
-    buildTokens: buildTokenInventory(),
-    nonEntrypointTriggers: production.workers.slice(1).map(({ role }) => [role, envelope([])]),
-    deployHooks: [...production.workers.map(({ role }) => role), "review"]
-      .map((label) => [label, envelope([])]),
-  }), /public or preview URL/u);
 
   assert.throws(() => validateConfiguredBuildsSnapshot({
     ...configuredBoundary(productionSpec, reviewSpec),
     production,
     review,
-    scripts: envelope([
-      { id: production.workers[0].name, tag: scriptTag },
-      { id: review.automaticReview.project, tag: reviewScriptTag },
-    ]),
-    productionTriggers: envelope([productionSpec]),
+    scripts: envelope([{ id: production.workers[0].name, tag: scriptTag }]),
+    productionTriggers: envelope([productionSpec, reviewSpec]),
     productionEnvironment: envelope(productionEnvironment),
-    reviewTriggers: envelope([reviewSpec]),
+    reviewTriggers: envelope([productionSpec, reviewSpec]),
     reviewEnvironment: envelope(automaticEnvironment),
     buildTokens: buildTokenInventory(),
     nonEntrypointTriggers: [["publisher", envelope([productionSpec])],
       ["rendezvous", envelope([])]],
-    deployHooks: [...production.workers.map(({ role }) => role), "review"]
+    deployHooks: production.workers.map(({ role }) => role)
       .map((label) => [label, envelope([])]),
   }), /independent Builds trigger/u);
   assert.throws(() => validateConfiguredBuildsSnapshot({
     ...configuredBoundary(productionSpec, reviewSpec),
-    production, review, scripts: envelope([
-      { id: production.workers[0].name, tag: scriptTag },
-      { id: review.automaticReview.project, tag: reviewScriptTag },
-    ]),
-    productionTriggers: envelope([productionSpec]),
+    production, review, scripts: envelope([{ id: production.workers[0].name, tag: scriptTag }]),
+    productionTriggers: envelope([productionSpec, reviewSpec]),
     productionEnvironment: envelope(productionEnvironment),
-    reviewTriggers: envelope([reviewSpec]),
+    reviewTriggers: envelope([productionSpec, reviewSpec]),
     reviewEnvironment: envelope(automaticEnvironment),
     buildTokens: buildTokenInventory(),
     nonEntrypointTriggers: [], deployHooks: [],
@@ -1315,7 +1277,7 @@ test("proves both triggers are inert before either activation", () => {
   }));
   productionSpec.branch_includes = [productionSentinelProof.branch];
   const reviewSpec = withConnection(automaticReviewTriggerSpec(review, {
-    externalScriptId: reviewScriptTag, repositoryConnectionUuid: resourceUuid,
+    externalScriptId: scriptTag, repositoryConnectionUuid: resourceUuid,
     buildTokenUuid: reviewTokenUuid,
   }));
   reviewSpec.trigger_uuid = reviewTriggerUuid;
@@ -1330,19 +1292,17 @@ test("proves both triggers are inert before either activation", () => {
     ...configuredBoundary(productionSpec, reviewSpec), production, review,
     productionSentinelProof, reviewSentinelProof,
     snapshotManifest: freshSnapshotManifest(),
-    scripts: envelope([{ id: production.workers[0].name, tag: scriptTag },
-      { id: review.automaticReview.project, tag: reviewScriptTag }]),
-    productionTriggers: envelope([productionSpec]),
+    scripts: envelope([{ id: production.workers[0].name, tag: scriptTag }]),
+    productionTriggers: envelope([productionSpec, reviewSpec]),
     productionEnvironment: envelope(productionEnvironment),
-    reviewTriggers: envelope([reviewSpec]),
+    reviewTriggers: envelope([productionSpec, reviewSpec]),
     reviewEnvironment: envelope(automaticReviewEnvironmentSpec(review)),
     nonEntrypointTriggers: production.workers.slice(1)
       .map(({ role }) => [role, envelope([])]),
     buildTokens: buildTokenInventory(),
-    deployHooks: [...production.workers.map(({ role }) => role), "review"]
+    deployHooks: production.workers.map(({ role }) => role)
       .map((label) => [label, envelope([])]),
-    builds: [...production.workers.map(({ role }) => [role, envelope([])]),
-      ["review", envelope([])]],
+    builds: production.workers.map(({ role }) => [role, envelope([])]),
   };
   const stagedProof = validateStagedBuildsSnapshot(arguments_);
   assert.equal(stagedProof.stagedTriggerCount, 2);
@@ -1357,9 +1317,15 @@ test("proves both triggers are inert before either activation", () => {
     Date.parse("2026-08-15T00:06:00.000Z")), /staged activation proof/u);
   const active = structuredClone(arguments_);
   active.productionTriggers.result[0].branch_includes = ["main"];
+  active.reviewTriggers = structuredClone(active.productionTriggers);
   assert.throws(() => validateStagedBuildsSnapshot(active), /trigger branch_includes drift/u);
+  const retiredWorker = structuredClone(arguments_);
+  retiredWorker.scripts.result.push({ id: review.automaticReview.localValidation.workerName,
+    tag: "d".repeat(32) });
+  assert.throws(() => validateStagedBuildsSnapshot(retiredWorker), /retired review Worker/u);
   const wrongToken = structuredClone(arguments_);
   wrongToken.productionTriggers.result[0].build_token_uuid = resourceUuid;
+  wrongToken.reviewTriggers = structuredClone(wrongToken.productionTriggers);
   assert.throws(() => validateStagedBuildsSnapshot(wrongToken), /zero-resource review token/u);
   const splitConnection = structuredClone(arguments_);
   splitConnection.reviewTriggers.result[0].repo_connection.repo_connection_uuid =
@@ -1368,8 +1334,9 @@ test("proves both triggers are inert before either activation", () => {
     /journaled repository connection/u);
   const equalSentinels = structuredClone(arguments_);
   equalSentinels.reviewSentinelProof = structuredClone(equalSentinels.productionSentinelProof);
-  equalSentinels.reviewTriggers.result[0].branch_includes =
+  equalSentinels.productionTriggers.result[1].branch_includes =
     [equalSentinels.productionSentinelProof.branch];
+  equalSentinels.reviewTriggers = structuredClone(equalSentinels.productionTriggers);
   assert.throws(() => validateStagedBuildsSnapshot(equalSentinels), /must be distinct/u);
   const swappedProofs = structuredClone(arguments_);
   [swappedProofs.productionSentinelProof, swappedProofs.reviewSentinelProof] =
@@ -1384,17 +1351,18 @@ test("proves both triggers are inert before either activation", () => {
     /independent staged Builds trigger/u);
   const reviewActive = structuredClone(arguments_);
   const finalReview = withConnection(automaticReviewTriggerSpec(review, {
-    externalScriptId: reviewScriptTag, repositoryConnectionUuid: resourceUuid,
+    externalScriptId: scriptTag, repositoryConnectionUuid: resourceUuid,
     buildTokenUuid: reviewTokenUuid,
   }));
   finalReview.trigger_uuid = reviewTriggerUuid;
-  reviewActive.reviewTriggers = envelope([finalReview]);
+  reviewActive.productionTriggers = envelope([productionSpec, finalReview]);
+  reviewActive.reviewTriggers = structuredClone(reviewActive.productionTriggers);
   assert.throws(() => validateStagedBuildsSnapshot(reviewActive), /branch_includes drift/u);
   assert.throws(() => validateProductionActivationSnapshot(reviewActive),
     /disposable review result proof/u);
   const buildUuid = "77777777-7777-4777-8777-777777777777";
   const reviewCommitSha = "b".repeat(40);
-  const branch = "review/issue-56-provider-proof";
+  const branch = "review/issue-66-provider-proof";
   const evidenceNow = Date.now();
   const createdOn = new Date(evidenceNow - 120_000).toISOString();
   const stoppedOn = new Date(evidenceNow - 60_000).toISOString();
@@ -1406,16 +1374,16 @@ test("proves both triggers are inert before either activation", () => {
       build_trigger_source: "push", repo_id: "1324297032", repo_name: "metaserver-worker",
       build_command: finalReview.build_command, deploy_command: finalReview.deploy_command,
       root_directory: finalReview.root_directory } };
-  reviewActive.reviewBootstrapState.builds = envelope([reviewBuild]);
+  reviewActive.reviewBuildState.builds = envelope([reviewBuild]);
   reviewActive.builds = reviewActive.builds.map(([label, value]) =>
-    [label, label === "review" ? envelope([reviewBuild]) : value]);
+    [label, label === "core" ? envelope([reviewBuild]) : value]);
   reviewActive.reviewResultProof = {
     source: "cloudflare-github-disposable-review-readback",
     repository: "atrinik/metaserver-worker", branch, reviewCommitSha, buildUuid,
     productionMainSha: "a".repeat(40),
     triggerUuid: reviewTriggerUuid, buildTokenUuid: reviewTokenUuid,
     cleanupPolicy: "build-only-no-version-binding-route-url-or-resource-created",
-    evidenceLocation: "atrinik/metaserver-worker#56-private-provider-evidence",
+    evidenceLocation: "atrinik/metaserver-worker#66-private-provider-evidence",
     capturedAt, githubEvidence: { capturedAt, refs: [], comparison: { status: "behind",
       base_commit: { sha: reviewCommitSha }, head_commit: { sha: "a".repeat(40) } },
       checkRuns: { total_count: 1, check_runs: [{ id: 123456, name: "Cloudflare Workers Builds",
@@ -1429,7 +1397,7 @@ test("proves both triggers are inert before either activation", () => {
   assert.equal(productionProof.outcome, "workers-builds-production-activation-snapshot-valid");
   assert.match(productionProof.proof_digest, /^[0-9a-f]{64}$/u);
   const failedReview = structuredClone(reviewActive);
-  failedReview.reviewBootstrapState.builds.result[0].build_outcome = "fail";
+  failedReview.reviewBuildState.builds.result[0].build_outcome = "fail";
   assert.throws(() => validateProductionActivationSnapshot(failedReview),
     /disposable review result proof/u);
   const wrongReviewSha = structuredClone(reviewActive);
@@ -1437,7 +1405,7 @@ test("proves both triggers are inert before either activation", () => {
   assert.throws(() => validateProductionActivationSnapshot(wrongReviewSha),
     /disposable review result proof/u);
   const manualReview = structuredClone(reviewActive);
-  manualReview.reviewBootstrapState.builds.result[0].build_trigger_metadata.build_trigger_source =
+  manualReview.reviewBuildState.builds.result[0].build_trigger_metadata.build_trigger_source =
     "api";
   assert.throws(() => validateProductionActivationSnapshot(manualReview),
     /disposable review result proof/u);
@@ -1465,7 +1433,7 @@ test("proves both triggers are inert before either activation", () => {
   assert.throws(() => validateProductionActivationSnapshot(duplicateCheck),
     /disposable review result proof/u);
   const oldBuild = structuredClone(reviewActive);
-  oldBuild.reviewBootstrapState.builds.result[0].created_on =
+  oldBuild.reviewBuildState.builds.result[0].created_on =
     new Date(evidenceNow - 30 * 60_000).toISOString();
   assert.throws(() => validateProductionActivationSnapshot(oldBuild),
     /disposable review result proof/u);
