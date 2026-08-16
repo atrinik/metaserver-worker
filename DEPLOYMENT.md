@@ -162,7 +162,10 @@ ref also protects the staged production secrets. The fixed
 
 Rollback first deletes and reads back the exact journal-owned wildcard preview
 trigger, before any quiescence claim, so a new non-main push cannot enqueue work
-behind that claim. It then obtains the fresh production sentinel proof, restores
+behind that claim. The phase-aware exhaustive readback accepts zero triggers
+when production creation never occurred, or exactly the journaled production
+trigger otherwise; it never requires an absent review-gate result and rejects
+every replacement or competing trigger. It then obtains the fresh production sentinel proof, restores
 the production trigger to the zero-resource inert shape, cancels and proves all
 builds quiescent, and only then deletes the production trigger and journal-owned
 token wrappers. The retained repository connection is never deleted.

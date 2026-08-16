@@ -26,7 +26,7 @@ const maximumProviderPages = 100;
 const stagingBranchPattern = /^review-build-only-sentinel-[0-9a-f]{32}$/u;
 const reviewStagingRootPattern = /^\/review-build-only-staging-[0-9a-f]{32}$/u;
 const gitShaPattern = /^[0-9a-f]{40}$/u;
-const expectedSetupPlanSha256 = "f7d624e67d0af59f17e87d2fa539643fd2ca6c3d1e66b5d3db5851522a0f61df";
+const expectedSetupPlanSha256 = "d1ef3a4a9e993172768dd4004f4d3efb5c1becb0918b993ca115a28a6fb28533";
 const githubRepository = Object.freeze({
   provider_account_id: "6371603",
   provider_account_name: "atrinik",
@@ -700,14 +700,17 @@ export function provisioningSetupPlan(production, review) {
           "/builds/triggers/{trigger_uuid}", "review-trigger-create", "trigger_uuid") } },
       { id: "prove-review-trigger-deleted-before-quiescence",
         actor: "workers-builds-control-plane-operator",
-        action: "prove-exhaustive-shared-core-trigger-inventory-excludes-journaled-review-trigger",
+        action: "prove-phase-aware-exhaustive-inventory-is-empty-or-exactly-journaled-production-trigger",
         mutation: false,
-        precondition: { deletedTrigger: resultReference(
-          "review-trigger-create", "trigger_uuid") },
+        journalInputs: {
+          productionTriggerUuid: "optional-journal-bound-production-trigger-staged-uuid",
+          reviewTriggerUuid: "optional-journal-bound-or-ambiguously-reconciled-review-trigger-create-uuid",
+        },
         request: { method: "GET", path: apiPathReference(
           "/builds/workers/{external_script_id}/triggers",
           "production-script", "script_tag") },
         stability: "two-complete-identical-passes-plus-final-identical-sweep",
+        validator: "validateRollbackTriggerInventory",
         produces: { proof_digest: "fresh-review-trigger-absence-readback-digest" } },
       { id: "sentinel-recheck-before-production-rollback", actor: "github-owner-readback",
         action: "repeat-exact-private-random-production-sentinel-ref-absence-proof-outside-sandbox",
@@ -905,7 +908,7 @@ export function validateSetupPlan(plan) {
     ["delete-review-trigger-before-quiescence", "workers-builds-control-plane-operator", true,
       "delete-exact-journaled-review-trigger-before-any-non-main-push-can-race-quiescence"],
     ["prove-review-trigger-deleted-before-quiescence", "workers-builds-control-plane-operator",
-      false, "prove-exhaustive-shared-core-trigger-inventory-excludes-journaled-review-trigger"],
+      false, "prove-phase-aware-exhaustive-inventory-is-empty-or-exactly-journaled-production-trigger"],
     ["sentinel-recheck-before-production-rollback", "github-owner-readback", false,
       "repeat-exact-private-random-production-sentinel-ref-absence-proof-outside-sandbox"],
     ["restore-production-trigger-to-inert-sentinel", "workers-builds-control-plane-operator", true,
@@ -969,6 +972,23 @@ export function validateNoDeployHooks(envelope, label) {
   const hooks = requireExhaustiveEnvelope(envelope, `${label} deploy hooks`);
   if (hooks.length !== 0)
     fail(`${label} gained a Deploy Hook`);
+}
+
+export function validateRollbackTriggerInventory(envelope, {
+  productionTriggerUuid = null, reviewTriggerUuid = null,
+} = {}) {
+  if (productionTriggerUuid !== null && !uuidPattern.test(productionTriggerUuid) ||
+      reviewTriggerUuid !== null && !uuidPattern.test(reviewTriggerUuid) ||
+      productionTriggerUuid !== null && productionTriggerUuid === reviewTriggerUuid)
+    fail("rollback journaled trigger identity is malformed");
+  const rows = requireExhaustiveEnvelope(envelope, "rollback shared core triggers");
+  const expected = productionTriggerUuid === null ? [] : [productionTriggerUuid];
+  if (!same(rows.map(({ trigger_uuid: id }) => id), expected) ||
+      rows.some(({ trigger_uuid: id }) => !uuidPattern.test(id ?? "")) ||
+      (reviewTriggerUuid !== null && rows.some(({ trigger_uuid: id }) => id === reviewTriggerUuid)))
+    fail("rollback trigger inventory contains a competing or unreconciled trigger");
+  return { outcome: "rollback-trigger-inventory-exact", mutation: false,
+    proof_digest: digestJson({ productionTriggerUuid, reviewTriggerUuid, rows }) };
 }
 
 export function validateNoActiveBuilds(envelope, label) {

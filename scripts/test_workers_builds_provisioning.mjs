@@ -41,6 +41,7 @@ import {
   validateReviewStagingRootAbsence,
   validateProductionRuntimeProof,
   validateRepositoryConnectionOwnerProof,
+  validateRollbackTriggerInventory,
   validateReviewedSourceCoordinates,
   validateSentinelRefAbsence,
   validateSnapshotManifest,
@@ -736,6 +737,28 @@ test("requires stable canonical environment before final review trigger activati
   assert.throws(() => validateReviewStagedEnvironmentReadback({ trigger: expected,
     environment: envelope({ SKIP_DEPENDENCY_INSTALL: { is_secret: false, value: "0" } }) },
   expected, review), /review trigger environment drift/u);
+});
+
+test("proves phase-aware exact rollback trigger inventory", () => {
+  assert.match(validateRollbackTriggerInventory(envelope([])).proof_digest,
+    /^[0-9a-f]{64}$/u);
+  assert.match(validateRollbackTriggerInventory(envelope([
+    { trigger_uuid: resourceUuid },
+  ]), { productionTriggerUuid: resourceUuid }).proof_digest, /^[0-9a-f]{64}$/u);
+  assert.match(validateRollbackTriggerInventory(envelope([
+    { trigger_uuid: resourceUuid },
+  ]), { productionTriggerUuid: resourceUuid,
+    reviewTriggerUuid }).proof_digest, /^[0-9a-f]{64}$/u);
+  assert.throws(() => validateRollbackTriggerInventory(envelope([
+    { trigger_uuid: reviewTriggerUuid },
+  ]), { productionTriggerUuid: resourceUuid, reviewTriggerUuid }),
+  /competing or unreconciled/u);
+  assert.throws(() => validateRollbackTriggerInventory(envelope([
+    { trigger_uuid: resourceUuid }, { trigger_uuid: reviewTriggerUuid },
+  ]), { productionTriggerUuid: resourceUuid }), /competing or unreconciled/u);
+  assert.throws(() => validateRollbackTriggerInventory(envelope([
+    { trigger_uuid: reviewTriggerUuid },
+  ])), /competing or unreconciled/u);
 });
 
 test("binds provider snapshots to a fresh exact reviewed source", () => {
