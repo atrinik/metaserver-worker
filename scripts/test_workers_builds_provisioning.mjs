@@ -547,6 +547,7 @@ test("cryptographically binds the disposable commit, executor, and empty journal
     cwd: repository, encoding: "utf8" })).stdout.trim();
   try {
     await git("init", "-q");
+    await chmod(resolve(repository, ".git"), 0o700);
     await git("config", "user.name", "Atrinik Delivery");
     await git("config", "user.email", "delivery@atrinik.org");
     await writeFile(resolve(repository, "README.md"), "base\n", { mode: 0o600 });
@@ -602,6 +603,12 @@ test("cryptographically binds the disposable commit, executor, and empty journal
     await git("checkout", "-q", "--detach", commit);
     await git("replace", commit, replacement);
     assert.equal((await validateDisposableCoordinatePreparation(coordinate)).commit, commit);
+    const linkedRepository = resolve(temporary, "linked-worktree");
+    await mkdir(linkedRepository, { mode: 0o700 });
+    await writeFile(resolve(linkedRepository, ".git"), `gitdir: ${resolve(repository, ".git")}\n`,
+      { mode: 0o600 });
+    await assert.rejects(validateDisposableCoordinatePreparation({ ...coordinate,
+      detachedRepositoryPath: linkedRepository }), /Git metadata must be an owner-only/u);
     await writeFile(journalPath, "started\n", { mode: 0o600 });
     await assert.rejects(validateDisposableCoordinatePreparation(coordinate),
       /executor or empty journal identity drift/u);
