@@ -509,7 +509,7 @@ The 30-minute activation authority ends with that transition and must not be
 replayed for the potentially 20-minute disposable build. Immediately before
 the disposable push, capture a new complete review-active provider snapshot
 and fresh owner, sentinel, token-policy, usage, and authenticated current-main
-evidence. Mint the distinct 45-minute proof-phase authority:
+evidence. Mint the distinct 60-minute proof-phase authority:
 
 ```sh
 ATRINIK_PROVIDER_SNAPSHOT_DIRECTORY=/secure/fresh-review-active-snapshot \
@@ -533,12 +533,18 @@ only one exact `review/issue-66-*` push, exact-SHA deletion, and cancellation
 of the journal-owned automatic review build during cleanup. Before either Git
 write, use `ATRINIK_DISPOSABLE_REVIEW_AUTHORITY_PROOF_FILE` and its exact source
 evidence. Immediately before the push, run
-`npm run provision:workers-builds:verify-disposable-review-authority-push`;
-the 45-minute authority must still have at least 30 minutes remaining so the
-bounded 20-minute automatic build and cleanup cannot consume the deletion
-reserve. Immediately before the exact-SHA deletion, run
+`npm run provision:workers-builds:verify-disposable-review-authority-push`
+with a new owner-only
+`ATRINIK_DISPOSABLE_REVIEW_PUSH_AUTHORIZATION_RECEIPT_OUTPUT_FILE`; the
+60-minute authority must still have at least 40 minutes remaining so the
+bounded 20-minute automatic build, evidence, provider preservation proof, and
+command overhead cannot consume the deletion reserve. The exclusive receipt
+makes that exact authority/journal/branch/commit push authorization one-use.
+Immediately before the exact-SHA deletion, run
 `npm run provision:workers-builds:verify-disposable-review-authority-proof`;
-that write requires five minutes remaining. The authority binds the exact
+write a distinct exclusive
+`ATRINIK_DISPOSABLE_REVIEW_DELETE_AUTHORIZATION_RECEIPT_OUTPUT_FILE`; that
+write requires five minutes remaining and is likewise one-use. The authority binds the exact
 journal ID, branch, commit, historical inert-setup/activation journals, and a
 fresh current-source two-trigger proof; historical activation source identity
 is deliberately distinct from the post-merge verifier source. Production trigger changes,

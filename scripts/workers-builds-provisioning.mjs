@@ -26,14 +26,14 @@ const maximumProviderPages = 100;
 const stagingBranchPattern = /^review-build-only-sentinel-[0-9a-f]{32}$/u;
 const reviewStagingRootPattern = /^\/review-build-only-staging-[0-9a-f]{32}$/u;
 const gitShaPattern = /^[0-9a-f]{40}$/u;
-const expectedSetupPlanSha256 = "b88c2f091d19786b630d9134c5af219488e7b09e28073a293136aaed81815dcc";
+const expectedSetupPlanSha256 = "a3281ab5632e6d66b7d5ada015420ab0d387250e446a4d0830abc204b9dc0cca";
 const currentMainProofSource = "authenticated-gh-api-current-main-readback";
 const currentMainProofEndpoint = "repos/atrinik/metaserver-worker/git/ref/heads/main";
 const currentMainRef = "refs/heads/main";
 const reviewActivationAuthorityLifetimeMs = 30 * 60_000;
 const reviewActivationTransitionBudgetMs = 5 * 60_000;
-const disposableReviewAuthorityLifetimeMs = 45 * 60_000;
-const disposableReviewPushReserveMs = 30 * 60_000;
+const disposableReviewAuthorityLifetimeMs = 60 * 60_000;
+const disposableReviewPushReserveMs = 40 * 60_000;
 const reviewActivationPredecessorPlanDigest =
   "fb95bcc4e693b6f933dc1bb788b736100dbd6a24c5b601e3533a03097d091892";
 const currentMainRepository = Object.freeze({ owner: "atrinik", name: "metaserver-worker" });
@@ -431,6 +431,36 @@ function validateReviewActivationJournal(records, reviewActivationProof, predece
   const proofBound = [...records].reverse().find(({ event, operation }) =>
     event === "provider-proof-bound" && operation === "review-activation");
   const preflight = records.find(({ event }) => event === "review-gate-preflight-proven");
+  const mutation = (event, operation) => records.find((record) =>
+    record.event === event && record.operation === operation);
+  const reviewTriggerUuid = terminal.reviewTrigger;
+  const mutationSemantics = [
+    ["review-trigger-create", "POST", "/builds/triggers"],
+    ["review-environment", "PATCH",
+      `/builds/triggers/${reviewTriggerUuid}/environment_variables`],
+    ["review-trigger-activate", "PATCH", `/builds/triggers/${reviewTriggerUuid}`],
+  ];
+  const mutationsValid = mutationSemantics.every(([operation, method, path]) => {
+    const intent = mutation("mutation-intent", operation);
+    const classification = mutation("provider-response-classified", operation);
+    const bound = mutation("mutation-bound", operation);
+    return intent?.method === method && intent.path === path &&
+      /^[0-9a-f]{64}$/u.test(intent.requestDigestSha256 ?? "") &&
+      classification?.outcome === "explicit-success" &&
+      (operation !== "review-trigger-create" || classification.resourceUuid === reviewTriggerUuid) &&
+      bound?.resourceUuid === reviewTriggerUuid && bound.providerResponseExplicitSuccess === true &&
+      bound.requestDigestSha256 === intent.requestDigestSha256 &&
+      /^[0-9a-f]{64}$/u.test(bound.readbackDigestSha256 ?? "");
+  });
+  const currentMainValid = records.filter(({ event }) => event === "current-main-proof-bound")
+    .every(({ sourceSha, proofFileSha256, rawFileSha256 }) =>
+      sourceSha === predecessorSourceSha && /^[0-9a-f]{64}$/u.test(proofFileSha256 ?? "") &&
+      /^[0-9a-f]{64}$/u.test(rawFileSha256 ?? ""));
+  const authorityDigest = preflight?.reviewActivationAuthorityDigest;
+  const authorityChecksValid = /^[0-9a-f]{64}$/u.test(authorityDigest ?? "") &&
+    records.filter(({ event }) => event === "review-activation-authority-checked")
+      .every(({ proofDigest, expiresAt }) => proofDigest === authorityDigest &&
+        isUtcTimestamp(expiresAt));
   if (first.event !== "attempt-started" || first.sourceSha !== predecessorSourceSha ||
       first.planDigestSha256 !== reviewActivationPredecessorPlanDigest ||
       terminal.event !== "review-trigger-active" ||
@@ -441,9 +471,11 @@ function validateReviewActivationJournal(records, reviewActivationProof, predece
       records.some(({ event }) => event.startsWith("rollback")) ||
       proofBound?.proofDigest !== reviewActivationProof?.proof_digest ||
       proofBound?.proofFileSha256 !== digestJson(reviewActivationProof) ||
+      Date.parse(reviewActivationProof?.capturedAt ?? "") > Date.parse(proofBound?.at ?? "") ||
       Date.parse(proofBound?.at ?? "") > Date.parse(terminal.at) ||
       preflight?.sourceSha !== predecessorSourceSha ||
-      preflight?.planDigestSha256 !== reviewActivationPredecessorPlanDigest)
+      preflight?.planDigestSha256 !== reviewActivationPredecessorPlanDigest ||
+      !mutationsValid || !currentMainValid || !authorityChecksValid)
     fail("review activation journal terminal provenance drift");
   return { digest: digestJson(records), reviewTriggerUuid: terminal.reviewTrigger,
     terminalAt: terminal.at, predecessorPlanDigest: first.planDigestSha256,
@@ -493,11 +525,42 @@ function validateInertSetupProvenance(records, setupResults, activationPreflight
   const terminal = records.at(-1);
   const resource = (operation) => [...records].reverse().find(({ event, operation: value }) =>
     event === "mutation-bound" && value === operation)?.resourceUuid;
+  const setupAuthorized = records.find(({ event }) => event === "setup-authorized");
+  const setupMutationSemantics = [
+    ["repository-connection", "PUT", "/builds/repos/connections"],
+    ["production-build-token", "POST", "/builds/tokens"],
+    ["review-build-token", "POST", "/builds/tokens"],
+    ["production-trigger-staged", "POST", "/builds/triggers"],
+    ["production-environment", "PATCH",
+      `/builds/triggers/${setupResults.productionTrigger}/environment_variables`],
+  ];
+  const setupMutationsValid = setupMutationSemantics.every(([operation, method, path]) => {
+    const intent = records.find((record) => record.event === "mutation-intent" &&
+      record.operation === operation);
+    const bound = records.find((record) => record.event === "mutation-bound" &&
+      record.operation === operation);
+    const classification = records.find((record) =>
+      record.event === "provider-response-classified" && record.operation === operation);
+    const expectedUuid = operation === "repository-connection" ? setupResults.repositoryConnection :
+      operation === "production-build-token" ? setupResults.productionBuildToken :
+        operation === "review-build-token" ? setupResults.reviewBuildToken :
+          setupResults.productionTrigger;
+    return intent?.method === method && intent.path === path &&
+      /^[0-9a-f]{64}$/u.test(intent.requestDigestSha256 ?? "") &&
+      bound?.resourceUuid === expectedUuid && bound.providerResponseExplicitSuccess === true &&
+      bound.requestDigestSha256 === intent.requestDigestSha256 &&
+      /^[0-9a-f]{64}$/u.test(bound.readbackDigestSha256 ?? "") &&
+      (operation === "repository-connection" ||
+        (classification?.outcome === "explicit-success" &&
+          (operation === "production-environment" || classification.resourceUuid === expectedUuid)));
+  });
   if (terminal.event !== "inert-setup-complete" || records.some(({ event }) =>
     event.startsWith("rollback")) || terminal.activation !== false ||
       terminal.migration0010 !== false || terminal.initialProductionBuild !== false ||
       setupResults.sourceSha !== "815076d3d69d358e3b265025d94a9151b9542b96" ||
       setupResults.planDigest !== "856f64dc2027a81ed5fcd7d85b687680e01c950400dbf8965ea40c076b09eb34" ||
+      setupAuthorized?.sourceSha !== setupResults.sourceSha ||
+      setupAuthorized?.planDigestSha256 !== setupResults.planDigest || !setupMutationsValid ||
       terminal.stagedProofDigest !== setupResults.stagedProofDigest ||
       resource("repository-connection") !== setupResults.repositoryConnection ||
       resource("production-build-token") !== setupResults.productionBuildToken ||
@@ -517,15 +580,30 @@ function validateInertSetupProvenance(records, setupResults, activationPreflight
 }
 
 function validateDisposableReviewCoordinate(coordinate, sourceSha, now = Date.now()) {
-  const keys = ["branch", "capturedAt", "commit", "journalId", "repository", "source",
-    "sourceSha"];
+  const keys = ["authorEmail", "authorName", "branch", "capturedAt", "commit",
+    "commitMetadataSha256", "commitSubject", "contentSha256", "executorSha256", "journalId",
+    "journalInitialRecordCount", "parentSha", "proofBlobSha", "proofMode", "proofPath",
+    "repository", "source", "sourceSha", "treeSha"];
   const captured = Date.parse(coordinate?.capturedAt ?? "");
+  const expectedContentSha256 = digestText("issue-66 automatic review build proof\n");
+  const expectedMetadataSha256 = digestJson(["test(deploy): verify issue 66 review build",
+    "Atrinik Delivery", "delivery@atrinik.org", sourceSha]);
   if (!coordinate || !same(sorted(Object.keys(coordinate)), sorted(keys)) ||
       coordinate.source !== "journaled-disposable-review-coordinate" ||
       coordinate.repository !== "atrinik/metaserver-worker" || coordinate.sourceSha !== sourceSha ||
       !/^review\/issue-66-[a-z0-9-]{1,40}$/u.test(coordinate.branch ?? "") ||
       !gitShaPattern.test(coordinate.commit ?? "") || coordinate.commit === sourceSha ||
+      coordinate.parentSha !== sourceSha || !gitShaPattern.test(coordinate.treeSha ?? "") ||
+      !gitShaPattern.test(coordinate.proofBlobSha ?? "") ||
+      coordinate.proofPath !== "deployment/review-check/.issue-66-build-proof" ||
+      coordinate.proofMode !== "100644" || coordinate.contentSha256 !== expectedContentSha256 ||
+      coordinate.commitSubject !== "test(deploy): verify issue 66 review build" ||
+      coordinate.authorName !== "Atrinik Delivery" ||
+      coordinate.authorEmail !== "delivery@atrinik.org" ||
+      coordinate.commitMetadataSha256 !== expectedMetadataSha256 ||
+      !/^[0-9a-f]{64}$/u.test(coordinate.executorSha256 ?? "") ||
       !/^[0-9a-f]{64}$/u.test(coordinate.journalId ?? "") ||
+      coordinate.journalInitialRecordCount !== 0 ||
       !isUtcTimestamp(coordinate.capturedAt) || !Number.isFinite(captured) ||
       captured > now + 30_000 || now - captured > 5 * 60_000)
     fail("disposable review coordinate proof is stale or malformed");
@@ -644,10 +722,8 @@ export function issueDisposableReviewAuthority({ production, review, accountId, 
   validateCurrentDisposableReviewSnapshotProof(currentReviewActiveProof,
     { accountId, sourceSha }, now);
   if (Date.parse(currentReviewActiveProof.snapshotStartedAt) <
-      Date.parse(reviewActivationProof.snapshotCompletedAt))
+      Date.parse(journal.terminalAt))
     fail("disposable review authority observations overlap");
-  if (currentReviewActiveProof.state_digest !== reviewActivationProof.state_digest)
-    fail("disposable review authority live state drift");
   const identities = currentReviewActiveProof.liveIdentities;
   if (identities.reviewTriggerUuid !== journal.reviewTriggerUuid ||
       identities.productionTriggerUuid !== setupProvenance.productionTriggerUuid ||
@@ -760,6 +836,8 @@ minimumRemainingMs = reviewActivationTransitionBudgetMs) {
       active.capturedAt !== currentReviewActiveProof.capturedAt ||
       active.startedAt !== currentReviewActiveProof.snapshotStartedAt ||
       active.completedAt !== currentReviewActiveProof.snapshotCompletedAt ||
+      Date.parse(reviewActivationProof.capturedAt) > Date.parse(journal.terminalAt) ||
+      Date.parse(journal.terminalAt) > Date.parse(currentReviewActiveProof.snapshotStartedAt) ||
       !same(active.liveIdentities, currentReviewActiveProof.liveIdentities) ||
       !same(proof.reviewActivationJournal, journal) ||
       !same(proof.inertSetup, setupProvenance) ||
@@ -1170,6 +1248,8 @@ export function provisioningSetupPlan(production, review) {
       "ATRINIK_CURRENT_REVIEW_ACTIVE_PROOF_FILE",
       "ATRINIK_DISPOSABLE_REVIEW_AUTHORITY_PROOF_OUTPUT_FILE",
       "ATRINIK_DISPOSABLE_REVIEW_AUTHORITY_PROOF_FILE",
+      "ATRINIK_DISPOSABLE_REVIEW_PUSH_AUTHORIZATION_RECEIPT_OUTPUT_FILE",
+      "ATRINIK_DISPOSABLE_REVIEW_DELETE_AUTHORIZATION_RECEIPT_OUTPUT_FILE",
       "ATRINIK_PRODUCTION_ACTIVATION_PROOF_OUTPUT_FILE",
       "ATRINIK_REVIEW_RESULT_PROOF_FILE",
       "ATRINIK_PRODUCTION_BUILD_TOKEN_SECRET_FILE",
@@ -3625,12 +3705,22 @@ export async function runProvisioningCli(mode = process.argv[2] ?? "--validate-o
       mode === "--verify-disposable-review-authority-push") {
     const accountId = await readPrivateValue(process.env.ATRINIK_CLOUDFLARE_ACCOUNT_ID_FILE,
       "Cloudflare account ID", accountIdPattern);
-    const { proof, validation } = await readAndValidateDisposableReviewAuthority({
+    const { proof, evidence, validation } = await readAndValidateDisposableReviewAuthority({
       production, review, accountId, sourceSha,
       minimumRemainingMs: mode === "--verify-disposable-review-authority-push" ?
         disposableReviewPushReserveMs : reviewActivationTransitionBudgetMs });
+    const operation = mode === "--verify-disposable-review-authority-push" ? "push" : "delete";
+    const receipt = { outcome: "workers-builds-disposable-review-write-authorized",
+      mutation: false, operation, sourceSha, authorityProofDigest: proof.proof_digest,
+      journalId: evidence.disposableCoordinate.journalId,
+      branch: evidence.disposableCoordinate.branch, commit: evidence.disposableCoordinate.commit,
+      checkedAt: validation.checkedAt, expiresAt: validation.expiresAt };
+    await writePrivateProof(operation === "push" ?
+      process.env.ATRINIK_DISPOSABLE_REVIEW_PUSH_AUTHORIZATION_RECEIPT_OUTPUT_FILE :
+      process.env.ATRINIK_DISPOSABLE_REVIEW_DELETE_AUTHORIZATION_RECEIPT_OUTPUT_FILE, receipt);
     process.stdout.write(`${JSON.stringify({ outcome: validation.outcome, mutation: false,
-      sourceSha, expiresAt: validation.expiresAt, proof_digest: proof.proof_digest })}\n`);
+      sourceSha, expiresAt: validation.expiresAt, proof_digest: proof.proof_digest,
+      authorizationReceiptDigest: digestJson(receipt) })}\n`);
     return;
   }
   if (mode === "--verify-review-activation-authority-proof") {

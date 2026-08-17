@@ -146,11 +146,11 @@ authority expiry. It then creates
 the provider preview role against a freshly proven absent private root with
 fixed inert commands, writes its nonsecret environment, and only then atomically
 switches to and validates the documented final preview trigger before any
-disposable branch proof. That proof uses a separate 45-minute authority minted
+disposable branch proof. That proof uses a separate 60-minute authority minted
 from a fresh exact review-active snapshot, with only exact disposable-ref
 push/delete and journal-owned automatic-build cleanup writes. It binds the exact
-disposable journal/branch/commit and requires 30 minutes remaining at push plus
-five minutes at exact-SHA deletion. A post-activation
+disposable journal/branch/commit and requires one-use receipts with 40 minutes
+remaining at push plus five minutes at exact-SHA deletion. A post-activation
 `npm run provision:workers-builds:verify-configured` check proves the serialized
 production/preview trigger pair, distinct fresh provider-token policies,
 environment-classification, and no-Deploy-Hook

@@ -109,11 +109,12 @@
   and stages review activation behind a bounded digest-bound phase authority,
   fresh per-command current-main evidence, a fresh private absent-root proof,
   inert commands, the exact nonsecret environment, and an atomic final trigger PATCH.
-  The disposable automatic-build proof uses a separate renewable 45-minute
+  The disposable automatic-build proof uses a separate renewable 60-minute
   authority issued only from the exact review-active state; it permits only the
   journaled disposable push/delete and exact owned-build cleanup, never production activation.
   Bind the exact branch, commit, journal identity, predecessor journals, and current
-  trigger/wrapper UUIDs; require 30 minutes remaining before push and five before deletion.
+  trigger/wrapper UUIDs; require exclusive one-use receipts, 40 minutes remaining
+  before push, and five before deletion.
   It performs only readback and local protected-document materialization, and must never gain implicit
   provider mutation. Provider apply and live-canary execution remain gated by
   separate maintainer authorization; `npm run deploy:review-canary` must fail

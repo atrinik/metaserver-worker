@@ -307,9 +307,8 @@ function disposableReviewAuthorityFixture(now = Date.now()) {
   const productionTrigger = "11111111-1111-4111-8111-111111111111";
   const productionBuildToken = "44444444-4444-4444-8444-444444444444";
   const repositoryConnection = "55555555-5555-4555-8555-555555555555";
-  const stateDigest = "d".repeat(64);
-  const reviewActivationProof = reviewActiveProof(new Date(now - 2_000).toISOString(),
-    stateDigest, predecessorSourceSha);
+  const reviewActivationProof = reviewActiveProof(new Date(now - 5_972).toISOString(),
+    "d".repeat(64), predecessorSourceSha);
   const liveIdentities = {
     productionTriggerUuid: productionTrigger, reviewTriggerUuid: reviewTrigger,
     productionBuildTokenUuid: productionBuildToken, reviewBuildTokenUuid: reviewTokenUuid,
@@ -317,7 +316,7 @@ function disposableReviewAuthorityFixture(now = Date.now()) {
     productionEnvironmentDigest: "6".repeat(64), reviewEnvironmentDigest: "7".repeat(64),
   };
   const currentReviewActiveProof = reviewActiveProof(new Date(now - 1_000).toISOString(),
-    stateDigest, currentSourceSha, liveIdentities);
+    "e".repeat(64), currentSourceSha, liveIdentities);
   const setupPairs = [
     ["preflight-proven", "execution-preflight"], ["setup-authorized"],
     ["mutation-intent", "repository-connection"],
@@ -342,11 +341,31 @@ function disposableReviewAuthorityFixture(now = Date.now()) {
   ];
   const setupResource = { "repository-connection": repositoryConnection,
     "production-build-token": productionBuildToken, "review-build-token": reviewTokenUuid,
-    "production-trigger-staged": productionTrigger };
+    "production-trigger-staged": productionTrigger, "production-environment": productionTrigger };
   const setupRecords = setupPairs.map(([event, operation], index) => {
     const payload = { event, ...(operation ? { operation } : {}), attempt: 1,
       at: new Date(now - 10_000 + index).toISOString() };
     if (event === "mutation-bound") payload.resourceUuid = setupResource[operation];
+    if (event === "setup-authorized") Object.assign(payload, { sourceSha: setupSourceSha,
+      planDigestSha256: setupPlanDigest });
+    if (event === "mutation-intent") Object.assign(payload, {
+      method: operation === "repository-connection" ? "PUT" :
+        operation === "production-environment" ? "PATCH" : "POST",
+      path: operation === "repository-connection" ? "/builds/repos/connections" :
+        operation === "production-environment" ?
+          `/builds/triggers/${productionTrigger}/environment_variables` :
+          operation.includes("token") ? "/builds/tokens" : "/builds/triggers",
+      requestDigestSha256: createHash("sha256").update(operation).digest("hex"),
+    });
+    if (event === "provider-response-classified") Object.assign(payload, {
+      outcome: "explicit-success",
+      ...(operation !== "production-environment" ? { resourceUuid: setupResource[operation] } : {}),
+    });
+    if (event === "mutation-bound") Object.assign(payload, {
+      providerResponseExplicitSuccess: true,
+      requestDigestSha256: createHash("sha256").update(operation).digest("hex"),
+      readbackDigestSha256: createHash("sha256").update(`readback:${operation}`).digest("hex"),
+    });
     if (event === "inert-setup-complete") Object.assign(payload, {
       stagedProofDigest: "8".repeat(64), activation: false, migration0010: false,
       initialProductionBuild: false });
@@ -400,6 +419,31 @@ function disposableReviewAuthorityFixture(now = Date.now()) {
     if (event === "review-gate-preflight-proven") Object.assign(payload, {
       sourceSha: predecessorSourceSha, planDigestSha256: activationPlanDigest,
       setupJournalSha256, setupResultsSha256,
+      reviewActivationAuthorityDigest: "4".repeat(64),
+    });
+    if (event === "current-main-proof-bound") Object.assign(payload, {
+      sourceSha: predecessorSourceSha, proofFileSha256: "5".repeat(64),
+      rawFileSha256: "6".repeat(64),
+    });
+    if (event === "review-activation-authority-checked") Object.assign(payload, {
+      proofDigest: "4".repeat(64), expiresAt: new Date(now + 60_000).toISOString(),
+    });
+    if (event === "mutation-intent") Object.assign(payload, {
+      method: operation === "review-trigger-create" ? "POST" : "PATCH",
+      path: operation === "review-trigger-create" ? "/builds/triggers" :
+        operation === "review-environment" ?
+          `/builds/triggers/${reviewTrigger}/environment_variables` :
+          `/builds/triggers/${reviewTrigger}`,
+      requestDigestSha256: createHash("sha256").update(operation).digest("hex"),
+    });
+    if (event === "provider-response-classified") Object.assign(payload, {
+      outcome: "explicit-success",
+      ...(operation === "review-trigger-create" ? { resourceUuid: reviewTrigger } : {}),
+    });
+    if (event === "mutation-bound") Object.assign(payload, { resourceUuid: reviewTrigger,
+      providerResponseExplicitSuccess: true,
+      requestDigestSha256: createHash("sha256").update(operation).digest("hex"),
+      readbackDigestSha256: createHash("sha256").update(`readback:${operation}`).digest("hex"),
     });
     if (event === "provider-proof-bound" && operation === "review-activation")
       Object.assign(payload, { proofDigest: reviewActivationProof.proof_digest,
@@ -413,7 +457,16 @@ function disposableReviewAuthorityFixture(now = Date.now()) {
   });
   const disposableCoordinate = { source: "journaled-disposable-review-coordinate",
     repository: "atrinik/metaserver-worker", sourceSha: currentSourceSha,
-    branch: "review/issue-66-proof", commit: "c".repeat(40), journalId: "9".repeat(64),
+    branch: "review/issue-66-proof", commit: "c".repeat(40), parentSha: currentSourceSha,
+    treeSha: "f".repeat(40), proofBlobSha: "1".repeat(40),
+    proofPath: "deployment/review-check/.issue-66-build-proof", proofMode: "100644",
+    contentSha256: createHash("sha256").update("issue-66 automatic review build proof\n")
+      .digest("hex"), commitSubject: "test(deploy): verify issue 66 review build",
+    authorName: "Atrinik Delivery", authorEmail: "delivery@atrinik.org",
+    commitMetadataSha256: createHash("sha256").update(JSON.stringify([
+      "test(deploy): verify issue 66 review build", "Atrinik Delivery", "delivery@atrinik.org",
+      currentSourceSha])).digest("hex"), executorSha256: "3".repeat(64),
+    journalId: "9".repeat(64), journalInitialRecordCount: 0,
     capturedAt: new Date(now - 1_500).toISOString() };
   const evidence = {
     reviewActivationProof, reviewActivationJournal, currentReviewActiveProof,
@@ -1388,14 +1441,14 @@ test("renews only a bounded disposable proof authority from exact review-active 
   const arguments_ = { production, review, accountId, sourceSha: "a".repeat(40), ...evidence };
   assert.equal(proof.sourceSha, "a".repeat(40));
   assert.equal(proof.predecessorSourceSha, "b".repeat(40));
-  assert.equal(Date.parse(proof.expiresAt) - Date.parse(proof.capturedAt), 45 * 60_000);
+  assert.equal(Date.parse(proof.expiresAt) - Date.parse(proof.capturedAt), 60 * 60_000);
   assert.equal(validateDisposableReviewAuthority(proof, arguments_, now + 10 * 60_000,
-    30 * 60_000).proof_digest, proof.proof_digest);
+    40 * 60_000).proof_digest, proof.proof_digest);
   assert.throws(() => validateDisposableReviewAuthority(proof, arguments_,
-    now + 16 * 60_000, 30 * 60_000), /stale, malformed, or cross-phase/u);
-  assert.equal(validateDisposableReviewAuthority(proof, arguments_, now + 39 * 60_000)
+    now + 21 * 60_000, 40 * 60_000), /stale, malformed, or cross-phase/u);
+  assert.equal(validateDisposableReviewAuthority(proof, arguments_, now + 54 * 60_000)
     .proof_digest, proof.proof_digest);
-  assert.throws(() => validateDisposableReviewAuthority(proof, arguments_, now + 41 * 60_000),
+  assert.throws(() => validateDisposableReviewAuthority(proof, arguments_, now + 56 * 60_000),
     /stale, malformed, or cross-phase/u);
   assert.throws(() => validateDisposableReviewAuthority({ ...proof, phase: "production" },
     arguments_, now), /cross-phase/u);
@@ -1486,6 +1539,10 @@ test("dispatches disposable authority verification through exact private evidenc
       ATRINIK_WORKERS_BUILDS_USAGE_PROOF_FILE: await json("usage.json",
         evidence.buildUsageProof),
       ATRINIK_DISPOSABLE_REVIEW_AUTHORITY_PROOF_FILE: await json("authority.json", proof),
+      ATRINIK_DISPOSABLE_REVIEW_PUSH_AUTHORIZATION_RECEIPT_OUTPUT_FILE:
+        resolve(temporary, "push-receipt.json"),
+      ATRINIK_DISPOSABLE_REVIEW_DELETE_AUTHORIZATION_RECEIPT_OUTPUT_FILE:
+        resolve(temporary, "delete-receipt.json"),
     });
     const output = [];
     process.stdout.write = (chunk) => { output.push(String(chunk)); return true; };
@@ -1496,6 +1553,8 @@ test("dispatches disposable authority verification through exact private evidenc
     assert.equal(output.length, 2);
     assert.ok(output.every((line) => JSON.parse(line).outcome ===
       "workers-builds-disposable-review-authority-valid"));
+    await assert.rejects(runProvisioningCli("--verify-disposable-review-authority-push",
+      async () => "a".repeat(40)), /EEXIST/u);
     await writeFile(process.env.ATRINIK_REVIEW_ACTIVATION_JOURNAL_FILE,
       JSON.stringify(evidence.reviewActivationJournal[0]), { mode: 0o600 });
     await assert.rejects(runProvisioningCli("--verify-disposable-review-authority-proof",
