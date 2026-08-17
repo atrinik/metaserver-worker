@@ -511,8 +511,10 @@ The `review-token-rotation` gate is separate from review activation and from
 the disposable build proof. Use it only after a checksum-valid terminal
 `review-trigger-active` journal. The replacement underlying user token must be
 new, user-owned, and zero-resource: `User Details:Read` only, with no account or
-zone permission or resource. Capture its exact token ID, `modifiedOn`, and
-owner-policy evidence no more than five minutes before authority issuance.
+zone permission or resource. Capture its exact token ID, `modifiedOn`, owner
+user ID, and a separate current `accepted` account-membership observation no
+more than five minutes before authority issuance. The token modification time
+must postdate the terminal review-activation journal.
 Keep the predecessor review token proof as immutable provenance.
 
 First take a new exhaustive review-active snapshot and issue the owner-only
@@ -525,6 +527,7 @@ review verifiers, plus these rotation inputs:
 ATRINIK_PROVIDER_SNAPSHOT_DIRECTORY=/secure/fresh-pre-rotation-snapshot \
 ATRINIK_REPLACEMENT_REVIEW_BUILD_TOKEN_ID_FILE=/secure/private/replacement-token-id \
 ATRINIK_REPLACEMENT_REVIEW_BUILD_TOKEN_PERMISSION_PROOF_FILE=/secure/private/replacement-token-policy.json \
+ATRINIK_REPLACEMENT_REVIEW_TOKEN_OWNER_MEMBERSHIP_PROOF_FILE=/secure/private/replacement-token-membership.json \
 ATRINIK_REVIEW_TOKEN_ROTATION_PREDECESSOR_PROOF_OUTPUT_FILE=/secure/private/rotation-predecessor-proof.json \
 ATRINIK_REVIEW_TOKEN_ROTATION_AUTHORITY_PROOF_OUTPUT_FILE=/secure/private/rotation-authority.json \
   npm run provision:workers-builds:verify-review-token-rotation-authority
@@ -556,18 +559,33 @@ The three readback commands require `ATRINIK_PROVIDER_SNAPSHOT_OUTPUT`, the
 rotation authority and all evidence used to issue it, the exact production and
 review trigger UUIDs bound by that authority, and
 `ATRINIK_REPLACEMENT_REVIEW_BUILD_TOKEN_UUID_FILE`. Write each proof to its
-corresponding `ATRINIK_REVIEW_TOKEN_ROTATION_*_PROOF_OUTPUT_FILE`. The terminal
-proof and fully framed checksum-valid journal become
+corresponding `ATRINIK_REVIEW_TOKEN_ROTATION_*_PROOF_OUTPUT_FILE`. Every phase
+must reproduce the authority-bound full non-token production-state digest,
+including scripts, settings, bindings, routes, domains, schedules, versions,
+deployments, active versions, Deploy Hooks, and migration state; only documented
+D1 query timing metadata is excluded. The intermediate and unreferenced proofs,
+terminal proof, and fully framed checksum-valid journal become
+`ATRINIK_REVIEW_TOKEN_ROTATION_INTERMEDIATE_PROOF_FILE`,
+`ATRINIK_REVIEW_TOKEN_ROTATION_UNREFERENCED_PROOF_FILE`,
 `ATRINIK_REVIEW_TOKEN_ROTATION_COMPLETE_PROOF_FILE` and
 `ATRINIK_REVIEW_TOKEN_ROTATION_JOURNAL_FILE` for the disposable authority.
 
 Before predecessor deletion, rollback restores only the two journaled token
 references to the predecessor wrapper, proves the exact predecessor
-review-active state, then deletes only the unreferenced journal-created
-replacement wrapper. Once predecessor absence is durably reconciled, rollback
+review-active state with
+`provision:workers-builds:verify-review-token-rotation-rollback-restored`, then
+deletes only the unreferenced journal-created replacement wrapper and proves
+the terminal predecessor with
+`provision:workers-builds:verify-review-token-rotation-rollback-complete`. Once
+predecessor absence is durably reconciled, rollback
 must roll forward: never recreate it; prove the terminal replacement state.
-Crashes resume from response UUID classifications and deletion tombstones and
-never adopt or delete a foreign wrapper. Production activation, migration
+Every intent digest is computed from the exact method, path, and authority-bound
+request body. Explicit success binds its returned identity; only a journaled
+ambiguous response may reconcile by exact stable readback, and deletions require
+an exact-absence tombstone. Crashes resume from those classifications and
+tombstones and never adopt or delete a foreign wrapper. The old wrapper must be
+unreferenced across the complete account trigger inventory, not merely this
+repository. Production activation, migration
 `0010`, manual/API builds, the initial production build, and all Worker,
 version, deployment, binding, route, domain, schedule, URL, state, secret, and
 repository-connection mutations remain forbidden.

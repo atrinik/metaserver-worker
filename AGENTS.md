@@ -112,7 +112,9 @@
   A separately authorized review-token rotation may replace the review wrapper only through
   the digest-pinned `review-token-rotation` gate: create one exact zero-resource successor,
   repoint the journaled inert production trigger and final review trigger without changing any
-  other field, prove the predecessor wrapper unreferenced, then delete only that wrapper. Bind
+  other field, bind the replacement owner to a fresh accepted account-membership observation,
+  preserve the complete non-token production control plane, prove the predecessor wrapper
+  unreferenced across the exhaustive account inventory, then delete only that wrapper. Bind
   the terminal rotation proof and checksum-valid journal into every later disposable authority;
   the original setup wrapper remains predecessor provenance and is never treated as live.
   The disposable automatic-build proof uses a separate renewable 60-minute
