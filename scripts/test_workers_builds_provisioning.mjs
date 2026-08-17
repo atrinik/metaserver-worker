@@ -609,6 +609,12 @@ test("cryptographically binds the disposable commit, executor, and empty journal
       { mode: 0o600 });
     await assert.rejects(validateDisposableCoordinatePreparation({ ...coordinate,
       detachedRepositoryPath: linkedRepository }), /Git metadata must be an owner-only/u);
+    const commonDirectoryMarker = resolve(repository, ".git/commondir");
+    await writeFile(commonDirectoryMarker, ".\n", { mode: 0o600 });
+    try {
+      await assert.rejects(validateDisposableCoordinatePreparation(coordinate),
+        /forbidden shared, graft, or shallow Git metadata/u);
+    } finally { await rm(commonDirectoryMarker); }
     await writeFile(journalPath, "started\n", { mode: 0o600 });
     await assert.rejects(validateDisposableCoordinatePreparation(coordinate),
       /executor or empty journal identity drift/u);

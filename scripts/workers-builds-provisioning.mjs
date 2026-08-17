@@ -644,10 +644,11 @@ export async function validateDisposableCoordinatePreparation(coordinate) {
   await canonicalDirectory(dirname(coordinate.journalPath), "disposable evidence directory");
   const gitDirectory = resolve(coordinate.detachedRepositoryPath, ".git");
   await canonicalDirectory(gitDirectory, "disposable repository Git metadata");
-  if (await lstat(resolve(gitDirectory, "info/grafts"))
-    .catch(() => null) || await lstat(resolve(gitDirectory, "shallow"))
-    .catch(() => null))
-    fail("disposable repository uses forbidden graft or shallow history");
+  if (await lstat(resolve(gitDirectory, "commondir")).catch(() => null) ||
+      await lstat(resolve(gitDirectory, "gitdir")).catch(() => null) ||
+      await lstat(resolve(gitDirectory, "info/grafts")).catch(() => null) ||
+      await lstat(resolve(gitDirectory, "shallow")).catch(() => null))
+    fail("disposable repository uses forbidden shared, graft, or shallow Git metadata");
   const executor = await privateBytes(coordinate.executorPath, "disposable executor");
   const journal = await privateBytes(coordinate.journalPath, "disposable initial journal");
   if (digestText(executor) !== coordinate.executorSha256 || journal.length !== 0 ||
