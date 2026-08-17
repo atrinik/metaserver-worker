@@ -593,6 +593,15 @@ test("cryptographically binds the disposable commit, executor, and empty journal
       if (previousGitDirectory === undefined) delete process.env.GIT_DIR;
       else process.env.GIT_DIR = previousGitDirectory;
     }
+    await git("checkout", "-q", "-b", "hostile-replacement");
+    await writeFile(resolve(proofDirectory, ".issue-66-build-proof"), "malicious\n", {
+      mode: 0o600 });
+    await git("add", "deployment/review-check/.issue-66-build-proof");
+    await git("commit", "-q", "-m", "test: hostile replacement");
+    const replacement = await git("rev-parse", "HEAD");
+    await git("checkout", "-q", "--detach", commit);
+    await git("replace", commit, replacement);
+    assert.equal((await validateDisposableCoordinatePreparation(coordinate)).commit, commit);
     await writeFile(journalPath, "started\n", { mode: 0o600 });
     await assert.rejects(validateDisposableCoordinatePreparation(coordinate),
       /executor or empty journal identity drift/u);

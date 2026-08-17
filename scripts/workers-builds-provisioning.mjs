@@ -642,6 +642,10 @@ export async function validateDisposableCoordinatePreparation(coordinate) {
   await canonicalDirectory(coordinate.detachedRepositoryPath,
     "disposable detached repository");
   await canonicalDirectory(dirname(coordinate.journalPath), "disposable evidence directory");
+  if (await lstat(resolve(coordinate.detachedRepositoryPath, ".git/info/grafts"))
+    .catch(() => null) || await lstat(resolve(coordinate.detachedRepositoryPath, ".git/shallow"))
+    .catch(() => null))
+    fail("disposable repository uses forbidden graft or shallow history");
   const executor = await privateBytes(coordinate.executorPath, "disposable executor");
   const journal = await privateBytes(coordinate.journalPath, "disposable initial journal");
   if (digestText(executor) !== coordinate.executorSha256 || journal.length !== 0 ||
@@ -651,7 +655,8 @@ export async function validateDisposableCoordinatePreparation(coordinate) {
   const git = async (args) => (await execFileAsync("git", args, {
     cwd: coordinate.detachedRepositoryPath, encoding: "utf8", timeout: 10_000,
     maxBuffer: maximumPrivateDocumentBytes,
-    env: { PATH: process.env.PATH, GIT_CONFIG_NOSYSTEM: "1", GIT_TERMINAL_PROMPT: "0" },
+    env: { PATH: process.env.PATH, GIT_CONFIG_NOSYSTEM: "1", GIT_TERMINAL_PROMPT: "0",
+      GIT_NO_REPLACE_OBJECTS: "1" },
   })).stdout;
   const [head, parent, status, diff, treeRow, content, metadata, treeSha] = await Promise.all([
     git(["rev-parse", "HEAD"]), git(["rev-parse", "HEAD^"]),
