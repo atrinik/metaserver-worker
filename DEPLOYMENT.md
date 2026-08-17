@@ -531,6 +531,10 @@ exact, and no competing trigger, active build, or Deploy Hook exists. It binds
 that current observation to the terminal review-activation proof and permits
 only one exact `review/issue-66-*` push, exact-SHA deletion, and cancellation
 of the journal-owned automatic review build during cleanup. Before either Git
+write, the issuer directly inspects the owner-only detached repository and
+cryptographically binds the commit parent/tree/blob, sole proof-file delta,
+content, mode, author/subject, executor bytes, initially empty journal identity,
+and canonical push/delete receipt paths. Before either Git
 write, use `ATRINIK_DISPOSABLE_REVIEW_AUTHORITY_PROOF_FILE` and its exact source
 evidence. Immediately before the push, run
 `npm run provision:workers-builds:verify-disposable-review-authority-push`

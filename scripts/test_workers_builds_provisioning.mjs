@@ -1,9 +1,11 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
+import { execFile } from "node:child_process";
 import { chmod, lstat, mkdir, mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { resolve } from "node:path";
 import test from "node:test";
+import { promisify } from "node:util";
 import {
   automaticReviewEnvironmentSpec,
   automaticReviewTriggerSpec,
@@ -38,6 +40,7 @@ import {
   validateCurrentMainProof,
   validateDistinctSentinelRefAbsence,
   validateDisposableReviewAuthority,
+  validateDisposableCoordinatePreparation,
   validateFreshBuildsSnapshot,
   validateInitialBootstrapSnapshot,
   validateNoActiveBuilds,
@@ -79,6 +82,7 @@ const scriptTag = "b".repeat(32);
 const resourceUuid = "11111111-1111-4111-8111-111111111111";
 const reviewTriggerUuid = "22222222-2222-4222-8222-222222222222";
 const reviewTokenUuid = "33333333-3333-4333-8333-333333333333";
+const execFileAsync = promisify(execFile);
 
 function envelope(result) {
   return Array.isArray(result) ? { success: true, result, result_info: {
@@ -285,7 +289,8 @@ function reviewActiveProof(capturedAt, stateDigest = "f".repeat(64),
   return proof;
 }
 
-function disposableReviewAuthorityFixture(now = Date.now()) {
+function disposableReviewAuthorityFixture(now = Date.now(),
+  runDirectory = "/secure/issue-66/disposable-proof") {
   const currentSourceSha = "a".repeat(40);
   const predecessorSourceSha = "b".repeat(40);
   const setupSourceSha = "815076d3d69d358e3b265025d94a9151b9542b96";
@@ -455,6 +460,8 @@ function disposableReviewAuthorityFixture(now = Date.now()) {
       productionActivation: false, migration0010: false, initialProductionBuild: false });
     return journalRecord(payload);
   });
+  const executorSha256 = "3".repeat(64);
+  const journalPath = resolve(runDirectory, "disposable-proof-journal.jsonl");
   const disposableCoordinate = { source: "journaled-disposable-review-coordinate",
     repository: "atrinik/metaserver-worker", sourceSha: currentSourceSha,
     branch: "review/issue-66-proof", commit: "c".repeat(40), parentSha: currentSourceSha,
@@ -465,8 +472,14 @@ function disposableReviewAuthorityFixture(now = Date.now()) {
     authorName: "Atrinik Delivery", authorEmail: "delivery@atrinik.org",
     commitMetadataSha256: createHash("sha256").update(JSON.stringify([
       "test(deploy): verify issue 66 review build", "Atrinik Delivery", "delivery@atrinik.org",
-      currentSourceSha])).digest("hex"), executorSha256: "3".repeat(64),
-    journalId: "9".repeat(64), journalInitialRecordCount: 0,
+      currentSourceSha])).digest("hex"), executorSha256,
+    executorPath: resolve(runDirectory, "run-disposable-proof.mjs"), journalPath,
+    detachedRepositoryPath: resolve(runDirectory, "disposable-source"),
+    pushReceiptPath: resolve(runDirectory, "push-authorization-receipt.json"),
+    deleteReceiptPath: resolve(runDirectory, "delete-authorization-receipt.json"),
+    journalId: createHash("sha256").update(
+      `disposable-journal:${journalPath}:${executorSha256}`).digest("hex"),
+    journalInitialRecordCount: 0,
     capturedAt: new Date(now - 1_500).toISOString() };
   const evidence = {
     reviewActivationProof, reviewActivationJournal, currentReviewActiveProof,
@@ -520,6 +533,62 @@ test("enforces owner-only no-follow private inputs and snapshots", async () => {
     const outputMetadata = await lstat(output);
     assert.equal(outputMetadata.mode & 0o777, 0o700);
     await assert.rejects(createPrivateDirectory(output), /already exists/u);
+  } finally {
+    await rm(temporary, { recursive: true, force: true });
+  }
+});
+
+test("cryptographically binds the disposable commit, executor, and empty journal", async () => {
+  const temporary = await mkdtemp(resolve(tmpdir(), "atrinik-disposable-coordinate-"));
+  await chmod(temporary, 0o700);
+  const repository = resolve(temporary, "disposable-source");
+  await mkdir(repository, { mode: 0o700 });
+  const git = async (...args) => (await execFileAsync("git", args, {
+    cwd: repository, encoding: "utf8" })).stdout.trim();
+  try {
+    await git("init", "-q");
+    await git("config", "user.name", "Atrinik Delivery");
+    await git("config", "user.email", "delivery@atrinik.org");
+    await writeFile(resolve(repository, "README.md"), "base\n", { mode: 0o600 });
+    await git("add", "README.md");
+    await git("commit", "-q", "-m", "test: base");
+    const parentSha = await git("rev-parse", "HEAD");
+    const proofDirectory = resolve(repository, "deployment/review-check");
+    await mkdir(proofDirectory, { recursive: true, mode: 0o700 });
+    const content = "issue-66 automatic review build proof\n";
+    await writeFile(resolve(proofDirectory, ".issue-66-build-proof"), content, { mode: 0o600 });
+    await git("add", "deployment/review-check/.issue-66-build-proof");
+    await git("commit", "-q", "-m", "test(deploy): verify issue 66 review build");
+    const commit = await git("rev-parse", "HEAD");
+    const treeSha = await git("rev-parse", "HEAD^{tree}");
+    const proofBlobSha = await git("rev-parse",
+      "HEAD:deployment/review-check/.issue-66-build-proof");
+    const executorPath = resolve(temporary, "run-disposable-proof.mjs");
+    const journalPath = resolve(temporary, "disposable-proof-journal.jsonl");
+    const executor = "export const reviewed = true;\n";
+    await writeFile(executorPath, executor, { mode: 0o600 });
+    await writeFile(journalPath, "", { mode: 0o600 });
+    const executorSha256 = createHash("sha256").update(executor).digest("hex");
+    const coordinate = {
+      source: "journaled-disposable-review-coordinate", repository: "atrinik/metaserver-worker",
+      sourceSha: parentSha, branch: "review/issue-66-proof", commit, parentSha, treeSha,
+      proofBlobSha, proofPath: "deployment/review-check/.issue-66-build-proof",
+      proofMode: "100644", contentSha256: createHash("sha256").update(content).digest("hex"),
+      commitSubject: "test(deploy): verify issue 66 review build", authorName: "Atrinik Delivery",
+      authorEmail: "delivery@atrinik.org", commitMetadataSha256: createHash("sha256").update(
+        JSON.stringify(["test(deploy): verify issue 66 review build", "Atrinik Delivery",
+          "delivery@atrinik.org", parentSha])).digest("hex"), executorSha256, executorPath,
+      journalPath, detachedRepositoryPath: repository,
+      pushReceiptPath: resolve(temporary, "push-authorization-receipt.json"),
+      deleteReceiptPath: resolve(temporary, "delete-authorization-receipt.json"),
+      journalId: createHash("sha256").update(
+        `disposable-journal:${journalPath}:${executorSha256}`).digest("hex"),
+      journalInitialRecordCount: 0, capturedAt: new Date().toISOString(),
+    };
+    assert.equal((await validateDisposableCoordinatePreparation(coordinate)).commit, commit);
+    await writeFile(journalPath, "started\n", { mode: 0o600 });
+    await assert.rejects(validateDisposableCoordinatePreparation(coordinate),
+      /executor or empty journal identity drift/u);
   } finally {
     await rm(temporary, { recursive: true, force: true });
   }
@@ -1499,7 +1568,7 @@ test("dispatches disposable authority verification through exact private evidenc
   const previousEnvironment = { ...process.env };
   const originalWrite = process.stdout.write;
   try {
-    const { proof, evidence } = disposableReviewAuthorityFixture();
+    const { proof, evidence } = disposableReviewAuthorityFixture(Date.now(), temporary);
     const json = async (name, value, lines = false) => {
       const path = resolve(temporary, name);
       const body = lines ? `${value.map((row) => JSON.stringify(row)).join("\n")}\n` :
@@ -1540,9 +1609,9 @@ test("dispatches disposable authority verification through exact private evidenc
         evidence.buildUsageProof),
       ATRINIK_DISPOSABLE_REVIEW_AUTHORITY_PROOF_FILE: await json("authority.json", proof),
       ATRINIK_DISPOSABLE_REVIEW_PUSH_AUTHORIZATION_RECEIPT_OUTPUT_FILE:
-        resolve(temporary, "push-receipt.json"),
+        evidence.disposableCoordinate.pushReceiptPath,
       ATRINIK_DISPOSABLE_REVIEW_DELETE_AUTHORIZATION_RECEIPT_OUTPUT_FILE:
-        resolve(temporary, "delete-receipt.json"),
+        evidence.disposableCoordinate.deleteReceiptPath,
     });
     const output = [];
     process.stdout.write = (chunk) => { output.push(String(chunk)); return true; };
@@ -1555,6 +1624,10 @@ test("dispatches disposable authority verification through exact private evidenc
       "workers-builds-disposable-review-authority-valid"));
     await assert.rejects(runProvisioningCli("--verify-disposable-review-authority-push",
       async () => "a".repeat(40)), /EEXIST/u);
+    process.env.ATRINIK_DISPOSABLE_REVIEW_PUSH_AUTHORIZATION_RECEIPT_OUTPUT_FILE =
+      resolve(temporary, "alternate-push-receipt.json");
+    await assert.rejects(runProvisioningCli("--verify-disposable-review-authority-push",
+      async () => "a".repeat(40)), /receipt path drift/u);
     await writeFile(process.env.ATRINIK_REVIEW_ACTIVATION_JOURNAL_FILE,
       JSON.stringify(evidence.reviewActivationJournal[0]), { mode: 0o600 });
     await assert.rejects(runProvisioningCli("--verify-disposable-review-authority-proof",

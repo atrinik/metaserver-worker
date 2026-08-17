@@ -582,8 +582,9 @@ function validateInertSetupProvenance(records, setupResults, activationPreflight
 function validateDisposableReviewCoordinate(coordinate, sourceSha, now = Date.now()) {
   const keys = ["authorEmail", "authorName", "branch", "capturedAt", "commit",
     "commitMetadataSha256", "commitSubject", "contentSha256", "executorSha256", "journalId",
-    "journalInitialRecordCount", "parentSha", "proofBlobSha", "proofMode", "proofPath",
-    "repository", "source", "sourceSha", "treeSha"];
+    "journalInitialRecordCount", "journalPath", "parentSha", "proofBlobSha", "proofMode",
+    "proofPath", "pushReceiptPath", "deleteReceiptPath", "executorPath",
+    "detachedRepositoryPath", "repository", "source", "sourceSha", "treeSha"];
   const captured = Date.parse(coordinate?.capturedAt ?? "");
   const expectedContentSha256 = digestText("issue-66 automatic review build proof\n");
   const expectedMetadataSha256 = digestJson(["test(deploy): verify issue 66 review build",
@@ -604,9 +605,71 @@ function validateDisposableReviewCoordinate(coordinate, sourceSha, now = Date.no
       !/^[0-9a-f]{64}$/u.test(coordinate.executorSha256 ?? "") ||
       !/^[0-9a-f]{64}$/u.test(coordinate.journalId ?? "") ||
       coordinate.journalInitialRecordCount !== 0 ||
+      ![coordinate.journalPath, coordinate.executorPath, coordinate.detachedRepositoryPath,
+        coordinate.pushReceiptPath, coordinate.deleteReceiptPath].every((path) =>
+        isAbsolute(path ?? "") && resolve(path) === path) ||
+      dirname(coordinate.journalPath) !== dirname(coordinate.executorPath) ||
+      coordinate.pushReceiptPath !== resolve(dirname(coordinate.journalPath),
+        "push-authorization-receipt.json") ||
+      coordinate.deleteReceiptPath !== resolve(dirname(coordinate.journalPath),
+        "delete-authorization-receipt.json") ||
       !isUtcTimestamp(coordinate.capturedAt) || !Number.isFinite(captured) ||
       captured > now + 30_000 || now - captured > 5 * 60_000)
     fail("disposable review coordinate proof is stale or malformed");
+  return coordinate;
+}
+
+export async function validateDisposableCoordinatePreparation(coordinate) {
+  const canonicalDirectory = async (path, label) => {
+    const metadata = await lstat(path).catch(() => null);
+    if (await realpath(path).catch(() => null) !== path || !metadata?.isDirectory() ||
+        !isCurrentUserOwned(metadata) || (metadata.mode & 0o077) !== 0)
+      fail(`${label} must be an owner-only canonical directory`);
+  };
+  const privateBytes = async (path, label) => {
+    if (await realpath(path).catch(() => null) !== path)
+      fail(`${label} must be canonical without linked ancestors`);
+    const handle = await open(path, constants.O_RDONLY | constants.O_NOFOLLOW).catch(() => null);
+    if (!handle) fail(`${label} cannot be opened without following links`);
+    try {
+      const metadata = await handle.stat();
+      if (!metadata.isFile() || !isCurrentUserOwned(metadata) || (metadata.mode & 0o077) !== 0 ||
+          metadata.size > maximumPrivateDocumentBytes)
+        fail(`${label} must be a bounded owner-only regular file`);
+      return await handle.readFile();
+    } finally { await handle.close(); }
+  };
+  await canonicalDirectory(coordinate.detachedRepositoryPath,
+    "disposable detached repository");
+  await canonicalDirectory(dirname(coordinate.journalPath), "disposable evidence directory");
+  const executor = await privateBytes(coordinate.executorPath, "disposable executor");
+  const journal = await privateBytes(coordinate.journalPath, "disposable initial journal");
+  if (digestText(executor) !== coordinate.executorSha256 || journal.length !== 0 ||
+      coordinate.journalId !== digestText(
+        `disposable-journal:${coordinate.journalPath}:${coordinate.executorSha256}`))
+    fail("disposable executor or empty journal identity drift");
+  const git = async (args) => (await execFileAsync("git", args, {
+    cwd: coordinate.detachedRepositoryPath, encoding: "utf8", timeout: 10_000,
+    maxBuffer: maximumPrivateDocumentBytes,
+  })).stdout;
+  const [head, parent, status, diff, treeRow, content, metadata, treeSha] = await Promise.all([
+    git(["rev-parse", "HEAD"]), git(["rev-parse", "HEAD^"]),
+    git(["status", "--porcelain=v1", "--untracked-files=all"]),
+    git(["diff-tree", "--no-commit-id", "--name-status", "-r", "HEAD"]),
+    git(["ls-tree", "HEAD", coordinate.proofPath]),
+    git(["show", `HEAD:${coordinate.proofPath}`]),
+    git(["show", "-s", "--format=%s%n%an%n%ae%n%P", "HEAD"]),
+    git(["rev-parse", "HEAD^{tree}"]),
+  ]).catch(() => fail("disposable Git object proof cannot be read"));
+  const treeMatch = new RegExp(`^100644 blob ([0-9a-f]{40})\\t${coordinate.proofPath.replace(
+    /[.*+?^${}()|[\]\\]/gu, "\\$&")}\\n$`, "u").exec(treeRow);
+  const metadataRows = metadata.trim().split("\n");
+  if (head.trim() !== coordinate.commit || parent.trim() !== coordinate.parentSha || status !== "" ||
+      diff !== `A\t${coordinate.proofPath}\n` || !treeMatch ||
+      treeMatch[1] !== coordinate.proofBlobSha || treeSha.trim() !== coordinate.treeSha ||
+      digestText(content) !== coordinate.contentSha256 ||
+      digestJson(metadataRows) !== coordinate.commitMetadataSha256)
+    fail("disposable Git object proof drift");
   return coordinate;
 }
 
@@ -3676,6 +3739,7 @@ export async function runProvisioningCli(mode = process.argv[2] ?? "--validate-o
       "Cloudflare account ID", accountIdPattern);
     const evidence = await readDisposableReviewAuthorityEvidence(process.env,
       { requireCurrent: false });
+    await validateDisposableCoordinatePreparation(evidence.disposableCoordinate);
     const current = await validateStagedSnapshotDirectory({
       snapshotDirectory: process.env.ATRINIK_PROVIDER_SNAPSHOT_DIRECTORY,
       production, review, accountId, tokenAuthorityProofs: evidence.tokenAuthorityProofs,
@@ -3710,14 +3774,19 @@ export async function runProvisioningCli(mode = process.argv[2] ?? "--validate-o
       minimumRemainingMs: mode === "--verify-disposable-review-authority-push" ?
         disposableReviewPushReserveMs : reviewActivationTransitionBudgetMs });
     const operation = mode === "--verify-disposable-review-authority-push" ? "push" : "delete";
+    const receiptPath = operation === "push" ? evidence.disposableCoordinate.pushReceiptPath :
+      evidence.disposableCoordinate.deleteReceiptPath;
+    const requestedReceiptPath = operation === "push" ?
+      process.env.ATRINIK_DISPOSABLE_REVIEW_PUSH_AUTHORIZATION_RECEIPT_OUTPUT_FILE :
+      process.env.ATRINIK_DISPOSABLE_REVIEW_DELETE_AUTHORIZATION_RECEIPT_OUTPUT_FILE;
+    if (requestedReceiptPath !== receiptPath)
+      fail("disposable review authorization receipt path drift");
     const receipt = { outcome: "workers-builds-disposable-review-write-authorized",
       mutation: false, operation, sourceSha, authorityProofDigest: proof.proof_digest,
       journalId: evidence.disposableCoordinate.journalId,
       branch: evidence.disposableCoordinate.branch, commit: evidence.disposableCoordinate.commit,
       checkedAt: validation.checkedAt, expiresAt: validation.expiresAt };
-    await writePrivateProof(operation === "push" ?
-      process.env.ATRINIK_DISPOSABLE_REVIEW_PUSH_AUTHORIZATION_RECEIPT_OUTPUT_FILE :
-      process.env.ATRINIK_DISPOSABLE_REVIEW_DELETE_AUTHORIZATION_RECEIPT_OUTPUT_FILE, receipt);
+    await writePrivateProof(receiptPath, receipt);
     process.stdout.write(`${JSON.stringify({ outcome: validation.outcome, mutation: false,
       sourceSha, expiresAt: validation.expiresAt, proof_digest: proof.proof_digest,
       authorizationReceiptDigest: digestJson(receipt) })}\n`);
