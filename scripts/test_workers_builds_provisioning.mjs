@@ -1133,6 +1133,11 @@ test("gates every credentialed mode on the private current-main proof", async ()
     "await credentialedSourceSha(mode, sourceShaLoader)");
   assert.notEqual(gateIndex, -1);
   assert.ok(gateIndex < implementation.indexOf('if (mode === "--readback")'));
+  const checkpointOptionIndex = implementation.indexOf(
+    "reviewActivationAuthorityCheckpoint = undefined");
+  assert.notEqual(checkpointOptionIndex, -1);
+  assert.notEqual(implementation.indexOf("reviewActivationAuthorityCheckpoint };",
+    checkpointOptionIndex), -1);
 });
 
 test("requires fresh owner proof for the unreadable shared repository connection", () => {
@@ -1157,6 +1162,10 @@ test("binds fresh owner evidence into one bounded review activation phase", () =
     captured + 24 * 60_000 + 59_000);
   assert.equal(validateReviewActivationAuthorityCheckpoint(proof, arguments_, checkpoint,
     captured + 29 * 60_000 + 59_500).proof_digest, proof.proof_digest);
+  assert.throws(() => validateReviewActivationAuthorityCheckpoint(proof, arguments_, checkpoint,
+    Date.parse(proof.expiresAt)), /stale, malformed, or cross-phase/u);
+  assert.throws(() => validateReviewActivationAuthorityCheckpoint(proof, arguments_, checkpoint,
+    Date.parse(checkpoint.checkedAt) - 1), /checkpoint is stale or malformed/u);
   assert.throws(() => validateReviewActivationAuthority(proof, arguments_,
     captured + 26 * 60_000), /stale, malformed, or cross-phase/u);
   assert.throws(() => validateReviewActivationAuthority({ ...proof, phase: "production" },
@@ -1997,6 +2006,16 @@ test("proves only the production trigger is inert before review activation", asy
   /staged activation proof/u);
   assert.throws(() => validateStagedProof(repeatedCapture, stagedProof,
     Date.parse(repeatedCapture.capturedAt)), /chronology did not advance/u);
+  const overlappingSweep = { ...laterSweep,
+    snapshotStartedAt: new Date(Date.parse(stagedProof.snapshotCompletedAt) - 1).toISOString() };
+  overlappingSweep.proof_digest = createHash("sha256").update(JSON.stringify({
+    state_digest: overlappingSweep.state_digest,
+    snapshotStartedAt: overlappingSweep.snapshotStartedAt,
+    snapshotCompletedAt: overlappingSweep.snapshotCompletedAt,
+    capturedAt: overlappingSweep.capturedAt,
+  })).digest("hex");
+  assert.throws(() => validateStagedProof(stagedProof, overlappingSweep,
+    Date.parse(overlappingSweep.capturedAt)), /chronology did not advance/u);
   assert.throws(() => validateStagedProof({ ...stagedProof, proof_digest: "0".repeat(64) },
     stagedProof), /staged activation proof/u);
   const staleProof = { ...stagedProof, capturedAt: "2026-08-15T00:00:00.000Z" };

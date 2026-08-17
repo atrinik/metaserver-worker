@@ -466,7 +466,7 @@ minimumRemainingMs = reviewActivationTransitionBudgetMs) {
       !isUtcTimestamp(proof.capturedAt) || !isUtcTimestamp(proof.expiresAt) ||
       !Number.isFinite(captured) || !Number.isFinite(expires) ||
       captured > now + 30_000 || expires - captured !== reviewActivationAuthorityLifetimeMs ||
-      expires - now < minimumRemainingMs ||
+      now >= expires || expires - now < minimumRemainingMs ||
       proof.planDigest !== digestJson(provisioningSetupPlan(production, review)) ||
       proof.productionContractDigest !== digestJson(production) ||
       proof.reviewContractDigest !== digestJson(review) ||
@@ -535,7 +535,7 @@ export function validateReviewActivationAuthorityCheckpoint(proof, arguments_, c
       checkpoint.outcome !== "workers-builds-review-activation-authority-valid" ||
       checkpoint.mutation !== false || checkpoint.phase !== "review-trigger-activation-and-proof" ||
       checkpoint.proof_digest !== proof?.proof_digest || !isUtcTimestamp(checkpoint.checkedAt) ||
-      !Number.isFinite(checked) || checked > now + 30_000)
+      !Number.isFinite(checked) || checked > now)
     fail("review activation authority checkpoint is stale or malformed");
   const start = validateReviewActivationAuthority(proof, arguments_, checked,
     reviewActivationTransitionBudgetMs);
@@ -1816,6 +1816,7 @@ export function validateStagedProof(proof, current, now = Date.now()) {
       { accountId: proof.accountId, sourceSha: proof.sourceSha }, now, 30_000);
   } catch { fail("staged activation proof is missing, stale, or mismatched"); }
   if (Date.parse(current.capturedAt) < Date.parse(proof.capturedAt) ||
+      Date.parse(current.snapshotStartedAt) < Date.parse(proof.snapshotCompletedAt) ||
       Date.parse(current.snapshotCompletedAt) < Date.parse(proof.snapshotCompletedAt))
     fail("staged activation proof chronology did not advance");
   return { outcome: "workers-builds-staged-activation-proof-valid", mutation: false,
@@ -2723,7 +2724,8 @@ async function validateStagedSnapshotDirectory({ snapshotDirectory, production, 
   accountId, tokenAuthorityProofs, sourceSha },
 { reviewActive = false, requireReviewResult = reviewActive,
   reviewResultProof = undefined, reviewActivationAuthorityProof = undefined,
-  reviewActivationAuthorityEvidence = undefined } = {}) {
+  reviewActivationAuthorityEvidence = undefined,
+  reviewActivationAuthorityCheckpoint = undefined } = {}) {
   const snapshotManifest = await loadSnapshot(snapshotDirectory, "snapshot-manifest.json");
   validateSnapshotManifest(snapshotManifest, { accountId, sourceSha, production, review });
   const core = production.workers[0];
@@ -2770,7 +2772,8 @@ async function validateStagedSnapshotDirectory({ snapshotDirectory, production, 
     accountTriggers: await loadSnapshot(snapshotDirectory, "account-triggers.json"),
     reviewBuildState, accountId, tokenAuthorityProofs, sourceSha,
     productionSentinelProof, snapshotManifest, reviewResultProof,
-    reviewActivationAuthorityProof, reviewActivationAuthorityEvidence };
+    reviewActivationAuthorityProof, reviewActivationAuthorityEvidence,
+    reviewActivationAuthorityCheckpoint };
   return reviewActive ? (requireReviewResult ? validateProductionActivationSnapshot(arguments_) :
     validateReviewActivationSnapshot(arguments_)) : validateStagedBuildsSnapshot(arguments_);
 }
