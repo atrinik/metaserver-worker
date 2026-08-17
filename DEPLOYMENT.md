@@ -201,10 +201,36 @@ either value directly. Point the command at a new absolute output directory,
 which the command creates as mode `0700` and fills with mode-`0600` raw
 provider responses:
 
+Immediately before every credentialed provisioning command, capture the exact
+current `main` ref through authenticated `gh api` outside the sandbox. Keep the
+raw response embedded in a new owner-only proof and never substitute a browser,
+anonymous HTTP request, or operator-authored SHA:
+
+```sh
+umask 077
+proof_tmp="$(mktemp /secure/path/current-main-proof.XXXXXX)"
+raw_tmp="$(mktemp /secure/path/current-main-ref.XXXXXX)"
+gh api --hostname github.com \
+  repos/atrinik/metaserver-worker/git/ref/heads/main >"${raw_tmp}"
+jq --arg capturedAt "$(date -u +%Y-%m-%dT%H:%M:%S.000Z)" \
+  '{source:"authenticated-gh-api-current-main-readback",
+    repository:{owner:"atrinik",name:"metaserver-worker"},
+    endpoint:"repos/atrinik/metaserver-worker/git/ref/heads/main",
+    ref:.ref,sha:.object.sha,capturedAt:$capturedAt,raw:.}' \
+  "${raw_tmp}" >"${proof_tmp}"
+chmod 0600 "${proof_tmp}"
+mv "${proof_tmp}" /secure/path/current-main-proof.json
+```
+
+Delete the temporary raw file after the owner-only proof is safely retained.
+The proof is valid for at most five minutes and must be regenerated after any
+`main` movement or retry outside that window.
+
 ```sh
 ATRINIK_CLOUDFLARE_ACCOUNT_ID_FILE=/secure/path/account-id \
 ATRINIK_WORKERS_BUILDS_API_TOKEN_FILE=/secure/path/builds-read-token \
 ATRINIK_PRODUCTION_BUILD_TOKEN_SECRET_FILE=/secure/path/production-build-token \
+ATRINIK_GITHUB_CURRENT_MAIN_PROOF_FILE=/secure/path/current-main-proof.json \
 ATRINIK_REVIEWED_SOURCE_SHA_FILE=/secure/path/reviewed-source-sha \
 ATRINIK_PROVIDER_SNAPSHOT_OUTPUT=/secure/new/provider-snapshot \
   npm run provision:workers-builds:readback
@@ -212,10 +238,12 @@ ATRINIK_PROVIDER_SNAPSHOT_OUTPUT=/secure/new/provider-snapshot \
 
 Every credentialed readback/verification command derives `HEAD` from the local
 checkout, requires an empty tracked and untracked worktree, compares it to the
-owner-only reviewed-SHA file, and then reads the public GitHub `main` ref
-directly. All three coordinates must be the same 40-hex SHA; a stale branch,
-dirty checkout, or self-consistent but wrong operator input fails before the
-provider proof is accepted.
+owner-only reviewed-SHA file, and validates the fresh authenticated `gh api`
+proof before reading any provider input or making any provider request. The
+local `HEAD`, reviewed SHA, top-level proof SHA, and embedded raw GitHub ref SHA
+must all be the same lowercase 40-hex value. A missing, stale, future,
+malformed, linked, over-permissive, wrong-repository, wrong-ref, mismatched, or
+anonymous proof fails before provider work.
 
 The readback covers the exact production and inert-review scripts, version and
 active-deployment and active-version/export inventories, script settings,
@@ -243,6 +271,7 @@ Before setup, prove the fresh no-trigger/no-Deploy-Hook/no-active-build boundary
 ```sh
 ATRINIK_PROVIDER_SNAPSHOT_DIRECTORY=/secure/provider-snapshot \
 ATRINIK_CLOUDFLARE_ACCOUNT_ID_FILE=/secure/path/account-id \
+ATRINIK_GITHUB_CURRENT_MAIN_PROOF_FILE=/secure/path/current-main-proof.json \
 ATRINIK_REVIEWED_SOURCE_SHA_FILE=/secure/path/reviewed-source-sha \
 ATRINIK_PRODUCTION_STAGING_SENTINEL_BRANCH_FILE=/secure/path/private-random-production-sentinel \
 ATRINIK_PRODUCTION_STAGING_SENTINEL_REFS_FILE=/secure/path/fresh-production-sentinel-proof.json \
@@ -300,6 +329,7 @@ provider's 5 KiB limit:
 
 ```sh
 ATRINIK_CLOUDFLARE_ACCOUNT_ID_FILE=/secure/path/account-id \
+ATRINIK_GITHUB_CURRENT_MAIN_PROOF_FILE=/secure/path/current-main-proof.json \
 ATRINIK_REVIEWED_SOURCE_SHA_FILE=/secure/path/reviewed-source-sha \
 ATRINIK_PROVIDER_SNAPSHOT_DIRECTORY=/secure/provider-snapshot \
 ATRINIK_PRODUCTION_CONFIG_OUTPUT=/secure/new/production-configs \
@@ -323,6 +353,7 @@ boundary before authorizing review activation:
 ```sh
 ATRINIK_PROVIDER_SNAPSHOT_DIRECTORY=/secure/staged-provider-snapshot \
 ATRINIK_CLOUDFLARE_ACCOUNT_ID_FILE=/secure/path/account-id \
+ATRINIK_GITHUB_CURRENT_MAIN_PROOF_FILE=/secure/path/current-main-proof.json \
 ATRINIK_REVIEWED_SOURCE_SHA_FILE=/secure/path/reviewed-source-sha \
 ATRINIK_PRODUCTION_STAGING_SENTINEL_BRANCH_FILE=/secure/path/private-random-production-sentinel \
 ATRINIK_PRODUCTION_STAGING_SENTINEL_REFS_FILE=/secure/path/fresh-production-sentinel-proof.json \
@@ -378,11 +409,13 @@ extra, duplicate, or reordered branch checks. Validate the separately captured c
 proofs with:
 
 ```sh
+ATRINIK_GITHUB_CURRENT_MAIN_PROOF_FILE=/secure/path/current-main-proof.json \
 ATRINIK_REVIEWED_SOURCE_SHA_FILE=/secure/path/reviewed-source-sha \
 ATRINIK_REVIEW_STAGING_ROOT_DIRECTORY_FILE=/secure/path/private-review-root \
 ATRINIK_REVIEW_STAGING_ROOT_CREATE_PROOF_FILE=/secure/path/create-root-proof.json \
   npm run provision:workers-builds:verify-review-staging-root-create
 
+ATRINIK_GITHUB_CURRENT_MAIN_PROOF_FILE=/secure/path/current-main-proof.json \
 ATRINIK_REVIEWED_SOURCE_SHA_FILE=/secure/path/reviewed-source-sha \
 ATRINIK_REVIEW_STAGING_ROOT_DIRECTORY_FILE=/secure/path/private-review-root \
 ATRINIK_REVIEW_STAGING_ROOT_ACTIVATION_PROOF_FILE=/secure/path/activation-root-proof.json \
@@ -464,6 +497,7 @@ After activation, take another new snapshot and prove the configured boundary:
 ```sh
 ATRINIK_PROVIDER_SNAPSHOT_DIRECTORY=/secure/post-setup-provider-snapshot \
 ATRINIK_CLOUDFLARE_ACCOUNT_ID_FILE=/secure/path/account-id \
+ATRINIK_GITHUB_CURRENT_MAIN_PROOF_FILE=/secure/path/current-main-proof.json \
 ATRINIK_REVIEWED_SOURCE_SHA_FILE=/secure/path/reviewed-source-sha \
 ATRINIK_PRODUCTION_BUILD_TOKEN_PERMISSION_PROOF_FILE=/secure/path/production-token-policy.json \
 ATRINIK_REVIEW_BUILD_TOKEN_PERMISSION_PROOF_FILE=/secure/path/review-token-policy.json \
