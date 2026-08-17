@@ -18,6 +18,7 @@ import {
   initialBootstrapPredecessorConfiguration,
   issueDisposableReviewAuthority,
   issueReviewActivationAuthority,
+  issueReviewTokenRotationAuthority,
   loadSnapshot,
   materializeProductionConfigurations,
   normalizeBuildsListPage,
@@ -25,6 +26,7 @@ import {
   normalizeTriggerListPage,
   productionEnvironmentSpec,
   productionTriggerSpec,
+  reviewBuildTokenNames,
   publicStagedProofSummary,
   provisioningDryRunSummary,
   provisioningSetupPlan,
@@ -50,6 +52,9 @@ import {
   validateReviewActivationSnapshot,
   validateReviewActivationAuthority,
   validateReviewActivationAuthorityCheckpoint,
+  validateReplacementReviewTokenAuthorityProof,
+  validateReviewTokenRotationReadback,
+  validateReviewTokenRotationAuthority,
   validateReviewStagedEnvironmentSnapshotDirectory,
   validateReviewStagedEnvironmentReadback,
   validateReviewStagingRootAbsence,
@@ -175,7 +180,7 @@ function buildTokenInventory() {
   return envelope([
     { build_token_name: "Atrinik metaserver production", build_token_uuid: resourceUuid,
       cloudflare_token_id: "production-token-id", owner_type: "user" },
-    { build_token_name: "Atrinik metaserver review check", build_token_uuid: reviewTokenUuid,
+    { build_token_name: reviewBuildTokenNames.current, build_token_uuid: reviewTokenUuid,
       cloudflare_token_id: "review-token-id", owner_type: "user" },
   ]);
 }
@@ -293,6 +298,7 @@ function disposableReviewAuthorityFixture(now = Date.now(),
   runDirectory = "/secure/issue-66/disposable-proof") {
   const currentSourceSha = "a".repeat(40);
   const predecessorSourceSha = "b".repeat(40);
+  const replacementReviewTokenUuid = "89898989-8989-4989-8989-898989898989";
   const setupSourceSha = "815076d3d69d358e3b265025d94a9151b9542b96";
   const setupPlanDigest = "856f64dc2027a81ed5fcd7d85b687680e01c950400dbf8965ea40c076b09eb34";
   const activationPlanDigest = "fb95bcc4e693b6f933dc1bb788b736100dbd6a24c5b601e3533a03097d091892";
@@ -320,7 +326,7 @@ function disposableReviewAuthorityFixture(now = Date.now(),
     repositoryConnectionUuid: repositoryConnection,
     productionEnvironmentDigest: "6".repeat(64), reviewEnvironmentDigest: "7".repeat(64),
   };
-  const currentReviewActiveProof = reviewActiveProof(new Date(now - 1_000).toISOString(),
+  const predecessorReviewActiveProof = reviewActiveProof(new Date(now - 3_000).toISOString(),
     "e".repeat(64), currentSourceSha, liveIdentities);
   const setupPairs = [
     ["preflight-proven", "execution-preflight"], ["setup-authorized"],
@@ -481,18 +487,123 @@ function disposableReviewAuthorityFixture(now = Date.now(),
       `disposable-journal:${journalPath}:${executorSha256}`).digest("hex"),
     journalInitialRecordCount: 0,
     capturedAt: new Date(now - 1_500).toISOString() };
-  const evidence = {
-    reviewActivationProof, reviewActivationJournal, currentReviewActiveProof,
-    inertSetupJournal: setupRecords, inertSetupResults, disposableCoordinate,
+  const replacementTokenId = "replacement-review-token-id";
+  const replacementTokenAuthorityProof = {
+    ...configured.tokenAuthorityProofs.find(({ kind }) => kind === "review"),
+    kind: "review-replacement", tokenId: replacementTokenId,
+    capturedAt: new Date(now - 3_200).toISOString(),
+  };
+  const rotationArguments = { production, review, accountId, sourceSha: currentSourceSha,
+    reviewActivationProof, reviewActivationJournal, inertSetupJournal: setupRecords,
+    inertSetupResults, currentReviewActiveProof: predecessorReviewActiveProof,
     repositoryConnectionProof: boundary.repositoryConnectionProof,
     productionSentinelProof: boundary.productionSentinelProof,
-    tokenAuthorityProofs: configured.tokenAuthorityProofs,
+    predecessorTokenAuthorityProofs: configured.tokenAuthorityProofs,
+    replacementTokenAuthorityProof, replacementTokenId,
+    buildUsageProof: configured.reviewBuildState.buildUsageProof,
+    tokenRows: { production: { build_token_uuid: productionBuildToken,
+      cloudflare_token_id: "production-token-id" }, review: {
+      build_token_uuid: reviewTokenUuid, cloudflare_token_id: "review-token-id" } },
+  };
+  const reviewTokenRotationAuthorityProof = issueReviewTokenRotationAuthority(rotationArguments,
+    now - 2_500);
+  const reviewTokenRotationProof = {
+    outcome: "workers-builds-review-token-rotation-complete-valid", mutation: false,
+    phase: "complete", accountId, sourceSha: currentSourceSha,
+    capturedAt: new Date(now - 2_300).toISOString(),
+    productionTriggerUuid: productionTrigger, reviewTriggerUuid: reviewTrigger,
+    productionBuildTokenUuid: productionBuildToken,
+    predecessorReviewTokenUuid: reviewTokenUuid,
+    replacementReviewTokenUuid,
+    proof_digest: "9".repeat(64),
+  };
+  const rotationPairs = [
+    ["attempt-started", "review-token-rotation"], ["rotation-authorized"],
+    ["review-token-rotation-authority-checked", "replacement-review-build-token"],
+    ["mutation-intent", "replacement-review-build-token"],
+    ["provider-response-classified", "replacement-review-build-token"],
+    ["mutation-bound", "replacement-review-build-token"],
+    ["review-token-rotation-authority-checked", "repoint-inert-production-trigger"],
+    ["mutation-intent", "repoint-inert-production-trigger"],
+    ["provider-response-classified", "repoint-inert-production-trigger"],
+    ["mutation-bound", "repoint-inert-production-trigger"],
+    ["provider-proof-bound", "prove-production-repointed-review-still-predecessor"],
+    ["review-token-rotation-authority-checked", "repoint-final-review-trigger"],
+    ["mutation-intent", "repoint-final-review-trigger"],
+    ["provider-response-classified", "repoint-final-review-trigger"],
+    ["mutation-bound", "repoint-final-review-trigger"],
+    ["provider-proof-bound", "prove-superseded-wrapper-unreferenced"],
+    ["review-token-rotation-authority-checked", "retire-superseded-review-build-token"],
+    ["mutation-intent", "retire-superseded-review-build-token"],
+    ["provider-response-classified", "retire-superseded-review-build-token"],
+    ["mutation-bound", "retire-superseded-review-build-token"],
+    ["provider-proof-bound", "review-token-rotation-readback"],
+    ["review-token-rotation-complete"],
+  ];
+  const resourceForRotation = (operation) => operation === "replacement-review-build-token" ?
+    replacementReviewTokenUuid : operation === "repoint-inert-production-trigger" ?
+      productionTrigger : operation === "repoint-final-review-trigger" ? reviewTrigger :
+        reviewTokenUuid;
+  const pathForRotation = (operation) => operation === "replacement-review-build-token" ?
+    "/builds/tokens" : operation === "repoint-inert-production-trigger" ?
+      `/builds/triggers/${productionTrigger}` : operation === "repoint-final-review-trigger" ?
+        `/builds/triggers/${reviewTrigger}` : `/builds/tokens/${reviewTokenUuid}`;
+  const reviewTokenRotationJournal = rotationPairs.map(([event, operation], index) => {
+    const payload = { event, ...(operation ? { operation } : {}), attempt: 1,
+      at: new Date(now - 2_200 + index).toISOString() };
+    if (event === "rotation-authorized") payload.authorityProofDigest =
+      reviewTokenRotationAuthorityProof.proof_digest;
+    if (event === "review-token-rotation-authority-checked") payload.proofDigest =
+      reviewTokenRotationAuthorityProof.proof_digest;
+    if (event === "mutation-intent") Object.assign(payload, {
+      method: operation === "replacement-review-build-token" ? "POST" :
+        operation === "retire-superseded-review-build-token" ? "DELETE" : "PATCH",
+      path: pathForRotation(operation),
+      requestDigestSha256: createHash("sha256").update(operation).digest("hex"),
+    });
+    if (event === "provider-response-classified") Object.assign(payload, {
+      outcome: "explicit-success", ...(operation === "replacement-review-build-token" ?
+        { resourceUuid: replacementReviewTokenUuid } : {}),
+    });
+    if (event === "mutation-bound") Object.assign(payload, {
+      resourceUuid: resourceForRotation(operation), providerResponseExplicitSuccess: true,
+      requestDigestSha256: createHash("sha256").update(operation).digest("hex"),
+      readbackDigestSha256: createHash("sha256").update(`readback:${operation}`).digest("hex"),
+    });
+    if (event === "provider-proof-bound") Object.assign(payload, {
+      proofDigest: operation === "review-token-rotation-readback" ?
+        reviewTokenRotationProof.proof_digest : createHash("sha256").update(operation).digest("hex"),
+      ...(operation === "review-token-rotation-readback" ? {
+        proofFileSha256: createHash("sha256").update(JSON.stringify(reviewTokenRotationProof))
+          .digest("hex") } : {}),
+    });
+    if (event === "review-token-rotation-complete") Object.assign(payload, {
+      proofDigest: reviewTokenRotationProof.proof_digest, productionTriggerUuid: productionTrigger,
+      reviewTriggerUuid: reviewTrigger, predecessorReviewTokenUuid: reviewTokenUuid,
+      replacementReviewTokenUuid, productionActivation: false, migration0010: false,
+      initialProductionBuild: false,
+    });
+    return journalRecord(payload);
+  });
+  const rotatedIdentities = { ...liveIdentities, reviewBuildTokenUuid: replacementReviewTokenUuid };
+  const currentReviewActiveProof = reviewActiveProof(new Date(now - 1_000).toISOString(),
+    "f".repeat(64), currentSourceSha, rotatedIdentities);
+  const tokenAuthorityProofs = configured.tokenAuthorityProofs.map((proof) =>
+    proof.kind === "review" ? { ...replacementTokenAuthorityProof, kind: "review" } : proof);
+  const evidence = {
+    reviewActivationProof, reviewActivationJournal, currentReviewActiveProof,
+    predecessorReviewActiveProof,
+    inertSetupJournal: setupRecords, inertSetupResults, disposableCoordinate,
+    reviewTokenRotationProof, reviewTokenRotationJournal, reviewTokenRotationAuthorityProof,
+    repositoryConnectionProof: boundary.repositoryConnectionProof,
+    productionSentinelProof: boundary.productionSentinelProof,
+    tokenAuthorityProofs, predecessorTokenAuthorityProofs: configured.tokenAuthorityProofs,
     buildUsageProof: configured.reviewBuildState.buildUsageProof,
   };
   const proof = issueDisposableReviewAuthority({ production, review, accountId,
     sourceSha: currentSourceSha, ...evidence, tokenRows: {
       production: { cloudflare_token_id: "production-token-id" },
-      review: { cloudflare_token_id: "review-token-id" },
+      review: { cloudflare_token_id: replacementTokenId },
     } }, now);
   return { proof, evidence };
 }
@@ -1394,6 +1505,11 @@ test("gates every credentialed mode on the private current-main proof", async ()
     "--verify-review-activation",
     "--verify-review-activation-authority",
     "--verify-review-activation-authority-proof",
+    "--verify-review-token-rotation-authority",
+    "--verify-review-token-rotation-authority-proof",
+    "--verify-review-token-rotation-complete",
+    "--verify-review-token-rotation-intermediate",
+    "--verify-review-token-rotation-unreferenced",
     "--verify-review-staged-environment",
     "--verify-review-staging-root-activation",
     "--verify-review-staging-root-create",
@@ -1561,6 +1677,10 @@ test("renews only a bounded disposable proof authority from exact review-active 
   corruptJournal.reviewActivationJournal[1].proofDigest = "0".repeat(64);
   assert.throws(() => validateDisposableReviewAuthority(proof, corruptJournal, now),
     /checksum drift|terminal provenance drift/u);
+  const corruptRotation = structuredClone(arguments_);
+  corruptRotation.reviewTokenRotationJournal[1].authorityProofDigest = "0".repeat(64);
+  assert.throws(() => validateDisposableReviewAuthority(proof, corruptRotation, now),
+    /checksum drift|terminal provenance drift/u);
   const exhaustedUsage = structuredClone(arguments_);
   exhaustedUsage.buildUsageProof.monthlyMinutesUsed = 780;
   assert.throws(() => validateDisposableReviewAuthority(proof, exhaustedUsage, now),
@@ -1580,15 +1700,86 @@ test("renews only a bounded disposable proof authority from exact review-active 
   assert.throws(() => issueDisposableReviewAuthority({ production, review, accountId,
     sourceSha: "a".repeat(40), ...evidence, currentReviewActiveProof: wrongIdentity,
     tokenRows: { production: { cloudflare_token_id: "production-token-id" },
-      review: { cloudflare_token_id: "review-token-id" } } }, now), /journal\/live identity drift/u);
+      review: { cloudflare_token_id: "replacement-review-token-id" } } }, now),
+  /journal\/live identity drift/u);
   const staleCurrent = reviewActiveProof(new Date(now - 31_000).toISOString(),
     evidence.currentReviewActiveProof.state_digest, "a".repeat(40),
     evidence.currentReviewActiveProof.liveIdentities);
   assert.throws(() => issueDisposableReviewAuthority({ production, review, accountId,
     sourceSha: "a".repeat(40), ...evidence, currentReviewActiveProof: staleCurrent,
     tokenRows: { production: { cloudflare_token_id: "production-token-id" },
-      review: { cloudflare_token_id: "review-token-id" } } }, now),
+      review: { cloudflare_token_id: "replacement-review-token-id" } } }, now),
   /staged proof drift|live proof drift/u);
+});
+
+test("issues one journal-bound review-token rotation authority", () => {
+  const now = Date.now();
+  const { evidence: disposable } = disposableReviewAuthorityFixture(now);
+  const replacementTokenId = "replacement-review-token-id";
+  const replacementTokenAuthorityProof = {
+    kind: "review-replacement", source: "cloudflare-owner-token-policy-readback",
+    capturedAt: new Date(now - 1_000).toISOString(),
+    modifiedOn: new Date(now - 2_000).toISOString(), accountId,
+    sourceSha: "a".repeat(40), tokenId: replacementTokenId,
+    userPermissions: ["User Details:Read"], accountPermissions: [], accountResources: [],
+    zonePermissions: [], zoneResources: [],
+  };
+  const evidence = {
+    reviewActivationProof: disposable.reviewActivationProof,
+    reviewActivationJournal: disposable.reviewActivationJournal,
+    inertSetupJournal: disposable.inertSetupJournal,
+    inertSetupResults: disposable.inertSetupResults,
+    currentReviewActiveProof: disposable.predecessorReviewActiveProof,
+    repositoryConnectionProof: disposable.repositoryConnectionProof,
+    productionSentinelProof: disposable.productionSentinelProof,
+    predecessorTokenAuthorityProofs: disposable.predecessorTokenAuthorityProofs,
+    replacementTokenAuthorityProof, replacementTokenId,
+    buildUsageProof: disposable.buildUsageProof,
+  };
+  const tokenRows = {
+    production: { build_token_uuid:
+      evidence.currentReviewActiveProof.liveIdentities.productionBuildTokenUuid,
+    cloudflare_token_id: "production-token-id" },
+    review: { build_token_uuid:
+      evidence.currentReviewActiveProof.liveIdentities.reviewBuildTokenUuid,
+    cloudflare_token_id: "review-token-id" },
+  };
+  const proof = issueReviewTokenRotationAuthority({ production, review, accountId,
+    sourceSha: "a".repeat(40), ...evidence, tokenRows }, now);
+  const arguments_ = { production, review, accountId, sourceSha: "a".repeat(40), ...evidence,
+    tokenRows };
+  assert.equal(proof.phase, "review-token-rotation");
+  assert.equal(proof.replacementToken.name, reviewBuildTokenNames.current);
+  assert.equal(proof.journalIdentities.predecessorReviewBuildTokenUuid, reviewTokenUuid);
+  assert.equal(Date.parse(proof.expiresAt) - Date.parse(proof.capturedAt), 30 * 60_000);
+  assert.equal(validateReviewTokenRotationAuthority(proof, arguments_, now + 20 * 60_000)
+    .proof_digest, proof.proof_digest);
+  assert.throws(() => validateReviewTokenRotationAuthority(proof, arguments_,
+    now + 26 * 60_000), /stale/u);
+  const wrongPermission = structuredClone(arguments_);
+  wrongPermission.replacementTokenAuthorityProof.accountPermissions.push("Workers Scripts:Read");
+  assert.throws(() => validateReviewTokenRotationAuthority(proof, wrongPermission, now),
+    /permission proof drift/u);
+  const reusedUnderlying = structuredClone(arguments_);
+  reusedUnderlying.replacementTokenId = "review-token-id";
+  reusedUnderlying.replacementTokenAuthorityProof.tokenId = "review-token-id";
+  assert.throws(() => issueReviewTokenRotationAuthority({ ...reusedUnderlying }, now),
+    /journal\/live\/token identity drift/u);
+  const wrongTrigger = structuredClone(arguments_);
+  wrongTrigger.currentReviewActiveProof.liveIdentities.reviewTriggerUuid =
+    "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
+  wrongTrigger.currentReviewActiveProof.proof_digest = createHash("sha256")
+    .update(JSON.stringify({ state_digest: wrongTrigger.currentReviewActiveProof.state_digest,
+      snapshotStartedAt: wrongTrigger.currentReviewActiveProof.snapshotStartedAt,
+      snapshotCompletedAt: wrongTrigger.currentReviewActiveProof.snapshotCompletedAt,
+      capturedAt: wrongTrigger.currentReviewActiveProof.capturedAt,
+      liveIdentities: wrongTrigger.currentReviewActiveProof.liveIdentities }))
+    .digest("hex");
+  assert.throws(() => issueReviewTokenRotationAuthority({ ...wrongTrigger }, now),
+    /journal\/live\/token identity drift/u);
+  const widened = { ...proof, allowedWrites: [...proof.allowedWrites, "manual-build"] };
+  assert.throws(() => validateReviewTokenRotationAuthority(widened, arguments_, now),
+    /malformed or cross-phase/u);
 });
 
 test("dispatches disposable authority verification through exact private evidence", async () => {
@@ -1624,6 +1815,12 @@ test("dispatches disposable authority verification through exact private evidenc
         evidence.disposableCoordinate),
       ATRINIK_CURRENT_REVIEW_ACTIVE_PROOF_FILE: await json("current-proof.json",
         evidence.currentReviewActiveProof),
+      ATRINIK_REVIEW_TOKEN_ROTATION_COMPLETE_PROOF_FILE: await json("rotation-proof.json",
+        evidence.reviewTokenRotationProof),
+      ATRINIK_REVIEW_TOKEN_ROTATION_JOURNAL_FILE: await json("rotation-journal.jsonl",
+        evidence.reviewTokenRotationJournal, true),
+      ATRINIK_REVIEW_TOKEN_ROTATION_AUTHORITY_PROOF_FILE: await json("rotation-authority.json",
+        evidence.reviewTokenRotationAuthorityProof),
       ATRINIK_REPOSITORY_CONNECTION_OWNER_PROOF_FILE: await json("owner-proof.json",
         evidence.repositoryConnectionProof),
       ATRINIK_PRODUCTION_STAGING_SENTINEL_BRANCH_FILE: await text("sentinel",
@@ -2035,6 +2232,8 @@ test("plans inert setup, separately gated activation, and ordered rollback", () 
     "sentinel-recheck-before-production-environment.proof_digest");
   assert.equal(productionStaged.request.body.build_token_uuid.resultReference,
     "review-build-token.build_token_uuid");
+  assert.equal(plan.setupOperations.find(({ id }) => id === "review-build-token")
+    .request.body.build_token_name, reviewBuildTokenNames.current);
   assert.equal(plan.setupOperations.some(({ id }) => id === "review-trigger-staged"), false);
   const reviewOperation = (id) => plan.reviewActivation.operations.find(
     (operation) => operation.id === id);
@@ -2088,6 +2287,59 @@ test("plans inert setup, separately gated activation, and ordered rollback", () 
     "review-root-recheck-before-activation.proof_digest");
   assert.equal(reviewActivate.precondition.reviewEnvironmentProof.resultReference,
     "review-environment-readback-before-activation.proof_digest");
+  const rotationOperation = (id) => plan.reviewTokenRotation.operations.find(
+    (operation) => operation.id === id);
+  const rotationAuthority = rotationOperation("review-token-rotation-authority");
+  const replacementToken = rotationOperation("replacement-review-build-token");
+  const productionRepoint = rotationOperation("repoint-inert-production-trigger");
+  const intermediate = rotationOperation(
+    "prove-production-repointed-review-still-predecessor");
+  const reviewRepoint = rotationOperation("repoint-final-review-trigger");
+  const unreferenced = rotationOperation("prove-superseded-wrapper-unreferenced");
+  const retire = rotationOperation("retire-superseded-review-build-token");
+  const rotationReadback = rotationOperation("review-token-rotation-readback");
+  assert.equal(rotationAuthority.command,
+    "npm run provision:workers-builds:verify-review-token-rotation-authority");
+  assert.equal(replacementToken.request.method, "POST");
+  assert.equal(replacementToken.request.path, "/builds/tokens");
+  assert.equal(replacementToken.request.body.build_token_name, reviewBuildTokenNames.current);
+  assert.equal(productionRepoint.request.method, "PATCH");
+  assert.equal(productionRepoint.request.path.resultReference,
+    "review-token-rotation-authority.production_trigger_uuid");
+  assert.deepEqual(productionRepoint.request.body.branch_includes,
+    [{ privateFileEnvironment: "ATRINIK_PRODUCTION_STAGING_SENTINEL_BRANCH_FILE" }]);
+  assert.equal(productionRepoint.request.body.build_token_uuid.resultReference,
+    "replacement-review-build-token.build_token_uuid");
+  assert.equal(intermediate.command,
+    "npm run provision:workers-builds:verify-review-token-rotation-intermediate");
+  assert.equal(reviewRepoint.precondition.intermediateProof.resultReference,
+    "prove-production-repointed-review-still-predecessor.proof_digest");
+  assert.equal(reviewRepoint.request.body.root_directory, "/deployment/review-check");
+  assert.equal(reviewRepoint.request.body.build_token_uuid.resultReference,
+    "replacement-review-build-token.build_token_uuid");
+  assert.equal(unreferenced.command,
+    "npm run provision:workers-builds:verify-review-token-rotation-unreferenced");
+  assert.equal(retire.precondition.unreferencedProof.resultReference,
+    "prove-superseded-wrapper-unreferenced.proof_digest");
+  assert.equal(retire.request.method, "DELETE");
+  assert.equal(retire.request.path.resultReference,
+    "review-token-rotation-authority.predecessor_review_build_token_uuid");
+  assert.equal(rotationReadback.command,
+    "npm run provision:workers-builds:verify-review-token-rotation-complete");
+  assert.equal(plan.disposableProof.authorityOperation.precondition
+    .reviewTokenRotationProof.resultReference,
+  "review-token-rotation-readback.proof_digest");
+  assert.equal(plan.disposableProof.precondition.reviewTokenRotationProof.resultReference,
+    "review-token-rotation-readback.proof_digest");
+  assert.deepEqual(plan.gates, ["provider-setup-authorization",
+    "review-trigger-activation-and-proof", "review-token-rotation",
+    "production-trigger-activation", "migration-0010",
+    "initial-automatic-production-proof"]);
+  assert.ok(plan.reviewTokenRotation.forbidden.includes("production-trigger-activation"));
+  assert.ok(plan.reviewTokenRotation.rollbackOperations.findIndex(({ id }) =>
+    id === "rotation-prove-predecessor-restored") <
+    plan.reviewTokenRotation.rollbackOperations.findIndex(({ id }) =>
+      id === "rotation-delete-replacement-wrapper"));
   assert.deepEqual(plan.productionActivation.request.body.branch_includes, ["main"]);
   assert.equal(plan.productionActivation.request.body.build_token_uuid.resultReference,
     "production-build-token.build_token_uuid");
@@ -2393,10 +2645,107 @@ test("proves one serialized production trigger and one isolated review trigger",
     { ...buildTokenInventory().result[0], build_token_uuid: reviewTokenUuid },
   ]), [
     { uuid: resourceUuid, name: "Atrinik metaserver production" },
-    { uuid: reviewTokenUuid, name: "Atrinik metaserver review check" },
+    { uuid: reviewTokenUuid, name: reviewBuildTokenNames.current },
   ]), /missing or ambiguous/u);
   assert.throws(() => validateNoDeployHooks(envelope([{ deploy_hook_uuid: resourceUuid }]),
     "production"), /Deploy Hook/u);
+});
+
+test("pins every journaled review-token rotation phase and rejects field drift", () => {
+  const productionTriggerUuid = "11111111-1111-4111-8111-111111111111";
+  const reviewTriggerIdentity = "22222222-2222-4222-8222-222222222222";
+  const predecessorReviewTokenUuid = "33333333-3333-4333-8333-333333333333";
+  const productionBuildTokenUuid = "44444444-4444-4444-8444-444444444444";
+  const repositoryConnectionUuid = "55555555-5555-4555-8555-555555555555";
+  const replacementReviewTokenUuid = "66666666-6666-4666-8666-666666666666";
+  const sentinel = `review-build-only-sentinel-${"a".repeat(32)}`;
+  const values = Object.fromEntries(Object.values(production.protectedInputs)
+    .map((name) => [name, `${name}-value`]));
+  const productionEnvironment = productionEnvironmentSpec(production, values);
+  for (const name of Object.values(production.protectedInputs))
+    productionEnvironment[name].value = null;
+  const reviewEnvironment = automaticReviewEnvironmentSpec(review);
+  const token = (name, uuid, tokenId) => ({ build_token_name: name, build_token_uuid: uuid,
+    cloudflare_token_id: tokenId, owner_type: "user" });
+  const productionToken = token("Atrinik metaserver production", productionBuildTokenUuid,
+    "production-token-id");
+  const predecessorToken = token(reviewBuildTokenNames.predecessor,
+    predecessorReviewTokenUuid, "predecessor-review-token-id");
+  const replacementToken = token(reviewBuildTokenNames.current,
+    replacementReviewTokenUuid, "replacement-review-token-id");
+  const trigger = (reviewRole, tokenUuid) => {
+    const spec = reviewRole ? automaticReviewTriggerSpec(review, {
+      externalScriptId: scriptTag, repositoryConnectionUuid, buildTokenUuid: tokenUuid,
+    }) : productionTriggerSpec(production, {
+      externalScriptId: scriptTag, repositoryConnectionUuid, buildTokenUuid: tokenUuid,
+    });
+    if (!reviewRole) spec.branch_includes = [sentinel];
+    const result = withConnection(spec);
+    result.trigger_uuid = reviewRole ? reviewTriggerIdentity : productionTriggerUuid;
+    return result;
+  };
+  const validate = (phase, productionTokenUuid_, reviewTokenUuid_, tokenRows) =>
+    validateReviewTokenRotationReadback({ production, review, phase,
+      productionTrigger: trigger(false, productionTokenUuid_),
+      reviewTrigger: trigger(true, reviewTokenUuid_),
+      productionEnvironment: envelope(productionEnvironment),
+      reviewEnvironment: envelope(reviewEnvironment), buildTokens: envelope(tokenRows),
+      accountTriggers: envelope([trigger(false, productionTokenUuid_),
+        trigger(true, reviewTokenUuid_)]), productionScriptTag: scriptTag,
+      productionSentinel: sentinel, productionTriggerUuid,
+      reviewTriggerUuid: reviewTriggerIdentity, predecessorReviewTokenUuid,
+      replacementReviewTokenUuid: phase === "predecessor" ? undefined :
+        replacementReviewTokenUuid, repositoryConnectionUuid });
+  assert.equal(validate("predecessor", predecessorReviewTokenUuid,
+    predecessorReviewTokenUuid, [productionToken, predecessorToken]).phase, "predecessor");
+  assert.equal(validate("production-repointed", replacementReviewTokenUuid,
+    predecessorReviewTokenUuid, [productionToken, predecessorToken, replacementToken]).phase,
+  "production-repointed");
+  assert.equal(validate("old-wrapper-unreferenced", replacementReviewTokenUuid,
+    replacementReviewTokenUuid, [productionToken, predecessorToken, replacementToken]).phase,
+  "old-wrapper-unreferenced");
+  assert.equal(validate("complete", replacementReviewTokenUuid, replacementReviewTokenUuid,
+    [productionToken, replacementToken]).phase, "complete");
+  assert.throws(() => validate("complete", replacementReviewTokenUuid,
+    predecessorReviewTokenUuid, [productionToken, replacementToken]), /drift/u);
+  assert.throws(() => validate("old-wrapper-unreferenced", replacementReviewTokenUuid,
+    replacementReviewTokenUuid, [productionToken, predecessorToken, replacementToken,
+      token("foreign", "77777777-7777-4777-8777-777777777777", "foreign-token-id")]),
+  /wrapper inventory drift/u);
+  const wrongProduction = trigger(false, replacementReviewTokenUuid);
+  wrongProduction.build_command = "npm run altered";
+  assert.throws(() => validateReviewTokenRotationReadback({ production, review,
+    phase: "complete", productionTrigger: wrongProduction,
+    reviewTrigger: trigger(true, replacementReviewTokenUuid),
+    productionEnvironment: envelope(productionEnvironment),
+    reviewEnvironment: envelope(reviewEnvironment),
+    buildTokens: envelope([productionToken, replacementToken]),
+    accountTriggers: envelope([wrongProduction, trigger(true, replacementReviewTokenUuid)]),
+    productionScriptTag: scriptTag, productionSentinel: sentinel, productionTriggerUuid,
+    reviewTriggerUuid: reviewTriggerIdentity, predecessorReviewTokenUuid,
+    replacementReviewTokenUuid, repositoryConnectionUuid }), /drift/u);
+
+  const now = Date.now();
+  const replacementProof = { kind: "review-replacement",
+    source: "cloudflare-owner-token-policy-readback", capturedAt: new Date(now).toISOString(),
+    modifiedOn: new Date(now - 1_000).toISOString(), accountId, sourceSha: "a".repeat(40),
+    tokenId: "replacement-review-token-id", userPermissions: ["User Details:Read"],
+    accountPermissions: [], accountResources: [], zonePermissions: [], zoneResources: [] };
+  assert.equal(validateReplacementReviewTokenAuthorityProof({ review, accountId,
+    proof: replacementProof, tokenId: replacementProof.tokenId,
+    sourceSha: replacementProof.sourceSha }, now).kind, "review-replacement");
+  for (const mutate of [
+    (value) => value.accountPermissions.push("Workers Scripts:Read"),
+    (value) => { value.kind = "review"; },
+    (value) => { value.tokenId = "predecessor-review-token-id"; },
+    (value) => { value.modifiedOn = "2999-01-01T00:00:00.000Z"; },
+  ]) {
+    const changed = structuredClone(replacementProof);
+    mutate(changed);
+    assert.throws(() => validateReplacementReviewTokenAuthorityProof({ review, accountId,
+      proof: changed, tokenId: replacementProof.tokenId,
+      sourceSha: replacementProof.sourceSha }, now));
+  }
 });
 
 test("proves only the production trigger is inert before review activation", async () => {
