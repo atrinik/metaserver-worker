@@ -585,7 +585,14 @@ test("cryptographically binds the disposable commit, executor, and empty journal
         `disposable-journal:${journalPath}:${executorSha256}`).digest("hex"),
       journalInitialRecordCount: 0, capturedAt: new Date().toISOString(),
     };
-    assert.equal((await validateDisposableCoordinatePreparation(coordinate)).commit, commit);
+    const previousGitDirectory = process.env.GIT_DIR;
+    process.env.GIT_DIR = resolve(temporary, "hostile-alternate-git-dir");
+    try {
+      assert.equal((await validateDisposableCoordinatePreparation(coordinate)).commit, commit);
+    } finally {
+      if (previousGitDirectory === undefined) delete process.env.GIT_DIR;
+      else process.env.GIT_DIR = previousGitDirectory;
+    }
     await writeFile(journalPath, "started\n", { mode: 0o600 });
     await assert.rejects(validateDisposableCoordinatePreparation(coordinate),
       /executor or empty journal identity drift/u);
