@@ -44,6 +44,7 @@ import {
   validateProductionActivationSnapshot,
   validateReviewActivationSnapshot,
   validateReviewActivationAuthority,
+  validateReviewActivationAuthorityCheckpoint,
   validateReviewStagedEnvironmentSnapshotDirectory,
   validateReviewStagedEnvironmentReadback,
   validateReviewStagingRootAbsence,
@@ -240,11 +241,15 @@ function configuredBoundary(productionSpec, reviewSpec) {
 
 function reviewActivationAuthorityFixture(stagedProof = null) {
   const stagedCapturedAt = new Date().toISOString();
+  const stateDigest = "e".repeat(64);
   stagedProof ??= {
     outcome: "workers-builds-staged-snapshot-valid", mutation: false, accountId,
     sourceSha: "a".repeat(40), stagedTriggerCount: 1, capturedAt: stagedCapturedAt,
     snapshotStartedAt: stagedCapturedAt, snapshotCompletedAt: stagedCapturedAt,
-    proof_digest: "f".repeat(64),
+    state_digest: stateDigest,
+    proof_digest: createHash("sha256").update(JSON.stringify({ state_digest: stateDigest,
+      snapshotStartedAt: stagedCapturedAt, snapshotCompletedAt: stagedCapturedAt,
+      capturedAt: stagedCapturedAt })).digest("hex"),
   };
   const boundary = freshBoundary();
   const configured = configuredBoundary({}, {});
@@ -1148,6 +1153,10 @@ test("binds fresh owner evidence into one bounded review activation phase", () =
     ...evidence };
   assert.equal(validateReviewActivationAuthority(proof, arguments_, captured + 10 * 60_000)
     .proof_digest, proof.proof_digest);
+  const checkpoint = validateReviewActivationAuthority(proof, arguments_,
+    captured + 24 * 60_000 + 59_000);
+  assert.equal(validateReviewActivationAuthorityCheckpoint(proof, arguments_, checkpoint,
+    captured + 29 * 60_000).proof_digest, proof.proof_digest);
   assert.throws(() => validateReviewActivationAuthority(proof, arguments_,
     captured + 26 * 60_000), /stale, malformed, or cross-phase/u);
   assert.throws(() => validateReviewActivationAuthority({ ...proof, phase: "production" },
@@ -1963,6 +1972,31 @@ test("proves only the production trigger is inert before review activation", () 
   assert.equal(Object.hasOwn(publicStagedProofSummary(stagedProof), "accountId"), false);
   assert.equal(validateStagedProof(stagedProof, stagedProof).proof_digest,
     stagedProof.proof_digest);
+  const repeatedCapture = { ...stagedProof,
+    capturedAt: new Date(Date.parse(stagedProof.capturedAt) + 1_000).toISOString() };
+  repeatedCapture.proof_digest = createHash("sha256").update(JSON.stringify({
+    state_digest: repeatedCapture.state_digest,
+    snapshotStartedAt: repeatedCapture.snapshotStartedAt,
+    snapshotCompletedAt: repeatedCapture.snapshotCompletedAt,
+    capturedAt: repeatedCapture.capturedAt,
+  })).digest("hex");
+  assert.equal(validateStagedProof(stagedProof, repeatedCapture,
+    Date.parse(repeatedCapture.capturedAt)).proof_digest, repeatedCapture.proof_digest);
+  const laterSweep = { ...repeatedCapture,
+    snapshotStartedAt: new Date(Date.parse(stagedProof.snapshotStartedAt) + 500).toISOString(),
+    snapshotCompletedAt: new Date(Date.parse(stagedProof.snapshotCompletedAt) + 500).toISOString(),
+  };
+  laterSweep.proof_digest = createHash("sha256").update(JSON.stringify({
+    state_digest: laterSweep.state_digest, snapshotStartedAt: laterSweep.snapshotStartedAt,
+    snapshotCompletedAt: laterSweep.snapshotCompletedAt, capturedAt: laterSweep.capturedAt,
+  })).digest("hex");
+  assert.equal(validateStagedProof(stagedProof, laterSweep,
+    Date.parse(laterSweep.capturedAt)).proof_digest, laterSweep.proof_digest);
+  assert.throws(() => validateStagedProof(stagedProof,
+    { ...laterSweep, state_digest: "0".repeat(64) }, Date.parse(laterSweep.capturedAt)),
+  /staged activation proof/u);
+  assert.throws(() => validateStagedProof(repeatedCapture, stagedProof,
+    Date.parse(repeatedCapture.capturedAt)), /chronology did not advance/u);
   assert.throws(() => validateStagedProof({ ...stagedProof, proof_digest: "0".repeat(64) },
     stagedProof), /staged activation proof/u);
   const staleProof = { ...stagedProof, capturedAt: "2026-08-15T00:00:00.000Z" };

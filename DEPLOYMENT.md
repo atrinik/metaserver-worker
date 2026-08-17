@@ -369,8 +369,8 @@ sentinel with the zero-resource review token, the exact protected production
 environment, no review trigger or review environment, all builds stopped, and
 current token/usage proofs.
 The command writes a new owner-only proof containing a deterministic SHA-256 of
-the fresh manifest, including its exact `startedAt`, `completedAt`, and proof
-capture time, and exact staged trigger/environment/token/
+the fresh manifest, including its exact `startedAt` and `completedAt`, and exact
+staged trigger/environment/token/
 hook/build evidence. Immediately before each activation mutation, set
 `ATRINIK_STAGED_PROOF_FILE` to that record and run
 `npm run provision:workers-builds:verify-staged-proof` immediately before the
@@ -418,7 +418,10 @@ Immediately before each review provider mutation, run
 `npm run provision:workers-builds:verify-review-activation-authority-proof`
 with those inputs and a newly captured current-main proof. The digest-pinned
 plan requires that executable check and a minimum 300-second remaining budget;
-an expired or cross-phase proof stops before the request.
+an expired or cross-phase proof stops before the request. Long-running
+credentialed verification commands retain that entry checkpoint: completion
+must still precede authority expiry, but does not reimpose the 300-second
+start reserve after the bounded provider sweep has already begun.
 Only then may the review gate first prove a fresh private random staging
 root is absent from every current non-main ref, then POST the provider-classified
 preview trigger (`branch_includes=["*"]`, `branch_excludes=["main"]`) with that

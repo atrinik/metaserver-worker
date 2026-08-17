@@ -140,7 +140,9 @@ review trigger remains absent before review activation. The review gate creates
 one digest-bound 30-minute phase authority from fresh owner, sentinel, token,
 usage, and staged evidence whose capture and provider-sweep start/completion
 times are exact and freshness-checked, while retaining a new five-minute
-authenticated current-`main` proof before every credentialed command. It then creates
+authenticated current-`main` proof before every credentialed command. Each
+bounded command checkpoints the phase budget at entry and must finish before
+authority expiry. It then creates
 the provider preview role against a freshly proven absent private root with
 fixed inert commands, writes its nonsecret environment, and only then atomically
 switches to and validates the documented final preview trigger before any
