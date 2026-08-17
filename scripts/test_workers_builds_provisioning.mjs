@@ -14,6 +14,7 @@ import {
   credentialedProvisioningModes,
   createPrivateDirectory,
   initialBootstrapPredecessorConfiguration,
+  issueDisposableReviewAuthority,
   issueReviewActivationAuthority,
   loadSnapshot,
   materializeProductionConfigurations,
@@ -36,6 +37,7 @@ import {
   validateConfiguredBuildsSnapshot,
   validateCurrentMainProof,
   validateDistinctSentinelRefAbsence,
+  validateDisposableReviewAuthority,
   validateFreshBuildsSnapshot,
   validateInitialBootstrapSnapshot,
   validateNoActiveBuilds,
@@ -265,6 +267,57 @@ function reviewActivationAuthorityFixture(stagedProof = null) {
       production: { cloudflare_token_id: "production-token-id" },
       review: { cloudflare_token_id: "review-token-id" },
     } });
+  return { proof, evidence };
+}
+
+function reviewActiveProof(capturedAt, stateDigest = "f".repeat(64)) {
+  return {
+    outcome: "workers-builds-review-activation-snapshot-valid", mutation: false, accountId,
+    sourceSha: "a".repeat(40), stagedTriggerCount: 2, capturedAt,
+    snapshotStartedAt: capturedAt, snapshotCompletedAt: capturedAt,
+    state_digest: stateDigest,
+    proof_digest: createHash("sha256").update(JSON.stringify({ state_digest: stateDigest,
+      snapshotStartedAt: capturedAt, snapshotCompletedAt: capturedAt,
+      capturedAt })).digest("hex"),
+  };
+}
+
+function disposableReviewAuthorityFixture(now = Date.now()) {
+  const boundary = freshBoundary();
+  const configured = configuredBoundary({}, {});
+  const reviewActivationProof = reviewActiveProof(new Date(now - 2_000).toISOString(),
+    "d".repeat(64));
+  const currentReviewActiveProof = reviewActiveProof(new Date(now - 1_000).toISOString());
+  const journalRecord = (payload) => ({ ...payload,
+    recordSha256: createHash("sha256").update(JSON.stringify(payload)).digest("hex") });
+  const reviewTrigger = "22222222-2222-4222-8222-222222222222";
+  const reviewActivationJournal = [
+    journalRecord({ event: "attempt-started", operation: "review-trigger-activation",
+      sourceSha: "a".repeat(40),
+      planDigestSha256: "fb95bcc4e693b6f933dc1bb788b736100dbd6a24c5b601e3533a03097d091892",
+      attempt: 1, at: new Date(now - 4_000).toISOString() }),
+    journalRecord({ event: "provider-proof-bound", operation: "review-activation",
+      proofDigest: reviewActivationProof.proof_digest,
+      proofFileSha256: createHash("sha256").update(JSON.stringify(reviewActivationProof))
+        .digest("hex"), attempt: 1, at: new Date(now - 2_001).toISOString() }),
+    journalRecord({ event: "review-trigger-active", reviewTrigger,
+      stagedEnvironmentProofDigest: "1".repeat(64), activationRootProofDigest: "2".repeat(64),
+      reviewActivationProofDigest: reviewActivationProof.proof_digest,
+      productionActivation: false, migration0010: false, initialProductionBuild: false,
+      attempt: 1, at: new Date(now - 2_000).toISOString() }),
+  ];
+  const evidence = {
+    reviewActivationProof, reviewActivationJournal, currentReviewActiveProof,
+    repositoryConnectionProof: boundary.repositoryConnectionProof,
+    productionSentinelProof: boundary.productionSentinelProof,
+    tokenAuthorityProofs: configured.tokenAuthorityProofs,
+    buildUsageProof: configured.reviewBuildState.buildUsageProof,
+  };
+  const proof = issueDisposableReviewAuthority({ production, review, accountId,
+    sourceSha: "a".repeat(40), ...evidence, tokenRows: {
+      production: { cloudflare_token_id: "production-token-id" },
+      review: { cloudflare_token_id: "review-token-id" },
+    } }, now);
   return { proof, evidence };
 }
 
@@ -1072,6 +1125,8 @@ test("gates every credentialed mode on the private current-main proof", async ()
     "--materialize-production",
     "--readback",
     "--verify-configured",
+    "--verify-disposable-review-authority",
+    "--verify-disposable-review-authority-proof",
     "--verify-preflight",
     "--verify-production-activation",
     "--verify-review-activation",
@@ -1214,6 +1269,35 @@ test("binds fresh owner evidence into one bounded review activation phase", () =
       production: { cloudflare_token_id: "production-token-id" },
       review: { cloudflare_token_id: "review-token-id" },
     } }, captured), /token permission proof drift/u);
+});
+
+test("renews only a bounded disposable proof authority from exact review-active state", () => {
+  const now = Date.now();
+  const { proof, evidence } = disposableReviewAuthorityFixture(now);
+  const arguments_ = { production, review, accountId, sourceSha: "a".repeat(40), ...evidence };
+  assert.equal(Date.parse(proof.expiresAt) - Date.parse(proof.capturedAt), 45 * 60_000);
+  assert.equal(validateDisposableReviewAuthority(proof, arguments_, now + 39 * 60_000)
+    .proof_digest, proof.proof_digest);
+  assert.throws(() => validateDisposableReviewAuthority(proof, arguments_, now + 41 * 60_000),
+    /stale, malformed, or cross-phase/u);
+  assert.throws(() => validateDisposableReviewAuthority({ ...proof, phase: "production" },
+    arguments_, now), /cross-phase/u);
+  assert.throws(() => validateDisposableReviewAuthority(proof, { ...arguments_,
+    currentReviewActiveProof: { ...evidence.currentReviewActiveProof,
+      proof_digest: "0".repeat(64) } }, now), /staged proof drift|live proof drift|evidence binding drift/u);
+  const wrongWrites = { ...proof, allowedWrites: [...proof.allowedWrites, "manual-build"] };
+  assert.throws(() => validateDisposableReviewAuthority(wrongWrites, arguments_, now),
+    /cross-phase/u);
+  const corruptJournal = structuredClone(arguments_);
+  corruptJournal.reviewActivationJournal[1].proofDigest = "0".repeat(64);
+  assert.throws(() => validateDisposableReviewAuthority(proof, corruptJournal, now),
+    /checksum drift|terminal provenance drift/u);
+  const staleCurrent = reviewActiveProof(new Date(now - 31_000).toISOString());
+  assert.throws(() => issueDisposableReviewAuthority({ production, review, accountId,
+    sourceSha: "a".repeat(40), ...evidence, currentReviewActiveProof: staleCurrent,
+    tokenRows: { production: { cloudflare_token_id: "production-token-id" },
+      review: { cloudflare_token_id: "review-token-id" } } }, now),
+  /staged proof drift|live proof drift/u);
 });
 
 test("materializes bounded production documents only from live private coordinates", () => {

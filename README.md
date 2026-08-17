@@ -146,7 +146,9 @@ authority expiry. It then creates
 the provider preview role against a freshly proven absent private root with
 fixed inert commands, writes its nonsecret environment, and only then atomically
 switches to and validates the documented final preview trigger before any
-disposable branch proof. A post-activation
+disposable branch proof. That proof uses a separate 45-minute authority minted
+from a fresh exact review-active snapshot, with only exact disposable-ref
+push/delete and journal-owned automatic-build cleanup writes. A post-activation
 `npm run provision:workers-builds:verify-configured` check proves the serialized
 production/preview trigger pair, distinct fresh provider-token policies,
 environment-classification, and no-Deploy-Hook

@@ -505,6 +505,37 @@ This command is read-only. Creating the preview trigger and writing its
 nonsecret environment remain separately authorized provider mutations; the
 command neither creates them nor starts a build.
 
+The 30-minute activation authority ends with that transition and must not be
+replayed for the potentially 20-minute disposable build. Immediately before
+the disposable push, capture a new complete review-active provider snapshot
+and fresh owner, sentinel, token-policy, usage, and authenticated current-main
+evidence. Mint the distinct 45-minute proof-phase authority:
+
+```sh
+ATRINIK_PROVIDER_SNAPSHOT_DIRECTORY=/secure/fresh-review-active-snapshot \
+ATRINIK_REVIEW_ACTIVATION_PROOF_FILE=/secure/private/review-activation-proof.json \
+ATRINIK_REVIEW_ACTIVATION_JOURNAL_FILE=/secure/private/review-activation-journal.jsonl \
+ATRINIK_CURRENT_REVIEW_ACTIVE_PROOF_OUTPUT_FILE=/secure/private/current-review-active-proof.json \
+ATRINIK_DISPOSABLE_REVIEW_AUTHORITY_PROOF_OUTPUT_FILE=/secure/private/disposable-review-authority.json \
+  npm run provision:workers-builds:verify-disposable-review-authority
+```
+
+Supply the same account/source and freshly observed owner, sentinel, token,
+usage, and current-main inputs required by the activation verifier. The command
+revalidates the exact two-trigger state: production remains inert on the
+zero-resource token, review is final, both environments and wrappers are
+exact, and no competing trigger, active build, or Deploy Hook exists. It binds
+that current observation to the terminal review-activation proof and permits
+only one exact `review/issue-66-*` push, exact-SHA deletion, and cancellation
+of the journal-owned automatic review build during cleanup. Before either Git
+write, run
+`npm run provision:workers-builds:verify-disposable-review-authority-proof`
+with `ATRINIK_DISPOSABLE_REVIEW_AUTHORITY_PROOF_FILE` and its exact source
+evidence. Each write needs five minutes remaining. Production trigger changes,
+manual/API build starts, migration `0010`, the initial production build, and
+production resource mutations remain forbidden. Cleanup of the exact owned
+build is phase-local and must never target a foreign or production build.
+
 After the review trigger is active and its disposable branch proof succeeds,
 retain a no-more-than-five-minute owner-only
 `ATRINIK_REVIEW_RESULT_PROOF_FILE`. It binds the exact review trigger/token,
