@@ -210,7 +210,8 @@ anonymous HTTP request, or operator-authored SHA:
 umask 077
 proof_tmp="$(mktemp /secure/path/current-main-proof.XXXXXX)"
 raw_tmp="$(mktemp /secure/path/current-main-ref.XXXXXX)"
-gh api repos/atrinik/metaserver-worker/git/ref/heads/main >"${raw_tmp}"
+gh api --hostname github.com \
+  repos/atrinik/metaserver-worker/git/ref/heads/main >"${raw_tmp}"
 jq --arg capturedAt "$(date -u +%Y-%m-%dT%H:%M:%S.000Z)" \
   '{source:"authenticated-gh-api-current-main-readback",
     repository:{owner:"atrinik",name:"metaserver-worker"},

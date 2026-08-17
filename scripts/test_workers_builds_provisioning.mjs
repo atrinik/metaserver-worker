@@ -1051,8 +1051,11 @@ test("gates every credentialed mode on the private current-main proof", async ()
   }), undefined);
   const implementation = await readFile(resolve(root,
     "scripts/workers-builds-provisioning.mjs"), "utf8");
+  const deploymentGuide = await readFile(resolve(root, "DEPLOYMENT.md"), "utf8");
   assert.doesNotMatch(implementation,
     /fetch\([\s\S]{0,200}api\.github\.com\/repos\/atrinik\/metaserver-worker/u);
+  assert.match(deploymentGuide,
+    /gh api --hostname github\.com \\\n+  repos\/atrinik\/metaserver-worker\/git\/ref\/heads\/main/u);
   assert.ok(implementation.indexOf("await credentialedSourceSha(mode)") <
     implementation.indexOf('if (mode === "--readback")'));
 });
