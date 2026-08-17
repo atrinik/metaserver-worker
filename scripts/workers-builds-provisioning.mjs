@@ -26,7 +26,7 @@ const maximumProviderPages = 100;
 const stagingBranchPattern = /^review-build-only-sentinel-[0-9a-f]{32}$/u;
 const reviewStagingRootPattern = /^\/review-build-only-staging-[0-9a-f]{32}$/u;
 const gitShaPattern = /^[0-9a-f]{40}$/u;
-const expectedSetupPlanSha256 = "8ac803842dd34503eb94a0075563c8a9148dfe6807e48a60132fd2fd813e3e5d";
+const expectedSetupPlanSha256 = "5438a3565025756661e7c435b77fb015bcf3b64e6e5a0dd4f3fcaefd1ff8fba7";
 const currentMainProofSource = "authenticated-gh-api-current-main-readback";
 const currentMainProofEndpoint = "repos/atrinik/metaserver-worker/git/ref/heads/main";
 const currentMainRef = "refs/heads/main";
@@ -693,6 +693,7 @@ function disposableReviewEvidenceDigests({ reviewActivationProof, reviewActivati
   inertSetupJournal, inertSetupResults, disposableCoordinate,
   reviewTokenRotationProof, reviewTokenRotationJournal, reviewTokenRotationAuthorityProof,
   reviewTokenRotationIntermediateProof, reviewTokenRotationUnreferencedProof,
+  replacementTokenOwnerMembershipProof, currentReplacementTokenOwnerMembershipProof,
   currentReviewActiveProof,
   repositoryConnectionProof, productionSentinelProof, tokenAuthorityProofs, buildUsageProof }) {
   return {
@@ -706,6 +707,9 @@ function disposableReviewEvidenceDigests({ reviewActivationProof, reviewActivati
     reviewTokenRotationAuthorityProof: digestJson(reviewTokenRotationAuthorityProof),
     reviewTokenRotationIntermediateProof: digestJson(reviewTokenRotationIntermediateProof),
     reviewTokenRotationUnreferencedProof: digestJson(reviewTokenRotationUnreferencedProof),
+    replacementTokenOwnerMembership: digestJson(replacementTokenOwnerMembershipProof),
+    currentReplacementTokenOwnerMembership:
+      digestJson(currentReplacementTokenOwnerMembershipProof),
     currentReviewActiveProofFile: digestJson(currentReviewActiveProof),
     repositoryOwner: digestJson(repositoryConnectionProof),
     productionSentinel: digestJson(productionSentinelProof),
@@ -992,10 +996,58 @@ function validateReviewTokenRotationPhaseProof(proof, phase, authorityProof, {
       proof.productionPreservationDigest !== authorityProof.productionPreservationDigest ||
       proof.productionTriggerUuid !== identity.productionTriggerUuid ||
       proof.reviewTriggerUuid !== identity.reviewTriggerUuid ||
+      proof.productionBuildTokenUuid !== identity.productionBuildTokenUuid ||
       proof.predecessorReviewTokenUuid !== identity.predecessorReviewBuildTokenUuid ||
       ![proof.productionBuildTokenUuid, proof.replacementReviewTokenUuid]
         .every((value) => uuidPattern.test(value ?? "")))
     fail("review token rotation phase proof drift");
+  return proof;
+}
+
+function validateReviewTokenRotationPredecessorProof(proof, authorityProof, {
+  accountId, sourceSha,
+}, now = Date.now(), maximumAgeMs = Infinity) {
+  const keys = ["accountId", "capturedAt", "mutation", "outcome", "phase",
+    "predecessorReviewTokenUuid", "productionBuildTokenUuid",
+    "productionPreservationDigest", "productionTriggerUuid", "proof_digest",
+    "reviewTriggerUuid", "sourceSha"];
+  const captured = Date.parse(proof?.capturedAt ?? "");
+  const identity = authorityProof?.journalIdentities ?? {};
+  if (!proof || !same(sorted(Object.keys(proof)), sorted(keys)) ||
+      proof.outcome !== "workers-builds-review-token-rotation-predecessor-valid" ||
+      proof.mutation !== false || proof.phase !== "predecessor" ||
+      proof.accountId !== accountId || proof.sourceSha !== sourceSha ||
+      !isUtcTimestamp(proof.capturedAt) || !Number.isFinite(captured) ||
+      captured > now + 30_000 || now - captured > maximumAgeMs ||
+      !/^[0-9a-f]{64}$/u.test(proof.proof_digest ?? "") ||
+      proof.productionPreservationDigest !== authorityProof.productionPreservationDigest ||
+      proof.productionTriggerUuid !== identity.productionTriggerUuid ||
+      proof.reviewTriggerUuid !== identity.reviewTriggerUuid ||
+      proof.productionBuildTokenUuid !== identity.productionBuildTokenUuid ||
+      proof.predecessorReviewTokenUuid !== identity.predecessorReviewBuildTokenUuid)
+    fail("review token rotation predecessor proof drift");
+  return proof;
+}
+
+function validateReviewTokenRotationRollbackResidualProof(proof, residualState, authorityProof, {
+  accountId, sourceSha,
+}, now = Date.now()) {
+  const keys = ["accountId", "capturedAt", "mutation", "outcome", "phase",
+    "productionPreservationDigest", "providerSnapshotDigest", "residualState", "sourceSha",
+    "proof_digest"];
+  const captured = Date.parse(proof?.capturedAt ?? "");
+  const unsigned = { ...proof };
+  delete unsigned.proof_digest;
+  if (!proof || !same(sorted(Object.keys(proof)), sorted(keys)) ||
+      proof.outcome !== "workers-builds-review-token-rotation-rollback-residual-valid" ||
+      proof.mutation !== false || proof.phase !== "rollback-blocked" ||
+      proof.accountId !== accountId || proof.sourceSha !== sourceSha ||
+      proof.productionPreservationDigest !== authorityProof.productionPreservationDigest ||
+      !/^[0-9a-f]{64}$/u.test(proof.providerSnapshotDigest ?? "") ||
+      !isUtcTimestamp(proof.capturedAt) || !Number.isFinite(captured) ||
+      captured > now + 30_000 || !same(proof.residualState, residualState) ||
+      proof.proof_digest !== digestJson(unsigned))
+    fail("review token rotation rollback residual proof drift");
   return proof;
 }
 
@@ -1213,6 +1265,8 @@ function validateReviewTokenRotationJournal(records, terminalProof, authorityPro
       terminal?.predecessorReviewTokenUuid !== identity.predecessorReviewBuildTokenUuid ||
       terminal?.replacementReviewTokenUuid !== replacement ||
       terminal?.productionPreservationDigest !== authorityProof.productionPreservationDigest ||
+      terminal?.replacementTokenOwnerMembershipProofDigest !==
+        authorityProof.evidenceDigests.replacementTokenOwnerMembership ||
       terminal?.productionActivation !== false || terminal?.migration0010 !== false ||
       terminal?.initialProductionBuild !== false ||
       Date.parse(terminalProof?.capturedAt ?? "") > Date.parse(proofBound?.at ?? "") ||
@@ -1224,13 +1278,15 @@ function validateReviewTokenRotationJournal(records, terminalProof, authorityPro
     productionBuildTokenUuid: terminalProof.productionBuildTokenUuid,
     predecessorReviewTokenUuid: identity.predecessorReviewBuildTokenUuid,
     replacementReviewTokenUuid: replacement,
+    replacementTokenOwnerMembershipProofDigest:
+      authorityProof.evidenceDigests.replacementTokenOwnerMembership,
     productionPreservationDigest: authorityProof.productionPreservationDigest,
     repositoryConnectionUuid: identity.repositoryConnectionUuid };
 }
 
 export function validateReviewTokenRotationRollbackJournal(records, authorityProof, {
   production, review, accountId, sourceSha, restoredProof, completeProof,
-  replacementReviewTokenUuid,
+  replacementReviewTokenUuid, blockedProof,
 }) {
   validateHistoricalReviewTokenRotationAuthority(authorityProof,
     { production, review, accountId, sourceSha });
@@ -1276,31 +1332,20 @@ export function validateReviewTokenRotationRollbackJournal(records, authorityPro
     ["review-token-rotation-rollback-complete", undefined]);
   const terminalBlocked = records.at(-1)?.event === "review-token-rotation-rollback-blocked";
   const actualPairs = records.map(({ event, operation }) => [event, operation]);
-  if (terminalBlocked) {
-    const prefix = actualPairs.slice(0, -1);
-    const residual = records.at(-1).residualState;
-    if (!same(prefix, expected.slice(0, prefix.length)) ||
-        !same(sorted(Object.keys(residual ?? {})),
-          ["activeMutation", "liveProductionTokenReference", "liveReviewTokenReference",
-            "predecessorWrapperPresent", "replacementWrapperPresent"].sort()) ||
-        ![residual.liveProductionTokenReference, residual.liveReviewTokenReference]
-          .every((value) => value === null || uuidPattern.test(value ?? "")) ||
-        ![residual.predecessorWrapperPresent, residual.replacementWrapperPresent]
-          .every((value) => typeof value === "boolean"))
-      fail("review token rotation rollback residual state drift");
-    return { outcome: "workers-builds-review-token-rotation-rollback-blocked-valid",
-      mutation: false, residualState: residual };
-  }
-  if (!same(actualPairs, expected))
+  const effectivePairs = terminalBlocked ? actualPairs.slice(0, -1) : actualPairs;
+  if (!same(effectivePairs, expected.slice(0, effectivePairs.length)) ||
+      (!terminalBlocked && !same(actualPairs, expected)))
     fail("review token rotation rollback journal sequence drift");
   const find = (event, operation) => records.find((record) =>
     record.event === event && record.operation === operation);
-  for (const operation of mutationOperations) {
+  const validateMutation = (operation) => {
     const currentMain = find("current-main-proof-bound", operation);
     const authority = find("rollback-authority-checked", operation);
     const intent = find("mutation-intent", operation);
     const classified = find("provider-response-classified", operation);
     const bound = find("mutation-bound", operation);
+    const present = [currentMain, authority, intent, classified, bound];
+    if (!present.some(Boolean)) return;
     const expectedRequest = reviewTokenRotationRollbackRequestDigest({ production, review,
       authorityProof, operation, replacementReviewTokenUuid });
     const explicit = classified?.outcome === "explicit-success";
@@ -1308,22 +1353,92 @@ export function validateReviewTokenRotationRollbackJournal(records, authorityPro
       authorityProof.journalIdentities.reviewTriggerUuid :
       operation === "rotation-restore-production-trigger-old-token" ?
         authorityProof.journalIdentities.productionTriggerUuid : replacementReviewTokenUuid;
-    if (currentMain?.sourceSha !== sourceSha || currentMain.ref !== currentMainRef ||
+    const mainCaptured = Date.parse(currentMain?.capturedAt ?? "");
+    const mainAt = Date.parse(currentMain?.at ?? "");
+    if (currentMain && (currentMain.sourceSha !== sourceSha || currentMain.ref !== currentMainRef ||
         !/^[0-9a-f]{64}$/u.test(currentMain.proofFileSha256 ?? "") ||
         !/^[0-9a-f]{64}$/u.test(currentMain.rawFileSha256 ?? "") ||
-        authority?.proofDigest !== authorityProof.proof_digest ||
-        authority?.historicalRollbackAuthority !== true ||
-        intent?.method !== expectedRequest.method || intent.path !== expectedRequest.path ||
-        intent.requestDigestSha256 !== expectedRequest.requestDigestSha256 ||
-        !["explicit-success", "ambiguous"].includes(classified?.outcome) ||
-        bound?.requestDigestSha256 !== intent.requestDigestSha256 ||
-        bound?.providerResponseExplicitSuccess !== explicit || bound?.resourceUuid !== resourceUuid ||
-        bound?.reconciliation !== (operation === "rotation-delete-replacement-wrapper" ?
-          (explicit ? "explicit-success-exact-absence" : "ambiguous-exact-absence") :
-          (explicit ? "explicit-success-exact-readback" : "ambiguous-exact-readback")) ||
-        (operation === "rotation-delete-replacement-wrapper" &&
-          bound.deletionTombstone !== true))
+        !isUtcTimestamp(currentMain.capturedAt) || !Number.isFinite(mainCaptured) ||
+        mainCaptured > mainAt || mainAt - mainCaptured > 5 * 60_000) ||
+        authority && (authority.proofDigest !== authorityProof.proof_digest ||
+          authority.historicalRollbackAuthority !== true) ||
+        intent && (intent.method !== expectedRequest.method || intent.path !== expectedRequest.path ||
+          intent.requestDigestSha256 !== expectedRequest.requestDigestSha256) ||
+        classified && !["explicit-success", "ambiguous"].includes(classified.outcome) ||
+        bound && (bound.requestDigestSha256 !== intent?.requestDigestSha256 ||
+          bound.providerResponseExplicitSuccess !== explicit || bound.resourceUuid !== resourceUuid ||
+          !/^[0-9a-f]{64}$/u.test(bound.readbackDigestSha256 ?? "") ||
+          bound.reconciliation !== (operation === "rotation-delete-replacement-wrapper" ?
+            (explicit ? "explicit-success-exact-absence" : "ambiguous-exact-absence") :
+            (explicit ? "explicit-success-exact-readback" : "ambiguous-exact-readback")) ||
+          (operation === "rotation-delete-replacement-wrapper" &&
+            bound.deletionTombstone !== true)))
       fail("review token rotation rollback mutation provenance drift");
+    const ordered = present.filter(Boolean).map(({ at }) => Date.parse(at));
+    if (ordered.some((at, index) => index > 0 && at < ordered[index - 1]) ||
+        intent && authority && Date.parse(intent.at) - Date.parse(authority.at) > 30_000)
+      fail("review token rotation rollback mutation chronology drift");
+  };
+  for (const operation of mutationOperations) validateMutation(operation);
+
+  if (terminalBlocked) {
+    const terminal = records.at(-1);
+    const residual = terminal.residualState;
+    const terminalKeys = ["at", "attempt", "event", "recordSha256", "residualProofDigest",
+      "residualProofFileSha256", "residualState"];
+    const residualKeys = ["activeMutation", "liveProductionTokenReference",
+      "liveReviewTokenReference", "predecessorWrapperPresent", "replacementWrapperPresent"];
+    const completed = new Set(mutationOperations.filter((operation) =>
+      find("mutation-bound", operation)));
+    const active = mutationOperations.find((operation) => !completed.has(operation) &&
+      ["current-main-proof-bound", "rollback-authority-checked", "mutation-intent",
+        "provider-response-classified"].some((event) => find(event, operation))) ?? null;
+    const predecessor = authorityProof.journalIdentities.predecessorReviewBuildTokenUuid;
+    const replacement = replacementReviewTokenUuid;
+    const state = startingPhase === "predecessor" ? {
+      liveProductionTokenReference: predecessor, liveReviewTokenReference: predecessor,
+      predecessorWrapperPresent: true, replacementWrapperPresent: false,
+    } : startingPhase === "replacement-created" ? {
+      liveProductionTokenReference: predecessor, liveReviewTokenReference: predecessor,
+      predecessorWrapperPresent: true, replacementWrapperPresent: true,
+    } : startingPhase === "production-repointed" ? {
+      liveProductionTokenReference: replacement, liveReviewTokenReference: predecessor,
+      predecessorWrapperPresent: true, replacementWrapperPresent: true,
+    } : {
+      liveProductionTokenReference: replacement, liveReviewTokenReference: replacement,
+      predecessorWrapperPresent: true, replacementWrapperPresent: true,
+    };
+    const apply = (value, operation) => {
+      const next = { ...value };
+      if (operation === "rotation-restore-review-trigger-old-token")
+        next.liveReviewTokenReference = predecessor;
+      if (operation === "rotation-restore-production-trigger-old-token")
+        next.liveProductionTokenReference = predecessor;
+      if (operation === "rotation-delete-replacement-wrapper")
+        next.replacementWrapperPresent = false;
+      return next;
+    };
+    let completedState = state;
+    for (const operation of mutationOperations) {
+      if (completed.has(operation)) completedState = apply(completedState, operation);
+    }
+    const allowedStates = [completedState, ...(active ? [apply(completedState, active)] : [])];
+    const residualWithoutActive = { ...residual };
+    delete residualWithoutActive.activeMutation;
+    validateReviewTokenRotationRollbackResidualProof(blockedProof, residual, authorityProof,
+      { accountId, sourceSha }, Date.parse(terminal.at));
+    const prefixAt = Date.parse(records.at(-2)?.at ?? records[0].at);
+    if (!same(sorted(Object.keys(terminal ?? {})), sorted(terminalKeys)) ||
+        !same(sorted(Object.keys(residual ?? {})), sorted(residualKeys)) ||
+        residual.activeMutation !== active ||
+        !allowedStates.some((allowed) => same(residualWithoutActive, allowed)) ||
+        terminal.residualProofDigest !== blockedProof.proof_digest ||
+        terminal.residualProofFileSha256 !== digestJson(blockedProof) ||
+        Date.parse(blockedProof.capturedAt) < prefixAt ||
+        Date.parse(blockedProof.capturedAt) > Date.parse(terminal.at))
+      fail("review token rotation rollback residual state drift");
+    return { outcome: "workers-builds-review-token-rotation-rollback-blocked-valid",
+      mutation: false, residualState: residual, proofDigest: blockedProof.proof_digest };
   }
   if (startingPhase !== "predecessor") {
     validateReviewTokenRotationPhaseProof(restoredProof, "predecessor-restored", authorityProof,
@@ -1338,14 +1453,11 @@ export function validateReviewTokenRotationRollbackJournal(records, authorityPro
       fail("review token rotation rollback restored proof chronology drift");
   }
   const completeBound = find("provider-proof-bound", "rotation-prove-rollback-complete");
-  if (completeProof?.phase !== "predecessor" || completeProof?.accountId !== accountId ||
-      completeProof?.sourceSha !== sourceSha ||
-      completeProof?.productionPreservationDigest !== authorityProof.productionPreservationDigest ||
-      completeProof?.productionTriggerUuid !== authorityProof.journalIdentities.productionTriggerUuid ||
-      completeProof?.reviewTriggerUuid !== authorityProof.journalIdentities.reviewTriggerUuid ||
-      completeProof?.predecessorReviewTokenUuid !==
-        authorityProof.journalIdentities.predecessorReviewBuildTokenUuid ||
-      !/^[0-9a-f]{64}$/u.test(completeProof?.proof_digest ?? "") ||
+  validateReviewTokenRotationPredecessorProof(completeProof, authorityProof,
+    { accountId, sourceSha }, Date.parse(completeBound?.at ?? ""), Infinity);
+  const finalMutation = mutationOperations.at(-1);
+  const lowerBound = finalMutation ? find("mutation-bound", finalMutation) : records[0];
+  if (Date.parse(lowerBound?.at ?? "") > Date.parse(completeProof.capturedAt) ||
       completeBound?.proofDigest !== completeProof.proof_digest ||
       completeBound?.proofFileSha256 !== digestJson(completeProof) ||
       Date.parse(completeProof.capturedAt ?? "") > Date.parse(completeBound?.at ?? "") ||
@@ -1361,7 +1473,9 @@ export function issueDisposableReviewAuthority({ production, review, accountId, 
   reviewActivationProof, reviewActivationJournal, inertSetupJournal, inertSetupResults,
   disposableCoordinate, reviewTokenRotationProof, reviewTokenRotationJournal,
   reviewTokenRotationAuthorityProof, reviewTokenRotationIntermediateProof,
-  reviewTokenRotationUnreferencedProof, currentReviewActiveProof,
+  reviewTokenRotationUnreferencedProof, replacementTokenOwnerMembershipProof,
+  currentReplacementTokenOwnerMembershipProof,
+  currentReviewActiveProof,
   repositoryConnectionProof,
   productionSentinelProof, tokenAuthorityProofs, buildUsageProof, tokenRows }, now = Date.now()) {
   validateRepositoryConnectionOwnerProof(repositoryConnectionProof, accountId, sourceSha, now);
@@ -1387,6 +1501,16 @@ export function issueDisposableReviewAuthority({ production, review, accountId, 
     reviewTokenRotationProof, reviewTokenRotationAuthorityProof, { production, review,
       accountId, sourceSha, intermediateProof: reviewTokenRotationIntermediateProof,
       unreferencedProof: reviewTokenRotationUnreferencedProof });
+  validateReplacementTokenOwnerMembershipProof({ accountId, sourceSha,
+    proof: replacementTokenOwnerMembershipProof,
+    ownerUserId: reviewTokenRotationAuthorityProof.replacementToken.ownerUserId },
+  Date.parse(reviewTokenRotationAuthorityProof.capturedAt));
+  if (reviewTokenRotationAuthorityProof.evidenceDigests.replacementTokenOwnerMembership !==
+      digestJson(replacementTokenOwnerMembershipProof))
+    fail("disposable review authority replacement owner evidence drift");
+  validateReplacementTokenOwnerMembershipProof({ accountId, sourceSha,
+    proof: currentReplacementTokenOwnerMembershipProof,
+    ownerUserId: reviewTokenRotationAuthorityProof.replacementToken.ownerUserId }, now);
   validateCurrentDisposableReviewSnapshotProof(currentReviewActiveProof,
     { accountId, sourceSha }, now);
   if (Date.parse(currentReviewActiveProof.snapshotStartedAt) <
@@ -1441,6 +1565,8 @@ export function issueDisposableReviewAuthority({ production, review, accountId, 
       reviewActivationJournal, inertSetupJournal, inertSetupResults, disposableCoordinate,
       reviewTokenRotationProof, reviewTokenRotationJournal, reviewTokenRotationAuthorityProof,
       reviewTokenRotationIntermediateProof, reviewTokenRotationUnreferencedProof,
+      replacementTokenOwnerMembershipProof,
+      currentReplacementTokenOwnerMembershipProof,
       currentReviewActiveProof, repositoryConnectionProof, productionSentinelProof,
       tokenAuthorityProofs, buildUsageProof }),
     allowedWrites: ["push-one-exact-review-issue-66-branch",
@@ -1455,6 +1581,8 @@ export function validateDisposableReviewAuthority(proof, { production, review, a
   inertSetupResults, disposableCoordinate, reviewTokenRotationProof,
   reviewTokenRotationJournal, reviewTokenRotationAuthorityProof,
   reviewTokenRotationIntermediateProof, reviewTokenRotationUnreferencedProof,
+  replacementTokenOwnerMembershipProof,
+  currentReplacementTokenOwnerMembershipProof,
   currentReviewActiveProof,
   repositoryConnectionProof,
   productionSentinelProof, tokenAuthorityProofs, buildUsageProof }, now = Date.now(),
@@ -1499,6 +1627,16 @@ minimumRemainingMs = reviewActivationTransitionBudgetMs) {
     reviewTokenRotationProof, reviewTokenRotationAuthorityProof, { production, review,
       accountId, sourceSha, intermediateProof: reviewTokenRotationIntermediateProof,
       unreferencedProof: reviewTokenRotationUnreferencedProof });
+  validateReplacementTokenOwnerMembershipProof({ accountId, sourceSha,
+    proof: replacementTokenOwnerMembershipProof,
+    ownerUserId: reviewTokenRotationAuthorityProof.replacementToken.ownerUserId },
+  Date.parse(reviewTokenRotationAuthorityProof.capturedAt));
+  if (reviewTokenRotationAuthorityProof.evidenceDigests.replacementTokenOwnerMembership !==
+      digestJson(replacementTokenOwnerMembershipProof))
+    fail("disposable review authority replacement owner evidence drift");
+  validateReplacementTokenOwnerMembershipProof({ accountId, sourceSha,
+    proof: currentReplacementTokenOwnerMembershipProof,
+    ownerUserId: reviewTokenRotationAuthorityProof.replacementToken.ownerUserId }, captured);
   validateCurrentDisposableReviewSnapshotProof(currentReviewActiveProof,
     { accountId, sourceSha }, captured);
   validateRepositoryConnectionOwnerProof(repositoryConnectionProof, accountId, sourceSha, captured);
@@ -1546,6 +1684,8 @@ minimumRemainingMs = reviewActivationTransitionBudgetMs) {
         reviewActivationJournal, inertSetupJournal, inertSetupResults, disposableCoordinate,
         reviewTokenRotationProof, reviewTokenRotationJournal, reviewTokenRotationAuthorityProof,
         reviewTokenRotationIntermediateProof, reviewTokenRotationUnreferencedProof,
+        replacementTokenOwnerMembershipProof,
+        currentReplacementTokenOwnerMembershipProof,
         currentReviewActiveProof, repositoryConnectionProof, productionSentinelProof,
         tokenAuthorityProofs, buildUsageProof })) ||
       !same(proof.repositoryOwner, { capturedAt: repositoryConnectionProof.capturedAt,
@@ -1976,6 +2116,7 @@ export function provisioningSetupPlan(production, review) {
       "ATRINIK_REPLACEMENT_REVIEW_BUILD_TOKEN_UUID_FILE",
       "ATRINIK_REPLACEMENT_REVIEW_BUILD_TOKEN_PERMISSION_PROOF_FILE",
       "ATRINIK_REPLACEMENT_REVIEW_TOKEN_OWNER_MEMBERSHIP_PROOF_FILE",
+      "ATRINIK_CURRENT_REPLACEMENT_REVIEW_TOKEN_OWNER_MEMBERSHIP_PROOF_FILE",
       "ATRINIK_REVIEW_TOKEN_ROTATION_AUTHORITY_PROOF_OUTPUT_FILE",
       "ATRINIK_REVIEW_TOKEN_ROTATION_AUTHORITY_PROOF_FILE",
       "ATRINIK_REVIEW_TOKEN_ROTATION_PREDECESSOR_PROOF_FILE",
@@ -3743,6 +3884,12 @@ async function readDisposableReviewAuthorityEvidence(environment = process.env,
     reviewTokenRotationUnreferencedProof: await readPrivateJson(
       environment.ATRINIK_REVIEW_TOKEN_ROTATION_UNREFERENCED_PROOF_FILE,
       "unreferenced review token rotation proof"),
+    replacementTokenOwnerMembershipProof: await readPrivateJson(
+      environment.ATRINIK_REPLACEMENT_REVIEW_TOKEN_OWNER_MEMBERSHIP_PROOF_FILE,
+      "replacement review token owner membership proof"),
+    currentReplacementTokenOwnerMembershipProof: await readPrivateJson(
+      environment.ATRINIK_CURRENT_REPLACEMENT_REVIEW_TOKEN_OWNER_MEMBERSHIP_PROOF_FILE,
+      "current replacement review token owner membership proof"),
     ...(requireCurrent ? { currentReviewActiveProof: await readPrivateJson(
       environment.ATRINIK_CURRENT_REVIEW_ACTIVE_PROOF_FILE, "current review active proof") } : {}),
     repositoryConnectionProof: await readPrivateJson(

@@ -634,6 +634,8 @@ function disposableReviewAuthorityFixture(now = Date.now(),
       reviewTriggerUuid: reviewTrigger, predecessorReviewTokenUuid: reviewTokenUuid,
       replacementReviewTokenUuid, productionActivation: false, migration0010: false,
       initialProductionBuild: false, productionPreservationDigest,
+      replacementTokenOwnerMembershipProofDigest:
+        reviewTokenRotationAuthorityProof.evidenceDigests.replacementTokenOwnerMembership,
     });
     return journalRecord(payload);
   });
@@ -654,6 +656,7 @@ function disposableReviewAuthorityFixture(now = Date.now(),
     productionSentinelProof: boundary.productionSentinelProof,
     tokenAuthorityProofs, predecessorTokenAuthorityProofs: configured.tokenAuthorityProofs,
     replacementTokenAuthorityProof, replacementTokenOwnerMembershipProof,
+    currentReplacementTokenOwnerMembershipProof: replacementTokenOwnerMembershipProof,
     replacementTokenId, productionBaselineProof,
     buildUsageProof: configured.reviewBuildState.buildUsageProof,
   };
@@ -1741,6 +1744,15 @@ test("renews only a bounded disposable proof authority from exact review-active 
   corruptRotation.reviewTokenRotationJournal[1].authorityProofDigest = "0".repeat(64);
   assert.throws(() => validateDisposableReviewAuthority(proof, corruptRotation, now),
     /checksum drift|terminal provenance drift/u);
+  const inactiveReplacementOwner = structuredClone(arguments_);
+  inactiveReplacementOwner.replacementTokenOwnerMembershipProof.membershipStatus = "revoked";
+  assert.throws(() => validateDisposableReviewAuthority(proof, inactiveReplacementOwner, now),
+    /active membership proof drift/u);
+  const staleCurrentReplacementOwner = structuredClone(arguments_);
+  staleCurrentReplacementOwner.currentReplacementTokenOwnerMembershipProof.capturedAt =
+    new Date(now - 6 * 60_000).toISOString();
+  assert.throws(() => validateDisposableReviewAuthority(proof, staleCurrentReplacementOwner, now),
+    /active membership proof drift/u);
   const alteredRequest = structuredClone(arguments_);
   const alteredIntentIndex = alteredRequest.reviewTokenRotationJournal.findIndex(({ event,
     operation }) => event === "mutation-intent" &&
@@ -2009,14 +2021,55 @@ test("validates exact review-token rotation rollback and residual journals", () 
   altered[intentIndex] = checksummedRecord(intent);
   assert.throws(() => validateReviewTokenRotationRollbackJournal(altered, authorityProof,
     arguments_), /mutation provenance drift/u);
+  const residualState = { activeMutation: null,
+    liveProductionTokenReference: replacementReviewTokenUuid,
+    liveReviewTokenReference: replacementReviewTokenUuid, predecessorWrapperPresent: true,
+    replacementWrapperPresent: true };
+  const blockedUnsigned = { outcome:
+    "workers-builds-review-token-rotation-rollback-residual-valid", mutation: false,
+  phase: "rollback-blocked", accountId, sourceSha: "a".repeat(40),
+  capturedAt: new Date(base + 5).toISOString(),
+  productionPreservationDigest: authorityProof.productionPreservationDigest,
+  providerSnapshotDigest: "f".repeat(64), residualState };
+  const blockedProof = { ...blockedUnsigned,
+    proof_digest: createHash("sha256").update(JSON.stringify(blockedUnsigned)).digest("hex") };
   const blocked = [records[0], checksummedRecord({ event:
     "review-token-rotation-rollback-blocked", attempt: 1,
-  at: new Date(base + 10).toISOString(), residualState: { activeMutation: null,
-    liveProductionTokenReference: authorityProof.journalIdentities.predecessorReviewBuildTokenUuid,
-    liveReviewTokenReference: replacementReviewTokenUuid, predecessorWrapperPresent: true,
-    replacementWrapperPresent: true } })];
-  assert.equal(validateReviewTokenRotationRollbackJournal(blocked, authorityProof, arguments_)
+  at: new Date(base + 10).toISOString(), residualState,
+  residualProofDigest: blockedProof.proof_digest,
+  residualProofFileSha256: createHash("sha256").update(JSON.stringify(blockedProof))
+    .digest("hex") })];
+  assert.equal(validateReviewTokenRotationRollbackJournal(blocked, authorityProof, {
+    ...arguments_, blockedProof })
     .outcome, "workers-builds-review-token-rotation-rollback-blocked-valid");
+  const staleMain = structuredClone(records);
+  const mainIndex = staleMain.findIndex(({ event }) => event === "current-main-proof-bound");
+  const { recordSha256: _mainChecksum, ...main } = staleMain[mainIndex];
+  main.capturedAt = new Date(base - 6 * 60_000).toISOString();
+  staleMain[mainIndex] = checksummedRecord(main);
+  assert.throws(() => validateReviewTokenRotationRollbackJournal(staleMain, authorityProof,
+    arguments_), /mutation provenance drift/u);
+  const staleComplete = { ...completeProof, capturedAt: new Date(base - 1).toISOString() };
+  assert.throws(() => validateReviewTokenRotationRollbackJournal(records, authorityProof,
+    { ...arguments_, completeProof: staleComplete }), /terminal provenance drift/u);
+  const blockedAfterBadIntent = structuredClone(records.slice(0, 4));
+  const badIntent = { ...blockedAfterBadIntent[3], requestDigestSha256: "0".repeat(64) };
+  delete badIntent.recordSha256;
+  blockedAfterBadIntent[3] = checksummedRecord(badIntent);
+  const activeResidual = { ...residualState,
+    activeMutation: "rotation-restore-review-trigger-old-token",
+    liveProductionTokenReference: replacementReviewTokenUuid };
+  const activeUnsigned = { ...blockedUnsigned, capturedAt: new Date(base + 35).toISOString(),
+    residualState: activeResidual };
+  const activeProof = { ...activeUnsigned,
+    proof_digest: createHash("sha256").update(JSON.stringify(activeUnsigned)).digest("hex") };
+  blockedAfterBadIntent.push(checksummedRecord({ event:
+    "review-token-rotation-rollback-blocked", attempt: 1, at: new Date(base + 40).toISOString(),
+  residualState: activeResidual, residualProofDigest: activeProof.proof_digest,
+  residualProofFileSha256: createHash("sha256").update(JSON.stringify(activeProof))
+    .digest("hex") }));
+  assert.throws(() => validateReviewTokenRotationRollbackJournal(blockedAfterBadIntent,
+    authorityProof, { ...arguments_, blockedProof: activeProof }), /mutation provenance drift/u);
 });
 
 test("dispatches disposable authority verification through exact private evidence", async () => {
@@ -2080,6 +2133,9 @@ test("dispatches disposable authority verification through exact private evidenc
         "replacement-review-token.json", evidence.replacementTokenAuthorityProof),
       ATRINIK_REPLACEMENT_REVIEW_TOKEN_OWNER_MEMBERSHIP_PROOF_FILE: await json(
         "replacement-membership.json", evidence.replacementTokenOwnerMembershipProof),
+      ATRINIK_CURRENT_REPLACEMENT_REVIEW_TOKEN_OWNER_MEMBERSHIP_PROOF_FILE: await json(
+        "current-replacement-membership.json",
+        evidence.currentReplacementTokenOwnerMembershipProof),
       ATRINIK_REPLACEMENT_REVIEW_BUILD_TOKEN_ID_FILE: await text(
         "replacement-token-id", evidence.replacementTokenId),
       ATRINIK_REPLACEMENT_REVIEW_BUILD_TOKEN_SECRET_FILE: await text(

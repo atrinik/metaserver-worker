@@ -591,9 +591,16 @@ mutation is preceded by a journal-bound fresh authenticated current-main proof;
 rollback revalidates the historical authority without reusing its expired write
 budget. A checksum-valid rollback journal must end in either exact predecessor
 restoration or an exact residual-state record naming both live token references,
-wrapper-presence flags, and any active mutation. The old wrapper must be
-unreferenced across the complete account trigger inventory, not merely this
-repository. Production activation, migration
+wrapper-presence flags, and the exact pending authorized mutation. A blocked
+terminal also binds a fresh exhaustive residual snapshot proof, its file digest,
+the unchanged production-preservation digest, and the semantic history of every
+rollback mutation already attempted. Successful rollback binds every exact
+readback digest and requires its final predecessor proof to postdate the last
+rollback mutation. The old wrapper must be unreferenced across the complete
+account trigger inventory, not merely this repository. The replacement owner's
+accepted-membership artifact remains part of terminal and disposable handoff
+evidence and is revalidated at the original rotation-authority observation time.
+Production activation, migration
 `0010`, manual/API builds, the initial production build, and all Worker,
 version, deployment, binding, route, domain, schedule, URL, state, secret, and
 repository-connection mutations remain forbidden.
@@ -613,13 +620,16 @@ ATRINIK_INERT_SETUP_RESULTS_FILE=/secure/private/inert-setup-results.json \
 ATRINIK_REVIEW_TOKEN_ROTATION_COMPLETE_PROOF_FILE=/secure/private/rotation-complete-proof.json \
 ATRINIK_REVIEW_TOKEN_ROTATION_JOURNAL_FILE=/secure/private/rotation-journal.jsonl \
 ATRINIK_REVIEW_TOKEN_ROTATION_AUTHORITY_PROOF_FILE=/secure/private/rotation-authority.json \
+ATRINIK_REPLACEMENT_REVIEW_TOKEN_OWNER_MEMBERSHIP_PROOF_FILE=/secure/private/rotation-membership-at-issuance.json \
+ATRINIK_CURRENT_REPLACEMENT_REVIEW_TOKEN_OWNER_MEMBERSHIP_PROOF_FILE=/secure/private/current-replacement-membership.json \
 ATRINIK_DISPOSABLE_REVIEW_COORDINATE_FILE=/secure/private/disposable-coordinate.json \
 ATRINIK_CURRENT_REVIEW_ACTIVE_PROOF_OUTPUT_FILE=/secure/private/current-review-active-proof.json \
 ATRINIK_DISPOSABLE_REVIEW_AUTHORITY_PROOF_OUTPUT_FILE=/secure/private/disposable-review-authority.json \
   npm run provision:workers-builds:verify-disposable-review-authority
 ```
 
-Supply the same account/source and freshly observed owner, sentinel, token,
+Supply the same account/source and freshly observed owner, replacement-token
+owner membership, sentinel, token,
 usage, and current-main inputs required by the activation verifier. The command
 revalidates the exact two-trigger state: production remains inert on the
 replacement zero-resource token, review is final, both environments and wrappers are
