@@ -505,12 +505,64 @@ This command is read-only. Creating the preview trigger and writing its
 nonsecret environment remain separately authorized provider mutations; the
 command neither creates them nor starts a build.
 
+The 30-minute activation authority ends with that transition and must not be
+replayed for the potentially 20-minute disposable build. Immediately before
+the disposable push, capture a new complete review-active provider snapshot
+and fresh owner, sentinel, token-policy, usage, and authenticated current-main
+evidence. Mint the distinct 60-minute proof-phase authority:
+
+```sh
+ATRINIK_PROVIDER_SNAPSHOT_DIRECTORY=/secure/fresh-review-active-snapshot \
+ATRINIK_REVIEW_ACTIVATION_PROOF_FILE=/secure/private/review-activation-proof.json \
+ATRINIK_REVIEW_ACTIVATION_JOURNAL_FILE=/secure/private/review-activation-journal.jsonl \
+ATRINIK_INERT_SETUP_JOURNAL_FILE=/secure/private/inert-setup-journal.jsonl \
+ATRINIK_INERT_SETUP_RESULTS_FILE=/secure/private/inert-setup-results.json \
+ATRINIK_DISPOSABLE_REVIEW_COORDINATE_FILE=/secure/private/disposable-coordinate.json \
+ATRINIK_CURRENT_REVIEW_ACTIVE_PROOF_OUTPUT_FILE=/secure/private/current-review-active-proof.json \
+ATRINIK_DISPOSABLE_REVIEW_AUTHORITY_PROOF_OUTPUT_FILE=/secure/private/disposable-review-authority.json \
+  npm run provision:workers-builds:verify-disposable-review-authority
+```
+
+Supply the same account/source and freshly observed owner, sentinel, token,
+usage, and current-main inputs required by the activation verifier. The command
+revalidates the exact two-trigger state: production remains inert on the
+zero-resource token, review is final, both environments and wrappers are
+exact, and no competing trigger, active build, or Deploy Hook exists. It binds
+that current observation to the terminal review-activation proof and permits
+only one exact `review/issue-66-*` push, exact-SHA deletion, and cancellation
+of the journal-owned automatic review build during cleanup. Before either Git
+write, the issuer directly inspects the owner-only detached repository and
+cryptographically binds the commit parent/tree/blob, sole proof-file delta,
+content, mode, author/subject, executor bytes, initially empty journal identity,
+and canonical push/delete receipt paths. Before either Git
+write, use `ATRINIK_DISPOSABLE_REVIEW_AUTHORITY_PROOF_FILE` and its exact source
+evidence. Immediately before the push, run
+`npm run provision:workers-builds:verify-disposable-review-authority-push`
+with a new owner-only
+`ATRINIK_DISPOSABLE_REVIEW_PUSH_AUTHORIZATION_RECEIPT_OUTPUT_FILE`; the
+60-minute authority must still have at least 40 minutes remaining so the
+bounded 20-minute automatic build, evidence, provider preservation proof, and
+command overhead cannot consume the deletion reserve. The exclusive receipt
+makes that exact authority/journal/branch/commit push authorization one-use.
+Immediately before the exact-SHA deletion, run
+`npm run provision:workers-builds:verify-disposable-review-authority-proof`;
+write a distinct exclusive
+`ATRINIK_DISPOSABLE_REVIEW_DELETE_AUTHORIZATION_RECEIPT_OUTPUT_FILE`; that
+write requires five minutes remaining and is likewise one-use. The authority binds the exact
+journal ID, branch, commit, historical inert-setup/activation journals, and a
+fresh current-source two-trigger proof; historical activation source identity
+is deliberately distinct from the post-merge verifier source. Production trigger changes,
+manual/API build starts, migration `0010`, the initial production build, and
+production resource mutations remain forbidden. Cleanup of the exact owned
+build is phase-local and must never target a foreign or production build.
+
 After the review trigger is active and its disposable branch proof succeeds,
 retain a no-more-than-five-minute owner-only
 `ATRINIK_REVIEW_RESULT_PROOF_FILE`. It binds the exact review trigger/token,
 terminal successful Cloudflare build UUID, same-repository
 `review/issue-66-*` branch and commit, provider-trusted build creation/stop
-times and automatic `push` source, complete embedded trigger/command snapshot,
+times and the live provider's automatic `push_event` source, complete embedded
+trigger/command snapshot,
 and the governed private-evidence coordinate. Capture the raw results of
 `gh api repos/atrinik/metaserver-worker/commits/<review-sha>/check-runs`,
 `gh api repos/atrinik/metaserver-worker/git/matching-refs/heads/<review-ref>`,
