@@ -369,7 +369,8 @@ sentinel with the zero-resource review token, the exact protected production
 environment, no review trigger or review environment, all builds stopped, and
 current token/usage proofs.
 The command writes a new owner-only proof containing a deterministic SHA-256 of
-the fresh manifest and exact staged trigger/environment/token/
+the fresh manifest, including its exact `startedAt` and `completedAt`, and exact
+staged trigger/environment/token/
 hook/build evidence. Immediately before each activation mutation, set
 `ATRINIK_STAGED_PROOF_FILE` to that record and run
 `npm run provision:workers-builds:verify-staged-proof` immediately before the
@@ -379,8 +380,49 @@ directory. It performs two new complete provider sweeps, requires the original
 proof to be no more than five minutes old and the live sweep no more than 30
 seconds old, and
 rejects any coordinate or digest mismatch. The setup plan makes the original
-command produce this private staged-proof digest. Only after successful fresh
-revalidation may the review gate first prove a fresh private random staging
+command produce this private staged-proof digest.
+
+Immediately after that successful revalidation and before any review-trigger
+mutation, mint the bounded review-phase authority:
+
+```sh
+ATRINIK_PROVIDER_SNAPSHOT_DIRECTORY=/secure/fresh-staged-proof-snapshot \
+ATRINIK_STAGED_PROOF_FILE=/secure/private/staged-proof.json \
+ATRINIK_REPOSITORY_CONNECTION_OWNER_PROOF_FILE=/secure/path/fresh-owner-proof.json \
+ATRINIK_PRODUCTION_STAGING_SENTINEL_BRANCH_FILE=/secure/path/private-random-production-sentinel \
+ATRINIK_PRODUCTION_STAGING_SENTINEL_REFS_FILE=/secure/path/fresh-production-sentinel-proof.json \
+ATRINIK_PRODUCTION_BUILD_TOKEN_PERMISSION_PROOF_FILE=/secure/path/production-token-policy.json \
+ATRINIK_REVIEW_BUILD_TOKEN_PERMISSION_PROOF_FILE=/secure/path/review-token-policy.json \
+ATRINIK_WORKERS_BUILDS_USAGE_PROOF_FILE=/secure/path/build-usage.json \
+ATRINIK_REVIEW_ACTIVATION_AUTHORITY_PROOF_OUTPUT_FILE=/secure/private/review-activation-authority.json \
+  npm run provision:workers-builds:verify-review-activation-authority
+```
+
+Also supply the account, exact-current-source, and freshly authenticated
+current-main proof used by every credentialed provisioning command. The five
+owner/provider observations must each still satisfy their five-minute source
+validator when this command runs; changing only `capturedAt` is not evidence.
+The resulting owner-only proof binds their complete digests, the freshly
+revalidated staged proof's capture and snapshot start/completion times, App
+85455 selected repository inventory and website preservation, sentinel, both
+token IDs and `modifiedOn` values, usage thresholds, staged digest, source/contracts, setup
+plan, phase, issue time, and exact expiry. It is valid only for the
+`review-trigger-activation-and-proof` phase, expires exactly 30 minutes after
+issue, and every following credentialed review transition must start with at
+least five minutes remaining. Authenticated current-main evidence is not
+extended by this phase proof: capture it anew immediately before every command.
+
+Set `ATRINIK_REVIEW_ACTIVATION_AUTHORITY_PROOF_FILE` to that record and retain
+the exact five source-proof files for every remaining review-phase verifier.
+Immediately before each review provider mutation, run
+`npm run provision:workers-builds:verify-review-activation-authority-proof`
+with those inputs and a newly captured current-main proof. The digest-pinned
+plan requires that executable check and a minimum 300-second remaining budget;
+an expired or cross-phase proof stops before the request. Long-running
+credentialed verification commands retain that entry checkpoint: completion
+must still precede authority expiry, but does not reimpose the 300-second
+start reserve after the bounded provider sweep has already begun.
+Only then may the review gate first prove a fresh private random staging
 root is absent from every current non-main ref, then POST the provider-classified
 preview trigger (`branch_includes=["*"]`, `branch_excludes=["main"]`) with that
 absent root, fixed `exit 1` commands, and the zero-resource review token. This
@@ -413,12 +455,14 @@ ATRINIK_GITHUB_CURRENT_MAIN_PROOF_FILE=/secure/path/current-main-proof.json \
 ATRINIK_REVIEWED_SOURCE_SHA_FILE=/secure/path/reviewed-source-sha \
 ATRINIK_REVIEW_STAGING_ROOT_DIRECTORY_FILE=/secure/path/private-review-root \
 ATRINIK_REVIEW_STAGING_ROOT_CREATE_PROOF_FILE=/secure/path/create-root-proof.json \
+ATRINIK_REVIEW_ACTIVATION_AUTHORITY_PROOF_FILE=/secure/private/review-activation-authority.json \
   npm run provision:workers-builds:verify-review-staging-root-create
 
 ATRINIK_GITHUB_CURRENT_MAIN_PROOF_FILE=/secure/path/current-main-proof.json \
 ATRINIK_REVIEWED_SOURCE_SHA_FILE=/secure/path/reviewed-source-sha \
 ATRINIK_REVIEW_STAGING_ROOT_DIRECTORY_FILE=/secure/path/private-review-root \
 ATRINIK_REVIEW_STAGING_ROOT_ACTIVATION_PROOF_FILE=/secure/path/activation-root-proof.json \
+ATRINIK_REVIEW_ACTIVATION_AUTHORITY_PROOF_FILE=/secure/private/review-activation-authority.json \
   npm run provision:workers-builds:verify-review-staging-root-activation
 ```
 
@@ -434,6 +478,7 @@ ATRINIK_PROVIDER_SNAPSHOT_OUTPUT=/secure/review-staged-provider-snapshot \
 ATRINIK_PRODUCTION_STAGED_TRIGGER_UUID_FILE=/secure/private/production-trigger-uuid \
 ATRINIK_REVIEW_STAGED_TRIGGER_UUID_FILE=/secure/private/review-trigger-uuid \
 ATRINIK_REVIEW_STAGED_ENVIRONMENT_PROOF_OUTPUT_FILE=/secure/private/review-staged-environment-proof.json \
+ATRINIK_REVIEW_ACTIVATION_AUTHORITY_PROOF_FILE=/secure/private/review-activation-authority.json \
   npm run provision:workers-builds:verify-review-staged-environment
 ```
 
@@ -452,6 +497,7 @@ plus a new output directory and proof destination:
 ```sh
 ATRINIK_PROVIDER_SNAPSHOT_OUTPUT=/secure/review-active-provider-snapshot \
 ATRINIK_REVIEW_ACTIVATION_PROOF_OUTPUT_FILE=/secure/private/review-activation-proof.json \
+ATRINIK_REVIEW_ACTIVATION_AUTHORITY_PROOF_FILE=/secure/private/review-activation-authority.json \
   npm run provision:workers-builds:verify-review-activation
 ```
 
@@ -520,7 +566,8 @@ reached its build-minute limit and the private usage proof remains below the
 the authored values or secret classifications.
 
 Each token-policy proof is captured from the provider no more than five minutes
-before verification and binds the exact underlying token ID, its current
+before ordinary verification, or before issuing the bounded review-phase
+authority described above, and binds the exact underlying token ID, its current
 `modified_on` value, and its complete user/account/zone policy and resource
 arrays, account, and reviewed source SHA. An older proof, a future modification time, or any in-place policy
 change fails closed.

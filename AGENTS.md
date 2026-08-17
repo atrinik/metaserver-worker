@@ -106,8 +106,9 @@
   `scripts/review-environment.mjs`. `scripts/workers-builds-provisioning.mjs`
   composes both checked-in contracts, requires stable exhaustive private
   provider inventories plus fresh production random-sentinel GitHub evidence,
-  and stages review activation behind a fresh private absent-root proof, inert
-  commands, the exact nonsecret environment, and an atomic final trigger PATCH.
+  and stages review activation behind a bounded digest-bound phase authority,
+  fresh per-command current-main evidence, a fresh private absent-root proof,
+  inert commands, the exact nonsecret environment, and an atomic final trigger PATCH.
   It performs only readback and local protected-document materialization, and must never gain implicit
   provider mutation. Provider apply and live-canary execution remain gated by
   separate maintainer authorization; `npm run deploy:review-canary` must fail

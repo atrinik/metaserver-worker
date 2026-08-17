@@ -26,10 +26,12 @@ const maximumProviderPages = 100;
 const stagingBranchPattern = /^review-build-only-sentinel-[0-9a-f]{32}$/u;
 const reviewStagingRootPattern = /^\/review-build-only-staging-[0-9a-f]{32}$/u;
 const gitShaPattern = /^[0-9a-f]{40}$/u;
-const expectedSetupPlanSha256 = "b44472d85573e30083a7ba0386416d9356b773a12220ea7c9909dc4001b713df";
+const expectedSetupPlanSha256 = "fb95bcc4e693b6f933dc1bb788b736100dbd6a24c5b601e3533a03097d091892";
 const currentMainProofSource = "authenticated-gh-api-current-main-readback";
 const currentMainProofEndpoint = "repos/atrinik/metaserver-worker/git/ref/heads/main";
 const currentMainRef = "refs/heads/main";
+const reviewActivationAuthorityLifetimeMs = 30 * 60_000;
+const reviewActivationTransitionBudgetMs = 5 * 60_000;
 const currentMainRepository = Object.freeze({ owner: "atrinik", name: "metaserver-worker" });
 const githubRepository = Object.freeze({
   provider_account_id: "6371603",
@@ -338,6 +340,209 @@ export function validateRepositoryConnectionOwnerProof(proof, accountId, sourceS
     fail("shared repository connection owner proof is stale");
 }
 
+function validateBuildUsageProof(review, buildUsageProof, accountId, now = Date.now()) {
+  const usageKeys = ["accountId", "alertAtMinutes", "capturedAt", "disableAtMinutes",
+    "monthlyMinutesUsed", "source"];
+  const usageCaptured = Date.parse(buildUsageProof?.capturedAt ?? "");
+  if (!buildUsageProof || !same(sorted(Object.keys(buildUsageProof)), sorted(usageKeys)) ||
+      buildUsageProof.source !== "cloudflare-owner-build-usage-readback" ||
+      buildUsageProof.accountId !== accountId ||
+      buildUsageProof.alertAtMinutes !== review.automaticReview.costPolicy.alertAtMinutes ||
+      buildUsageProof.disableAtMinutes !==
+        review.automaticReview.costPolicy.maximumMonthlyReviewBuildMinutes ||
+      !Number.isSafeInteger(buildUsageProof.monthlyMinutesUsed) ||
+      buildUsageProof.monthlyMinutesUsed < 0 ||
+      buildUsageProof.monthlyMinutesUsed >= buildUsageProof.alertAtMinutes ||
+      !Number.isFinite(usageCaptured) || usageCaptured > now + 30_000 ||
+      now - usageCaptured > 5 * 60_000)
+    fail("Workers Builds private usage boundary is stale or exhausted");
+  return buildUsageProof;
+}
+
+function reviewActivationEvidenceDigests({ stagedProof, repositoryConnectionProof,
+  productionSentinelProof, tokenAuthorityProofs, buildUsageProof }) {
+  return {
+    stagedProofFile: digestJson(stagedProof),
+    repositoryOwner: digestJson(repositoryConnectionProof),
+    productionSentinel: digestJson(productionSentinelProof),
+    tokenAuthority: Object.fromEntries(tokenAuthorityProofs.map((proof) =>
+      [proof.kind, digestJson(proof)])),
+    buildUsage: digestJson(buildUsageProof),
+  };
+}
+
+const stagedSnapshotProofKeys = ["accountId", "capturedAt", "mutation", "outcome",
+  "proof_digest", "snapshotCompletedAt", "snapshotStartedAt", "sourceSha", "state_digest",
+  "stagedTriggerCount"];
+
+function validateStagedSnapshotProofEvidence(proof, { accountId, sourceSha },
+  now = Date.now(), maximumAgeMs = 5 * 60_000) {
+  const captured = Date.parse(proof?.capturedAt ?? "");
+  const started = Date.parse(proof?.snapshotStartedAt ?? "");
+  const completed = Date.parse(proof?.snapshotCompletedAt ?? "");
+  if (!proof || !same(sorted(Object.keys(proof)), sorted(stagedSnapshotProofKeys)) ||
+      proof.outcome !== "workers-builds-staged-snapshot-valid" || proof.mutation !== false ||
+      proof.accountId !== accountId || proof.sourceSha !== sourceSha ||
+      proof.stagedTriggerCount !== 1 || !/^[0-9a-f]{64}$/u.test(proof.proof_digest ?? "") ||
+      !/^[0-9a-f]{64}$/u.test(proof.state_digest ?? "") ||
+      !isUtcTimestamp(proof.capturedAt) || !isUtcTimestamp(proof.snapshotStartedAt) ||
+      !isUtcTimestamp(proof.snapshotCompletedAt) || !Number.isFinite(captured) ||
+      !Number.isFinite(started) || !Number.isFinite(completed) || started > completed ||
+      completed > captured || captured - completed > 5 * 60_000 ||
+      completed - started > 5 * 60_000 || captured > now + 30_000 ||
+      now - captured > maximumAgeMs || proof.proof_digest !== digestJson({
+        state_digest: proof.state_digest, snapshotStartedAt: proof.snapshotStartedAt,
+        snapshotCompletedAt: proof.snapshotCompletedAt, capturedAt: proof.capturedAt,
+      }))
+    fail("review activation authority staged proof drift");
+  return { captured, started, completed };
+}
+
+export function issueReviewActivationAuthority({ production, review, accountId, sourceSha,
+  stagedProof, currentStagedProof, repositoryConnectionProof, productionSentinelProof,
+  tokenAuthorityProofs, buildUsageProof, tokenRows }, now = Date.now()) {
+  validateRepositoryConnectionOwnerProof(repositoryConnectionProof, accountId, sourceSha, now);
+  const sentinel = validateSentinelRefAbsence(productionSentinelProof, now);
+  validateTokenAuthorityProofs({ production, review, accountId, proofs: tokenAuthorityProofs,
+    tokenRows, sourceSha }, now);
+  validateBuildUsageProof(review, buildUsageProof, accountId, now);
+  validateStagedProof(stagedProof, currentStagedProof, now);
+  const capturedAt = new Date(now).toISOString();
+  const expiresAt = new Date(now + reviewActivationAuthorityLifetimeMs).toISOString();
+  const authority = {
+    outcome: "workers-builds-review-activation-authority-valid",
+    mutation: false,
+    phase: "review-trigger-activation-and-proof",
+    accountId,
+    sourceSha,
+    capturedAt,
+    expiresAt,
+    planDigest: digestJson(provisioningSetupPlan(production, review)),
+    productionContractDigest: digestJson(production),
+    reviewContractDigest: digestJson(review),
+    stagedSnapshot: {
+      predecessorProofDigest: stagedProof.proof_digest,
+      stateDigest: currentStagedProof.state_digest,
+      proofDigest: currentStagedProof.proof_digest,
+      capturedAt: currentStagedProof.capturedAt,
+      startedAt: currentStagedProof.snapshotStartedAt,
+      completedAt: currentStagedProof.snapshotCompletedAt,
+    },
+    repositoryOwner: {
+      capturedAt: repositoryConnectionProof.capturedAt,
+      githubApp: structuredClone(repositoryConnectionProof.githubApp),
+      websitePreserved: repositoryConnectionProof.websitePreserved,
+    },
+    productionSentinel: { branch: sentinel.branch,
+      capturedAt: productionSentinelProof.capturedAt },
+    tokenAuthority: tokenAuthorityProofs.map(({ kind, tokenId, modifiedOn, capturedAt: captured }) =>
+      ({ kind, tokenId, modifiedOn, capturedAt: captured })),
+    buildUsage: {
+      capturedAt: buildUsageProof.capturedAt,
+      monthlyMinutesUsed: buildUsageProof.monthlyMinutesUsed,
+      alertAtMinutes: buildUsageProof.alertAtMinutes,
+      disableAtMinutes: buildUsageProof.disableAtMinutes,
+    },
+    evidenceDigests: reviewActivationEvidenceDigests({ stagedProof, repositoryConnectionProof,
+      productionSentinelProof, tokenAuthorityProofs, buildUsageProof }),
+  };
+  return { ...authority, proof_digest: digestJson(authority) };
+}
+
+export function validateReviewActivationAuthority(proof, { production, review, accountId,
+  sourceSha, stagedProof, repositoryConnectionProof, productionSentinelProof,
+  tokenAuthorityProofs, buildUsageProof }, now = Date.now(),
+minimumRemainingMs = reviewActivationTransitionBudgetMs) {
+  const keys = ["accountId", "buildUsage", "capturedAt", "evidenceDigests", "expiresAt",
+    "mutation", "outcome", "phase", "planDigest", "productionContractDigest",
+    "productionSentinel", "proof_digest", "repositoryOwner", "reviewContractDigest",
+    "sourceSha", "stagedSnapshot", "tokenAuthority"];
+  const captured = Date.parse(proof?.capturedAt ?? "");
+  const expires = Date.parse(proof?.expiresAt ?? "");
+  if (!proof || !same(sorted(Object.keys(proof)), sorted(keys)) ||
+      proof.outcome !== "workers-builds-review-activation-authority-valid" ||
+      proof.mutation !== false || proof.phase !== "review-trigger-activation-and-proof" ||
+      proof.accountId !== accountId || proof.sourceSha !== sourceSha ||
+      !isUtcTimestamp(proof.capturedAt) || !isUtcTimestamp(proof.expiresAt) ||
+      !Number.isFinite(captured) || !Number.isFinite(expires) ||
+      captured > now + 30_000 || expires - captured !== reviewActivationAuthorityLifetimeMs ||
+      now >= expires || expires - now < minimumRemainingMs ||
+      proof.planDigest !== digestJson(provisioningSetupPlan(production, review)) ||
+      proof.productionContractDigest !== digestJson(production) ||
+      proof.reviewContractDigest !== digestJson(review) ||
+      proof.proof_digest !== digestJson(Object.fromEntries(Object.entries(proof)
+        .filter(([key]) => key !== "proof_digest"))))
+    fail("review activation authority proof is stale, malformed, or cross-phase");
+  validateStagedSnapshotProofEvidence(stagedProof, { accountId, sourceSha }, captured);
+  const stagedCaptured = Date.parse(proof.stagedSnapshot?.capturedAt ?? "");
+  const stagedStarted = Date.parse(proof.stagedSnapshot?.startedAt ?? "");
+  const stagedCompleted = Date.parse(proof.stagedSnapshot?.completedAt ?? "");
+  validateRepositoryConnectionOwnerProof(repositoryConnectionProof, accountId, sourceSha,
+    captured);
+  const sentinel = validateSentinelRefAbsence(productionSentinelProof, captured);
+  const proofByKind = Object.fromEntries(tokenAuthorityProofs.map((item) => [item.kind, item]));
+  validateTokenAuthorityProofs({ production, review, accountId, proofs: tokenAuthorityProofs,
+    tokenRows: {
+      production: { cloudflare_token_id: proofByKind.production?.tokenId },
+      review: { cloudflare_token_id: proofByKind.review?.tokenId },
+    }, sourceSha }, captured);
+  validateBuildUsageProof(review, buildUsageProof, accountId, captured);
+  if (!proof.stagedSnapshot ||
+      !same(sorted(Object.keys(proof.stagedSnapshot)), sorted(["capturedAt", "completedAt",
+        "predecessorProofDigest", "proofDigest", "startedAt", "stateDigest"])) ||
+      proof.stagedSnapshot.predecessorProofDigest !== stagedProof.proof_digest ||
+      proof.stagedSnapshot.stateDigest !== stagedProof.state_digest ||
+      !/^[0-9a-f]{64}$/u.test(proof.stagedSnapshot.proofDigest ?? "") ||
+      proof.stagedSnapshot.proofDigest !== digestJson({
+        state_digest: proof.stagedSnapshot.stateDigest,
+        snapshotStartedAt: proof.stagedSnapshot.startedAt,
+        snapshotCompletedAt: proof.stagedSnapshot.completedAt,
+        capturedAt: proof.stagedSnapshot.capturedAt,
+      }) ||
+      !isUtcTimestamp(proof.stagedSnapshot.capturedAt) ||
+      !isUtcTimestamp(proof.stagedSnapshot.startedAt) ||
+      !isUtcTimestamp(proof.stagedSnapshot.completedAt) ||
+      !Number.isFinite(stagedCaptured) || !Number.isFinite(stagedStarted) ||
+      !Number.isFinite(stagedCompleted) || stagedStarted > stagedCompleted ||
+      stagedCompleted > stagedCaptured || stagedCaptured > captured ||
+      stagedCompleted - stagedStarted > 5 * 60_000 ||
+      !same(proof.evidenceDigests, reviewActivationEvidenceDigests({ stagedProof,
+    repositoryConnectionProof, productionSentinelProof, tokenAuthorityProofs,
+    buildUsageProof })) ||
+      !same(proof.repositoryOwner, { capturedAt: repositoryConnectionProof.capturedAt,
+        githubApp: repositoryConnectionProof.githubApp,
+        websitePreserved: repositoryConnectionProof.websitePreserved }) ||
+      !same(proof.productionSentinel, { branch: sentinel.branch,
+        capturedAt: productionSentinelProof.capturedAt }) ||
+      !same(proof.tokenAuthority, tokenAuthorityProofs.map(
+        ({ kind, tokenId, modifiedOn, capturedAt: capturedAt_ }) =>
+          ({ kind, tokenId, modifiedOn, capturedAt: capturedAt_ }))) ||
+      !same(proof.buildUsage, { capturedAt: buildUsageProof.capturedAt,
+        monthlyMinutesUsed: buildUsageProof.monthlyMinutesUsed,
+        alertAtMinutes: buildUsageProof.alertAtMinutes,
+        disableAtMinutes: buildUsageProof.disableAtMinutes }))
+    fail("review activation authority evidence binding drift");
+  return { outcome: proof.outcome, mutation: false, phase: proof.phase,
+    proofValidationTime: captured, checkedAt: new Date(now).toISOString(),
+    expiresAt: proof.expiresAt, proof_digest: proof.proof_digest };
+}
+
+export function validateReviewActivationAuthorityCheckpoint(proof, arguments_, checkpoint,
+  now = Date.now()) {
+  const checked = Date.parse(checkpoint?.checkedAt ?? "");
+  if (!checkpoint || !same(sorted(Object.keys(checkpoint)), sorted(["checkedAt", "expiresAt",
+    "mutation", "outcome", "phase", "proofValidationTime", "proof_digest"])) ||
+      checkpoint.outcome !== "workers-builds-review-activation-authority-valid" ||
+      checkpoint.mutation !== false || checkpoint.phase !== "review-trigger-activation-and-proof" ||
+      checkpoint.proof_digest !== proof?.proof_digest || !isUtcTimestamp(checkpoint.checkedAt) ||
+      !Number.isFinite(checked) || checked > now)
+    fail("review activation authority checkpoint is stale or malformed");
+  const start = validateReviewActivationAuthority(proof, arguments_, checked,
+    reviewActivationTransitionBudgetMs);
+  if (!same(start, checkpoint)) fail("review activation authority checkpoint drift");
+  return validateReviewActivationAuthority(proof, arguments_, now, 0);
+}
+
 export function productionTriggerSpec(contract, {
   externalScriptId, repositoryConnectionUuid, buildTokenUuid,
 }) {
@@ -446,6 +651,14 @@ function privateFileReference(environmentVariable) {
   return { privateFileEnvironment: environmentVariable };
 }
 
+function reviewActivationAuthorityPrecondition() {
+  return {
+    proof: resultReference("review-activation-authority", "proof_digest"),
+    command: "npm run provision:workers-builds:verify-review-activation-authority-proof",
+    minimumRemainingSeconds: reviewActivationTransitionBudgetMs / 1000,
+  };
+}
+
 function triggerPlanSpec(spec, scriptOperation, tokenOperation) {
   return {
     ...spec,
@@ -536,6 +749,8 @@ export function provisioningSetupPlan(production, review) {
       "ATRINIK_PRODUCTION_STAGED_TRIGGER_UUID_FILE",
       "ATRINIK_REVIEW_STAGED_TRIGGER_UUID_FILE",
       "ATRINIK_REVIEW_STAGED_ENVIRONMENT_PROOF_OUTPUT_FILE",
+      "ATRINIK_REVIEW_ACTIVATION_AUTHORITY_PROOF_OUTPUT_FILE",
+      "ATRINIK_REVIEW_ACTIVATION_AUTHORITY_PROOF_FILE",
       "ATRINIK_REPOSITORY_CONNECTION_OWNER_PROOF_FILE",
       "ATRINIK_WORKERS_BUILDS_USAGE_PROOF_FILE",
       "ATRINIK_STAGED_PROOF_OUTPUT_FILE",
@@ -654,22 +869,31 @@ export function provisioningSetupPlan(production, review) {
       precondition: { stagedProof: resultReference("staged-readback", "proof_digest") },
       preconditionCommand: "npm run provision:workers-builds:verify-staged-proof",
       operations: [
+        { id: "review-activation-authority", actor: "workers-builds-control-plane-operator",
+          action: "bind-fresh-owner-token-sentinel-usage-and-staged-evidence-into-bounded-review-phase-authority",
+          mutation: false,
+          command: "npm run provision:workers-builds:verify-review-activation-authority",
+          precondition: { stagedProof: resultReference("staged-readback", "proof_digest") },
+          produces: { proof_digest: "bounded-review-activation-authority-proof-digest" } },
         { id: "review-root-recheck-before-trigger", actor: "github-owner-readback",
           action: "prove-private-random-review-staging-root-absent-from-every-current-non-main-ref-outside-sandbox",
           mutation: false, rootDirectory: reviewStagingRoot,
           command: "npm run provision:workers-builds:verify-review-staging-root-create",
+          precondition: { reviewActivationAuthority: reviewActivationAuthorityPrecondition() },
           proof: privateFileReference("ATRINIK_REVIEW_STAGING_ROOT_CREATE_PROOF_FILE"),
           produces: { proof_digest: "fresh-review-staging-root-absence-proof-digest" } },
         { id: "review-trigger-create", actor: "workers-builds-control-plane-operator",
           action: "post-preview-role-trigger-with-private-absent-root-inert-commands-and-zero-resource-token",
           mutation: true,
-          precondition: { reviewRootProof: resultReference(
-            "review-root-recheck-before-trigger", "proof_digest") },
+          precondition: { reviewActivationAuthority: reviewActivationAuthorityPrecondition(),
+            reviewRootProof: resultReference(
+              "review-root-recheck-before-trigger", "proof_digest") },
           request: { method: "POST", path: "/builds/triggers",
             body: triggerPlanSpec(reviewStaged, "production-script", "review-build-token") },
           produces: { trigger_uuid: "provider-trigger-uuid" } },
         { id: "review-environment", actor: "workers-builds-control-plane-operator",
           action: "patch-exact-nonsecret-review-environment", mutation: true,
+          precondition: { reviewActivationAuthority: reviewActivationAuthorityPrecondition() },
           request: { method: "PATCH",
             path: apiPathReference("/builds/triggers/{trigger_uuid}/environment_variables",
               "review-trigger-create", "trigger_uuid"),
@@ -697,17 +921,20 @@ export function provisioningSetupPlan(production, review) {
           stability: "two-complete-identical-passes-plus-final-identical-sweep",
           validator: "exact-journaled-production-and-review-staged-triggers-environments-no-hooks-or-active-builds",
           command: "npm run provision:workers-builds:verify-review-staged-environment",
+          precondition: { reviewActivationAuthority: reviewActivationAuthorityPrecondition() },
           produces: { proof_digest: "fresh-staged-review-environment-readback-digest" } },
         { id: "review-root-recheck-before-activation", actor: "github-owner-readback",
           action: "repeat-private-random-review-staging-root-absence-proof-immediately-before-final-preview-patch-outside-sandbox",
           mutation: false, rootDirectory: reviewStagingRoot,
           command: "npm run provision:workers-builds:verify-review-staging-root-activation",
+          precondition: { reviewActivationAuthority: reviewActivationAuthorityPrecondition() },
           proof: privateFileReference("ATRINIK_REVIEW_STAGING_ROOT_ACTIVATION_PROOF_FILE"),
           produces: { proof_digest: "fresh-review-staging-root-absence-proof-digest" } },
         { id: "review-trigger-activate", actor: "workers-builds-control-plane-operator",
           action: "patch-preview-trigger-atomically-to-reviewed-root-and-commands",
           mutation: true,
           precondition: {
+            reviewActivationAuthority: reviewActivationAuthorityPrecondition(),
             reviewEnvironmentProof: resultReference(
               "review-environment-readback-before-activation", "proof_digest"),
             reviewRootProof: resultReference(
@@ -720,6 +947,7 @@ export function provisioningSetupPlan(production, review) {
         { id: "review-activation-readback", actor: "workers-builds-control-plane-operator",
           action: "prove-final-review-trigger-production-staged-and-no-build-active",
           mutation: false, command: "npm run provision:workers-builds:verify-review-activation",
+          precondition: { reviewActivationAuthority: reviewActivationAuthorityPrecondition() },
           produces: { proof_digest: "fresh-live-review-active-production-staged-proof-digest" } },
       ],
       proof: "disposable-same-repository-non-main-build-only-branch",
@@ -947,6 +1175,8 @@ export function validateSetupPlan(plan) {
   }
   const reviewOperations = plan.reviewActivation?.operations;
   const expectedReviewOperations = [
+    ["review-activation-authority", "workers-builds-control-plane-operator", false,
+      "bind-fresh-owner-token-sentinel-usage-and-staged-evidence-into-bounded-review-phase-authority"],
     ["review-root-recheck-before-trigger", "github-owner-readback", false,
       "prove-private-random-review-staging-root-absent-from-every-current-non-main-ref-outside-sandbox"],
     ["review-trigger-create", "workers-builds-control-plane-operator", true,
@@ -1272,21 +1502,7 @@ export function validateReviewBuildBoundary({ review, builds, buildLimits,
     fail("Workers Builds account limit readback is malformed");
   if (limits.has_reached_build_minutes_limit)
     fail("Workers Builds account has reached its monthly limit");
-  const usageKeys = ["accountId", "alertAtMinutes", "capturedAt", "disableAtMinutes",
-    "monthlyMinutesUsed", "source"];
-  const usageCaptured = Date.parse(buildUsageProof?.capturedAt ?? "");
-  if (!buildUsageProof || !same(sorted(Object.keys(buildUsageProof)), sorted(usageKeys)) ||
-      buildUsageProof.source !== "cloudflare-owner-build-usage-readback" ||
-      buildUsageProof.accountId !== accountId ||
-      buildUsageProof.alertAtMinutes !== review.automaticReview.costPolicy.alertAtMinutes ||
-      buildUsageProof.disableAtMinutes !==
-        review.automaticReview.costPolicy.maximumMonthlyReviewBuildMinutes ||
-      !Number.isSafeInteger(buildUsageProof.monthlyMinutesUsed) ||
-      buildUsageProof.monthlyMinutesUsed < 0 ||
-      buildUsageProof.monthlyMinutesUsed >= buildUsageProof.alertAtMinutes ||
-      !Number.isFinite(usageCaptured) || usageCaptured > now + 30_000 ||
-      now - usageCaptured > 5 * 60_000)
-    fail("Workers Builds private usage boundary is stale or exhausted");
+  validateBuildUsageProof(review, buildUsageProof, accountId, now);
 }
 
 export function validateConfiguredBuildsSnapshot({ production, review, scripts,
@@ -1447,8 +1663,25 @@ function validateActivationSnapshot({ production, review, scripts,
   nonEntrypointTriggers, deployHooks, builds, buildTokens, accountTriggers, reviewBuildState,
   accountId, tokenAuthorityProofs, sourceSha,
   productionSentinelProof,
-  snapshotManifest, reviewResultProof }, { reviewActive, requireReviewResult = reviewActive }) {
-  validateSentinelRefAbsence(productionSentinelProof);
+  snapshotManifest, reviewResultProof, reviewActivationAuthorityProof,
+  reviewActivationAuthorityEvidence, reviewActivationAuthorityCheckpoint },
+{ reviewActive, requireReviewResult = reviewActive }) {
+  const reviewAuthority = reviewActive && !requireReviewResult ?
+    (reviewActivationAuthorityCheckpoint ? validateReviewActivationAuthorityCheckpoint(
+      reviewActivationAuthorityProof, {
+        production, review, accountId, sourceSha, ...reviewActivationAuthorityEvidence,
+      }, reviewActivationAuthorityCheckpoint) :
+      validateReviewActivationAuthority(reviewActivationAuthorityProof, {
+        production, review, accountId, sourceSha, ...reviewActivationAuthorityEvidence,
+      })) : null;
+  const proofValidationTime = reviewAuthority?.proofValidationTime ?? Date.now();
+  if (reviewAuthority &&
+      (!same(productionSentinelProof, reviewActivationAuthorityEvidence.productionSentinelProof) ||
+       !same(tokenAuthorityProofs, reviewActivationAuthorityEvidence.tokenAuthorityProofs) ||
+       !same(reviewBuildState.buildUsageProof,
+         reviewActivationAuthorityEvidence.buildUsageProof)))
+    fail("review activation snapshot authority evidence drift");
+  validateSentinelRefAbsence(productionSentinelProof, proofValidationTime);
   const scriptRows = requireEnvelope(scripts, "scripts");
   if (!Array.isArray(scriptRows)) fail("script inventory is invalid");
   validateRetiredReviewWorkerAbsent(scriptRows, review, "staged Worker inventory");
@@ -1484,7 +1717,8 @@ function validateActivationSnapshot({ production, review, scripts,
       cloudflareTokenId: tokenAuthorityProofs?.find(({ kind }) => kind === "review")?.tokenId },
   ]);
   validateTokenAuthorityProofs({ production, review, accountId, proofs: tokenAuthorityProofs,
-    tokenRows: { production: productionToken, review: reviewToken }, sourceSha });
+    tokenRows: { production: productionToken, review: reviewToken }, sourceSha },
+  proofValidationTime);
   const productionExpected = productionTriggerSpec(production, {
     externalScriptId: productionScript.tag,
     repositoryConnectionUuid: productionRows[0].repo_connection?.repo_connection_uuid,
@@ -1526,7 +1760,7 @@ function validateActivationSnapshot({ production, review, scripts,
     "staged Deploy Hook")) validateNoDeployHooks(envelope, label);
   for (const [label, envelope] of exactLabeledInventories(builds, stagedLabels,
     "staged build")) validateNoActiveBuilds(envelope, label);
-  validateReviewBuildBoundary({ review, ...reviewBuildState, accountId });
+  validateReviewBuildBoundary({ review, ...reviewBuildState, accountId }, proofValidationTime);
   if (requireReviewResult) validateReviewResultProof({ proof: reviewResultProof,
     reviewTrigger: reviewRows[0], reviewToken,
     builds: reviewBuildState.builds, mainSha: sourceSha });
@@ -1540,15 +1774,21 @@ function validateActivationSnapshot({ production, review, scripts,
     production: { repository: productionSentinelProof.repository,
       branch: productionSentinelProof.branch, refs: productionSentinelProof.refs },
   };
-  const proof_digest = digestJson({ snapshotCoordinate, sentinelCoordinates, scripts,
+  const state_digest = digestJson({ snapshotCoordinate, sentinelCoordinates, scripts,
     productionTriggers, productionEnvironment, reviewTriggers, reviewEnvironment,
     nonEntrypointTriggers, deployHooks, builds, buildTokens, accountTriggers,
     reviewBuildState, tokenAuthorityProofs,
+    ...(reviewAuthority ? { reviewActivationAuthorityProof } : {}),
     ...(requireReviewResult ? { reviewResultProof } : {}) });
+  const proof_digest = digestJson({ state_digest,
+    snapshotStartedAt: snapshotManifest.startedAt,
+    snapshotCompletedAt: snapshotManifest.completedAt, capturedAt });
   return { outcome: requireReviewResult ? "workers-builds-production-activation-snapshot-valid" :
     reviewActive ? "workers-builds-review-activation-snapshot-valid" :
       "workers-builds-staged-snapshot-valid", mutation: false,
-    stagedTriggerCount: expectedTriggerCount, accountId, sourceSha, capturedAt, proof_digest };
+    stagedTriggerCount: expectedTriggerCount, accountId, sourceSha, capturedAt,
+    snapshotStartedAt: snapshotManifest.startedAt,
+    snapshotCompletedAt: snapshotManifest.completedAt, state_digest, proof_digest };
 }
 
 export function validateStagedBuildsSnapshot(arguments_) {
@@ -1565,24 +1805,22 @@ export function validateReviewActivationSnapshot(arguments_) {
 }
 
 export function validateStagedProof(proof, current, now = Date.now()) {
-  const keys = ["accountId", "capturedAt", "mutation", "outcome", "proof_digest",
-    "sourceSha", "stagedTriggerCount"];
-  const captured = Date.parse(proof?.capturedAt ?? "");
-  const currentCaptured = Date.parse(current?.capturedAt ?? "");
-  if (!proof || !current || !same(sorted(Object.keys(proof)), sorted(keys)) ||
-      !same(sorted(Object.keys(current)), sorted(keys)) ||
+  if (!proof || !current ||
       proof.accountId !== current.accountId || proof.sourceSha !== current.sourceSha ||
-      proof.proof_digest !== current.proof_digest ||
-      proof.outcome !== "workers-builds-staged-snapshot-valid" || proof.mutation !== false ||
-      proof.stagedTriggerCount !== 1 || !/^[0-9a-f]{64}$/u.test(proof.proof_digest ?? "") ||
-      !Number.isFinite(captured) || captured > now + 30_000 || now - captured > 5 * 60_000)
+      proof.state_digest !== current.state_digest)
     fail("staged activation proof is missing, stale, or mismatched");
-  if (current.outcome !== proof.outcome || current.mutation !== false ||
-      current.stagedTriggerCount !== 1 || !Number.isFinite(currentCaptured) ||
-      currentCaptured > now + 30_000 || now - currentCaptured > 30_000)
-    fail("current staged activation readback is stale or malformed");
+  try {
+    validateStagedSnapshotProofEvidence(proof,
+      { accountId: proof.accountId, sourceSha: proof.sourceSha }, now);
+    validateStagedSnapshotProofEvidence(current,
+      { accountId: proof.accountId, sourceSha: proof.sourceSha }, now, 30_000);
+  } catch { fail("staged activation proof is missing, stale, or mismatched"); }
+  if (Date.parse(current.capturedAt) < Date.parse(proof.capturedAt) ||
+      Date.parse(current.snapshotStartedAt) < Date.parse(proof.snapshotCompletedAt) ||
+      Date.parse(current.snapshotCompletedAt) < Date.parse(proof.snapshotCompletedAt))
+    fail("staged activation proof chronology did not advance");
   return { outcome: "workers-builds-staged-activation-proof-valid", mutation: false,
-    proof_digest: proof.proof_digest };
+    state_digest: current.state_digest, proof_digest: current.proof_digest };
 }
 
 export function publicStagedProofSummary(proof) {
@@ -1831,7 +2069,7 @@ export async function readPrivateJson(path, label) {
   } finally { await handle.close(); }
 }
 
-export async function readProductionSentinelProof(environment = process.env, now = Date.now()) {
+async function loadProductionSentinelProof(environment = process.env) {
   const productionBranch = await readPrivateValue(
     environment.ATRINIK_PRODUCTION_STAGING_SENTINEL_BRANCH_FILE,
     "production staging sentinel branch", stagingBranchPattern);
@@ -1840,8 +2078,43 @@ export async function readProductionSentinelProof(environment = process.env, now
     "production staging sentinel refs");
   if (productionProof.branch !== productionBranch)
     fail("production staging sentinel proof branch drift");
+  return productionProof;
+}
+
+export async function readProductionSentinelProof(environment = process.env, now = Date.now()) {
+  const productionProof = await loadProductionSentinelProof(environment);
   validateSentinelRefAbsence(productionProof, now);
   return { productionSentinelProof: productionProof };
+}
+
+async function readReviewActivationAuthorityEvidence(environment = process.env) {
+  return {
+    stagedProof: await readPrivateJson(environment.ATRINIK_STAGED_PROOF_FILE,
+      "staged activation proof"),
+    repositoryConnectionProof: await readPrivateJson(
+      environment.ATRINIK_REPOSITORY_CONNECTION_OWNER_PROOF_FILE,
+      "shared repository connection owner proof"),
+    productionSentinelProof: await loadProductionSentinelProof(environment),
+    tokenAuthorityProofs: [
+      await readPrivateJson(environment.ATRINIK_PRODUCTION_BUILD_TOKEN_PERMISSION_PROOF_FILE,
+        "production build token permission proof"),
+      await readPrivateJson(environment.ATRINIK_REVIEW_BUILD_TOKEN_PERMISSION_PROOF_FILE,
+        "review build token permission proof"),
+    ],
+    buildUsageProof: await readPrivateJson(environment.ATRINIK_WORKERS_BUILDS_USAGE_PROOF_FILE,
+      "Workers Builds usage proof"),
+  };
+}
+
+async function readAndValidateReviewActivationAuthority({ production, review, accountId,
+  sourceSha, environment = process.env, minimumRemainingMs = reviewActivationTransitionBudgetMs }) {
+  const evidence = await readReviewActivationAuthorityEvidence(environment);
+  const proof = await readPrivateJson(environment.ATRINIK_REVIEW_ACTIVATION_AUTHORITY_PROOF_FILE,
+    "review activation authority proof");
+  const validation = validateReviewActivationAuthority(proof, {
+    production, review, accountId, sourceSha, ...evidence,
+  }, Date.now(), minimumRemainingMs);
+  return { proof, evidence, validation };
 }
 
 export async function readReviewStagingRootProof(proofVariable, expectedPhase,
@@ -2450,7 +2723,9 @@ async function validateConfiguredSnapshotDirectory({ snapshotDirectory, producti
 async function validateStagedSnapshotDirectory({ snapshotDirectory, production, review,
   accountId, tokenAuthorityProofs, sourceSha },
 { reviewActive = false, requireReviewResult = reviewActive,
-  reviewResultProof = undefined } = {}) {
+  reviewResultProof = undefined, reviewActivationAuthorityProof = undefined,
+  reviewActivationAuthorityEvidence = undefined,
+  reviewActivationAuthorityCheckpoint = undefined } = {}) {
   const snapshotManifest = await loadSnapshot(snapshotDirectory, "snapshot-manifest.json");
   validateSnapshotManifest(snapshotManifest, { accountId, sourceSha, production, review });
   const core = production.workers[0];
@@ -2489,19 +2764,32 @@ async function validateStagedSnapshotDirectory({ snapshotDirectory, production, 
     buildUsageProof: await readPrivateJson(process.env.ATRINIK_WORKERS_BUILDS_USAGE_PROOF_FILE,
       "Workers Builds usage proof"),
   };
-  const { productionSentinelProof } = await readProductionSentinelProof();
+  const productionSentinelProof = reviewActivationAuthorityEvidence?.productionSentinelProof ??
+    (await readProductionSentinelProof()).productionSentinelProof;
   const arguments_ = { production, review, scripts, productionTriggers,
     productionEnvironment, reviewTriggers, reviewEnvironment, nonEntrypointTriggers,
     deployHooks, builds, buildTokens,
     accountTriggers: await loadSnapshot(snapshotDirectory, "account-triggers.json"),
     reviewBuildState, accountId, tokenAuthorityProofs, sourceSha,
-    productionSentinelProof, snapshotManifest, reviewResultProof };
+    productionSentinelProof, snapshotManifest, reviewResultProof,
+    reviewActivationAuthorityProof, reviewActivationAuthorityEvidence,
+    reviewActivationAuthorityCheckpoint };
   return reviewActive ? (requireReviewResult ? validateProductionActivationSnapshot(arguments_) :
     validateReviewActivationSnapshot(arguments_)) : validateStagedBuildsSnapshot(arguments_);
 }
 
 export async function validateReviewStagedEnvironmentSnapshotDirectory({ snapshotDirectory,
-  production, review, accountId, sourceSha, tokenAuthorityProofs }) {
+  production, review, accountId, sourceSha, tokenAuthorityProofs,
+  reviewActivationAuthorityProof, reviewActivationAuthorityEvidence,
+  reviewActivationAuthorityCheckpoint }) {
+  const authorityArguments = { production, review, accountId, sourceSha,
+    ...reviewActivationAuthorityEvidence };
+  const { proofValidationTime } = reviewActivationAuthorityCheckpoint ?
+    validateReviewActivationAuthorityCheckpoint(reviewActivationAuthorityProof,
+      authorityArguments, reviewActivationAuthorityCheckpoint) :
+    validateReviewActivationAuthority(reviewActivationAuthorityProof, authorityArguments);
+  if (!same(tokenAuthorityProofs, reviewActivationAuthorityEvidence.tokenAuthorityProofs))
+    fail("review staged token authority evidence drift");
   const manifest = await loadSnapshot(snapshotDirectory, "snapshot-manifest.json");
   validateSnapshotManifest(manifest, { accountId, sourceSha, production, review });
   const core = production.workers[0];
@@ -2541,11 +2829,13 @@ export async function validateReviewStagedEnvironmentSnapshotDirectory({ snapsho
     { uuid: reviewToken[0].build_token_uuid, name: "Atrinik metaserver review check" },
   ]);
   validateTokenAuthorityProofs({ production, review, accountId, proofs: tokenAuthorityProofs,
-    tokenRows: { production: productionToken[0], review: reviewToken[0] }, sourceSha });
+    tokenRows: { production: productionToken[0], review: reviewToken[0] }, sourceSha },
+  proofValidationTime);
   const rootDirectory = await readPrivateValue(
     process.env.ATRINIK_REVIEW_STAGING_ROOT_DIRECTORY_FILE,
     "review staging root directory", reviewStagingRootPattern);
-  const { productionSentinelProof } = await readProductionSentinelProof();
+  const productionSentinelProof = reviewActivationAuthorityEvidence.productionSentinelProof;
+  validateSentinelRefAbsence(productionSentinelProof, proofValidationTime);
   const productionExpected = productionTriggerSpec(production, {
     externalScriptId: script[0].tag,
     repositoryConnectionUuid: productionActual.repo_connection?.repo_connection_uuid,
@@ -2589,7 +2879,8 @@ export async function validateReviewStagedEnvironmentSnapshotDirectory({ snapsho
   return { outcome: result.outcome, mutation: false, accountId, sourceSha, capturedAt,
     proof_digest: digestJson({ manifest, productionTrigger: productionActual,
       reviewTrigger: reviewActual, environment,
-      tokenIds: [productionToken[0].build_token_uuid, reviewToken[0].build_token_uuid] }) };
+      tokenIds: [productionToken[0].build_token_uuid, reviewToken[0].build_token_uuid],
+      reviewActivationAuthorityProof }) };
 }
 
 async function validateFreshSnapshotDirectory({ snapshotDirectory, production, review,
@@ -2662,6 +2953,8 @@ export const credentialedProvisioningModes = Object.freeze([
   "--verify-preflight",
   "--verify-production-activation",
   "--verify-review-activation",
+  "--verify-review-activation-authority",
+  "--verify-review-activation-authority-proof",
   "--verify-review-staged-environment",
   "--verify-review-staging-root-activation",
   "--verify-review-staging-root-create",
@@ -2740,8 +3033,49 @@ export async function runProvisioningCli(mode = process.argv[2] ?? "--validate-o
     process.stdout.write(`${JSON.stringify(publicStagedProofSummary(stagedProof))}\n`);
     return;
   }
+  if (mode === "--verify-review-activation-authority") {
+    const accountId = await readPrivateValue(process.env.ATRINIK_CLOUDFLARE_ACCOUNT_ID_FILE,
+      "Cloudflare account ID", accountIdPattern);
+    const evidence = await readReviewActivationAuthorityEvidence();
+    const current = await validateStagedSnapshotDirectory({
+      snapshotDirectory: process.env.ATRINIK_PROVIDER_SNAPSHOT_DIRECTORY,
+      production, review, accountId, tokenAuthorityProofs: evidence.tokenAuthorityProofs,
+      sourceSha,
+    });
+    validateStagedProof(evidence.stagedProof, current);
+    const tokenRows = requireExhaustiveEnvelope(await loadSnapshot(
+      process.env.ATRINIK_PROVIDER_SNAPSHOT_DIRECTORY, "build-tokens.json"),
+    "review activation authority build tokens");
+    const productionToken = tokenRows.find(({ build_token_name: name }) =>
+      name === "Atrinik metaserver production");
+    const reviewToken = tokenRows.find(({ build_token_name: name }) =>
+      name === "Atrinik metaserver review check");
+    if (!productionToken || !reviewToken)
+      fail("review activation authority token inventory drift");
+    const proof = issueReviewActivationAuthority({ production, review, accountId, sourceSha,
+      ...evidence, currentStagedProof: current,
+      tokenRows: { production: productionToken, review: reviewToken } });
+    await writePrivateProof(
+      process.env.ATRINIK_REVIEW_ACTIVATION_AUTHORITY_PROOF_OUTPUT_FILE, proof);
+    process.stdout.write(`${JSON.stringify({ outcome: proof.outcome, mutation: false,
+      sourceSha, expiresAt: proof.expiresAt, proof_digest: proof.proof_digest })}\n`);
+    return;
+  }
+  if (mode === "--verify-review-activation-authority-proof") {
+    const accountId = await readPrivateValue(process.env.ATRINIK_CLOUDFLARE_ACCOUNT_ID_FILE,
+      "Cloudflare account ID", accountIdPattern);
+    const { proof, validation } = await readAndValidateReviewActivationAuthority({
+      production, review, accountId, sourceSha,
+    });
+    process.stdout.write(`${JSON.stringify({ outcome: validation.outcome, mutation: false,
+      sourceSha, expiresAt: validation.expiresAt, proof_digest: proof.proof_digest })}\n`);
+    return;
+  }
   if (mode === "--verify-review-staging-root-create" ||
       mode === "--verify-review-staging-root-activation") {
+    const accountId = await readPrivateValue(process.env.ATRINIK_CLOUDFLARE_ACCOUNT_ID_FILE,
+      "Cloudflare account ID", accountIdPattern);
+    await readAndValidateReviewActivationAuthority({ production, review, accountId, sourceSha });
     const activation = mode === "--verify-review-staging-root-activation";
     const proofVariable = activation ? "ATRINIK_REVIEW_STAGING_ROOT_ACTIVATION_PROOF_FILE" :
       "ATRINIK_REVIEW_STAGING_ROOT_CREATE_PROOF_FILE";
@@ -2764,18 +3098,17 @@ export async function runProvisioningCli(mode = process.argv[2] ?? "--validate-o
     const productionReadToken = await readPrivateValue(
       process.env.ATRINIK_PRODUCTION_BUILD_TOKEN_SECRET_FILE,
       "production D1 read API token");
-    const tokenAuthorityProofs = [
-      await readPrivateJson(process.env.ATRINIK_PRODUCTION_BUILD_TOKEN_PERMISSION_PROOF_FILE,
-        "production build token permission proof"),
-      await readPrivateJson(process.env.ATRINIK_REVIEW_BUILD_TOKEN_PERMISSION_PROOF_FILE,
-        "review build token permission proof"),
-    ];
+    const authority = await readAndValidateReviewActivationAuthority({ production, review,
+      accountId, sourceSha });
+    const tokenAuthorityProofs = authority.evidence.tokenAuthorityProofs;
     const outputDirectory = process.env.ATRINIK_PROVIDER_SNAPSHOT_OUTPUT;
     await readProviderSnapshot({ accountId, token, productionReadToken, outputDirectory,
       production, review, sourceSha });
     const proof = await validateReviewStagedEnvironmentSnapshotDirectory({
       snapshotDirectory: outputDirectory, production, review, accountId, sourceSha,
-      tokenAuthorityProofs,
+      tokenAuthorityProofs, reviewActivationAuthorityProof: authority.proof,
+      reviewActivationAuthorityEvidence: authority.evidence,
+      reviewActivationAuthorityCheckpoint: authority.validation,
     });
     await writePrivateProof(process.env.ATRINIK_REVIEW_STAGED_ENVIRONMENT_PROOF_OUTPUT_FILE,
       proof);
@@ -2823,15 +3156,20 @@ export async function runProvisioningCli(mode = process.argv[2] ?? "--validate-o
       await readPrivateJson(process.env.ATRINIK_REVIEW_BUILD_TOKEN_PERMISSION_PROOF_FILE,
         "review build token permission proof"),
     ];
+    const requireReviewResult = mode === "--verify-production-activation";
+    const authority = requireReviewResult ? null :
+      await readAndValidateReviewActivationAuthority({ production, review, accountId, sourceSha });
     const outputDirectory = process.env.ATRINIK_PROVIDER_SNAPSHOT_OUTPUT;
     await readProviderSnapshot({ accountId, token, productionReadToken, outputDirectory,
       production, review, sourceSha });
-    const requireReviewResult = mode === "--verify-production-activation";
     const reviewResultProof = requireReviewResult ? await readPrivateJson(
       process.env.ATRINIK_REVIEW_RESULT_PROOF_FILE, "disposable review result proof") : undefined;
     const proof = await validateStagedSnapshotDirectory({ snapshotDirectory: outputDirectory,
       production, review, accountId, tokenAuthorityProofs, sourceSha,
-    }, { reviewActive: true, requireReviewResult, reviewResultProof });
+    }, { reviewActive: true, requireReviewResult, reviewResultProof,
+      reviewActivationAuthorityProof: authority?.proof,
+      reviewActivationAuthorityEvidence: authority?.evidence,
+      reviewActivationAuthorityCheckpoint: authority?.validation });
     await writePrivateProof(requireReviewResult ?
       process.env.ATRINIK_PRODUCTION_ACTIVATION_PROOF_OUTPUT_FILE :
       process.env.ATRINIK_REVIEW_ACTIVATION_PROOF_OUTPUT_FILE, proof);

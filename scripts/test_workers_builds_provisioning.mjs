@@ -14,6 +14,7 @@ import {
   credentialedProvisioningModes,
   createPrivateDirectory,
   initialBootstrapPredecessorConfiguration,
+  issueReviewActivationAuthority,
   loadSnapshot,
   materializeProductionConfigurations,
   normalizeBuildsListPage,
@@ -42,6 +43,8 @@ import {
   validateProductionControlPlane,
   validateProductionActivationSnapshot,
   validateReviewActivationSnapshot,
+  validateReviewActivationAuthority,
+  validateReviewActivationAuthorityCheckpoint,
   validateReviewStagedEnvironmentSnapshotDirectory,
   validateReviewStagedEnvironmentReadback,
   validateReviewStagingRootAbsence,
@@ -234,6 +237,35 @@ function configuredBoundary(productionSpec, reviewSpec) {
         accountPermissions: [], accountResources: [], zonePermissions: [], zoneResources: [] },
     ],
   };
+}
+
+function reviewActivationAuthorityFixture(stagedProof = null) {
+  const stagedCapturedAt = new Date().toISOString();
+  const stateDigest = "e".repeat(64);
+  stagedProof ??= {
+    outcome: "workers-builds-staged-snapshot-valid", mutation: false, accountId,
+    sourceSha: "a".repeat(40), stagedTriggerCount: 1, capturedAt: stagedCapturedAt,
+    snapshotStartedAt: stagedCapturedAt, snapshotCompletedAt: stagedCapturedAt,
+    state_digest: stateDigest,
+    proof_digest: createHash("sha256").update(JSON.stringify({ state_digest: stateDigest,
+      snapshotStartedAt: stagedCapturedAt, snapshotCompletedAt: stagedCapturedAt,
+      capturedAt: stagedCapturedAt })).digest("hex"),
+  };
+  const boundary = freshBoundary();
+  const configured = configuredBoundary({}, {});
+  const evidence = {
+    stagedProof,
+    repositoryConnectionProof: boundary.repositoryConnectionProof,
+    productionSentinelProof: boundary.productionSentinelProof,
+    tokenAuthorityProofs: configured.tokenAuthorityProofs,
+    buildUsageProof: configured.reviewBuildState.buildUsageProof,
+  };
+  const proof = issueReviewActivationAuthority({ production, review, accountId,
+    sourceSha: "a".repeat(40), ...evidence, currentStagedProof: stagedProof, tokenRows: {
+      production: { cloudflare_token_id: "production-token-id" },
+      review: { cloudflare_token_id: "review-token-id" },
+    } });
+  return { proof, evidence };
 }
 
 test("accepts the checked-in provisioning composition", async () => {
@@ -856,8 +888,11 @@ test("binds the staged review environment proof to both journaled triggers", asy
       ATRINIK_PRODUCTION_STAGING_SENTINEL_BRANCH_FILE: privatePaths["production-branch"],
       ATRINIK_PRODUCTION_STAGING_SENTINEL_REFS_FILE: privatePaths["production-proof"],
     });
+    const authority = reviewActivationAuthorityFixture();
     const arguments_ = { snapshotDirectory: snapshot, production, review, accountId, sourceSha,
-      tokenAuthorityProofs: configuredBoundary(productionActual, reviewActual).tokenAuthorityProofs };
+      tokenAuthorityProofs: authority.evidence.tokenAuthorityProofs,
+      reviewActivationAuthorityProof: authority.proof,
+      reviewActivationAuthorityEvidence: authority.evidence };
     const accepted = await validateReviewStagedEnvironmentSnapshotDirectory(arguments_);
     assert.match(accepted.proof_digest, /^[0-9a-f]{64}$/u);
 
@@ -1040,6 +1075,8 @@ test("gates every credentialed mode on the private current-main proof", async ()
     "--verify-preflight",
     "--verify-production-activation",
     "--verify-review-activation",
+    "--verify-review-activation-authority",
+    "--verify-review-activation-authority-proof",
     "--verify-review-staged-environment",
     "--verify-review-staging-root-activation",
     "--verify-review-staging-root-create",
@@ -1096,6 +1133,11 @@ test("gates every credentialed mode on the private current-main proof", async ()
     "await credentialedSourceSha(mode, sourceShaLoader)");
   assert.notEqual(gateIndex, -1);
   assert.ok(gateIndex < implementation.indexOf('if (mode === "--readback")'));
+  const checkpointOptionIndex = implementation.indexOf(
+    "reviewActivationAuthorityCheckpoint = undefined");
+  assert.notEqual(checkpointOptionIndex, -1);
+  assert.notEqual(implementation.indexOf("reviewActivationAuthorityCheckpoint };",
+    checkpointOptionIndex), -1);
 });
 
 test("requires fresh owner proof for the unreadable shared repository connection", () => {
@@ -1107,6 +1149,71 @@ test("requires fresh owner proof for the unreadable shared repository connection
   assert.throws(() => validateRepositoryConnectionOwnerProof({ ...proof,
     capturedAt: "2026-08-14T00:00:00Z" }, accountId, "a".repeat(40),
     Date.parse("2026-08-15T00:00:01Z")), /stale/u);
+});
+
+test("binds fresh owner evidence into one bounded review activation phase", () => {
+  const { proof, evidence } = reviewActivationAuthorityFixture();
+  const captured = Date.parse(proof.capturedAt);
+  const arguments_ = { production, review, accountId, sourceSha: "a".repeat(40),
+    ...evidence };
+  assert.equal(validateReviewActivationAuthority(proof, arguments_, captured + 10 * 60_000)
+    .proof_digest, proof.proof_digest);
+  const checkpoint = validateReviewActivationAuthority(proof, arguments_,
+    captured + 24 * 60_000 + 59_000);
+  assert.equal(validateReviewActivationAuthorityCheckpoint(proof, arguments_, checkpoint,
+    captured + 29 * 60_000 + 59_500).proof_digest, proof.proof_digest);
+  assert.throws(() => validateReviewActivationAuthorityCheckpoint(proof, arguments_, checkpoint,
+    Date.parse(proof.expiresAt)), /stale, malformed, or cross-phase/u);
+  assert.throws(() => validateReviewActivationAuthorityCheckpoint(proof, arguments_, checkpoint,
+    Date.parse(checkpoint.checkedAt) - 1), /checkpoint is stale or malformed/u);
+  assert.throws(() => validateReviewActivationAuthority(proof, arguments_,
+    captured + 26 * 60_000), /stale, malformed, or cross-phase/u);
+  assert.throws(() => validateReviewActivationAuthority({ ...proof, phase: "production" },
+    arguments_, captured), /cross-phase/u);
+  assert.throws(() => validateReviewActivationAuthority(proof, { ...arguments_,
+    buildUsageProof: { ...evidence.buildUsageProof, monthlyMinutesUsed: 1 } }, captured),
+  /evidence binding drift/u);
+  const replayed = { ...proof, stagedSnapshot: { ...proof.stagedSnapshot,
+    proofDigest: "0".repeat(64) } };
+  assert.throws(() => validateReviewActivationAuthority(replayed, arguments_, captured),
+    /cross-phase/u);
+  const staleStaged = structuredClone(evidence);
+  staleStaged.stagedProof.capturedAt = new Date(captured - 6 * 60_000).toISOString();
+  staleStaged.stagedProof.snapshotStartedAt = staleStaged.stagedProof.capturedAt;
+  staleStaged.stagedProof.snapshotCompletedAt = staleStaged.stagedProof.capturedAt;
+  assert.throws(() => issueReviewActivationAuthority({ production, review, accountId,
+    sourceSha: "a".repeat(40), ...staleStaged,
+    currentStagedProof: staleStaged.stagedProof, tokenRows: {
+      production: { cloudflare_token_id: "production-token-id" },
+      review: { cloudflare_token_id: "review-token-id" },
+    } }, captured), /staged activation proof/u);
+  const futureStaged = structuredClone(evidence);
+  futureStaged.stagedProof.capturedAt = new Date(captured + 31_000).toISOString();
+  futureStaged.stagedProof.snapshotStartedAt = futureStaged.stagedProof.capturedAt;
+  futureStaged.stagedProof.snapshotCompletedAt = futureStaged.stagedProof.capturedAt;
+  assert.throws(() => issueReviewActivationAuthority({ production, review, accountId,
+    sourceSha: "a".repeat(40), ...futureStaged,
+    currentStagedProof: futureStaged.stagedProof, tokenRows: {
+      production: { cloudflare_token_id: "production-token-id" },
+      review: { cloudflare_token_id: "review-token-id" },
+    } }, captured), /staged activation proof/u);
+  const rewrittenTiming = structuredClone(evidence);
+  rewrittenTiming.stagedProof.snapshotStartedAt = new Date(captured - 1_000).toISOString();
+  assert.throws(() => issueReviewActivationAuthority({ production, review, accountId,
+    sourceSha: "a".repeat(40), ...rewrittenTiming,
+    currentStagedProof: evidence.stagedProof, tokenRows: {
+      production: { cloudflare_token_id: "production-token-id" },
+      review: { cloudflare_token_id: "review-token-id" },
+    } }, captured), /staged activation proof/u);
+  const staleEvidence = structuredClone(evidence);
+  staleEvidence.tokenAuthorityProofs[0].capturedAt = new Date(captured - 6 * 60_000)
+    .toISOString();
+  assert.throws(() => issueReviewActivationAuthority({ production, review, accountId,
+    sourceSha: "a".repeat(40), ...staleEvidence,
+    currentStagedProof: staleEvidence.stagedProof, tokenRows: {
+      production: { cloudflare_token_id: "production-token-id" },
+      review: { cloudflare_token_id: "review-token-id" },
+    } }, captured), /token permission proof drift/u);
 });
 
 test("materializes bounded production documents only from live private coordinates", () => {
@@ -1475,12 +1582,23 @@ test("plans inert setup, separately gated activation, and ordered rollback", () 
   assert.equal(productionStaged.request.body.build_token_uuid.resultReference,
     "review-build-token.build_token_uuid");
   assert.equal(plan.setupOperations.some(({ id }) => id === "review-trigger-staged"), false);
-  const reviewRootProof = plan.reviewActivation.operations[0];
-  const reviewCreate = plan.reviewActivation.operations[1];
-  const reviewEnvironment = plan.reviewActivation.operations[2];
-  const reviewEnvironmentReadback = plan.reviewActivation.operations[3];
-  const reviewActivationRootProof = plan.reviewActivation.operations[4];
-  const reviewActivate = plan.reviewActivation.operations[5];
+  const reviewOperation = (id) => plan.reviewActivation.operations.find(
+    (operation) => operation.id === id);
+  const reviewAuthority = reviewOperation("review-activation-authority");
+  const reviewRootProof = reviewOperation("review-root-recheck-before-trigger");
+  const reviewCreate = reviewOperation("review-trigger-create");
+  const reviewEnvironment = reviewOperation("review-environment");
+  const reviewEnvironmentReadback = reviewOperation(
+    "review-environment-readback-before-activation");
+  const reviewActivationRootProof = reviewOperation("review-root-recheck-before-activation");
+  const reviewActivate = reviewOperation("review-trigger-activate");
+  assert.equal(reviewAuthority.command,
+    "npm run provision:workers-builds:verify-review-activation-authority");
+  assert.equal(reviewRootProof.precondition.reviewActivationAuthority.proof.resultReference,
+    "review-activation-authority.proof_digest");
+  assert.equal(reviewCreate.precondition.reviewActivationAuthority.minimumRemainingSeconds, 300);
+  assert.equal(reviewCreate.precondition.reviewActivationAuthority.command,
+    "npm run provision:workers-builds:verify-review-activation-authority-proof");
   assert.equal(reviewRootProof.id, "review-root-recheck-before-trigger");
   assert.equal(reviewCreate.id, "review-trigger-create");
   assert.equal(reviewCreate.request.method, "POST");
@@ -1598,6 +1716,9 @@ test("plans inert setup, separately gated activation, and ordered rollback", () 
   assert.ok(plan.privateInputs.includes("ATRINIK_REVIEW_STAGING_ROOT_ACTIVATION_PROOF_FILE"));
   assert.ok(plan.privateInputs.includes(
     "ATRINIK_REVIEW_STAGED_ENVIRONMENT_PROOF_OUTPUT_FILE"));
+  assert.ok(plan.privateInputs.includes(
+    "ATRINIK_REVIEW_ACTIVATION_AUTHORITY_PROOF_OUTPUT_FILE"));
+  assert.ok(plan.privateInputs.includes("ATRINIK_REVIEW_ACTIVATION_AUTHORITY_PROOF_FILE"));
   assert.ok(plan.setupOperations.filter(({ mutation }) => mutation)
     .every(({ actor, action }) => actor && action));
   assert.equal(validateSetupPlan(plan), plan);
@@ -1673,6 +1794,17 @@ test("plans inert setup, separately gated activation, and ordered rollback", () 
   delete missingReviewEnvironmentProof.reviewActivation.operations.find(({ id }) =>
     id === "review-trigger-activate").precondition.reviewEnvironmentProof;
   assert.throws(() => validateSetupPlan(missingReviewEnvironmentProof),
+    /complete setup plan schema drift/u);
+  const missingReviewAuthority = structuredClone(plan);
+  delete missingReviewAuthority.reviewActivation.operations.find(({ id }) =>
+    id === "review-trigger-create").precondition.reviewActivationAuthority;
+  assert.throws(() => validateSetupPlan(missingReviewAuthority),
+    /complete setup plan schema drift/u);
+  const insufficientReviewAuthorityBudget = structuredClone(plan);
+  insufficientReviewAuthorityBudget.reviewActivation.operations.find(({ id }) =>
+    id === "review-trigger-activate").precondition.reviewActivationAuthority
+    .minimumRemainingSeconds = 0;
+  assert.throws(() => validateSetupPlan(insufficientReviewAuthorityBudget),
     /complete setup plan schema drift/u);
   const unsafeRollbackOrder = structuredClone(plan);
   [unsafeRollbackOrder.rollbackOperations[0], unsafeRollbackOrder.rollbackOperations[1]] =
@@ -1813,7 +1945,7 @@ test("proves one serialized production trigger and one isolated review trigger",
     "production"), /Deploy Hook/u);
 });
 
-test("proves only the production trigger is inert before review activation", () => {
+test("proves only the production trigger is inert before review activation", async () => {
   const { productionSentinelProof } = freshBoundary();
   const productionSpec = withConnection(productionTriggerSpec(production, {
     ...triggerCoordinates(), buildTokenUuid: reviewTokenUuid,
@@ -1843,15 +1975,61 @@ test("proves only the production trigger is inert before review activation", () 
   arguments_.accountTriggers = envelope([productionSpec]);
   const stagedProof = validateStagedBuildsSnapshot(arguments_);
   assert.equal(stagedProof.stagedTriggerCount, 1);
+  assert.equal(stagedProof.snapshotStartedAt, arguments_.snapshotManifest.startedAt);
+  assert.equal(stagedProof.snapshotCompletedAt, arguments_.snapshotManifest.completedAt);
   assert.match(stagedProof.proof_digest, /^[0-9a-f]{64}$/u);
   assert.equal(Object.hasOwn(publicStagedProofSummary(stagedProof), "accountId"), false);
   assert.equal(validateStagedProof(stagedProof, stagedProof).proof_digest,
     stagedProof.proof_digest);
+  const repeatedCapture = { ...stagedProof,
+    capturedAt: new Date(Date.parse(stagedProof.capturedAt) + 1_000).toISOString() };
+  repeatedCapture.proof_digest = createHash("sha256").update(JSON.stringify({
+    state_digest: repeatedCapture.state_digest,
+    snapshotStartedAt: repeatedCapture.snapshotStartedAt,
+    snapshotCompletedAt: repeatedCapture.snapshotCompletedAt,
+    capturedAt: repeatedCapture.capturedAt,
+  })).digest("hex");
+  assert.equal(validateStagedProof(stagedProof, repeatedCapture,
+    Date.parse(repeatedCapture.capturedAt)).proof_digest, repeatedCapture.proof_digest);
+  const laterSweep = { ...repeatedCapture,
+    snapshotStartedAt: new Date(Date.parse(stagedProof.snapshotStartedAt) + 500).toISOString(),
+    snapshotCompletedAt: new Date(Date.parse(stagedProof.snapshotCompletedAt) + 500).toISOString(),
+  };
+  laterSweep.proof_digest = createHash("sha256").update(JSON.stringify({
+    state_digest: laterSweep.state_digest, snapshotStartedAt: laterSweep.snapshotStartedAt,
+    snapshotCompletedAt: laterSweep.snapshotCompletedAt, capturedAt: laterSweep.capturedAt,
+  })).digest("hex");
+  assert.equal(validateStagedProof(stagedProof, laterSweep,
+    Date.parse(laterSweep.capturedAt)).proof_digest, laterSweep.proof_digest);
+  assert.throws(() => validateStagedProof(stagedProof,
+    { ...laterSweep, state_digest: "0".repeat(64) }, Date.parse(laterSweep.capturedAt)),
+  /staged activation proof/u);
+  assert.throws(() => validateStagedProof(repeatedCapture, stagedProof,
+    Date.parse(repeatedCapture.capturedAt)), /chronology did not advance/u);
+  const overlappingSweep = { ...laterSweep,
+    snapshotStartedAt: new Date(Date.parse(stagedProof.snapshotCompletedAt) - 1).toISOString() };
+  overlappingSweep.proof_digest = createHash("sha256").update(JSON.stringify({
+    state_digest: overlappingSweep.state_digest,
+    snapshotStartedAt: overlappingSweep.snapshotStartedAt,
+    snapshotCompletedAt: overlappingSweep.snapshotCompletedAt,
+    capturedAt: overlappingSweep.capturedAt,
+  })).digest("hex");
+  assert.throws(() => validateStagedProof(stagedProof, overlappingSweep,
+    Date.parse(overlappingSweep.capturedAt)), /chronology did not advance/u);
   assert.throws(() => validateStagedProof({ ...stagedProof, proof_digest: "0".repeat(64) },
     stagedProof), /staged activation proof/u);
   const staleProof = { ...stagedProof, capturedAt: "2026-08-15T00:00:00.000Z" };
   assert.throws(() => validateStagedProof(staleProof, staleProof,
     Date.parse("2026-08-15T00:06:00.000Z")), /staged activation proof/u);
+  await new Promise((resolvePromise) => setTimeout(resolvePromise, 5));
+  const retimed = structuredClone(arguments_);
+  retimed.snapshotManifest.startedAt = new Date().toISOString();
+  retimed.snapshotManifest.completedAt = retimed.snapshotManifest.startedAt;
+  const retimedProof = validateStagedBuildsSnapshot(retimed);
+  assert.equal(retimedProof.state_digest, stagedProof.state_digest);
+  assert.notEqual(retimedProof.proof_digest, stagedProof.proof_digest);
+  assert.equal(validateStagedProof(stagedProof, retimedProof).proof_digest,
+    retimedProof.proof_digest);
   const active = structuredClone(arguments_);
   active.productionTriggers.result[0].branch_includes = ["main"];
   active.reviewTriggers = structuredClone(active.productionTriggers);
@@ -1880,6 +2058,12 @@ test("proves only the production trigger is inert before review activation", () 
   reviewActive.reviewTriggers = structuredClone(reviewActive.productionTriggers);
   reviewActive.reviewEnvironment = envelope(automaticReviewEnvironmentSpec(review));
   reviewActive.accountTriggers = envelope([productionSpec, finalReview]);
+  const authority = reviewActivationAuthorityFixture(stagedProof);
+  reviewActive.reviewActivationAuthorityProof = authority.proof;
+  reviewActive.reviewActivationAuthorityEvidence = authority.evidence;
+  reviewActive.productionSentinelProof = authority.evidence.productionSentinelProof;
+  reviewActive.tokenAuthorityProofs = authority.evidence.tokenAuthorityProofs;
+  reviewActive.reviewBuildState.buildUsageProof = authority.evidence.buildUsageProof;
   assert.throws(() => validateStagedBuildsSnapshot(reviewActive), /exactly 1/u);
   const reviewActivationProof = validateReviewActivationSnapshot(reviewActive);
   assert.equal(reviewActivationProof.outcome,
