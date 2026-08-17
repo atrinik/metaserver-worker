@@ -238,11 +238,14 @@ function configuredBoundary(productionSpec, reviewSpec) {
   };
 }
 
-function reviewActivationAuthorityFixture(stagedProof = {
-  outcome: "workers-builds-staged-snapshot-valid", mutation: false, accountId,
-  sourceSha: "a".repeat(40), stagedTriggerCount: 1, capturedAt: new Date().toISOString(),
-  proof_digest: "f".repeat(64),
-}) {
+function reviewActivationAuthorityFixture(stagedProof = null) {
+  const stagedCapturedAt = new Date().toISOString();
+  stagedProof ??= {
+    outcome: "workers-builds-staged-snapshot-valid", mutation: false, accountId,
+    sourceSha: "a".repeat(40), stagedTriggerCount: 1, capturedAt: stagedCapturedAt,
+    snapshotStartedAt: stagedCapturedAt, snapshotCompletedAt: stagedCapturedAt,
+    proof_digest: "f".repeat(64),
+  };
   const boundary = freshBoundary();
   const configured = configuredBoundary({}, {});
   const evidence = {
@@ -253,7 +256,7 @@ function reviewActivationAuthorityFixture(stagedProof = {
     buildUsageProof: configured.reviewBuildState.buildUsageProof,
   };
   const proof = issueReviewActivationAuthority({ production, review, accountId,
-    sourceSha: "a".repeat(40), ...evidence, tokenRows: {
+    sourceSha: "a".repeat(40), ...evidence, currentStagedProof: stagedProof, tokenRows: {
       production: { cloudflare_token_id: "production-token-id" },
       review: { cloudflare_token_id: "review-token-id" },
     } });
@@ -1152,14 +1155,44 @@ test("binds fresh owner evidence into one bounded review activation phase", () =
   assert.throws(() => validateReviewActivationAuthority(proof, { ...arguments_,
     buildUsageProof: { ...evidence.buildUsageProof, monthlyMinutesUsed: 1 } }, captured),
   /evidence binding drift/u);
-  const replayed = { ...proof, stagedProofDigest: "0".repeat(64) };
+  const replayed = { ...proof, stagedSnapshot: { ...proof.stagedSnapshot,
+    proofDigest: "0".repeat(64) } };
   assert.throws(() => validateReviewActivationAuthority(replayed, arguments_, captured),
     /cross-phase/u);
+  const staleStaged = structuredClone(evidence);
+  staleStaged.stagedProof.capturedAt = new Date(captured - 6 * 60_000).toISOString();
+  staleStaged.stagedProof.snapshotStartedAt = staleStaged.stagedProof.capturedAt;
+  staleStaged.stagedProof.snapshotCompletedAt = staleStaged.stagedProof.capturedAt;
+  assert.throws(() => issueReviewActivationAuthority({ production, review, accountId,
+    sourceSha: "a".repeat(40), ...staleStaged,
+    currentStagedProof: staleStaged.stagedProof, tokenRows: {
+      production: { cloudflare_token_id: "production-token-id" },
+      review: { cloudflare_token_id: "review-token-id" },
+    } }, captured), /staged activation proof/u);
+  const futureStaged = structuredClone(evidence);
+  futureStaged.stagedProof.capturedAt = new Date(captured + 31_000).toISOString();
+  futureStaged.stagedProof.snapshotStartedAt = futureStaged.stagedProof.capturedAt;
+  futureStaged.stagedProof.snapshotCompletedAt = futureStaged.stagedProof.capturedAt;
+  assert.throws(() => issueReviewActivationAuthority({ production, review, accountId,
+    sourceSha: "a".repeat(40), ...futureStaged,
+    currentStagedProof: futureStaged.stagedProof, tokenRows: {
+      production: { cloudflare_token_id: "production-token-id" },
+      review: { cloudflare_token_id: "review-token-id" },
+    } }, captured), /staged activation proof/u);
+  const rewrittenTiming = structuredClone(evidence);
+  rewrittenTiming.stagedProof.snapshotStartedAt = new Date(captured - 1_000).toISOString();
+  assert.throws(() => issueReviewActivationAuthority({ production, review, accountId,
+    sourceSha: "a".repeat(40), ...rewrittenTiming,
+    currentStagedProof: evidence.stagedProof, tokenRows: {
+      production: { cloudflare_token_id: "production-token-id" },
+      review: { cloudflare_token_id: "review-token-id" },
+    } }, captured), /staged activation proof/u);
   const staleEvidence = structuredClone(evidence);
   staleEvidence.tokenAuthorityProofs[0].capturedAt = new Date(captured - 6 * 60_000)
     .toISOString();
   assert.throws(() => issueReviewActivationAuthority({ production, review, accountId,
-    sourceSha: "a".repeat(40), ...staleEvidence, tokenRows: {
+    sourceSha: "a".repeat(40), ...staleEvidence,
+    currentStagedProof: staleEvidence.stagedProof, tokenRows: {
       production: { cloudflare_token_id: "production-token-id" },
       review: { cloudflare_token_id: "review-token-id" },
     } }, captured), /token permission proof drift/u);
@@ -1924,6 +1957,8 @@ test("proves only the production trigger is inert before review activation", () 
   arguments_.accountTriggers = envelope([productionSpec]);
   const stagedProof = validateStagedBuildsSnapshot(arguments_);
   assert.equal(stagedProof.stagedTriggerCount, 1);
+  assert.equal(stagedProof.snapshotStartedAt, arguments_.snapshotManifest.startedAt);
+  assert.equal(stagedProof.snapshotCompletedAt, arguments_.snapshotManifest.completedAt);
   assert.match(stagedProof.proof_digest, /^[0-9a-f]{64}$/u);
   assert.equal(Object.hasOwn(publicStagedProofSummary(stagedProof), "accountId"), false);
   assert.equal(validateStagedProof(stagedProof, stagedProof).proof_digest,
@@ -1933,6 +1968,10 @@ test("proves only the production trigger is inert before review activation", () 
   const staleProof = { ...stagedProof, capturedAt: "2026-08-15T00:00:00.000Z" };
   assert.throws(() => validateStagedProof(staleProof, staleProof,
     Date.parse("2026-08-15T00:06:00.000Z")), /staged activation proof/u);
+  const retimed = structuredClone(arguments_);
+  retimed.snapshotManifest.startedAt = new Date(
+    Date.parse(arguments_.snapshotManifest.startedAt) - 1_000).toISOString();
+  assert.notEqual(validateStagedBuildsSnapshot(retimed).proof_digest, stagedProof.proof_digest);
   const active = structuredClone(arguments_);
   active.productionTriggers.result[0].branch_includes = ["main"];
   active.reviewTriggers = structuredClone(active.productionTriggers);

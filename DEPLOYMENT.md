@@ -369,7 +369,8 @@ sentinel with the zero-resource review token, the exact protected production
 environment, no review trigger or review environment, all builds stopped, and
 current token/usage proofs.
 The command writes a new owner-only proof containing a deterministic SHA-256 of
-the fresh manifest and exact staged trigger/environment/token/
+the fresh manifest, including its exact `startedAt`, `completedAt`, and proof
+capture time, and exact staged trigger/environment/token/
 hook/build evidence. Immediately before each activation mutation, set
 `ATRINIK_STAGED_PROOF_FILE` to that record and run
 `npm run provision:workers-builds:verify-staged-proof` immediately before the
@@ -401,9 +402,10 @@ Also supply the account, exact-current-source, and freshly authenticated
 current-main proof used by every credentialed provisioning command. The five
 owner/provider observations must each still satisfy their five-minute source
 validator when this command runs; changing only `capturedAt` is not evidence.
-The resulting owner-only proof binds their complete digests, App 85455 selected
-repository inventory and website preservation, sentinel, both token IDs and
-`modifiedOn` values, usage thresholds, staged digest, source/contracts, setup
+The resulting owner-only proof binds their complete digests, the freshly
+revalidated staged proof's capture and snapshot start/completion times, App
+85455 selected repository inventory and website preservation, sentinel, both
+token IDs and `modifiedOn` values, usage thresholds, staged digest, source/contracts, setup
 plan, phase, issue time, and exact expiry. It is valid only for the
 `review-trigger-activation-and-proof` phase, expires exactly 30 minutes after
 issue, and every following credentialed review transition must start with at

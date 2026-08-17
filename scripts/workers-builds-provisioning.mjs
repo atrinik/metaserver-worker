@@ -371,19 +371,38 @@ function reviewActivationEvidenceDigests({ stagedProof, repositoryConnectionProo
   };
 }
 
+const stagedSnapshotProofKeys = ["accountId", "capturedAt", "mutation", "outcome",
+  "proof_digest", "snapshotCompletedAt", "snapshotStartedAt", "sourceSha",
+  "stagedTriggerCount"];
+
+function validateStagedSnapshotProofEvidence(proof, { accountId, sourceSha },
+  now = Date.now(), maximumAgeMs = 5 * 60_000) {
+  const captured = Date.parse(proof?.capturedAt ?? "");
+  const started = Date.parse(proof?.snapshotStartedAt ?? "");
+  const completed = Date.parse(proof?.snapshotCompletedAt ?? "");
+  if (!proof || !same(sorted(Object.keys(proof)), sorted(stagedSnapshotProofKeys)) ||
+      proof.outcome !== "workers-builds-staged-snapshot-valid" || proof.mutation !== false ||
+      proof.accountId !== accountId || proof.sourceSha !== sourceSha ||
+      proof.stagedTriggerCount !== 1 || !/^[0-9a-f]{64}$/u.test(proof.proof_digest ?? "") ||
+      !isUtcTimestamp(proof.capturedAt) || !isUtcTimestamp(proof.snapshotStartedAt) ||
+      !isUtcTimestamp(proof.snapshotCompletedAt) || !Number.isFinite(captured) ||
+      !Number.isFinite(started) || !Number.isFinite(completed) || started > completed ||
+      completed > captured || captured - completed > 5 * 60_000 ||
+      completed - started > 5 * 60_000 || captured > now + 30_000 ||
+      now - captured > maximumAgeMs)
+    fail("review activation authority staged proof drift");
+  return { captured, started, completed };
+}
+
 export function issueReviewActivationAuthority({ production, review, accountId, sourceSha,
-  stagedProof, repositoryConnectionProof, productionSentinelProof, tokenAuthorityProofs,
-  buildUsageProof, tokenRows }, now = Date.now()) {
+  stagedProof, currentStagedProof, repositoryConnectionProof, productionSentinelProof,
+  tokenAuthorityProofs, buildUsageProof, tokenRows }, now = Date.now()) {
   validateRepositoryConnectionOwnerProof(repositoryConnectionProof, accountId, sourceSha, now);
   const sentinel = validateSentinelRefAbsence(productionSentinelProof, now);
   validateTokenAuthorityProofs({ production, review, accountId, proofs: tokenAuthorityProofs,
     tokenRows, sourceSha }, now);
   validateBuildUsageProof(review, buildUsageProof, accountId, now);
-  if (!stagedProof || stagedProof.outcome !== "workers-builds-staged-snapshot-valid" ||
-      stagedProof.mutation !== false || stagedProof.accountId !== accountId ||
-      stagedProof.sourceSha !== sourceSha || stagedProof.stagedTriggerCount !== 1 ||
-      !/^[0-9a-f]{64}$/u.test(stagedProof.proof_digest ?? ""))
-    fail("review activation authority staged proof drift");
+  validateStagedProof(stagedProof, currentStagedProof, now);
   const capturedAt = new Date(now).toISOString();
   const expiresAt = new Date(now + reviewActivationAuthorityLifetimeMs).toISOString();
   const authority = {
@@ -397,7 +416,12 @@ export function issueReviewActivationAuthority({ production, review, accountId, 
     planDigest: digestJson(provisioningSetupPlan(production, review)),
     productionContractDigest: digestJson(production),
     reviewContractDigest: digestJson(review),
-    stagedProofDigest: stagedProof.proof_digest,
+    stagedSnapshot: {
+      proofDigest: stagedProof.proof_digest,
+      capturedAt: stagedProof.capturedAt,
+      startedAt: stagedProof.snapshotStartedAt,
+      completedAt: stagedProof.snapshotCompletedAt,
+    },
     repositoryOwner: {
       capturedAt: repositoryConnectionProof.capturedAt,
       githubApp: structuredClone(repositoryConnectionProof.githubApp),
@@ -426,7 +450,7 @@ minimumRemainingMs = reviewActivationTransitionBudgetMs) {
   const keys = ["accountId", "buildUsage", "capturedAt", "evidenceDigests", "expiresAt",
     "mutation", "outcome", "phase", "planDigest", "productionContractDigest",
     "productionSentinel", "proof_digest", "repositoryOwner", "reviewContractDigest",
-    "sourceSha", "stagedProofDigest", "tokenAuthority"];
+    "sourceSha", "stagedSnapshot", "tokenAuthority"];
   const captured = Date.parse(proof?.capturedAt ?? "");
   const expires = Date.parse(proof?.expiresAt ?? "");
   if (!proof || !same(sorted(Object.keys(proof)), sorted(keys)) ||
@@ -440,10 +464,10 @@ minimumRemainingMs = reviewActivationTransitionBudgetMs) {
       proof.planDigest !== digestJson(provisioningSetupPlan(production, review)) ||
       proof.productionContractDigest !== digestJson(production) ||
       proof.reviewContractDigest !== digestJson(review) ||
-      proof.stagedProofDigest !== stagedProof?.proof_digest ||
       proof.proof_digest !== digestJson(Object.fromEntries(Object.entries(proof)
         .filter(([key]) => key !== "proof_digest"))))
     fail("review activation authority proof is stale, malformed, or cross-phase");
+  validateStagedSnapshotProofEvidence(stagedProof, { accountId, sourceSha }, captured);
   validateRepositoryConnectionOwnerProof(repositoryConnectionProof, accountId, sourceSha,
     captured);
   const sentinel = validateSentinelRefAbsence(productionSentinelProof, captured);
@@ -454,7 +478,10 @@ minimumRemainingMs = reviewActivationTransitionBudgetMs) {
       review: { cloudflare_token_id: proofByKind.review?.tokenId },
     }, sourceSha }, captured);
   validateBuildUsageProof(review, buildUsageProof, accountId, captured);
-  if (!same(proof.evidenceDigests, reviewActivationEvidenceDigests({ stagedProof,
+  if (!same(proof.stagedSnapshot, { proofDigest: stagedProof.proof_digest,
+    capturedAt: stagedProof.capturedAt, startedAt: stagedProof.snapshotStartedAt,
+    completedAt: stagedProof.snapshotCompletedAt }) ||
+      !same(proof.evidenceDigests, reviewActivationEvidenceDigests({ stagedProof,
     repositoryConnectionProof, productionSentinelProof, tokenAuthorityProofs,
     buildUsageProof })) ||
       !same(proof.repositoryOwner, { capturedAt: repositoryConnectionProof.capturedAt,
@@ -1695,7 +1722,10 @@ function validateActivationSnapshot({ production, review, scripts,
   const snapshotCoordinate = { accountId: snapshotManifest.accountId,
     sourceSha: snapshotManifest.sourceSha,
     productionContractSha256: snapshotManifest.productionContractSha256,
-    reviewContractSha256: snapshotManifest.reviewContractSha256 };
+    reviewContractSha256: snapshotManifest.reviewContractSha256,
+    startedAt: snapshotManifest.startedAt,
+    completedAt: snapshotManifest.completedAt,
+    capturedAt };
   const sentinelCoordinates = {
     production: { repository: productionSentinelProof.repository,
       branch: productionSentinelProof.branch, refs: productionSentinelProof.refs },
@@ -1709,7 +1739,9 @@ function validateActivationSnapshot({ production, review, scripts,
   return { outcome: requireReviewResult ? "workers-builds-production-activation-snapshot-valid" :
     reviewActive ? "workers-builds-review-activation-snapshot-valid" :
       "workers-builds-staged-snapshot-valid", mutation: false,
-    stagedTriggerCount: expectedTriggerCount, accountId, sourceSha, capturedAt, proof_digest };
+    stagedTriggerCount: expectedTriggerCount, accountId, sourceSha, capturedAt,
+    snapshotStartedAt: snapshotManifest.startedAt,
+    snapshotCompletedAt: snapshotManifest.completedAt, proof_digest };
 }
 
 export function validateStagedBuildsSnapshot(arguments_) {
@@ -1726,22 +1758,18 @@ export function validateReviewActivationSnapshot(arguments_) {
 }
 
 export function validateStagedProof(proof, current, now = Date.now()) {
-  const keys = ["accountId", "capturedAt", "mutation", "outcome", "proof_digest",
-    "sourceSha", "stagedTriggerCount"];
-  const captured = Date.parse(proof?.capturedAt ?? "");
-  const currentCaptured = Date.parse(current?.capturedAt ?? "");
-  if (!proof || !current || !same(sorted(Object.keys(proof)), sorted(keys)) ||
-      !same(sorted(Object.keys(current)), sorted(keys)) ||
+  if (!proof || !current ||
       proof.accountId !== current.accountId || proof.sourceSha !== current.sourceSha ||
       proof.proof_digest !== current.proof_digest ||
-      proof.outcome !== "workers-builds-staged-snapshot-valid" || proof.mutation !== false ||
-      proof.stagedTriggerCount !== 1 || !/^[0-9a-f]{64}$/u.test(proof.proof_digest ?? "") ||
-      !Number.isFinite(captured) || captured > now + 30_000 || now - captured > 5 * 60_000)
+      proof.snapshotStartedAt !== current.snapshotStartedAt ||
+      proof.snapshotCompletedAt !== current.snapshotCompletedAt)
     fail("staged activation proof is missing, stale, or mismatched");
-  if (current.outcome !== proof.outcome || current.mutation !== false ||
-      current.stagedTriggerCount !== 1 || !Number.isFinite(currentCaptured) ||
-      currentCaptured > now + 30_000 || now - currentCaptured > 30_000)
-    fail("current staged activation readback is stale or malformed");
+  try {
+    validateStagedSnapshotProofEvidence(proof,
+      { accountId: proof.accountId, sourceSha: proof.sourceSha }, now);
+    validateStagedSnapshotProofEvidence(current,
+      { accountId: proof.accountId, sourceSha: proof.sourceSha }, now, 30_000);
+  } catch { fail("staged activation proof is missing, stale, or mismatched"); }
   return { outcome: "workers-builds-staged-activation-proof-valid", mutation: false,
     proof_digest: proof.proof_digest };
 }
@@ -2970,7 +2998,8 @@ export async function runProvisioningCli(mode = process.argv[2] ?? "--validate-o
     if (!productionToken || !reviewToken)
       fail("review activation authority token inventory drift");
     const proof = issueReviewActivationAuthority({ production, review, accountId, sourceSha,
-      ...evidence, tokenRows: { production: productionToken, review: reviewToken } });
+      ...evidence, currentStagedProof: current,
+      tokenRows: { production: productionToken, review: reviewToken } });
     await writePrivateProof(
       process.env.ATRINIK_REVIEW_ACTIVATION_AUTHORITY_PROOF_OUTPUT_FILE, proof);
     process.stdout.write(`${JSON.stringify({ outcome: proof.outcome, mutation: false,
