@@ -28,6 +28,7 @@ import {
   readCurrentMainProof,
   readProviderSnapshot,
   readPrivateValue,
+  runProvisioningCli,
   validateAutomaticReviewEnvironment,
   validateBuildTokenInventory,
   validateCheckedInProvisioning,
@@ -965,6 +966,8 @@ test("validates an exact fresh authenticated current-main proof", () => {
   const now = Date.parse("2026-08-17T12:00:00.000Z");
   const proof = authenticatedCurrentMainProof(sha, "2026-08-17T11:59:00.000Z");
   assert.equal(validateCurrentMainProof(proof, sha, now), sha);
+  assert.equal(validateCurrentMainProof({ ...proof,
+    repository: { name: "metaserver-worker", owner: "atrinik" } }, sha, now), sha);
   assert.throws(() => validateCurrentMainProof({ ...proof,
     capturedAt: "2026-08-17T11:54:59.000Z" }, sha, now), /stale or malformed/u);
   assert.throws(() => validateCurrentMainProof({ ...proof,
@@ -998,6 +1001,8 @@ test("loads current-main evidence only from an owner-only regular file", async (
   const temporary = await mkdtemp(resolve(tmpdir(), "atrinik-current-main-proof-"));
   const proofPath = resolve(temporary, "proof.json");
   const linkedPath = resolve(temporary, "linked-proof.json");
+  const proofDirectory = resolve(temporary, "proof-directory");
+  const linkedDirectory = resolve(temporary, "linked-directory");
   const sha = "a".repeat(40);
   const now = Date.parse("2026-08-17T12:00:00.000Z");
   await chmod(temporary, 0o700);
@@ -1013,7 +1018,14 @@ test("loads current-main evidence only from an owner-only regular file", async (
     await symlink(proofPath, linkedPath);
     await assert.rejects(readCurrentMainProof({
       ATRINIK_GITHUB_CURRENT_MAIN_PROOF_FILE: linkedPath,
-    }, sha, now), /without following links/u);
+    }, sha, now), /canonical without linked ancestors/u);
+    await mkdir(proofDirectory, { mode: 0o700 });
+    await writeFile(resolve(proofDirectory, "proof.json"), `${JSON.stringify(
+      authenticatedCurrentMainProof(sha, "2026-08-17T11:59:00.000Z"))}\n`, { mode: 0o600 });
+    await symlink(proofDirectory, linkedDirectory);
+    await assert.rejects(readCurrentMainProof({
+      ATRINIK_GITHUB_CURRENT_MAIN_PROOF_FILE: resolve(linkedDirectory, "proof.json"),
+    }, sha, now), /canonical without linked ancestors/u);
     await assert.rejects(readCurrentMainProof({}, sha, now), /path must be absolute/u);
   } finally {
     await rm(temporary, { recursive: true, force: true });
@@ -1049,6 +1061,30 @@ test("gates every credentialed mode on the private current-main proof", async ()
   assert.equal(await credentialedSourceSha("--dry-run", async () => {
     assert.fail("credential-free mode must not load a current-main proof");
   }), undefined);
+  for (const mode of credentialedProvisioningModes) {
+    let runtimeProofLoads = 0;
+    await assert.rejects(runProvisioningCli(mode, async () => {
+      runtimeProofLoads += 1;
+      throw new Error("runtime proof gate stopped before provider access");
+    }), /runtime proof gate stopped before provider access/u);
+    assert.equal(runtimeProofLoads, 1, mode);
+  }
+  const writes = [];
+  const stdoutWrite = process.stdout.write;
+  process.stdout.write = (chunk) => {
+    writes.push(String(chunk));
+    return true;
+  };
+  try {
+    for (const mode of ["--validate-only", "--dry-run", "--plan-setup"])
+      await runProvisioningCli(mode, async () => assert.fail(
+        `credential-free mode ${mode} must not load current-main proof`));
+  } finally {
+    process.stdout.write = stdoutWrite;
+  }
+  assert.equal(writes.length, 3);
+  assert.ok(writes.every((output) =>
+    /"mutation":false|workers-builds-provisioning-valid/u.test(output)));
   const implementation = await readFile(resolve(root,
     "scripts/workers-builds-provisioning.mjs"), "utf8");
   const deploymentGuide = await readFile(resolve(root, "DEPLOYMENT.md"), "utf8");
@@ -1056,8 +1092,10 @@ test("gates every credentialed mode on the private current-main proof", async ()
     /fetch\([\s\S]{0,200}api\.github\.com\/repos\/atrinik\/metaserver-worker/u);
   assert.match(deploymentGuide,
     /gh api --hostname github\.com \\\n+  repos\/atrinik\/metaserver-worker\/git\/ref\/heads\/main/u);
-  assert.ok(implementation.indexOf("await credentialedSourceSha(mode)") <
-    implementation.indexOf('if (mode === "--readback")'));
+  const gateIndex = implementation.indexOf(
+    "await credentialedSourceSha(mode, sourceShaLoader)");
+  assert.notEqual(gateIndex, -1);
+  assert.ok(gateIndex < implementation.indexOf('if (mode === "--readback")'));
 });
 
 test("requires fresh owner proof for the unreadable shared repository connection", () => {

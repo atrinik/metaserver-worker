@@ -106,7 +106,10 @@ export function validateCurrentMainProof(proof, sourceSha, now = Date.now()) {
   const sha = proof?.sha;
   if (!proof || !same(sorted(Object.keys(proof)), keys) ||
       proof.source !== currentMainProofSource || proof.endpoint !== currentMainProofEndpoint ||
-      !same(proof.repository, currentMainRepository) || proof.ref !== currentMainRef ||
+      !proof.repository ||
+      !same(sorted(Object.keys(proof.repository)), sorted(Object.keys(currentMainRepository))) ||
+      proof.repository.owner !== currentMainRepository.owner ||
+      proof.repository.name !== currentMainRepository.name || proof.ref !== currentMainRef ||
       !gitShaPattern.test(sha ?? "") || sha !== sourceSha ||
       !isUtcTimestamp(proof.capturedAt) || !Number.isFinite(captured) ||
       captured > now + 30_000 || now - captured > 5 * 60_000 ||
@@ -1812,6 +1815,8 @@ export async function readPrivateValue(path, label, pattern = null) {
 
 export async function readPrivateJson(path, label) {
   if (!isAbsolute(path ?? "")) fail(`${label} file path must be absolute`);
+  if (await realpath(path).catch(() => null) !== resolve(path))
+    fail(`${label} file path must be canonical without linked ancestors`);
   const handle = await open(path, constants.O_RDONLY | constants.O_NOFOLLOW).catch(() => null);
   if (!handle) fail(`${label} file cannot be opened without following links`);
   try {
@@ -2668,8 +2673,8 @@ export async function credentialedSourceSha(mode, load = reviewedCurrentMainSha)
   return credentialedProvisioningModes.includes(mode) ? await load() : undefined;
 }
 
-async function main() {
-  const mode = process.argv[2] ?? "--validate-only";
+export async function runProvisioningCli(mode = process.argv[2] ?? "--validate-only",
+  sourceShaLoader = reviewedCurrentMainSha) {
   const { production, review } = await validateCheckedInProvisioning();
   if (mode === "--validate-only") {
     process.stdout.write(`${JSON.stringify({ outcome: "workers-builds-provisioning-valid" })}\n`);
@@ -2683,7 +2688,7 @@ async function main() {
     process.stdout.write(`${JSON.stringify(provisioningSetupPlan(production, review))}\n`);
     return;
   }
-  const sourceSha = await credentialedSourceSha(mode);
+  const sourceSha = await credentialedSourceSha(mode, sourceShaLoader);
   if (mode === "--readback") {
     const accountId = await readPrivateValue(process.env.ATRINIK_CLOUDFLARE_ACCOUNT_ID_FILE,
       "Cloudflare account ID", accountIdPattern);
@@ -2852,7 +2857,7 @@ async function main() {
 }
 
 if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url))
-  main().catch((error) => {
+  runProvisioningCli().catch((error) => {
     const reason = error instanceof WorkersBuildsProvisioningError
       ? error.message : "unexpected-internal-error";
     process.stderr.write(`${JSON.stringify({ outcome: "workers-builds-provisioning-stopped", reason })}\n`);
