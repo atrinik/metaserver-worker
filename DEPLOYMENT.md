@@ -515,6 +515,9 @@ evidence. Mint the distinct 45-minute proof-phase authority:
 ATRINIK_PROVIDER_SNAPSHOT_DIRECTORY=/secure/fresh-review-active-snapshot \
 ATRINIK_REVIEW_ACTIVATION_PROOF_FILE=/secure/private/review-activation-proof.json \
 ATRINIK_REVIEW_ACTIVATION_JOURNAL_FILE=/secure/private/review-activation-journal.jsonl \
+ATRINIK_INERT_SETUP_JOURNAL_FILE=/secure/private/inert-setup-journal.jsonl \
+ATRINIK_INERT_SETUP_RESULTS_FILE=/secure/private/inert-setup-results.json \
+ATRINIK_DISPOSABLE_REVIEW_COORDINATE_FILE=/secure/private/disposable-coordinate.json \
 ATRINIK_CURRENT_REVIEW_ACTIVE_PROOF_OUTPUT_FILE=/secure/private/current-review-active-proof.json \
 ATRINIK_DISPOSABLE_REVIEW_AUTHORITY_PROOF_OUTPUT_FILE=/secure/private/disposable-review-authority.json \
   npm run provision:workers-builds:verify-disposable-review-authority
@@ -528,10 +531,17 @@ exact, and no competing trigger, active build, or Deploy Hook exists. It binds
 that current observation to the terminal review-activation proof and permits
 only one exact `review/issue-66-*` push, exact-SHA deletion, and cancellation
 of the journal-owned automatic review build during cleanup. Before either Git
-write, run
-`npm run provision:workers-builds:verify-disposable-review-authority-proof`
-with `ATRINIK_DISPOSABLE_REVIEW_AUTHORITY_PROOF_FILE` and its exact source
-evidence. Each write needs five minutes remaining. Production trigger changes,
+write, use `ATRINIK_DISPOSABLE_REVIEW_AUTHORITY_PROOF_FILE` and its exact source
+evidence. Immediately before the push, run
+`npm run provision:workers-builds:verify-disposable-review-authority-push`;
+the 45-minute authority must still have at least 30 minutes remaining so the
+bounded 20-minute automatic build and cleanup cannot consume the deletion
+reserve. Immediately before the exact-SHA deletion, run
+`npm run provision:workers-builds:verify-disposable-review-authority-proof`;
+that write requires five minutes remaining. The authority binds the exact
+journal ID, branch, commit, historical inert-setup/activation journals, and a
+fresh current-source two-trigger proof; historical activation source identity
+is deliberately distinct from the post-merge verifier source. Production trigger changes,
 manual/API build starts, migration `0010`, the initial production build, and
 production resource mutations remain forbidden. Cleanup of the exact owned
 build is phase-local and must never target a foreign or production build.
@@ -541,7 +551,8 @@ retain a no-more-than-five-minute owner-only
 `ATRINIK_REVIEW_RESULT_PROOF_FILE`. It binds the exact review trigger/token,
 terminal successful Cloudflare build UUID, same-repository
 `review/issue-66-*` branch and commit, provider-trusted build creation/stop
-times and automatic `push` source, complete embedded trigger/command snapshot,
+times and the live provider's automatic `push_event` source, complete embedded
+trigger/command snapshot,
 and the governed private-evidence coordinate. Capture the raw results of
 `gh api repos/atrinik/metaserver-worker/commits/<review-sha>/check-runs`,
 `gh api repos/atrinik/metaserver-worker/git/matching-refs/heads/<review-ref>`,

@@ -26,13 +26,14 @@ const maximumProviderPages = 100;
 const stagingBranchPattern = /^review-build-only-sentinel-[0-9a-f]{32}$/u;
 const reviewStagingRootPattern = /^\/review-build-only-staging-[0-9a-f]{32}$/u;
 const gitShaPattern = /^[0-9a-f]{40}$/u;
-const expectedSetupPlanSha256 = "d4c66a4a25aa5d5e6ab3dcf2628c2211ede4ed601ebf7b67ccc5b03f3de4202b";
+const expectedSetupPlanSha256 = "b88c2f091d19786b630d9134c5af219488e7b09e28073a293136aaed81815dcc";
 const currentMainProofSource = "authenticated-gh-api-current-main-readback";
 const currentMainProofEndpoint = "repos/atrinik/metaserver-worker/git/ref/heads/main";
 const currentMainRef = "refs/heads/main";
 const reviewActivationAuthorityLifetimeMs = 30 * 60_000;
 const reviewActivationTransitionBudgetMs = 5 * 60_000;
 const disposableReviewAuthorityLifetimeMs = 45 * 60_000;
+const disposableReviewPushReserveMs = 30 * 60_000;
 const reviewActivationPredecessorPlanDigest =
   "fb95bcc4e693b6f933dc1bb788b736100dbd6a24c5b601e3533a03097d091892";
 const currentMainRepository = Object.freeze({ owner: "atrinik", name: "metaserver-worker" });
@@ -93,6 +94,10 @@ function isUtcTimestamp(value) {
 
 function digestJson(value) {
   return createHash("sha256").update(JSON.stringify(value)).digest("hex");
+}
+
+function digestText(value) {
+  return createHash("sha256").update(value).digest("hex");
 }
 
 export function validateReviewedSourceCoordinates({ expected, head, dirty, currentMain }) {
@@ -374,18 +379,59 @@ function reviewActivationEvidenceDigests({ stagedProof, repositoryConnectionProo
   };
 }
 
-function validateReviewActivationJournal(records, reviewActivationProof, sourceSha) {
+function validateReviewActivationJournal(records, reviewActivationProof, predecessorSourceSha) {
   if (!Array.isArray(records) || records.length === 0) fail("review activation journal is absent");
+  const expected = [
+    ["attempt-started", "review-trigger-activation"],
+    ["current-main-proof-bound", "fresh-staged-readback"],
+    ["current-main-proof-bound", "fresh-staged-verify"],
+    ["current-main-proof-bound", "fresh-staged-proof-verify"],
+    ["current-main-proof-bound", "review-activation-authority-issue"],
+    ["review-gate-preflight-proven", undefined],
+    ["current-main-proof-bound", "review-root-create-validate"],
+    ["github-proof-bound", "review-root-create"],
+    ["review-gate-authorized", undefined],
+    ["current-main-proof-bound", "before-review-trigger-create"],
+    ["review-activation-authority-checked", "before-review-trigger-create"],
+    ["mutation-intent", "review-trigger-create"],
+    ["provider-response-classified", "review-trigger-create"],
+    ["mutation-bound", "review-trigger-create"],
+    ["current-main-proof-bound", "before-review-environment"],
+    ["review-activation-authority-checked", "before-review-environment"],
+    ["mutation-intent", "review-environment"],
+    ["provider-response-classified", "review-environment"],
+    ["mutation-bound", "review-environment"],
+    ["current-main-proof-bound", "review-staged-environment-verify"],
+    ["provider-proof-bound", "review-staged-environment"],
+    ["current-main-proof-bound", "review-root-activation-validate"],
+    ["github-proof-bound", "review-root-activation"],
+    ["current-main-proof-bound", "before-review-trigger-activate"],
+    ["review-activation-authority-checked", "before-review-trigger-activate"],
+    ["mutation-intent", "review-trigger-activate"],
+    ["provider-response-classified", "review-trigger-activate"],
+    ["mutation-bound", "review-trigger-activate"],
+    ["current-main-proof-bound", "review-activation-verify"],
+    ["provider-proof-bound", "review-activation"],
+    ["review-trigger-active", undefined],
+  ];
+  if (!same(records.map(({ event, operation }) => [event, operation]), expected))
+    fail("review activation journal operation sequence drift");
+  let previousAt = -Infinity;
   for (const record of records) {
     const { recordSha256, ...payload } = record ?? {};
-    if (!/^[0-9a-f]{64}$/u.test(recordSha256 ?? "") || digestJson(payload) !== recordSha256)
+    const at = Date.parse(record?.at ?? "");
+    if (!/^[0-9a-f]{64}$/u.test(recordSha256 ?? "") || digestJson(payload) !== recordSha256 ||
+        !Number.isFinite(at) || !isUtcTimestamp(record.at) || at <= previousAt ||
+        record.attempt !== 1)
       fail("review activation journal checksum drift");
+    previousAt = at;
   }
   const first = records[0];
   const terminal = records.at(-1);
   const proofBound = [...records].reverse().find(({ event, operation }) =>
     event === "provider-proof-bound" && operation === "review-activation");
-  if (first.event !== "attempt-started" || first.sourceSha !== sourceSha ||
+  const preflight = records.find(({ event }) => event === "review-gate-preflight-proven");
+  if (first.event !== "attempt-started" || first.sourceSha !== predecessorSourceSha ||
       first.planDigestSha256 !== reviewActivationPredecessorPlanDigest ||
       terminal.event !== "review-trigger-active" ||
       !uuidPattern.test(terminal.reviewTrigger ?? "") ||
@@ -394,18 +440,108 @@ function validateReviewActivationJournal(records, reviewActivationProof, sourceS
       terminal.initialProductionBuild !== false ||
       records.some(({ event }) => event.startsWith("rollback")) ||
       proofBound?.proofDigest !== reviewActivationProof?.proof_digest ||
-      proofBound?.proofFileSha256 !== digestJson(reviewActivationProof))
+      proofBound?.proofFileSha256 !== digestJson(reviewActivationProof) ||
+      Date.parse(proofBound?.at ?? "") > Date.parse(terminal.at) ||
+      preflight?.sourceSha !== predecessorSourceSha ||
+      preflight?.planDigestSha256 !== reviewActivationPredecessorPlanDigest)
     fail("review activation journal terminal provenance drift");
   return { digest: digestJson(records), reviewTriggerUuid: terminal.reviewTrigger,
-    terminalAt: terminal.at, predecessorPlanDigest: first.planDigestSha256 };
+    terminalAt: terminal.at, predecessorPlanDigest: first.planDigestSha256,
+    predecessorSourceSha, preflight };
+}
+
+function validateInertSetupProvenance(records, setupResults, activationPreflight) {
+  if (!Array.isArray(records) || records.length === 0 || !setupResults || !activationPreflight)
+    fail("inert setup predecessor evidence is absent");
+  const expected = [
+    ["preflight-proven", "execution-preflight"], ["setup-authorized", undefined],
+    ["mutation-intent", "repository-connection"],
+    ["mutation-bound", "repository-connection"],
+    ["mutation-intent", "production-build-token"],
+    ["provider-response-classified", "production-build-token"],
+    ["mutation-bound", "production-build-token"],
+    ["mutation-intent", "review-build-token"],
+    ["provider-response-classified", "review-build-token"],
+    ["mutation-bound", "review-build-token"],
+    ["sentinel-recheck", "sentinel-recheck-before-production-trigger"],
+    ["mutation-intent", "production-trigger-staged"],
+    ["provider-response-classified", "production-trigger-staged"],
+    ["mutation-bound", "production-trigger-staged"],
+    ["mutation-proof-bound", "production-trigger-staged"],
+    ["sentinel-recheck", "sentinel-recheck-before-production-environment"],
+    ["mutation-intent", "production-environment"],
+    ["provider-response-classified", "production-environment"],
+    ["mutation-bound", "production-environment"],
+    ["mutation-proof-bound", "production-environment"],
+    ["staged-readback-proven", "staged-readback"], ["inert-setup-complete", undefined],
+  ];
+  if (!same(records.map(({ event, operation }) => [event, operation]), expected) ||
+      !same(sorted(Object.keys(setupResults)), sorted(["planDigest", "productionBuildToken",
+        "productionTrigger", "repositoryConnection", "reviewBuildToken", "sourceSha",
+        "stagedProofDigest"])))
+    fail("inert setup predecessor operation sequence drift");
+  let previousAt = -Infinity;
+  for (const record of records) {
+    const { recordSha256, ...payload } = record ?? {};
+    const at = Date.parse(record?.at ?? "");
+    if (!/^[0-9a-f]{64}$/u.test(recordSha256 ?? "") ||
+        digestJson(payload) !== recordSha256 || !Number.isFinite(at) || at <= previousAt ||
+        record.at !== new Date(at).toISOString() || record.attempt !== 1)
+      fail("inert setup predecessor journal drift");
+    previousAt = at;
+  }
+  const terminal = records.at(-1);
+  const resource = (operation) => [...records].reverse().find(({ event, operation: value }) =>
+    event === "mutation-bound" && value === operation)?.resourceUuid;
+  if (terminal.event !== "inert-setup-complete" || records.some(({ event }) =>
+    event.startsWith("rollback")) || terminal.activation !== false ||
+      terminal.migration0010 !== false || terminal.initialProductionBuild !== false ||
+      setupResults.sourceSha !== "815076d3d69d358e3b265025d94a9151b9542b96" ||
+      setupResults.planDigest !== "856f64dc2027a81ed5fcd7d85b687680e01c950400dbf8965ea40c076b09eb34" ||
+      terminal.stagedProofDigest !== setupResults.stagedProofDigest ||
+      resource("repository-connection") !== setupResults.repositoryConnection ||
+      resource("production-build-token") !== setupResults.productionBuildToken ||
+      resource("review-build-token") !== setupResults.reviewBuildToken ||
+      resource("production-trigger-staged") !== setupResults.productionTrigger ||
+      activationPreflight.setupJournalSha256 !== digestText(
+        records.map((record) => JSON.stringify(record)).join("\n")) ||
+      activationPreflight.setupResultsSha256 !== digestJson(setupResults))
+    fail("inert setup predecessor terminal provenance drift");
+  return { journalDigest: activationPreflight.setupJournalSha256,
+    resultsDigest: activationPreflight.setupResultsSha256,
+    productionTriggerUuid: setupResults.productionTrigger,
+    productionBuildTokenUuid: setupResults.productionBuildToken,
+    reviewBuildTokenUuid: setupResults.reviewBuildToken,
+    repositoryConnectionUuid: setupResults.repositoryConnection,
+    stagedProofDigest: setupResults.stagedProofDigest };
+}
+
+function validateDisposableReviewCoordinate(coordinate, sourceSha, now = Date.now()) {
+  const keys = ["branch", "capturedAt", "commit", "journalId", "repository", "source",
+    "sourceSha"];
+  const captured = Date.parse(coordinate?.capturedAt ?? "");
+  if (!coordinate || !same(sorted(Object.keys(coordinate)), sorted(keys)) ||
+      coordinate.source !== "journaled-disposable-review-coordinate" ||
+      coordinate.repository !== "atrinik/metaserver-worker" || coordinate.sourceSha !== sourceSha ||
+      !/^review\/issue-66-[a-z0-9-]{1,40}$/u.test(coordinate.branch ?? "") ||
+      !gitShaPattern.test(coordinate.commit ?? "") || coordinate.commit === sourceSha ||
+      !/^[0-9a-f]{64}$/u.test(coordinate.journalId ?? "") ||
+      !isUtcTimestamp(coordinate.capturedAt) || !Number.isFinite(captured) ||
+      captured > now + 30_000 || now - captured > 5 * 60_000)
+    fail("disposable review coordinate proof is stale or malformed");
+  return coordinate;
 }
 
 function disposableReviewEvidenceDigests({ reviewActivationProof, reviewActivationJournal,
+  inertSetupJournal, inertSetupResults, disposableCoordinate,
   currentReviewActiveProof,
   repositoryConnectionProof, productionSentinelProof, tokenAuthorityProofs, buildUsageProof }) {
   return {
     reviewActivationProofFile: digestJson(reviewActivationProof),
     reviewActivationJournal: digestJson(reviewActivationJournal),
+    inertSetupJournal: digestJson(inertSetupJournal),
+    inertSetupResults: digestJson(inertSetupResults),
+    disposableCoordinate: digestJson(disposableCoordinate),
     currentReviewActiveProofFile: digestJson(currentReviewActiveProof),
     repositoryOwner: digestJson(repositoryConnectionProof),
     productionSentinel: digestJson(productionSentinelProof),
@@ -453,8 +589,37 @@ function validateReviewActiveSnapshotProofEvidence(proof, { accountId, sourceSha
   return proof;
 }
 
+function validateCurrentDisposableReviewSnapshotProof(proof, { accountId, sourceSha },
+  now = Date.now()) {
+  const identityKeys = ["productionBuildTokenUuid", "productionEnvironmentDigest",
+    "productionTriggerUuid", "repositoryConnectionUuid", "reviewBuildTokenUuid",
+    "reviewEnvironmentDigest", "reviewTriggerUuid"];
+  const expectedKeys = [...stagedSnapshotProofKeys, "liveIdentities"];
+  if (!proof || !same(sorted(Object.keys(proof)), sorted(expectedKeys)) ||
+      !proof.liveIdentities ||
+      !same(sorted(Object.keys(proof.liveIdentities)), sorted(identityKeys)) ||
+      !Object.entries(proof.liveIdentities).every(([key, value]) =>
+        key.endsWith("Digest") ? /^[0-9a-f]{64}$/u.test(value) : uuidPattern.test(value)) ||
+      proof.liveIdentities.productionTriggerUuid === proof.liveIdentities.reviewTriggerUuid ||
+      proof.liveIdentities.productionBuildTokenUuid === proof.liveIdentities.reviewBuildTokenUuid)
+    fail("disposable review authority live identity proof drift");
+  const withoutIdentities = { ...proof };
+  delete withoutIdentities.liveIdentities;
+  withoutIdentities.proof_digest = digestJson({ state_digest: proof.state_digest,
+    snapshotStartedAt: proof.snapshotStartedAt,
+    snapshotCompletedAt: proof.snapshotCompletedAt, capturedAt: proof.capturedAt });
+  validateReviewActiveSnapshotProofEvidence(withoutIdentities, { accountId, sourceSha }, now,
+    30_000);
+  if (proof.proof_digest !== digestJson({ state_digest: proof.state_digest,
+    snapshotStartedAt: proof.snapshotStartedAt, snapshotCompletedAt: proof.snapshotCompletedAt,
+    capturedAt: proof.capturedAt, liveIdentities: proof.liveIdentities }))
+    fail("disposable review authority live identity proof drift");
+  return proof;
+}
+
 export function issueDisposableReviewAuthority({ production, review, accountId, sourceSha,
-  reviewActivationProof, reviewActivationJournal, currentReviewActiveProof,
+  reviewActivationProof, reviewActivationJournal, inertSetupJournal, inertSetupResults,
+  disposableCoordinate, currentReviewActiveProof,
   repositoryConnectionProof,
   productionSentinelProof, tokenAuthorityProofs, buildUsageProof, tokenRows }, now = Date.now()) {
   validateRepositoryConnectionOwnerProof(repositoryConnectionProof, accountId, sourceSha, now);
@@ -462,19 +627,39 @@ export function issueDisposableReviewAuthority({ production, review, accountId, 
   validateTokenAuthorityProofs({ production, review, accountId, proofs: tokenAuthorityProofs,
     tokenRows, sourceSha }, now);
   validateBuildUsageProof(review, buildUsageProof, accountId, now);
-  validateReviewActiveSnapshotProofEvidence(reviewActivationProof, { accountId, sourceSha },
+  if (buildUsageProof.monthlyMinutesUsed + review.automaticReview.providerBuildTimeoutMinutes >=
+      buildUsageProof.alertAtMinutes)
+    fail("disposable review authority lacks reserved build-minute budget");
+  const predecessorSourceSha = reviewActivationProof?.sourceSha;
+  if (!gitShaPattern.test(predecessorSourceSha ?? ""))
+    fail("disposable review authority predecessor source drift");
+  validateReviewActiveSnapshotProofEvidence(reviewActivationProof,
+    { accountId, sourceSha: predecessorSourceSha },
     Date.parse(reviewActivationProof?.capturedAt ?? ""), 0);
   const journal = validateReviewActivationJournal(reviewActivationJournal,
-    reviewActivationProof, sourceSha);
-  validateReviewActiveSnapshotProofEvidence(currentReviewActiveProof, { accountId, sourceSha },
-    now, 30_000);
+    reviewActivationProof, predecessorSourceSha);
+  const setupProvenance = validateInertSetupProvenance(inertSetupJournal, inertSetupResults,
+    journal.preflight);
+  const coordinate = validateDisposableReviewCoordinate(disposableCoordinate, sourceSha, now);
+  validateCurrentDisposableReviewSnapshotProof(currentReviewActiveProof,
+    { accountId, sourceSha }, now);
   if (Date.parse(currentReviewActiveProof.snapshotStartedAt) <
       Date.parse(reviewActivationProof.snapshotCompletedAt))
     fail("disposable review authority observations overlap");
+  if (currentReviewActiveProof.state_digest !== reviewActivationProof.state_digest)
+    fail("disposable review authority live state drift");
+  const identities = currentReviewActiveProof.liveIdentities;
+  if (identities.reviewTriggerUuid !== journal.reviewTriggerUuid ||
+      identities.productionTriggerUuid !== setupProvenance.productionTriggerUuid ||
+      identities.productionBuildTokenUuid !== setupProvenance.productionBuildTokenUuid ||
+      identities.reviewBuildTokenUuid !== setupProvenance.reviewBuildTokenUuid ||
+      identities.repositoryConnectionUuid !== setupProvenance.repositoryConnectionUuid)
+    fail("disposable review authority journal/live identity drift");
   const capturedAt = new Date(now).toISOString();
   const authority = {
     outcome: "workers-builds-disposable-review-authority-valid", mutation: false,
     phase: "disposable-review-build-and-proof", accountId, sourceSha, capturedAt,
+    predecessorSourceSha,
     expiresAt: new Date(now + disposableReviewAuthorityLifetimeMs).toISOString(),
     planDigest: digestJson(provisioningSetupPlan(production, review)),
     productionContractDigest: digestJson(production),
@@ -486,8 +671,11 @@ export function issueDisposableReviewAuthority({ production, review, accountId, 
       capturedAt: currentReviewActiveProof.capturedAt,
       startedAt: currentReviewActiveProof.snapshotStartedAt,
       completedAt: currentReviewActiveProof.snapshotCompletedAt,
+      liveIdentities: structuredClone(currentReviewActiveProof.liveIdentities),
     },
     reviewActivationJournal: journal,
+    inertSetup: setupProvenance,
+    disposableCoordinate: structuredClone(coordinate),
     repositoryOwner: { capturedAt: repositoryConnectionProof.capturedAt,
       githubApp: structuredClone(repositoryConnectionProof.githubApp),
       websitePreserved: repositoryConnectionProof.websitePreserved },
@@ -498,8 +686,9 @@ export function issueDisposableReviewAuthority({ production, review, accountId, 
       monthlyMinutesUsed: buildUsageProof.monthlyMinutesUsed,
       alertAtMinutes: buildUsageProof.alertAtMinutes,
       disableAtMinutes: buildUsageProof.disableAtMinutes },
+    reservedBuildMinutes: review.automaticReview.providerBuildTimeoutMinutes,
     evidenceDigests: disposableReviewEvidenceDigests({ reviewActivationProof,
-      reviewActivationJournal,
+      reviewActivationJournal, inertSetupJournal, inertSetupResults, disposableCoordinate,
       currentReviewActiveProof, repositoryConnectionProof, productionSentinelProof,
       tokenAuthorityProofs, buildUsageProof }),
     allowedWrites: ["push-one-exact-review-issue-66-branch",
@@ -510,20 +699,24 @@ export function issueDisposableReviewAuthority({ production, review, accountId, 
 }
 
 export function validateDisposableReviewAuthority(proof, { production, review, accountId,
-  sourceSha, reviewActivationProof, reviewActivationJournal, currentReviewActiveProof,
+  sourceSha, reviewActivationProof, reviewActivationJournal, inertSetupJournal,
+  inertSetupResults, disposableCoordinate, currentReviewActiveProof,
   repositoryConnectionProof,
   productionSentinelProof, tokenAuthorityProofs, buildUsageProof }, now = Date.now(),
 minimumRemainingMs = reviewActivationTransitionBudgetMs) {
   const keys = ["accountId", "allowedWrites", "buildUsage", "capturedAt", "evidenceDigests",
-    "expiresAt", "mutation", "outcome", "phase", "planDigest", "productionContractDigest",
+    "disposableCoordinate", "expiresAt", "inertSetup", "mutation", "outcome", "phase",
+    "planDigest", "predecessorSourceSha", "productionContractDigest",
     "productionSentinel", "proof_digest", "repositoryOwner", "reviewActiveSnapshot",
-    "reviewActivationJournal", "reviewContractDigest", "sourceSha", "tokenAuthority"];
+    "reservedBuildMinutes", "reviewActivationJournal", "reviewContractDigest", "sourceSha",
+    "tokenAuthority"];
   const captured = Date.parse(proof?.capturedAt ?? "");
   const expires = Date.parse(proof?.expiresAt ?? "");
   if (!proof || !same(sorted(Object.keys(proof)), sorted(keys)) ||
       proof.outcome !== "workers-builds-disposable-review-authority-valid" ||
       proof.mutation !== false || proof.phase !== "disposable-review-build-and-proof" ||
       proof.accountId !== accountId || proof.sourceSha !== sourceSha ||
+      proof.predecessorSourceSha !== reviewActivationProof?.sourceSha ||
       !isUtcTimestamp(proof.capturedAt) || !isUtcTimestamp(proof.expiresAt) ||
       !Number.isFinite(captured) || !Number.isFinite(expires) || captured > now + 30_000 ||
       expires - captured !== disposableReviewAuthorityLifetimeMs || now >= expires ||
@@ -531,18 +724,23 @@ minimumRemainingMs = reviewActivationTransitionBudgetMs) {
       proof.planDigest !== digestJson(provisioningSetupPlan(production, review)) ||
       proof.productionContractDigest !== digestJson(production) ||
       proof.reviewContractDigest !== digestJson(review) ||
+      proof.reservedBuildMinutes !== review.automaticReview.providerBuildTimeoutMinutes ||
       !same(proof.allowedWrites, ["push-one-exact-review-issue-66-branch",
         "delete-that-exact-sha-bound-branch",
         "cancel-only-journal-owned-automatic-review-build-during-cleanup"]) ||
       proof.proof_digest !== digestJson(Object.fromEntries(Object.entries(proof)
         .filter(([key]) => key !== "proof_digest"))))
     fail("disposable review authority proof is stale, malformed, or cross-phase");
-  validateReviewActiveSnapshotProofEvidence(reviewActivationProof, { accountId, sourceSha },
+  validateReviewActiveSnapshotProofEvidence(reviewActivationProof,
+    { accountId, sourceSha: proof.predecessorSourceSha },
     Date.parse(reviewActivationProof?.capturedAt ?? ""), 0);
   const journal = validateReviewActivationJournal(reviewActivationJournal,
-    reviewActivationProof, sourceSha);
-  validateReviewActiveSnapshotProofEvidence(currentReviewActiveProof, { accountId, sourceSha },
-    captured, 30_000);
+    reviewActivationProof, proof.predecessorSourceSha);
+  const setupProvenance = validateInertSetupProvenance(inertSetupJournal, inertSetupResults,
+    journal.preflight);
+  const coordinate = validateDisposableReviewCoordinate(disposableCoordinate, sourceSha, captured);
+  validateCurrentDisposableReviewSnapshotProof(currentReviewActiveProof,
+    { accountId, sourceSha }, captured);
   validateRepositoryConnectionOwnerProof(repositoryConnectionProof, accountId, sourceSha, captured);
   const sentinel = validateSentinelRefAbsence(productionSentinelProof, captured);
   const proofByKind = Object.fromEntries(tokenAuthorityProofs.map((item) => [item.kind, item]));
@@ -550,20 +748,33 @@ minimumRemainingMs = reviewActivationTransitionBudgetMs) {
     tokenRows: { production: { cloudflare_token_id: proofByKind.production?.tokenId },
       review: { cloudflare_token_id: proofByKind.review?.tokenId } }, sourceSha }, captured);
   validateBuildUsageProof(review, buildUsageProof, accountId, captured);
+  if (buildUsageProof.monthlyMinutesUsed + proof.reservedBuildMinutes >=
+      buildUsageProof.alertAtMinutes)
+    fail("disposable review authority lacks reserved build-minute budget");
   const active = proof.reviewActiveSnapshot;
   if (!active || !same(sorted(Object.keys(active)), sorted(["capturedAt", "completedAt",
-    "predecessorProofDigest", "proofDigest", "startedAt", "stateDigest"])) ||
+    "liveIdentities", "predecessorProofDigest", "proofDigest", "startedAt", "stateDigest"])) ||
       active.predecessorProofDigest !== reviewActivationProof.proof_digest ||
       active.stateDigest !== currentReviewActiveProof.state_digest ||
       active.proofDigest !== currentReviewActiveProof.proof_digest ||
       active.capturedAt !== currentReviewActiveProof.capturedAt ||
       active.startedAt !== currentReviewActiveProof.snapshotStartedAt ||
       active.completedAt !== currentReviewActiveProof.snapshotCompletedAt ||
+      !same(active.liveIdentities, currentReviewActiveProof.liveIdentities) ||
       !same(proof.reviewActivationJournal, journal) ||
-      active.reviewTriggerUuid !== undefined ||
-      journal.reviewTriggerUuid === undefined ||
+      !same(proof.inertSetup, setupProvenance) ||
+      !same(proof.disposableCoordinate, coordinate) ||
+      currentReviewActiveProof.liveIdentities.reviewTriggerUuid !== journal.reviewTriggerUuid ||
+      currentReviewActiveProof.liveIdentities.productionTriggerUuid !==
+        setupProvenance.productionTriggerUuid ||
+      currentReviewActiveProof.liveIdentities.productionBuildTokenUuid !==
+        setupProvenance.productionBuildTokenUuid ||
+      currentReviewActiveProof.liveIdentities.reviewBuildTokenUuid !==
+        setupProvenance.reviewBuildTokenUuid ||
+      currentReviewActiveProof.liveIdentities.repositoryConnectionUuid !==
+        setupProvenance.repositoryConnectionUuid ||
       !same(proof.evidenceDigests, disposableReviewEvidenceDigests({ reviewActivationProof,
-        reviewActivationJournal,
+        reviewActivationJournal, inertSetupJournal, inertSetupResults, disposableCoordinate,
         currentReviewActiveProof, repositoryConnectionProof, productionSentinelProof,
         tokenAuthorityProofs, buildUsageProof })) ||
       !same(proof.repositoryOwner, { capturedAt: repositoryConnectionProof.capturedAt,
@@ -952,6 +1163,9 @@ export function provisioningSetupPlan(production, review) {
       "ATRINIK_REVIEW_ACTIVATION_PROOF_OUTPUT_FILE",
       "ATRINIK_REVIEW_ACTIVATION_PROOF_FILE",
       "ATRINIK_REVIEW_ACTIVATION_JOURNAL_FILE",
+      "ATRINIK_INERT_SETUP_JOURNAL_FILE",
+      "ATRINIK_INERT_SETUP_RESULTS_FILE",
+      "ATRINIK_DISPOSABLE_REVIEW_COORDINATE_FILE",
       "ATRINIK_CURRENT_REVIEW_ACTIVE_PROOF_OUTPUT_FILE",
       "ATRINIK_CURRENT_REVIEW_ACTIVE_PROOF_FILE",
       "ATRINIK_DISPOSABLE_REVIEW_AUTHORITY_PROOF_OUTPUT_FILE",
@@ -1165,6 +1379,7 @@ export function provisioningSetupPlan(production, review) {
       precondition: { disposableReviewAuthority: disposableReviewAuthorityPrecondition(),
         reviewActivationProof: resultReference("review-activation-readback", "proof_digest") },
       authorityLifetimeMinutes: disposableReviewAuthorityLifetimeMs / 60_000,
+      pushMinimumRemainingMinutes: disposableReviewPushReserveMs / 60_000,
       maximumAutomaticBuildMinutes: review.automaticReview.providerBuildTimeoutMinutes,
       allowedWrites: ["push-one-exact-review-issue-66-branch",
         "delete-that-exact-sha-bound-branch",
@@ -1853,8 +2068,15 @@ export function validateReviewResultProof({ proof, reviewTrigger, reviewToken, b
       matches.length !== 1 || row.status !== "stopped" || row.build_outcome !== "success" ||
       row.trigger?.trigger_uuid !== proof.triggerUuid || metadata.branch !== proof.branch ||
       metadata.commit_hash !== proof.reviewCommitSha ||
-      metadata.build_token_uuid !== proof.buildTokenUuid || metadata.build_trigger_source !== "push" ||
-      metadata.repo_id !== githubRepository.repo_id || metadata.repo_name !== githubRepository.repo_name ||
+      metadata.build_token_uuid !== proof.buildTokenUuid ||
+      metadata.build_trigger_source !== "push_event" ||
+      metadata.provider_type !== "github" || metadata.provider_account_name !== "atrinik" ||
+      metadata.repo_name !== githubRepository.repo_name ||
+      row.trigger?.repo_connection?.provider_account_id !==
+        githubRepository.provider_account_id ||
+      row.trigger?.repo_connection?.repo_id !== githubRepository.repo_id ||
+      row.trigger?.repo_connection?.repo_connection_uuid !==
+        reviewTrigger.repo_connection?.repo_connection_uuid ||
       metadata.build_command !== reviewTrigger.build_command ||
       metadata.deploy_command !== reviewTrigger.deploy_command ||
       normalizedRoot(metadata.root_directory) !== normalizedRoot(reviewTrigger.root_directory) ||
@@ -1871,7 +2093,7 @@ export function validateReviewResultProof({ proof, reviewTrigger, reviewToken, b
       proof.githubEvidence?.comparison?.head_commit?.sha !== mainSha ||
       checkRuns?.total_count !== 1 || !Array.isArray(checkRuns?.check_runs) ||
       checkRuns.check_runs.length !== 1 || !Number.isSafeInteger(check?.id) ||
-      check.name !== "Cloudflare Workers Builds" || check.status !== "completed" ||
+      check.name !== "Workers Builds: atrinik-metaserver" || check.status !== "completed" ||
       check.conclusion !== "success" || check.head_sha !== proof.reviewCommitSha ||
       check.app?.id !== 85455 || typeof check.external_id !== "string" || !check.external_id ||
       details?.protocol !== "https:" || details.hostname !== "dash.cloudflare.com" ||
@@ -1890,7 +2112,8 @@ function validateActivationSnapshot({ production, review, scripts,
   snapshotManifest, reviewResultProof, reviewActivationAuthorityProof,
   reviewActivationAuthorityEvidence, reviewActivationAuthorityCheckpoint },
 { reviewActive, requireReviewResult = reviewActive,
-  authorityRequired = reviewActive && !requireReviewResult }) {
+  authorityRequired = reviewActive && !requireReviewResult,
+  includeLiveIdentities = false }) {
   const reviewAuthority = reviewActive && !requireReviewResult && authorityRequired ?
     (reviewActivationAuthorityCheckpoint ? validateReviewActivationAuthorityCheckpoint(
       reviewActivationAuthorityProof, {
@@ -2005,15 +2228,26 @@ function validateActivationSnapshot({ production, review, scripts,
     reviewBuildState, tokenAuthorityProofs,
     ...(reviewAuthority ? { reviewActivationAuthorityProof } : {}),
     ...(requireReviewResult ? { reviewResultProof } : {}) });
+  const liveIdentities = includeLiveIdentities ? {
+    productionTriggerUuid: productionRows[0].trigger_uuid,
+    reviewTriggerUuid: reviewRows[0].trigger_uuid,
+    productionBuildTokenUuid: productionToken.build_token_uuid,
+    reviewBuildTokenUuid: reviewToken.build_token_uuid,
+    repositoryConnectionUuid: reviewRows[0].repo_connection.repo_connection_uuid,
+    productionEnvironmentDigest: digestJson(productionEnvironment),
+    reviewEnvironmentDigest: digestJson(reviewEnvironment),
+  } : undefined;
   const proof_digest = digestJson({ state_digest,
     snapshotStartedAt: snapshotManifest.startedAt,
-    snapshotCompletedAt: snapshotManifest.completedAt, capturedAt });
+    snapshotCompletedAt: snapshotManifest.completedAt, capturedAt,
+    ...(liveIdentities ? { liveIdentities } : {}) });
   return { outcome: requireReviewResult ? "workers-builds-production-activation-snapshot-valid" :
     reviewActive ? "workers-builds-review-activation-snapshot-valid" :
       "workers-builds-staged-snapshot-valid", mutation: false,
     stagedTriggerCount: expectedTriggerCount, accountId, sourceSha, capturedAt,
     snapshotStartedAt: snapshotManifest.startedAt,
-    snapshotCompletedAt: snapshotManifest.completedAt, state_digest, proof_digest };
+    snapshotCompletedAt: snapshotManifest.completedAt, state_digest, proof_digest,
+    ...(liveIdentities ? { liveIdentities } : {}) };
 }
 
 export function validateStagedBuildsSnapshot(arguments_) {
@@ -2359,6 +2593,13 @@ async function readDisposableReviewAuthorityEvidence(environment = process.env,
       environment.ATRINIK_REVIEW_ACTIVATION_PROOF_FILE, "review activation proof"),
     reviewActivationJournal: await readPrivateJsonLines(
       environment.ATRINIK_REVIEW_ACTIVATION_JOURNAL_FILE, "review activation journal"),
+    inertSetupJournal: await readPrivateJsonLines(environment.ATRINIK_INERT_SETUP_JOURNAL_FILE,
+      "inert setup journal"),
+    inertSetupResults: await readPrivateJson(environment.ATRINIK_INERT_SETUP_RESULTS_FILE,
+      "inert setup results"),
+    disposableCoordinate: await readPrivateJson(
+      environment.ATRINIK_DISPOSABLE_REVIEW_COORDINATE_FILE,
+      "disposable review coordinate"),
     ...(requireCurrent ? { currentReviewActiveProof: await readPrivateJson(
       environment.ATRINIK_CURRENT_REVIEW_ACTIVE_PROOF_FILE, "current review active proof") } : {}),
     repositoryConnectionProof: await readPrivateJson(
@@ -3005,6 +3246,7 @@ async function validateStagedSnapshotDirectory({ snapshotDirectory, production, 
   accountId, tokenAuthorityProofs, sourceSha },
 { reviewActive = false, requireReviewResult = reviewActive,
   authorityRequired = reviewActive && !requireReviewResult,
+  includeLiveIdentities = false,
   reviewResultProof = undefined, reviewActivationAuthorityProof = undefined,
   reviewActivationAuthorityEvidence = undefined,
   reviewActivationAuthorityCheckpoint = undefined } = {}) {
@@ -3060,7 +3302,7 @@ async function validateStagedSnapshotDirectory({ snapshotDirectory, production, 
   if (requireReviewResult) return validateProductionActivationSnapshot(arguments_);
   return authorityRequired ? validateReviewActivationSnapshot(arguments_) :
     validateActivationSnapshot(arguments_, { reviewActive: true, requireReviewResult: false,
-      authorityRequired: false });
+      authorityRequired: false, includeLiveIdentities });
 }
 
 export async function validateReviewStagedEnvironmentSnapshotDirectory({ snapshotDirectory,
@@ -3237,6 +3479,7 @@ export const credentialedProvisioningModes = Object.freeze([
   "--verify-configured",
   "--verify-disposable-review-authority",
   "--verify-disposable-review-authority-proof",
+  "--verify-disposable-review-authority-push",
   "--verify-preflight",
   "--verify-production-activation",
   "--verify-review-activation",
@@ -3357,7 +3600,8 @@ export async function runProvisioningCli(mode = process.argv[2] ?? "--validate-o
       snapshotDirectory: process.env.ATRINIK_PROVIDER_SNAPSHOT_DIRECTORY,
       production, review, accountId, tokenAuthorityProofs: evidence.tokenAuthorityProofs,
       sourceSha,
-    }, { reviewActive: true, requireReviewResult: false, authorityRequired: false });
+    }, { reviewActive: true, requireReviewResult: false, authorityRequired: false,
+      includeLiveIdentities: true });
     await writePrivateProof(process.env.ATRINIK_CURRENT_REVIEW_ACTIVE_PROOF_OUTPUT_FILE, current);
     const tokenRows = requireExhaustiveEnvelope(await loadSnapshot(
       process.env.ATRINIK_PROVIDER_SNAPSHOT_DIRECTORY, "build-tokens.json"),
@@ -3377,11 +3621,14 @@ export async function runProvisioningCli(mode = process.argv[2] ?? "--validate-o
       sourceSha, expiresAt: proof.expiresAt, proof_digest: proof.proof_digest })}\n`);
     return;
   }
-  if (mode === "--verify-disposable-review-authority-proof") {
+  if (mode === "--verify-disposable-review-authority-proof" ||
+      mode === "--verify-disposable-review-authority-push") {
     const accountId = await readPrivateValue(process.env.ATRINIK_CLOUDFLARE_ACCOUNT_ID_FILE,
       "Cloudflare account ID", accountIdPattern);
     const { proof, validation } = await readAndValidateDisposableReviewAuthority({
-      production, review, accountId, sourceSha });
+      production, review, accountId, sourceSha,
+      minimumRemainingMs: mode === "--verify-disposable-review-authority-push" ?
+        disposableReviewPushReserveMs : reviewActivationTransitionBudgetMs });
     process.stdout.write(`${JSON.stringify({ outcome: validation.outcome, mutation: false,
       sourceSha, expiresAt: validation.expiresAt, proof_digest: proof.proof_digest })}\n`);
     return;

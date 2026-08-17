@@ -46,6 +46,7 @@
     "provision:workers-builds:verify-review-activation-authority-proof": "node scripts/workers-builds-provisioning.mjs --verify-review-activation-authority-proof",
     "provision:workers-builds:verify-disposable-review-authority": "node scripts/workers-builds-provisioning.mjs --verify-disposable-review-authority",
     "provision:workers-builds:verify-disposable-review-authority-proof": "node scripts/workers-builds-provisioning.mjs --verify-disposable-review-authority-proof",
+    "provision:workers-builds:verify-disposable-review-authority-push": "node scripts/workers-builds-provisioning.mjs --verify-disposable-review-authority-push",
     "provision:workers-builds:verify-review-staging-root-create": "node scripts/workers-builds-provisioning.mjs --verify-review-staging-root-create",
     "provision:workers-builds:verify-review-staging-root-activation": "node scripts/workers-builds-provisioning.mjs --verify-review-staging-root-activation",
     "provision:workers-builds:verify-review-staged-environment": "node scripts/workers-builds-provisioning.mjs --verify-review-staged-environment",
