@@ -529,6 +529,7 @@ ATRINIK_REPLACEMENT_REVIEW_BUILD_TOKEN_ID_FILE=/secure/private/replacement-token
 ATRINIK_REPLACEMENT_REVIEW_BUILD_TOKEN_PERMISSION_PROOF_FILE=/secure/private/replacement-token-policy.json \
 ATRINIK_REPLACEMENT_REVIEW_TOKEN_OWNER_MEMBERSHIP_PROOF_FILE=/secure/private/replacement-token-membership.json \
 ATRINIK_REVIEW_TOKEN_ROTATION_PREDECESSOR_PROOF_OUTPUT_FILE=/secure/private/rotation-predecessor-proof.json \
+ATRINIK_REVIEW_TOKEN_ROTATION_PRODUCTION_BASELINE_PROOF_OUTPUT_FILE=/secure/private/rotation-production-baseline-proof.json \
 ATRINIK_REVIEW_TOKEN_ROTATION_AUTHORITY_PROOF_OUTPUT_FILE=/secure/private/rotation-authority.json \
   npm run provision:workers-builds:verify-review-token-rotation-authority
 ```
@@ -556,8 +557,10 @@ and binding before continuing. Perform exactly this sequence:
    `npm run provision:workers-builds:verify-review-token-rotation-complete`.
 
 The three readback commands require `ATRINIK_PROVIDER_SNAPSHOT_OUTPUT`, the
-rotation authority and all evidence used to issue it, the exact production and
-review trigger UUIDs bound by that authority, and
+rotation authority, its independently written
+`ATRINIK_REVIEW_TOKEN_ROTATION_PRODUCTION_BASELINE_PROOF_FILE`, all evidence
+used to issue it, the exact production and review trigger UUIDs bound by that
+authority, and
 `ATRINIK_REPLACEMENT_REVIEW_BUILD_TOKEN_UUID_FILE`. Write each proof to its
 corresponding `ATRINIK_REVIEW_TOKEN_ROTATION_*_PROOF_OUTPUT_FILE`. Every phase
 must reproduce the authority-bound full non-token production-state digest,
@@ -583,7 +586,12 @@ Every intent digest is computed from the exact method, path, and authority-bound
 request body. Explicit success binds its returned identity; only a journaled
 ambiguous response may reconcile by exact stable readback, and deletions require
 an exact-absence tombstone. Crashes resume from those classifications and
-tombstones and never adopt or delete a foreign wrapper. The old wrapper must be
+tombstones and never adopt or delete a foreign wrapper. Each forward or rollback
+mutation is preceded by a journal-bound fresh authenticated current-main proof;
+rollback revalidates the historical authority without reusing its expired write
+budget. A checksum-valid rollback journal must end in either exact predecessor
+restoration or an exact residual-state record naming both live token references,
+wrapper-presence flags, and any active mutation. The old wrapper must be
 unreferenced across the complete account trigger inventory, not merely this
 repository. Production activation, migration
 `0010`, manual/API builds, the initial production build, and all Worker,
