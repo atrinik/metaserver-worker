@@ -42,6 +42,8 @@
     "provision:workers-builds:verify-preflight": "node scripts/workers-builds-provisioning.mjs --verify-preflight",
     "provision:workers-builds:materialize-production": "node scripts/workers-builds-provisioning.mjs --materialize-production",
     "provision:workers-builds:verify-staged": "node scripts/workers-builds-provisioning.mjs --verify-staged",
+    "provision:workers-builds:verify-review-activation-authority": "node scripts/workers-builds-provisioning.mjs --verify-review-activation-authority",
+    "provision:workers-builds:verify-review-activation-authority-proof": "node scripts/workers-builds-provisioning.mjs --verify-review-activation-authority-proof",
     "provision:workers-builds:verify-review-staging-root-create": "node scripts/workers-builds-provisioning.mjs --verify-review-staging-root-create",
     "provision:workers-builds:verify-review-staging-root-activation": "node scripts/workers-builds-provisioning.mjs --verify-review-staging-root-activation",
     "provision:workers-builds:verify-review-staged-environment": "node scripts/workers-builds-provisioning.mjs --verify-review-staged-environment",
