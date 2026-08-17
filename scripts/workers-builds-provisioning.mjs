@@ -1347,6 +1347,9 @@ export async function validateReviewTokenRotationRollbackJournal(records, author
           intent.requestDigestSha256 !== expectedRequest.requestDigestSha256) ||
         classified && !["explicit-success", "ambiguous",
           ...(terminalBlocked ? ["explicit-failure"] : [])].includes(classified.outcome) ||
+        explicitFailure && (!Number.isInteger(classified.status) || classified.status < 400 ||
+          classified.status > 599 ||
+          !/^[0-9a-f]{64}$/u.test(classified.responseDigestSha256 ?? "")) ||
         explicitFailure && bound ||
         bound && (bound.requestDigestSha256 !== intent?.requestDigestSha256 ||
           bound.providerResponseExplicitSuccess !== explicit || bound.resourceUuid !== resourceUuid ||
@@ -1374,7 +1377,8 @@ export async function validateReviewTokenRotationRollbackJournal(records, author
     const completed = new Set(mutationOperations.filter((operation) =>
       find("mutation-bound", operation)));
     const active = mutationOperations.find((operation) => !completed.has(operation) &&
-      find("mutation-intent", operation)) ?? null;
+      find("mutation-intent", operation) &&
+      find("provider-response-classified", operation)?.outcome !== "explicit-failure") ?? null;
     const predecessor = authorityProof.journalIdentities.predecessorReviewBuildTokenUuid;
     const replacement = replacementReviewTokenUuid;
     const state = startingPhase === "predecessor" ? {
@@ -1411,6 +1415,13 @@ export async function validateReviewTokenRotationRollbackJournal(records, author
           [completedState, apply(completedState, active)];
     const residualWithoutActive = { ...residual };
     delete residualWithoutActive.activeMutation;
+    const prefixAt = Date.parse(records.at(-2)?.at ?? records[0].at);
+    const blockedManifest = await loadSnapshot(blockedSnapshotDirectory,
+      "snapshot-manifest.json");
+    if (Date.parse(blockedManifest?.startedAt ?? "") < prefixAt ||
+        Date.parse(blockedManifest?.completedAt ?? "") >
+          Date.parse(blockedProof?.capturedAt ?? ""))
+      fail("review token rotation rollback residual snapshot chronology drift");
     const residualPhase = !residual.replacementWrapperPresent ? "predecessor" :
       residual.liveProductionTokenReference === predecessor &&
         residual.liveReviewTokenReference === predecessor ? "predecessor-restored" :
@@ -1427,11 +1438,11 @@ export async function validateReviewTokenRotationRollbackJournal(records, author
       reviewTriggerUuid: authorityProof.journalIdentities.reviewTriggerUuid,
       predecessorReviewTokenUuid:
         authorityProof.journalIdentities.predecessorReviewBuildTokenUuid,
-      replacementReviewTokenUuid, productionPreservationDigest:
+      replacementReviewTokenUuid: residualPhase === "predecessor" ? undefined :
+        replacementReviewTokenUuid, productionPreservationDigest:
         authorityProof.productionPreservationDigest, authorityProof, productionBaselineProof,
       now: Date.parse(blockedProof?.capturedAt ?? ""),
     });
-    const prefixAt = Date.parse(records.at(-2)?.at ?? records[0].at);
     if (!same(sorted(Object.keys(terminal ?? {})), sorted(terminalKeys)) ||
         !same(sorted(Object.keys(residual ?? {})), sorted(residualKeys)) ||
         residual.activeMutation !== active ||
@@ -1522,7 +1533,7 @@ export function issueDisposableReviewAuthority({ production, review, accountId, 
     currentReplacementTokenOwnerMembershipProof.capturedAt);
   if (digestJson(currentReplacementTokenOwnerMembershipProof) ===
       digestJson(replacementTokenOwnerMembershipProof) ||
-      currentMembershipCaptured < Date.parse(rotation.terminalAt) ||
+      currentMembershipCaptured <= Date.parse(rotation.terminalAt) ||
       currentMembershipCaptured > Date.parse(currentReviewActiveProof.snapshotStartedAt) ||
       Date.parse(currentReviewActiveProof.snapshotStartedAt) < Date.parse(rotation.terminalAt))
     fail("disposable review authority observations overlap");
@@ -1674,7 +1685,7 @@ minimumRemainingMs = reviewActivationTransitionBudgetMs) {
       Date.parse(journal.terminalAt) > Date.parse(rotation.terminalAt) ||
       digestJson(currentReplacementTokenOwnerMembershipProof) ===
         digestJson(replacementTokenOwnerMembershipProof) ||
-      currentMembershipCaptured < Date.parse(rotation.terminalAt) ||
+      currentMembershipCaptured <= Date.parse(rotation.terminalAt) ||
       currentMembershipCaptured > Date.parse(currentReviewActiveProof.snapshotStartedAt) ||
       Date.parse(rotation.terminalAt) > Date.parse(currentReviewActiveProof.snapshotStartedAt) ||
       !same(active.liveIdentities, currentReviewActiveProof.liveIdentities) ||
