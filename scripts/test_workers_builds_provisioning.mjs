@@ -1156,7 +1156,7 @@ test("binds fresh owner evidence into one bounded review activation phase", () =
   const checkpoint = validateReviewActivationAuthority(proof, arguments_,
     captured + 24 * 60_000 + 59_000);
   assert.equal(validateReviewActivationAuthorityCheckpoint(proof, arguments_, checkpoint,
-    captured + 29 * 60_000).proof_digest, proof.proof_digest);
+    captured + 29 * 60_000 + 59_500).proof_digest, proof.proof_digest);
   assert.throws(() => validateReviewActivationAuthority(proof, arguments_,
     captured + 26 * 60_000), /stale, malformed, or cross-phase/u);
   assert.throws(() => validateReviewActivationAuthority({ ...proof, phase: "production" },
@@ -1936,7 +1936,7 @@ test("proves one serialized production trigger and one isolated review trigger",
     "production"), /Deploy Hook/u);
 });
 
-test("proves only the production trigger is inert before review activation", () => {
+test("proves only the production trigger is inert before review activation", async () => {
   const { productionSentinelProof } = freshBoundary();
   const productionSpec = withConnection(productionTriggerSpec(production, {
     ...triggerCoordinates(), buildTokenUuid: reviewTokenUuid,
@@ -2002,10 +2002,15 @@ test("proves only the production trigger is inert before review activation", () 
   const staleProof = { ...stagedProof, capturedAt: "2026-08-15T00:00:00.000Z" };
   assert.throws(() => validateStagedProof(staleProof, staleProof,
     Date.parse("2026-08-15T00:06:00.000Z")), /staged activation proof/u);
+  await new Promise((resolvePromise) => setTimeout(resolvePromise, 5));
   const retimed = structuredClone(arguments_);
-  retimed.snapshotManifest.startedAt = new Date(
-    Date.parse(arguments_.snapshotManifest.startedAt) - 1_000).toISOString();
-  assert.notEqual(validateStagedBuildsSnapshot(retimed).proof_digest, stagedProof.proof_digest);
+  retimed.snapshotManifest.startedAt = new Date().toISOString();
+  retimed.snapshotManifest.completedAt = retimed.snapshotManifest.startedAt;
+  const retimedProof = validateStagedBuildsSnapshot(retimed);
+  assert.equal(retimedProof.state_digest, stagedProof.state_digest);
+  assert.notEqual(retimedProof.proof_digest, stagedProof.proof_digest);
+  assert.equal(validateStagedProof(stagedProof, retimedProof).proof_digest,
+    retimedProof.proof_digest);
   const active = structuredClone(arguments_);
   active.productionTriggers.result[0].branch_includes = ["main"];
   active.reviewTriggers = structuredClone(active.productionTriggers);

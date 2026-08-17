@@ -535,7 +535,7 @@ export function validateReviewActivationAuthorityCheckpoint(proof, arguments_, c
       checkpoint.outcome !== "workers-builds-review-activation-authority-valid" ||
       checkpoint.mutation !== false || checkpoint.phase !== "review-trigger-activation-and-proof" ||
       checkpoint.proof_digest !== proof?.proof_digest || !isUtcTimestamp(checkpoint.checkedAt) ||
-      !Number.isFinite(checked) || checked > now + 30_000 || now - checked > 5 * 60_000)
+      !Number.isFinite(checked) || checked > now + 30_000)
     fail("review activation authority checkpoint is stale or malformed");
   const start = validateReviewActivationAuthority(proof, arguments_, checked,
     reviewActivationTransitionBudgetMs);
@@ -1769,9 +1769,7 @@ function validateActivationSnapshot({ production, review, scripts,
   const snapshotCoordinate = { accountId: snapshotManifest.accountId,
     sourceSha: snapshotManifest.sourceSha,
     productionContractSha256: snapshotManifest.productionContractSha256,
-    reviewContractSha256: snapshotManifest.reviewContractSha256,
-    startedAt: snapshotManifest.startedAt,
-    completedAt: snapshotManifest.completedAt };
+    reviewContractSha256: snapshotManifest.reviewContractSha256 };
   const sentinelCoordinates = {
     production: { repository: productionSentinelProof.repository,
       branch: productionSentinelProof.branch, refs: productionSentinelProof.refs },
