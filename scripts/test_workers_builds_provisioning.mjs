@@ -834,6 +834,20 @@ test("binds the staged review environment proof to both journaled triggers", asy
     const accepted = await validateReviewStagedEnvironmentSnapshotDirectory(arguments_);
     assert.match(accepted.proof_digest, /^[0-9a-f]{64}$/u);
 
+    await writePrivate(privatePaths["production-uuid"],
+      "44444444-4444-4444-8444-444444444444");
+    await assert.rejects(validateReviewStagedEnvironmentSnapshotDirectory(arguments_),
+      /incomplete or competing/u);
+    await writePrivate(privatePaths["production-uuid"], reviewTriggerUuid);
+    await writePrivate(privatePaths["review-uuid"], resourceUuid);
+    await assert.rejects(validateReviewStagedEnvironmentSnapshotDirectory(arguments_),
+      /incomplete or competing/u);
+    await writePrivate(privatePaths["production-uuid"], resourceUuid);
+    await writePrivate(privatePaths["review-uuid"], resourceUuid);
+    await assert.rejects(validateReviewStagedEnvironmentSnapshotDirectory(arguments_),
+      /identities overlap/u);
+    await writePrivate(privatePaths["review-uuid"], reviewTriggerUuid);
+
     await writeSnapshot(`${production.workers[0].name}.triggers.json`, envelope([{
       ...productionActual, branch_includes: ["main"],
     }, reviewActual]));
