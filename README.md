@@ -124,16 +124,21 @@ under replacement authority #66 can be checked without credentials using
 `npm run provision:workers-builds:validate` and
 `npm run provision:workers-builds:dry-run`. The value-free
 `npm run provision:workers-builds:plan-setup` output additionally pins inert
-staging, distinct review/production activation gates, and rollback order
-without an apply path. Staging uses distinct private random, freshly absent
-production and review GitHub refs with the zero-resource review token; the
+production staging, distinct review/production activation gates, and rollback
+order without an apply path. Staging uses one private random, freshly absent
+production GitHub ref with the zero-resource review token while the review
+trigger remains absent; the
 production selector and token change
 together only at activation. Its separately credentialed exhaustive provider
 readback, D1-ledger proof, and local materializer write only private mode-`0600` provider
 snapshots/configurations and have no remote mutation path. A post-setup
-`npm run provision:workers-builds:verify-staged` gate proves both triggers are
-still private-sentinel-only and share only the zero-resource review token before
-activation. A post-activation
+`npm run provision:workers-builds:verify-staged` gate proves the production
+trigger is private-sentinel-only on the zero-resource review token and the
+review trigger remains absent before review activation. The review gate creates
+the provider preview role against a freshly proven absent private root with
+fixed inert commands, writes its nonsecret environment, and only then atomically
+switches to and validates the documented final preview trigger before any
+disposable branch proof. A post-activation
 `npm run provision:workers-builds:verify-configured` check proves the serialized
 production/preview trigger pair, distinct fresh provider-token policies,
 environment-classification, and no-Deploy-Hook

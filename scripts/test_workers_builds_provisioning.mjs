@@ -20,8 +20,9 @@ import {
   productionEnvironmentSpec,
   productionTriggerSpec,
   publicStagedProofSummary,
+  provisioningDryRunSummary,
   provisioningSetupPlan,
-  readDistinctSentinelProofs,
+  readProductionSentinelProof,
   readProviderSnapshot,
   readPrivateValue,
   validateAutomaticReviewEnvironment,
@@ -35,8 +36,15 @@ import {
   validateNoDeployHooks,
   validateProductionControlPlane,
   validateProductionActivationSnapshot,
+  validateReviewActivationSnapshot,
+  validateReviewStagedEnvironmentSnapshotDirectory,
+  validateReviewStagedEnvironmentReadback,
+  validateReviewStagingRootAbsence,
+  validateReviewStagingRootProofSequence,
   validateProductionRuntimeProof,
   validateRepositoryConnectionOwnerProof,
+  validateRollbackProductionTriggerReadback,
+  validateRollbackTriggerInventory,
   validateReviewedSourceCoordinates,
   validateSentinelRefAbsence,
   validateSnapshotManifest,
@@ -152,7 +160,6 @@ function freshBoundary() {
     buildTokens: envelope([]),
     accountTriggers: envelope([]),
     productionSentinelProof: sentinelProof("a"),
-    reviewSentinelProof: sentinelProof("b"),
     repositoryConnectionProof: {
       source: "cloudflare-owner-ui-readback", accountId,
       connectionPreexisting: true, websitePreserved: true,
@@ -628,7 +635,9 @@ test("rejects equal-count provider replacement between complete passes", () => {
 });
 
 test("requires an exact private random absent staging ref", () => {
-  const { productionSentinelProof: proof, reviewSentinelProof } = freshBoundary();
+  const { productionSentinelProof: proof } = freshBoundary();
+  const reviewSentinelProof = { ...structuredClone(proof),
+    branch: `review-build-only-sentinel-${"b".repeat(32)}` };
   assert.equal(validateSentinelRefAbsence(proof).outcome, "staging-sentinel-ref-absent");
   assert.doesNotThrow(() => validateDistinctSentinelRefAbsence(proof, reviewSentinelProof));
   assert.throws(() => validateDistinctSentinelRefAbsence(undefined, reviewSentinelProof),
@@ -648,11 +657,11 @@ test("requires an exact private random absent staging ref", () => {
   }, Date.parse("2026-08-15T00:06:00Z")), /stale/u);
 });
 
-test("routes distinct private sentinel branch and proof files by role", async () => {
-  const temporary = await mkdtemp(resolve(tmpdir(), "atrinik-distinct-sentinels-"));
+test("loads the private production sentinel branch and proof", async () => {
+  const temporary = await mkdtemp(resolve(tmpdir(), "atrinik-production-sentinel-"));
   await chmod(temporary, 0o700);
-  const paths = Object.fromEntries(["production-branch", "production-proof",
-    "review-branch", "review-proof"].map((name) => [name, resolve(temporary, name)]));
+  const paths = Object.fromEntries(["production-branch", "production-proof"]
+    .map((name) => [name, resolve(temporary, name)]));
   const boundary = freshBoundary();
   const writePrivate = async (path, value) => {
     await writeFile(path, typeof value === "string" ? `${value}\n` : `${JSON.stringify(value)}\n`);
@@ -661,38 +670,242 @@ test("routes distinct private sentinel branch and proof files by role", async ()
   const environment = {
     ATRINIK_PRODUCTION_STAGING_SENTINEL_BRANCH_FILE: paths["production-branch"],
     ATRINIK_PRODUCTION_STAGING_SENTINEL_REFS_FILE: paths["production-proof"],
-    ATRINIK_REVIEW_STAGING_SENTINEL_BRANCH_FILE: paths["review-branch"],
-    ATRINIK_REVIEW_STAGING_SENTINEL_REFS_FILE: paths["review-proof"],
   };
   try {
     await writePrivate(paths["production-branch"], boundary.productionSentinelProof.branch);
     await writePrivate(paths["production-proof"], boundary.productionSentinelProof);
-    await writePrivate(paths["review-branch"], boundary.reviewSentinelProof.branch);
-    await writePrivate(paths["review-proof"], boundary.reviewSentinelProof);
-    const loaded = await readDistinctSentinelProofs(environment);
+    const loaded = await readProductionSentinelProof(environment);
     assert.equal(loaded.productionSentinelProof.branch,
       boundary.productionSentinelProof.branch);
-    assert.equal(loaded.reviewSentinelProof.branch, boundary.reviewSentinelProof.branch);
-
-    await assert.rejects(readDistinctSentinelProofs({ ...environment,
-      ATRINIK_REVIEW_STAGING_SENTINEL_REFS_FILE: undefined }), /path must be absolute/u);
-    await assert.rejects(readDistinctSentinelProofs({ ...environment,
-      ATRINIK_PRODUCTION_STAGING_SENTINEL_REFS_FILE: paths["review-proof"],
-      ATRINIK_REVIEW_STAGING_SENTINEL_REFS_FILE: paths["production-proof"] }),
-    /production staging sentinel proof branch drift/u);
-
-    await writePrivate(paths["review-proof"], boundary.productionSentinelProof);
-    await writePrivate(paths["review-branch"], boundary.productionSentinelProof.branch);
-    await assert.rejects(readDistinctSentinelProofs(environment), /must be distinct/u);
-
-    const stale = { ...boundary.reviewSentinelProof, capturedAt: "2026-08-15T00:00:00Z" };
-    await writePrivate(paths["review-proof"], stale);
-    await writePrivate(paths["review-branch"], stale.branch);
-    await assert.rejects(readDistinctSentinelProofs(environment,
-      Date.parse("2026-08-15T00:06:00Z")), /stale/u);
+    await assert.rejects(readProductionSentinelProof({ ...environment,
+      ATRINIK_PRODUCTION_STAGING_SENTINEL_REFS_FILE: undefined }), /path must be absolute/u);
   } finally {
     await rm(temporary, { recursive: true, force: true });
   }
+});
+
+test("requires fresh complete per-branch absence proof for a private review staging root", () => {
+  const sourceSha = "a".repeat(40);
+  const rootDirectory = `/review-build-only-staging-${"b".repeat(32)}`;
+  const proof = {
+    source: "github-complete-branch-root-absence-readback",
+    phase: "create",
+    repository: { provider_account_id: "6371603", provider_account_name: "atrinik",
+      provider_type: "github", repo_id: "1324297032", repo_name: "metaserver-worker" },
+    rootDirectory, currentMainSha: sourceSha, capturedAt: new Date().toISOString(),
+    pagination: { hasNextPage: false, pageCount: 1, totalCount: 2 },
+    branches: [
+      { ref: "refs/heads/main", sha: sourceSha },
+      { ref: "refs/heads/review/example", sha: "c".repeat(40) },
+    ],
+    absenceChecks: [
+      { ref: "refs/heads/review/example", sha: "c".repeat(40),
+        path: rootDirectory.slice(1), status: 404 },
+    ],
+  };
+  assert.match(validateReviewStagingRootAbsence(proof, rootDirectory, sourceSha,
+    "create").proof_digest,
+    /^[0-9a-f]{64}$/u);
+  assert.throws(() => validateReviewStagingRootAbsence(proof,
+    "/deployment/review-check", sourceSha, "create"), /identity is malformed/u);
+  assert.throws(() => validateReviewStagingRootAbsence({ ...proof,
+    capturedAt: "2026-08-15T00:00:00Z" }, rootDirectory, sourceSha, "create",
+  Date.parse("2026-08-15T00:06:00Z")), /stale/u);
+  assert.throws(() => validateReviewStagingRootAbsence({ ...proof,
+    currentMainSha: "d".repeat(40) }, rootDirectory, sourceSha, "create"),
+  /identity is malformed/u);
+  assert.throws(() => validateReviewStagingRootAbsence({ ...proof,
+    absenceChecks: [] }, rootDirectory, sourceSha, "create"), /incomplete or reordered/u);
+  assert.throws(() => validateReviewStagingRootAbsence({ ...proof,
+    pagination: { ...proof.pagination, hasNextPage: true } }, rootDirectory, sourceSha, "create"),
+  /pagination is incomplete/u);
+  assert.throws(() => validateReviewStagingRootAbsence({ ...proof,
+    branches: [...proof.branches, { ref: "refs/heads/other", sha: "d".repeat(40) }] },
+  rootDirectory, sourceSha, "create"), /pagination is incomplete/u);
+  assert.throws(() => validateReviewStagingRootAbsence(proof, rootDirectory, sourceSha,
+    "activation"), /identity is malformed/u);
+  const activationProof = { ...proof, phase: "activation",
+    capturedAt: new Date(Date.parse(proof.capturedAt) + 1000).toISOString() };
+  assert.equal(validateReviewStagingRootAbsence(activationProof, rootDirectory, sourceSha,
+    "activation").phase, "activation");
+  const createResult = validateReviewStagingRootAbsence(proof, rootDirectory, sourceSha, "create");
+  const activationResult = validateReviewStagingRootAbsence(activationProof,
+    rootDirectory, sourceSha, "activation");
+  assert.equal(validateReviewStagingRootProofSequence(createResult, activationResult).outcome,
+    "review-staging-root-proof-sequence-valid");
+  assert.throws(() => validateReviewStagingRootProofSequence(createResult, {
+    ...activationResult, capturedAt: createResult.capturedAt,
+  }), /replayed/u);
+});
+
+test("requires stable canonical environment before final review trigger activation", () => {
+  const rootDirectory = `/review-build-only-staging-${"b".repeat(32)}`;
+  const expected = withConnection(automaticReviewTriggerSpec(review, {
+    externalScriptId: scriptTag, repositoryConnectionUuid: resourceUuid,
+    buildTokenUuid: reviewTokenUuid,
+  }));
+  expected.trigger_uuid = reviewTriggerUuid;
+  expected.root_directory = rootDirectory;
+  expected.build_command = "exit 1";
+  expected.deploy_command = "exit 1";
+  const environment = envelope(automaticReviewEnvironmentSpec(review));
+  assert.match(validateReviewStagedEnvironmentReadback({ trigger: expected, environment },
+    expected, review).proof_digest, /^[0-9a-f]{64}$/u);
+  assert.throws(() => validateReviewStagedEnvironmentReadback({ trigger: {
+    ...expected, root_directory: "/deployment/review-check",
+  }, environment }, expected, review), /staged review trigger root_directory drift/u);
+  assert.throws(() => validateReviewStagedEnvironmentReadback({ trigger: expected,
+    environment: envelope({ SKIP_DEPENDENCY_INSTALL: { is_secret: false, value: "0" } }) },
+  expected, review), /review trigger environment drift/u);
+});
+
+test("binds the staged review environment proof to both journaled triggers", async () => {
+  const temporary = await mkdtemp(resolve(tmpdir(), "atrinik-review-staged-proof-"));
+  const snapshot = resolve(temporary, "snapshot");
+  await chmod(temporary, 0o700);
+  await mkdir(snapshot, { mode: 0o700 });
+  const writePrivate = async (path, value) => {
+    await writeFile(path, typeof value === "string" ? `${value}\n` :
+      `${JSON.stringify(value)}\n`, { mode: 0o600 });
+    await chmod(path, 0o600);
+  };
+  const sourceSha = "a".repeat(40);
+  const boundary = freshBoundary();
+  const rootDirectory = `/review-build-only-staging-${"b".repeat(32)}`;
+  const productionActual = withConnection(productionTriggerSpec(production, {
+    externalScriptId: scriptTag, repositoryConnectionUuid: resourceUuid,
+    buildTokenUuid: reviewTokenUuid,
+  }));
+  productionActual.trigger_uuid = resourceUuid;
+  productionActual.branch_includes = [boundary.productionSentinelProof.branch];
+  const reviewActual = withConnection(automaticReviewTriggerSpec(review, {
+    externalScriptId: scriptTag, repositoryConnectionUuid: resourceUuid,
+    buildTokenUuid: reviewTokenUuid,
+  }));
+  reviewActual.trigger_uuid = reviewTriggerUuid;
+  reviewActual.root_directory = rootDirectory;
+  reviewActual.build_command = "exit 1";
+  reviewActual.deploy_command = "exit 1";
+  const now = new Date().toISOString();
+  const manifest = {
+    accountId, sourceSha,
+    productionContractSha256: createHash("sha256").update(JSON.stringify(production)).digest("hex"),
+    reviewContractSha256: createHash("sha256").update(JSON.stringify(review)).digest("hex"),
+    startedAt: now, completedAt: now,
+  };
+  const privatePaths = Object.fromEntries([
+    "production-uuid", "review-uuid", "root", "production-branch", "production-proof",
+  ].map((name) => [name, resolve(temporary, name)]));
+  const prior = Object.fromEntries(Object.keys(process.env).filter((name) => name.startsWith(
+    "ATRINIK_")).map((name) => [name, process.env[name]]));
+  const writeSnapshot = (name, value) => writePrivate(resolve(snapshot, name), value);
+  try {
+    await Promise.all([
+      writeSnapshot("snapshot-manifest.json", manifest),
+      writeSnapshot("scripts.json", envelope([{ id: production.workers[0].name,
+        tag: scriptTag }])),
+      writeSnapshot(`${production.workers[0].name}.triggers.json`,
+        envelope([productionActual, reviewActual])),
+      writeSnapshot("build-tokens.json", buildTokenInventory()),
+      writeSnapshot(`${production.workers[0].name}.trigger-${reviewTriggerUuid}.environment.json`,
+        envelope(automaticReviewEnvironmentSpec(review))),
+      writeSnapshot("account-triggers.json", envelope([productionActual, reviewActual])),
+      ...production.workers.flatMap(({ name }) => [
+        writeSnapshot(`${name}.deploy-hooks.json`, envelope([])),
+        writeSnapshot(`${name}.builds.json`, envelope([])),
+      ]),
+      ...production.workers.slice(1).map(({ name }) =>
+        writeSnapshot(`${name}.triggers.json`, envelope([]))),
+      writePrivate(privatePaths["production-uuid"], resourceUuid),
+      writePrivate(privatePaths["review-uuid"], reviewTriggerUuid),
+      writePrivate(privatePaths.root, rootDirectory),
+      writePrivate(privatePaths["production-branch"], boundary.productionSentinelProof.branch),
+      writePrivate(privatePaths["production-proof"], boundary.productionSentinelProof),
+    ]);
+    Object.assign(process.env, {
+      ATRINIK_PRODUCTION_STAGED_TRIGGER_UUID_FILE: privatePaths["production-uuid"],
+      ATRINIK_REVIEW_STAGED_TRIGGER_UUID_FILE: privatePaths["review-uuid"],
+      ATRINIK_REVIEW_STAGING_ROOT_DIRECTORY_FILE: privatePaths.root,
+      ATRINIK_PRODUCTION_STAGING_SENTINEL_BRANCH_FILE: privatePaths["production-branch"],
+      ATRINIK_PRODUCTION_STAGING_SENTINEL_REFS_FILE: privatePaths["production-proof"],
+    });
+    const arguments_ = { snapshotDirectory: snapshot, production, review, accountId, sourceSha,
+      tokenAuthorityProofs: configuredBoundary(productionActual, reviewActual).tokenAuthorityProofs };
+    const accepted = await validateReviewStagedEnvironmentSnapshotDirectory(arguments_);
+    assert.match(accepted.proof_digest, /^[0-9a-f]{64}$/u);
+
+    await writePrivate(privatePaths["production-uuid"],
+      "44444444-4444-4444-8444-444444444444");
+    await assert.rejects(validateReviewStagedEnvironmentSnapshotDirectory(arguments_),
+      /incomplete or competing/u);
+    await writePrivate(privatePaths["production-uuid"], reviewTriggerUuid);
+    await writePrivate(privatePaths["review-uuid"], resourceUuid);
+    await assert.rejects(validateReviewStagedEnvironmentSnapshotDirectory(arguments_),
+      /incomplete or competing/u);
+    await writePrivate(privatePaths["production-uuid"], resourceUuid);
+    await writePrivate(privatePaths["review-uuid"], resourceUuid);
+    await assert.rejects(validateReviewStagedEnvironmentSnapshotDirectory(arguments_),
+      /identities overlap/u);
+    await writePrivate(privatePaths["review-uuid"], reviewTriggerUuid);
+
+    await writeSnapshot(`${production.workers[0].name}.triggers.json`, envelope([{
+      ...productionActual, branch_includes: ["main"],
+    }, reviewActual]));
+    await assert.rejects(validateReviewStagedEnvironmentSnapshotDirectory(arguments_),
+      /branch_includes drift/u);
+    await writeSnapshot(`${production.workers[0].name}.triggers.json`,
+      envelope([productionActual, reviewActual]));
+    await writeSnapshot(`${production.workers[0].name}.builds.json`, envelope([{
+      build_uuid: resourceUuid, status: "running",
+    }]));
+    await assert.rejects(validateReviewStagedEnvironmentSnapshotDirectory(arguments_),
+      /active Workers Build/u);
+  } finally {
+    for (const name of Object.keys(process.env).filter((key) => key.startsWith("ATRINIK_")))
+      if (!(name in prior)) delete process.env[name];
+    Object.assign(process.env, prior);
+    await rm(temporary, { recursive: true, force: true });
+  }
+});
+
+test("proves phase-aware exact rollback trigger inventory", () => {
+  assert.match(validateRollbackTriggerInventory(envelope([])).proof_digest,
+    /^[0-9a-f]{64}$/u);
+  assert.match(validateRollbackTriggerInventory(envelope([
+    { trigger_uuid: resourceUuid },
+  ]), { productionTriggerUuid: resourceUuid }).proof_digest, /^[0-9a-f]{64}$/u);
+  assert.match(validateRollbackTriggerInventory(envelope([
+    { trigger_uuid: resourceUuid },
+  ]), { productionTriggerUuid: resourceUuid,
+    reviewTriggerUuid }).proof_digest, /^[0-9a-f]{64}$/u);
+  assert.throws(() => validateRollbackTriggerInventory(envelope([
+    { trigger_uuid: reviewTriggerUuid },
+  ]), { productionTriggerUuid: resourceUuid, reviewTriggerUuid }),
+  /competing or unreconciled/u);
+  assert.throws(() => validateRollbackTriggerInventory(envelope([
+    { trigger_uuid: resourceUuid }, { trigger_uuid: reviewTriggerUuid },
+  ]), { productionTriggerUuid: resourceUuid }), /competing or unreconciled/u);
+  assert.throws(() => validateRollbackTriggerInventory(envelope([
+    { trigger_uuid: reviewTriggerUuid },
+  ])), /competing or unreconciled/u);
+
+  const inert = withConnection(productionTriggerSpec(production, {
+    externalScriptId: scriptTag, repositoryConnectionUuid: resourceUuid,
+    buildTokenUuid: reviewTokenUuid,
+  }));
+  inert.trigger_uuid = resourceUuid;
+  inert.branch_includes = ["review-build-only-sentinel-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"];
+  assert.match(validateRollbackProductionTriggerReadback(envelope([])).proof_digest,
+    /^[0-9a-f]{64}$/u);
+  assert.match(validateRollbackProductionTriggerReadback(envelope([inert]), {
+    productionTriggerUuid: resourceUuid, expectedTrigger: inert,
+  }).proof_digest, /^[0-9a-f]{64}$/u);
+  assert.throws(() => validateRollbackProductionTriggerReadback(envelope([{
+    ...inert, branch_includes: ["main"],
+  }]), { productionTriggerUuid: resourceUuid, expectedTrigger: inert }), /branch_includes drift/u);
+  assert.throws(() => validateRollbackProductionTriggerReadback(envelope([{
+    ...inert, build_token_uuid: "44444444-4444-4444-8444-444444444444",
+  }]), { productionTriggerUuid: resourceUuid, expectedTrigger: inert }), /build_token_uuid drift/u);
 });
 
 test("binds provider snapshots to a fresh exact reviewed source", () => {
@@ -1066,10 +1279,16 @@ test("proves a fresh setup has no competing trigger, Deploy Hook, or active buil
 
 test("plans inert setup, separately gated activation, and ordered rollback", () => {
   const plan = provisioningSetupPlan(production, review);
+  assert.deepEqual(provisioningDryRunSummary(production, review).gates, plan.gates);
   assert.equal(plan.mutation, false);
   assert.equal(plan.providerTopology.mode, "one-worker-two-triggers");
   assert.equal(plan.retainedFailedRequest.error, 12002);
   assert.equal(plan.retainedFailedRequest.disposition, "forbidden-never-retry-or-vary");
+  assert.equal(plan.retainedRejectedPreviewRequest.error, 12002);
+  assert.equal(plan.retainedRejectedPreviewRequest.topology,
+    "one-worker-two-triggers-private-sentinel-preview");
+  assert.equal(plan.retainedRejectedPreviewRequest.disposition,
+    "forbidden-never-retry-or-normalize");
   assert.deepEqual(plan.repositoryConnection, {
     provider_account_id: "6371603", provider_account_name: "atrinik",
     provider_type: "github", repo_id: "1324297032", repo_name: "metaserver-worker",
@@ -1080,41 +1299,59 @@ test("plans inert setup, separately gated activation, and ordered rollback", () 
     /sentinel-ref-absence/u);
   const triggerCreates = plan.setupOperations.filter(({ action }) =>
     action === "post-inert-trigger-with-zero-resource-token");
-  assert.equal(triggerCreates.length, 2);
+  assert.equal(triggerCreates.length, 1);
   const productionStaged = triggerCreates.find(({ id }) => id === "production-trigger-staged");
-  const reviewStaged = triggerCreates.find(({ id }) => id === "review-trigger-staged");
   assert.deepEqual(productionStaged.request.body.branch_includes,
     [{ privateFileEnvironment: "ATRINIK_PRODUCTION_STAGING_SENTINEL_BRANCH_FILE" }]);
-  assert.deepEqual(reviewStaged.request.body.branch_includes,
-    [{ privateFileEnvironment: "ATRINIK_REVIEW_STAGING_SENTINEL_BRANCH_FILE" }]);
-  assert.notDeepEqual(productionStaged.request.body.branch_includes,
-    reviewStaged.request.body.branch_includes);
   assert.equal(productionStaged.precondition.productionSentinelProof.resultReference,
     "sentinel-recheck-before-production-trigger.proof_digest");
-  assert.equal(reviewStaged.precondition.reviewSentinelProof.resultReference,
-    "sentinel-recheck-before-review-trigger.proof_digest");
   assert.equal(plan.setupOperations.find(({ id }) => id === "production-environment")
     .precondition.productionSentinelProof.resultReference,
     "sentinel-recheck-before-production-environment.proof_digest");
-  assert.equal(plan.setupOperations.find(({ id }) => id === "review-environment")
-    .precondition.reviewSentinelProof.resultReference,
-    "sentinel-recheck-before-review-environment.proof_digest");
   assert.equal(productionStaged.request.body.build_token_uuid.resultReference,
     "review-build-token.build_token_uuid");
-  assert.equal(reviewStaged.request.body.root_directory, "/deployment/review-check");
-  assert.equal(reviewStaged.request.body.build_command, "npm run build");
-  assert.equal(reviewStaged.request.body.deploy_command, "npm run validate");
-  assert.deepEqual(reviewStaged.request.body.external_script_id,
-    productionStaged.request.body.external_script_id);
-  assert.deepEqual(plan.reviewActivation.request.body.branch_includes,
+  assert.equal(plan.setupOperations.some(({ id }) => id === "review-trigger-staged"), false);
+  const reviewRootProof = plan.reviewActivation.operations[0];
+  const reviewCreate = plan.reviewActivation.operations[1];
+  const reviewEnvironment = plan.reviewActivation.operations[2];
+  const reviewEnvironmentReadback = plan.reviewActivation.operations[3];
+  const reviewActivationRootProof = plan.reviewActivation.operations[4];
+  const reviewActivate = plan.reviewActivation.operations[5];
+  assert.equal(reviewRootProof.id, "review-root-recheck-before-trigger");
+  assert.equal(reviewCreate.id, "review-trigger-create");
+  assert.equal(reviewCreate.request.method, "POST");
+  assert.deepEqual(reviewCreate.request.body.branch_includes,
     review.automaticReview.previewBranchIncludes);
-  assert.equal(plan.reviewActivation.request.body.root_directory,
-    "/deployment/review-check");
-  assert.equal(plan.reviewActivation.request.method, "PATCH");
-  assert.deepEqual(plan.reviewActivation.request.path, {
-    template: "/builds/triggers/{trigger_uuid}",
-    resultReference: "review-trigger-staged.trigger_uuid",
+  assert.deepEqual(reviewCreate.request.body.root_directory,
+    { privateFileEnvironment: "ATRINIK_REVIEW_STAGING_ROOT_DIRECTORY_FILE" });
+  assert.equal(reviewCreate.request.body.build_command, "exit 1");
+  assert.equal(reviewCreate.request.body.deploy_command, "exit 1");
+  assert.equal(reviewCreate.precondition.reviewRootProof.resultReference,
+    "review-root-recheck-before-trigger.proof_digest");
+  assert.equal(reviewCreate.request.body.build_token_uuid.resultReference,
+    "review-build-token.build_token_uuid");
+  assert.deepEqual(reviewEnvironment.request.path, {
+    template: "/builds/triggers/{trigger_uuid}/environment_variables",
+    resultReference: "review-trigger-create.trigger_uuid",
   });
+  assert.equal(reviewEnvironmentReadback.id,
+    "review-environment-readback-before-activation");
+  assert.equal(reviewEnvironmentReadback.command,
+    "npm run provision:workers-builds:verify-review-staged-environment");
+  assert.equal(reviewEnvironmentReadback.stability,
+    "two-complete-identical-passes-plus-final-identical-sweep");
+  assert.equal(reviewActivationRootProof.id, "review-root-recheck-before-activation");
+  assert.equal(reviewActivate.id, "review-trigger-activate");
+  assert.equal(reviewActivate.request.method, "PATCH");
+  assert.deepEqual(reviewActivate.request.path, {
+    template: "/builds/triggers/{trigger_uuid}",
+    resultReference: "review-trigger-create.trigger_uuid",
+  });
+  assert.equal(reviewActivate.request.body.root_directory, "/deployment/review-check");
+  assert.equal(reviewActivate.precondition.reviewRootProof.resultReference,
+    "review-root-recheck-before-activation.proof_digest");
+  assert.equal(reviewActivate.precondition.reviewEnvironmentProof.resultReference,
+    "review-environment-readback-before-activation.proof_digest");
   assert.deepEqual(plan.productionActivation.request.body.branch_includes, ["main"]);
   assert.equal(plan.productionActivation.request.body.build_token_uuid.resultReference,
     "production-build-token.build_token_uuid");
@@ -1145,20 +1382,38 @@ test("plans inert setup, separately gated activation, and ordered rollback", () 
   assert.match(plan.partialFailure.productionWorkerPolicy, /never-delete/u);
   const productionRollback = plan.rollbackOperations.find(({ id }) =>
     id === "restore-production-trigger-to-inert-sentinel");
-  const reviewRollback = plan.rollbackOperations.find(({ id }) =>
-    id === "restore-review-trigger-to-inert-sentinel");
+  assert.match(productionRollback.condition, /only-if-production-trigger-staged/u);
   assert.equal(productionRollback.precondition.productionSentinelProof.resultReference,
     "sentinel-recheck-before-production-rollback.proof_digest");
   assert.deepEqual(productionRollback.request.body.branch_includes,
     [{ privateFileEnvironment: "ATRINIK_PRODUCTION_STAGING_SENTINEL_BRANCH_FILE" }]);
   assert.equal(productionRollback.request.body.build_token_uuid.resultReference,
     "review-build-token.build_token_uuid");
-  assert.equal(reviewRollback.precondition.reviewSentinelProof.resultReference,
-    "sentinel-recheck-before-review-rollback.proof_digest");
-  assert.deepEqual(reviewRollback.request.body.branch_includes,
-    [{ privateFileEnvironment: "ATRINIK_REVIEW_STAGING_SENTINEL_BRANCH_FILE" }]);
-  assert.equal(reviewRollback.request.body.build_token_uuid.resultReference,
-    "review-build-token.build_token_uuid");
+  assert.equal(plan.rollbackOperations.some(({ id }) =>
+    id === "restore-review-trigger-to-inert-sentinel"), false);
+  assert.ok(plan.rollbackOperations.findIndex(({ id }) =>
+    id === "delete-review-trigger-before-quiescence") <
+    plan.rollbackOperations.findIndex(({ id }) =>
+      id === "restore-production-trigger-to-inert-sentinel"));
+  assert.ok(plan.rollbackOperations.findIndex(({ id }) =>
+    id === "delete-review-trigger-before-quiescence") <
+    plan.rollbackOperations.findIndex(({ id }) => id === "prove-rollback-quiescence"));
+  const productionInertReadback = plan.rollbackOperations.find(({ id }) =>
+    id === "prove-production-trigger-inert-before-quiescence");
+  assert.equal(productionInertReadback.validator,
+    "validateRollbackProductionTriggerReadback");
+  assert.equal(plan.rollbackOperations.find(({ id }) =>
+    id === "prove-rollback-quiescence").precondition.productionInertProof.resultReference,
+  "prove-production-trigger-inert-before-quiescence.proof_digest");
+  assert.ok(plan.rollbackOperations.findIndex(({ id }) =>
+    id === "restore-production-trigger-to-inert-sentinel") <
+    plan.rollbackOperations.findIndex(({ id }) =>
+      id === "prove-production-trigger-inert-before-quiescence"));
+  assert.ok(plan.rollbackOperations.findIndex(({ id }) =>
+    id === "prove-production-trigger-inert-before-quiescence") <
+    plan.rollbackOperations.findIndex(({ id }) => id === "prove-rollback-quiescence"));
+  assert.ok(plan.rollbackOperations.findIndex(({ id }) => id === "prove-rollback-quiescence") <
+    plan.rollbackOperations.findIndex(({ id }) => id === "delete-production-trigger"));
   assert.equal(plan.rollbackOperations.at(-1).action,
     "prove-three-production-workers-and-website-app-selection-unchanged");
   assert.match(plan.rollbackOperations.find(({ id }) =>
@@ -1172,7 +1427,12 @@ test("plans inert setup, separately gated activation, and ordered rollback", () 
   assert.ok(plan.privateInputs.every((name) => name.endsWith("_FILE")));
   assert.equal(plan.privateInputs.includes("ATRINIK_REVIEW_BOOTSTRAP_API_TOKEN_FILE"), false);
   assert.ok(plan.privateInputs.includes("ATRINIK_PRODUCTION_STAGING_SENTINEL_REFS_FILE"));
-  assert.ok(plan.privateInputs.includes("ATRINIK_REVIEW_STAGING_SENTINEL_REFS_FILE"));
+  assert.equal(plan.privateInputs.includes("ATRINIK_REVIEW_STAGING_SENTINEL_REFS_FILE"), false);
+  assert.ok(plan.privateInputs.includes("ATRINIK_REVIEW_STAGING_ROOT_DIRECTORY_FILE"));
+  assert.ok(plan.privateInputs.includes("ATRINIK_REVIEW_STAGING_ROOT_CREATE_PROOF_FILE"));
+  assert.ok(plan.privateInputs.includes("ATRINIK_REVIEW_STAGING_ROOT_ACTIVATION_PROOF_FILE"));
+  assert.ok(plan.privateInputs.includes(
+    "ATRINIK_REVIEW_STAGED_ENVIRONMENT_PROOF_OUTPUT_FILE"));
   assert.ok(plan.setupOperations.filter(({ mutation }) => mutation)
     .every(({ actor, action }) => actor && action));
   assert.equal(validateSetupPlan(plan), plan);
@@ -1201,12 +1461,16 @@ test("plans inert setup, separately gated activation, and ordered rollback", () 
     .request.body.branch_includes = ["main"];
   assert.throws(() => validateSetupPlan(unsafeSelector), /complete setup plan schema drift/u);
   const rejectedTwoWorkerTopology = structuredClone(plan);
-  rejectedTwoWorkerTopology.setupOperations.find(({ id }) => id === "review-trigger-staged")
-    .request.body.external_script_id = { resultReference: "review-bootstrap.script_tag" };
+  rejectedTwoWorkerTopology.reviewActivation.operations.find(({ id }) =>
+    id === "review-trigger-create").request.body.external_script_id =
+      { resultReference: "review-bootstrap.script_tag" };
   assert.throws(() => validateSetupPlan(rejectedTwoWorkerTopology), /dangling or forward/u);
   const forgotten12002 = structuredClone(plan);
   forgotten12002.retainedFailedRequest.disposition = "retry";
   assert.throws(() => validateSetupPlan(forgotten12002), /retained failure constraint/u);
+  const normalizedPreview = structuredClone(plan);
+  normalizedPreview.retainedRejectedPreviewRequest.disposition = "normalize";
+  assert.throws(() => validateSetupPlan(normalizedPreview), /retained failure constraint/u);
   const unsafeActivation = structuredClone(plan);
   unsafeActivation.productionActivation.request.method = "DELETE";
   assert.throws(() => validateSetupPlan(unsafeActivation), /complete setup plan schema drift/u);
@@ -1220,12 +1484,46 @@ test("plans inert setup, separately gated activation, and ordered rollback", () 
   delete missingRollbackProof.rollbackOperations.find(({ id }) =>
     id === "restore-production-trigger-to-inert-sentinel").precondition;
   assert.throws(() => validateSetupPlan(missingRollbackProof), /complete setup plan schema drift/u);
-  const swappedRollbackProof = structuredClone(plan);
-  swappedRollbackProof.rollbackOperations.find(({ id }) =>
-    id === "restore-production-trigger-to-inert-sentinel")
-    .precondition.productionSentinelProof.resultReference =
-      "sentinel-recheck-before-review-rollback.proof_digest";
-  assert.throws(() => validateSetupPlan(swappedRollbackProof), /dangling or forward/u);
+  const missingProductionInertReadback = structuredClone(plan);
+  missingProductionInertReadback.rollbackOperations =
+    missingProductionInertReadback.rollbackOperations.filter(({ id }) =>
+      id !== "prove-production-trigger-inert-before-quiescence");
+  assert.throws(() => validateSetupPlan(missingProductionInertReadback),
+    /rollback operation set/u);
+  const missingReviewCreate = structuredClone(plan);
+  missingReviewCreate.reviewActivation.operations = missingReviewCreate.reviewActivation.operations
+    .filter(({ id }) => id !== "review-trigger-create");
+  assert.throws(() => validateSetupPlan(missingReviewCreate),
+    /review activation operation set/u);
+  const unsafeReviewCreate = structuredClone(plan);
+  unsafeReviewCreate.reviewActivation.operations.find(({ id }) =>
+    id === "review-trigger-create").request.body.root_directory = "/deployment/review-check";
+  assert.throws(() => validateSetupPlan(unsafeReviewCreate), /complete setup plan schema drift/u);
+  const missingReviewRootProof = structuredClone(plan);
+  delete missingReviewRootProof.reviewActivation.operations.find(({ id }) =>
+    id === "review-trigger-activate").precondition;
+  assert.throws(() => validateSetupPlan(missingReviewRootProof),
+    /complete setup plan schema drift/u);
+  const missingReviewEnvironmentProof = structuredClone(plan);
+  delete missingReviewEnvironmentProof.reviewActivation.operations.find(({ id }) =>
+    id === "review-trigger-activate").precondition.reviewEnvironmentProof;
+  assert.throws(() => validateSetupPlan(missingReviewEnvironmentProof),
+    /complete setup plan schema drift/u);
+  const unsafeRollbackOrder = structuredClone(plan);
+  [unsafeRollbackOrder.rollbackOperations[0], unsafeRollbackOrder.rollbackOperations[1]] =
+    [unsafeRollbackOrder.rollbackOperations[1], unsafeRollbackOrder.rollbackOperations[0]];
+  assert.throws(() => validateSetupPlan(unsafeRollbackOrder), /rollback operation set/u);
+  const missingReviewDeletionReadback = structuredClone(plan);
+  missingReviewDeletionReadback.rollbackOperations =
+    missingReviewDeletionReadback.rollbackOperations.filter(({ id }) =>
+      id !== "prove-review-trigger-deleted-before-quiescence");
+  assert.throws(() => validateSetupPlan(missingReviewDeletionReadback),
+    /rollback operation set/u);
+  const wrongRollbackUuid = structuredClone(plan);
+  wrongRollbackUuid.rollbackOperations.find(({ id }) =>
+    id === "delete-review-trigger-before-quiescence").request.path.resultReference =
+      "production-trigger-staged.trigger_uuid";
+  assert.throws(() => validateSetupPlan(wrongRollbackUuid), /complete setup plan schema drift/u);
   const missingActivationProof = structuredClone(plan);
   delete missingActivationProof.productionActivation.precondition.productionSentinelProof;
   assert.throws(() => validateSetupPlan(missingActivationProof), /complete setup plan schema drift/u);
@@ -1350,33 +1648,26 @@ test("proves one serialized production trigger and one isolated review trigger",
     "production"), /Deploy Hook/u);
 });
 
-test("proves both triggers are inert before either activation", () => {
-  const { productionSentinelProof, reviewSentinelProof } = freshBoundary();
+test("proves only the production trigger is inert before review activation", () => {
+  const { productionSentinelProof } = freshBoundary();
   const productionSpec = withConnection(productionTriggerSpec(production, {
     ...triggerCoordinates(), buildTokenUuid: reviewTokenUuid,
   }));
   productionSpec.branch_includes = [productionSentinelProof.branch];
-  const reviewSpec = withConnection(automaticReviewTriggerSpec(review, {
-    externalScriptId: scriptTag, repositoryConnectionUuid: resourceUuid,
-    buildTokenUuid: reviewTokenUuid,
-  }));
-  reviewSpec.trigger_uuid = reviewTriggerUuid;
-  reviewSpec.branch_includes = [reviewSentinelProof.branch];
-  reviewSpec.branch_excludes = ["main"];
   const values = Object.fromEntries(Object.values(production.protectedInputs)
     .map((name) => [name, `${name}-value`]));
   const productionEnvironment = productionEnvironmentSpec(production, values);
   for (const name of Object.values(production.protectedInputs))
     productionEnvironment[name].value = null;
   const arguments_ = {
-    ...configuredBoundary(productionSpec, reviewSpec), production, review,
-    productionSentinelProof, reviewSentinelProof,
+    ...configuredBoundary(productionSpec, productionSpec), production, review,
+    productionSentinelProof,
     snapshotManifest: freshSnapshotManifest(),
     scripts: envelope([{ id: production.workers[0].name, tag: scriptTag }]),
-    productionTriggers: envelope([productionSpec, reviewSpec]),
+    productionTriggers: envelope([productionSpec]),
     productionEnvironment: envelope(productionEnvironment),
-    reviewTriggers: envelope([productionSpec, reviewSpec]),
-    reviewEnvironment: envelope(automaticReviewEnvironmentSpec(review)),
+    reviewTriggers: envelope([productionSpec]),
+    reviewEnvironment: undefined,
     nonEntrypointTriggers: production.workers.slice(1)
       .map(({ role }) => [role, envelope([])]),
     buildTokens: buildTokenInventory(),
@@ -1384,8 +1675,9 @@ test("proves both triggers are inert before either activation", () => {
       .map((label) => [label, envelope([])]),
     builds: production.workers.map(({ role }) => [role, envelope([])]),
   };
+  arguments_.accountTriggers = envelope([productionSpec]);
   const stagedProof = validateStagedBuildsSnapshot(arguments_);
-  assert.equal(stagedProof.stagedTriggerCount, 2);
+  assert.equal(stagedProof.stagedTriggerCount, 1);
   assert.match(stagedProof.proof_digest, /^[0-9a-f]{64}$/u);
   assert.equal(Object.hasOwn(publicStagedProofSummary(stagedProof), "accountId"), false);
   assert.equal(validateStagedProof(stagedProof, stagedProof).proof_digest,
@@ -1407,22 +1699,6 @@ test("proves both triggers are inert before either activation", () => {
   wrongToken.productionTriggers.result[0].build_token_uuid = resourceUuid;
   wrongToken.reviewTriggers = structuredClone(wrongToken.productionTriggers);
   assert.throws(() => validateStagedBuildsSnapshot(wrongToken), /zero-resource review token/u);
-  const splitConnection = structuredClone(arguments_);
-  splitConnection.reviewTriggers.result[0].repo_connection.repo_connection_uuid =
-    "66666666-6666-4666-8666-666666666666";
-  assert.throws(() => validateStagedBuildsSnapshot(splitConnection),
-    /journaled repository connection/u);
-  const equalSentinels = structuredClone(arguments_);
-  equalSentinels.reviewSentinelProof = structuredClone(equalSentinels.productionSentinelProof);
-  equalSentinels.productionTriggers.result[1].branch_includes =
-    [equalSentinels.productionSentinelProof.branch];
-  equalSentinels.reviewTriggers = structuredClone(equalSentinels.productionTriggers);
-  assert.throws(() => validateStagedBuildsSnapshot(equalSentinels), /must be distinct/u);
-  const swappedProofs = structuredClone(arguments_);
-  [swappedProofs.productionSentinelProof, swappedProofs.reviewSentinelProof] =
-    [swappedProofs.reviewSentinelProof, swappedProofs.productionSentinelProof];
-  assert.throws(() => validateStagedBuildsSnapshot(swappedProofs),
-    /production trigger branch_includes drift/u);
   const callerTrigger = structuredClone(arguments_);
   callerTrigger.nonEntrypointTriggers[0][1].result.push({ trigger_uuid: resourceUuid,
     repo_connection: { provider_type: "gitlab", repo_id: "unrelated" } });
@@ -1437,7 +1713,18 @@ test("proves both triggers are inert before either activation", () => {
   finalReview.trigger_uuid = reviewTriggerUuid;
   reviewActive.productionTriggers = envelope([productionSpec, finalReview]);
   reviewActive.reviewTriggers = structuredClone(reviewActive.productionTriggers);
-  assert.throws(() => validateStagedBuildsSnapshot(reviewActive), /branch_includes drift/u);
+  reviewActive.reviewEnvironment = envelope(automaticReviewEnvironmentSpec(review));
+  reviewActive.accountTriggers = envelope([productionSpec, finalReview]);
+  assert.throws(() => validateStagedBuildsSnapshot(reviewActive), /exactly 1/u);
+  const reviewActivationProof = validateReviewActivationSnapshot(reviewActive);
+  assert.equal(reviewActivationProof.outcome,
+    "workers-builds-review-activation-snapshot-valid");
+  const splitConnection = structuredClone(reviewActive);
+  splitConnection.productionTriggers.result[1].repo_connection.repo_connection_uuid =
+    "66666666-6666-4666-8666-666666666666";
+  splitConnection.reviewTriggers = structuredClone(splitConnection.productionTriggers);
+  assert.throws(() => validateProductionActivationSnapshot(splitConnection),
+    /journaled repository connection/u);
   assert.throws(() => validateProductionActivationSnapshot(reviewActive),
     /disposable review result proof/u);
   const buildUuid = "77777777-7777-4777-8777-777777777777";

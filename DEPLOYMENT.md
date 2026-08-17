@@ -139,19 +139,19 @@ shared exact GitHub connection; configured trigger readback proves the returned
 connection identity. Existing production
 Workers, versions, state, and runtime secrets are never rollback targets.
 Because Cloudflare requires a trigger UUID before its environment can be
-written, the operator independently generates two distinct private random
-`review-build-only-sentinel-<32-lowercase-hex>` selectors, one for production
-staging and one for review staging, and uses `gh api` outside the sandbox to
-retain a fresh, exact empty matching-ref proof for each governed repository
-coordinate. Setup rechecks the production proof immediately before the
-production trigger and environment mutations, rechecks the review proof
-immediately before the review trigger and environment mutations, and binds both
-proofs into staged readback. Rollback likewise obtains a new production proof
-immediately before its full production-trigger restore PATCH and a new review
-proof immediately before its full review-trigger restore PATCH; an expired,
-missing, or role-swapped rollback proof stops before mutation. Both restore
-requests use the zero-resource review token. Both staged triggers use the
-review token, whose provider policy has no account or zone resource. Production
+written, the operator generates one private random
+`review-build-only-sentinel-<32-lowercase-hex>` selector for production staging
+and uses `gh api` outside the sandbox to retain a fresh, exact empty matching-ref
+proof for that governed repository coordinate. Setup rechecks the proof
+immediately before the production trigger and environment mutations and binds
+it into staged readback. Rollback likewise obtains a new production proof
+immediately before its full production-trigger restore PATCH; an expired or
+missing rollback proof stops before mutation. The restore request uses the
+zero-resource review token. The staged production trigger uses the review token,
+whose provider policy has no account or zone resource. The preview trigger is
+absent during inert setup because the provider accepts it only in its documented
+final wildcard/exclude-main shape; it is created with that exact shape and the
+zero-resource token only after the separate review-activation gate. Production
 activation is one trigger PATCH that atomically replaces the private production
 selector and zero-resource token with `main` and the production token. Its
 provider activation readback runs first; the fresh production-selector GitHub
@@ -160,13 +160,29 @@ never receives deploy authority; the unguessable, repeatedly absent production
 ref also protects the staged production secrets. The fixed
 `review-build-only-sentinel` name is not used.
 
-The retained issue-66 journal records Cloudflare error `12002` after accepting
-the production trigger and environment but rejecting the exact second trigger
-on a different Worker that reused the repository connection. That
-one-connection/two-Worker request is forbidden and is never retried or varied.
-The replacement uses Cloudflare's documented maximum-two-trigger model on the
-single production core Worker: one production trigger and one preview trigger,
-with distinct per-trigger tokens, commands, and environments. Equality,
+Rollback first deletes and reads back the exact journal-owned wildcard preview
+trigger, before any quiescence claim, so a new non-main push cannot enqueue work
+behind that claim. The phase-aware exhaustive readback accepts zero triggers
+when production creation never occurred, or exactly the journaled production
+trigger otherwise; it never requires an absent review-gate result and rejects
+every replacement or competing trigger. It then obtains the fresh production sentinel proof, restores
+the production trigger to the zero-resource inert shape, and performs another
+stable exhaustive readback proving that exact journaled trigger is inert (or
+that the inventory is empty when production creation never occurred). Only
+that proof and the preview-deletion proof authorize build cancellation and
+quiescence; rollback then deletes the production trigger and journal-owned token
+wrappers. The retained repository connection is never deleted.
+
+The retained issue-66 history records two distinct Cloudflare `12002` failures.
+The first accepted a production trigger and environment but rejected a second
+trigger on a different Worker that reused the repository connection; that
+one-connection/two-Worker request remains forbidden and is never retried or
+varied. The later attempt targeted the shared core Worker but used a private
+sentinel selector for the second preview trigger; that exact request is also
+forbidden and is never retried or normalized. The replacement uses Cloudflare's
+documented maximum-two-trigger model on the single production core Worker: one
+production trigger and one final-shape preview trigger, with distinct
+per-trigger tokens, commands, and environments. Equality,
 proof/selector swaps, fixed names, a second connected Worker, and fallback to
 an unreviewed request all fail before setup mutation.
 
@@ -230,8 +246,6 @@ ATRINIK_CLOUDFLARE_ACCOUNT_ID_FILE=/secure/path/account-id \
 ATRINIK_REVIEWED_SOURCE_SHA_FILE=/secure/path/reviewed-source-sha \
 ATRINIK_PRODUCTION_STAGING_SENTINEL_BRANCH_FILE=/secure/path/private-random-production-sentinel \
 ATRINIK_PRODUCTION_STAGING_SENTINEL_REFS_FILE=/secure/path/fresh-production-sentinel-proof.json \
-ATRINIK_REVIEW_STAGING_SENTINEL_BRANCH_FILE=/secure/path/private-random-review-sentinel \
-ATRINIK_REVIEW_STAGING_SENTINEL_REFS_FILE=/secure/path/fresh-review-sentinel-proof.json \
 ATRINIK_REPOSITORY_CONNECTION_OWNER_PROOF_FILE=/secure/path/connection-owner-proof.json \
   npm run provision:workers-builds:verify-preflight
 ```
@@ -240,12 +254,12 @@ The fresh preflight requires exactly the three existing production Workers,
 proves the retired `atrinik-metaserver-review-check` Worker is absent, and
 requires no Builds trigger; it never creates or adopts a review Worker. A journal-bound
 partial setup uses exact recovery readback instead of the fresh verifier. The
-readback never accepts an absent production Worker. Each sentinel proof
+readback never accepts an absent production Worker. The sentinel proof
 contains the exact repository object, its private selector, an empty `refs`
-array, and an RFC 3339 `capturedAt` no more than five minutes old. Each is
+array, and an RFC 3339 `capturedAt` no more than five minutes old. It is
 produced from the exact
 `gh api repos/atrinik/metaserver-worker/git/matching-refs/heads/<selector>`
-result outside the sandbox, and the selectors must differ. Readback performs
+result outside the sandbox. Readback performs
 only bounded, timed provider
 reads (including the read-only D1 ledger query) and emits
 only a bounded summary; raw identifiers and provider responses remain in the
@@ -302,8 +316,9 @@ Worker, token, trigger, variable, build, or deployment. Those mutations remain
 behind the explicit setup authorization; migration `0010` and the first
 automatic production proof are later, separately authorized gates.
 
-After creating both inert triggers and their environments, take a new snapshot
-and prove the staged boundary before activating either trigger:
+After creating the inert production trigger and its protected environment while
+leaving the review trigger absent, take a new snapshot and prove the staged
+boundary before authorizing review activation:
 
 ```sh
 ATRINIK_PROVIDER_SNAPSHOT_DIRECTORY=/secure/staged-provider-snapshot \
@@ -311,8 +326,6 @@ ATRINIK_CLOUDFLARE_ACCOUNT_ID_FILE=/secure/path/account-id \
 ATRINIK_REVIEWED_SOURCE_SHA_FILE=/secure/path/reviewed-source-sha \
 ATRINIK_PRODUCTION_STAGING_SENTINEL_BRANCH_FILE=/secure/path/private-random-production-sentinel \
 ATRINIK_PRODUCTION_STAGING_SENTINEL_REFS_FILE=/secure/path/fresh-production-sentinel-proof.json \
-ATRINIK_REVIEW_STAGING_SENTINEL_BRANCH_FILE=/secure/path/private-random-review-sentinel \
-ATRINIK_REVIEW_STAGING_SENTINEL_REFS_FILE=/secure/path/fresh-review-sentinel-proof.json \
 ATRINIK_PRODUCTION_BUILD_TOKEN_PERMISSION_PROOF_FILE=/secure/path/production-token-policy.json \
 ATRINIK_REVIEW_BUILD_TOKEN_PERMISSION_PROOF_FILE=/secure/path/review-token-policy.json \
 ATRINIK_WORKERS_BUILDS_USAGE_PROOF_FILE=/secure/path/build-usage.json \
@@ -320,13 +333,13 @@ ATRINIK_STAGED_PROOF_OUTPUT_FILE=/secure/private/staged-proof.json \
   npm run provision:workers-builds:verify-staged
 ```
 
-This requires each trigger to select only its own fresh, distinct private
-sentinel and use the zero-resource review token, while both exact environments
-are present,
-all builds are stopped, and the token/usage proofs are current.
+This requires exactly one production trigger selecting the fresh private
+sentinel with the zero-resource review token, the exact protected production
+environment, no review trigger or review environment, all builds stopped, and
+current token/usage proofs.
 The command writes a new owner-only proof containing a deterministic SHA-256 of
 the fresh manifest and exact staged trigger/environment/token/
-hook/build evidence. Immediately before each activation PATCH, set
+hook/build evidence. Immediately before each activation mutation, set
 `ATRINIK_STAGED_PROOF_FILE` to that record and run
 `npm run provision:workers-builds:verify-staged-proof` immediately before the
 review activation, with the read token,
@@ -335,8 +348,83 @@ directory. It performs two new complete provider sweeps, requires the original
 proof to be no more than five minutes old and the live sweep no more than 30
 seconds old, and
 rejects any coordinate or digest mismatch. The setup plan makes the original
-command produce this private staged-proof digest and makes the review PATCH
-consume a successful fresh revalidation.
+command produce this private staged-proof digest. Only after successful fresh
+revalidation may the review gate first prove a fresh private random staging
+root is absent from every current non-main ref, then POST the provider-classified
+preview trigger (`branch_includes=["*"]`, `branch_excludes=["main"]`) with that
+absent root, fixed `exit 1` commands, and the zero-resource review token. This
+keeps a racing non-main push away from branch-controlled dependency handling.
+After PATCHing the exact nonsecret environment, repeat the root-absence proof
+immediately before atomically PATCHing the trigger to the reviewed
+`/deployment/review-check` root and commands, and then run
+`npm run provision:workers-builds:verify-review-activation` against a new private
+snapshot. That verifier requires the final review trigger and environment, the
+still-inert production trigger, both exact token wrappers, no active build or
+Deploy Hook, and writes the owner-only review-activation proof. No private
+review sentinel is created or accepted.
+
+The staging root must match
+`/review-build-only-staging-<32-lowercase-hex>`. For each of the two checks,
+use `gh api` outside the sandbox to retain a complete current
+`repos/atrinik/metaserver-worker/git/matching-refs/heads/` inventory and an
+HTTP `404` contents lookup for that exact root at every non-`main` ref SHA. The
+owner-only JSON proof has the exact fields `source`, `repository`,
+`rootDirectory`, `currentMainSha`, `capturedAt`, `pagination`, `branches`, and
+`absenceChecks`; each branch is `{ref,sha}` and each non-main absence check is
+`{ref,sha,path,status:404}` in the same order. It must include current `main`,
+carry terminal GraphQL-style pagination metadata with `hasNextPage:false` and
+an exact total count, be no more than five minutes old, and contain no missing,
+extra, duplicate, or reordered branch checks. Validate the separately captured create and activation
+proofs with:
+
+```sh
+ATRINIK_REVIEWED_SOURCE_SHA_FILE=/secure/path/reviewed-source-sha \
+ATRINIK_REVIEW_STAGING_ROOT_DIRECTORY_FILE=/secure/path/private-review-root \
+ATRINIK_REVIEW_STAGING_ROOT_CREATE_PROOF_FILE=/secure/path/create-root-proof.json \
+  npm run provision:workers-builds:verify-review-staging-root-create
+
+ATRINIK_REVIEWED_SOURCE_SHA_FILE=/secure/path/reviewed-source-sha \
+ATRINIK_REVIEW_STAGING_ROOT_DIRECTORY_FILE=/secure/path/private-review-root \
+ATRINIK_REVIEW_STAGING_ROOT_ACTIVATION_PROOF_FILE=/secure/path/activation-root-proof.json \
+  npm run provision:workers-builds:verify-review-staging-root-activation
+```
+
+After the environment PATCH, two complete identical trigger/environment reads
+plus a final identical sweep must prove the created trigger still has the
+private root and inert commands and that `SKIP_DEPENDENCY_INSTALL=1` is present
+and nonsecret. The final trigger PATCH consumes both that readback digest and
+the second fresh root-absence digest; either missing or ambiguous proof stops
+before activation.
+
+```sh
+ATRINIK_PROVIDER_SNAPSHOT_OUTPUT=/secure/review-staged-provider-snapshot \
+ATRINIK_PRODUCTION_STAGED_TRIGGER_UUID_FILE=/secure/private/production-trigger-uuid \
+ATRINIK_REVIEW_STAGED_TRIGGER_UUID_FILE=/secure/private/review-trigger-uuid \
+ATRINIK_REVIEW_STAGED_ENVIRONMENT_PROOF_OUTPUT_FILE=/secure/private/review-staged-environment-proof.json \
+  npm run provision:workers-builds:verify-review-staged-environment
+```
+
+Use the same account, exact-current-source, provider read token, production D1
+read token, token-policy proofs, private staging-root inputs, and journaled
+production/review trigger UUID files as the adjacent staged commands. The
+verifier binds both journaled trigger identities, proves the production peer is
+still exactly inert, and rejects any active build, Deploy Hook, caller trigger,
+or competing repository trigger. It writes the full account-bound proof only
+to the owner-only output file and prints a safe source/digest summary.
+
+Run that review-phase readback with the same account, reviewed-source, provider
+read token, token-policy proofs, and usage proof used by the staged verifier,
+plus a new output directory and proof destination:
+
+```sh
+ATRINIK_PROVIDER_SNAPSHOT_OUTPUT=/secure/review-active-provider-snapshot \
+ATRINIK_REVIEW_ACTIVATION_PROOF_OUTPUT_FILE=/secure/private/review-activation-proof.json \
+  npm run provision:workers-builds:verify-review-activation
+```
+
+This command is read-only. Creating the preview trigger and writing its
+nonsecret environment remain separately authorized provider mutations; the
+command neither creates them nor starts a build.
 
 After the review trigger is active and its disposable branch proof succeeds,
 retain a no-more-than-five-minute owner-only
@@ -366,9 +454,10 @@ sentinel and zero-resource token. Only that fresh digest authorizes the separate
 production PATCH. Consequently neither activation is reachable when its own
 phase proof is skipped, stale, replayed, or based on the other phase. Both
 commands print only safe source/digest summaries; the account-bound proof stays
-in its owner-only file. The complete setup/activation/
-rollback request document is digest-pinned by the validator, not merely its
-operation names.
+in its owner-only file. The complete setup/activation/rollback document,
+including journal-bound trigger/token DELETE paths, stable exhaustive absence
+readbacks, actors, result dependencies, and request bodies, is digest-pinned by
+the validator, not merely its operation names.
 
 After activation, take another new snapshot and prove the configured boundary:
 

@@ -24,8 +24,9 @@ const maximumProviderResponseBytes = 1024 * 1024;
 const maximumPrivateDocumentBytes = 64 * 1024;
 const maximumProviderPages = 100;
 const stagingBranchPattern = /^review-build-only-sentinel-[0-9a-f]{32}$/u;
+const reviewStagingRootPattern = /^\/review-build-only-staging-[0-9a-f]{32}$/u;
 const gitShaPattern = /^[0-9a-f]{40}$/u;
-const expectedSetupPlanSha256 = "be0810d287c1a2e3e6571328ea57627955c9a4570ba65e781d2404a74dc8ffd3";
+const expectedSetupPlanSha256 = "856f64dc2027a81ed5fcd7d85b687680e01c950400dbf8965ea40c076b09eb34";
 const githubRepository = Object.freeze({
   provider_account_id: "6371603",
   provider_account_name: "atrinik",
@@ -209,6 +210,65 @@ export function validateDistinctSentinelRefAbsence(productionProof, reviewProof,
   return { production, review };
 }
 
+export function validateReviewStagingRootAbsence(proof, rootDirectory, sourceSha,
+  expectedPhase, now = Date.now()) {
+  const keys = ["absenceChecks", "branches", "capturedAt", "currentMainSha", "pagination",
+    "phase", "repository", "rootDirectory", "source"];
+  if (!reviewStagingRootPattern.test(rootDirectory ?? "") ||
+      !proof || !same(sorted(Object.keys(proof)), sorted(keys)) ||
+      proof.source !== "github-complete-branch-root-absence-readback" ||
+      !["create", "activation"].includes(expectedPhase) || proof.phase !== expectedPhase ||
+      !same(proof.repository, githubRepository) || proof.rootDirectory !== rootDirectory ||
+      proof.currentMainSha !== sourceSha || !gitShaPattern.test(sourceSha ?? ""))
+    fail("review staging root absence proof identity is malformed");
+  const captured = Date.parse(proof.capturedAt ?? "");
+  if (!Number.isFinite(captured) || captured > now + 30_000 || now - captured > 5 * 60_000)
+    fail("review staging root absence proof is stale");
+  if (!Array.isArray(proof.branches) || !Array.isArray(proof.absenceChecks) ||
+      proof.branches.length < 1 || proof.branches.length > 200)
+    fail("review staging root branch inventory is incomplete");
+  if (!proof.pagination || !same(sorted(Object.keys(proof.pagination)),
+    ["hasNextPage", "pageCount", "totalCount"]) ||
+      proof.pagination.hasNextPage !== false ||
+      !Number.isSafeInteger(proof.pagination.pageCount) || proof.pagination.pageCount < 1 ||
+      proof.pagination.pageCount > 10 || proof.pagination.totalCount !== proof.branches.length)
+    fail("review staging root branch pagination is incomplete");
+  const branchKeys = ["ref", "sha"];
+  const branches = proof.branches.map((entry) => {
+    if (!entry || !same(sorted(Object.keys(entry)), branchKeys) ||
+        !/^refs\/heads\/[A-Za-z0-9._/-]{1,200}$/u.test(entry.ref ?? "") ||
+        !gitShaPattern.test(entry.sha ?? ""))
+      fail("review staging root branch inventory is malformed");
+    return entry;
+  });
+  if (new Set(branches.map(({ ref }) => ref)).size !== branches.length ||
+      branches.filter(({ ref, sha }) => ref === "refs/heads/main" && sha === sourceSha).length !== 1)
+    fail("review staging root branch inventory is incomplete");
+  const nonMain = branches.filter(({ ref }) => ref !== "refs/heads/main");
+  const expectedPath = rootDirectory.slice(1);
+  const checks = proof.absenceChecks.map((entry) => {
+    if (!entry || !same(sorted(Object.keys(entry)), ["path", "ref", "sha", "status"]) ||
+        entry.path !== expectedPath || entry.status !== 404)
+      fail("review staging root absence check is malformed");
+    return entry;
+  });
+  if (!same(checks.map(({ ref, sha }) => ({ ref, sha })),
+    nonMain.map(({ ref, sha }) => ({ ref, sha }))))
+    fail("review staging root absence checks are incomplete or reordered");
+  return { outcome: "review-staging-root-absent", mutation: false, phase: expectedPhase,
+    rootDirectory, sourceSha, capturedAt: proof.capturedAt, proof_digest: digestJson(proof) };
+}
+
+export function validateReviewStagingRootProofSequence(create, activation) {
+  if (create?.phase !== "create" || activation?.phase !== "activation" ||
+      create.rootDirectory !== activation.rootDirectory || create.sourceSha !== activation.sourceSha ||
+      Date.parse(activation.capturedAt ?? "") <= Date.parse(create.capturedAt ?? "") ||
+      activation.proof_digest === create.proof_digest)
+    fail("review staging root activation proof was replayed from create phase");
+  return { outcome: "review-staging-root-proof-sequence-valid", mutation: false,
+    createProofDigest: create.proof_digest, activationProofDigest: activation.proof_digest };
+}
+
 export function validateRepositoryConnectionOwnerProof(proof, accountId, sourceSha,
   now = Date.now()) {
   const expectedKeys = ["accountId", "capturedAt", "connectionPreexisting", "repository",
@@ -376,8 +436,6 @@ export function provisioningSetupPlan(production, review) {
   const placeholderUuid = "11111111-1111-4111-8111-111111111111";
   const productionSentinel = privateFileReference(
     "ATRINIK_PRODUCTION_STAGING_SENTINEL_BRANCH_FILE");
-  const reviewSentinel = privateFileReference(
-    "ATRINIK_REVIEW_STAGING_SENTINEL_BRANCH_FILE");
   const productionFinal = productionTriggerSpec(production, {
     externalScriptId: placeholderTag,
     repositoryConnectionUuid: placeholderUuid,
@@ -390,9 +448,12 @@ export function provisioningSetupPlan(production, review) {
   });
   const productionStaged = structuredClone(productionFinal);
   productionStaged.branch_includes = [productionSentinel];
+  const reviewStagingRoot = privateFileReference(
+    "ATRINIK_REVIEW_STAGING_ROOT_DIRECTORY_FILE");
   const reviewStaged = structuredClone(reviewFinal);
-  reviewStaged.branch_includes = [reviewSentinel];
-  reviewStaged.branch_excludes = ["main"];
+  reviewStaged.root_directory = reviewStagingRoot;
+  reviewStaged.build_command = "exit 1";
+  reviewStaged.deploy_command = "exit 1";
   const plan = {
     schemaVersion: 1,
     outcome: "workers-builds-reviewed-setup-plan",
@@ -402,6 +463,11 @@ export function provisioningSetupPlan(production, review) {
       error: 12002,
       topology: "one-repository-connection-two-workers",
       disposition: "forbidden-never-retry-or-vary",
+    },
+    retainedRejectedPreviewRequest: {
+      error: 12002,
+      topology: "one-worker-two-triggers-private-sentinel-preview",
+      disposition: "forbidden-never-retry-or-normalize",
     },
     repositoryConnection: structuredClone(githubRepository),
     gates: [
@@ -417,12 +483,17 @@ export function provisioningSetupPlan(production, review) {
       "ATRINIK_WORKERS_BUILDS_API_TOKEN_FILE",
       "ATRINIK_PRODUCTION_STAGING_SENTINEL_BRANCH_FILE",
       "ATRINIK_PRODUCTION_STAGING_SENTINEL_REFS_FILE",
-      "ATRINIK_REVIEW_STAGING_SENTINEL_BRANCH_FILE",
-      "ATRINIK_REVIEW_STAGING_SENTINEL_REFS_FILE",
+      "ATRINIK_REVIEW_STAGING_ROOT_DIRECTORY_FILE",
+      "ATRINIK_REVIEW_STAGING_ROOT_CREATE_PROOF_FILE",
+      "ATRINIK_REVIEW_STAGING_ROOT_ACTIVATION_PROOF_FILE",
+      "ATRINIK_PRODUCTION_STAGED_TRIGGER_UUID_FILE",
+      "ATRINIK_REVIEW_STAGED_TRIGGER_UUID_FILE",
+      "ATRINIK_REVIEW_STAGED_ENVIRONMENT_PROOF_OUTPUT_FILE",
       "ATRINIK_REPOSITORY_CONNECTION_OWNER_PROOF_FILE",
       "ATRINIK_WORKERS_BUILDS_USAGE_PROOF_FILE",
       "ATRINIK_STAGED_PROOF_OUTPUT_FILE",
       "ATRINIK_STAGED_PROOF_FILE",
+      "ATRINIK_REVIEW_ACTIVATION_PROOF_OUTPUT_FILE",
       "ATRINIK_PRODUCTION_ACTIVATION_PROOF_OUTPUT_FILE",
       "ATRINIK_REVIEW_RESULT_PROOF_FILE",
       "ATRINIK_PRODUCTION_BUILD_TOKEN_SECRET_FILE",
@@ -467,16 +538,13 @@ export function provisioningSetupPlan(production, review) {
     },
     setupOperations: [
       { id: "preflight", actor: "workers-builds-control-plane-operator",
-        action: "require-exact-private-readback-no-competing-trigger-and-validate-two-distinct-private-random-sentinel-ref-absences",
+        action: "require-exact-private-readback-no-competing-trigger-and-validate-private-random-production-sentinel-ref-absence",
         mutation: false,
         commands: [
           "gh api repos/atrinik/metaserver-worker/git/matching-refs/heads/{private-random-production-sentinel} outside-sandbox",
-          "gh api repos/atrinik/metaserver-worker/git/matching-refs/heads/{private-random-review-sentinel} outside-sandbox",
         ],
         produces: { production_sentinel_branch: "private-random-branch-name",
           production_sentinel_refs: "exact-empty-array",
-          review_sentinel_branch: "distinct-private-random-branch-name",
-          review_sentinel_refs: "exact-empty-array",
           repository_connection_owner_proof: "fresh-exact-cloudflare-owner-ui-proof" } },
       { id: "production-script", actor: "workers-builds-control-plane-operator",
         action: "select-exact-existing-production-script-tag", mutation: false,
@@ -529,33 +597,8 @@ export function provisioningSetupPlan(production, review) {
           path: apiPathReference("/builds/triggers/{trigger_uuid}/environment_variables",
             "production-trigger-staged", "trigger_uuid"),
           body: productionEnvironmentPlan(production) } },
-      { id: "sentinel-recheck-before-review-trigger", actor: "github-owner-readback",
-        action: "repeat-exact-private-random-review-sentinel-ref-absence-proof-outside-sandbox",
-        mutation: false, branch: reviewSentinel,
-        produces: { proof_digest: "fresh-review-sentinel-absence-proof-digest" } },
-      { id: "review-trigger-staged", actor: "workers-builds-control-plane-operator",
-        action: "post-inert-trigger-with-zero-resource-token", mutation: true,
-        precondition: { reviewSentinelProof: resultReference(
-          "sentinel-recheck-before-review-trigger", "proof_digest") },
-        request: { method: "POST", path: "/builds/triggers",
-          body: triggerPlanSpec(reviewStaged, "production-script", "review-build-token") },
-        produces: { trigger_uuid: "provider-trigger-uuid" } },
-      { id: "sentinel-recheck-before-review-environment", actor: "github-owner-readback",
-        action: "repeat-exact-private-random-review-sentinel-ref-absence-proof-outside-sandbox",
-        mutation: false, branch: reviewSentinel,
-        produces: { proof_digest: "fresh-review-sentinel-absence-proof-digest" } },
-      { id: "review-environment", actor: "workers-builds-control-plane-operator",
-        action: "patch-exact-environment", mutation: true,
-        precondition: { reviewSentinelProof: resultReference(
-          "sentinel-recheck-before-review-environment", "proof_digest") },
-        request: { method: "PATCH",
-          path: apiPathReference("/builds/triggers/{trigger_uuid}/environment_variables",
-            "review-trigger-staged", "trigger_uuid"),
-          body: Object.fromEntries(Object.entries(automaticReviewEnvironmentSpec(review))
-            .map(([name, value]) => [name, { is_secret: value.is_secret,
-              valueSource: { literal: value.value } }])) } },
       { id: "staged-readback", actor: "workers-builds-control-plane-operator",
-        action: "prove-both-inert-triggers-environments-tokens-and-no-deploy-hooks",
+        action: "prove-one-inert-production-trigger-review-trigger-absent-tokens-and-no-deploy-hooks",
         mutation: false, command: "npm run provision:workers-builds:verify-staged",
         produces: { proof_digest: "fresh-private-staged-verifier-digest" } },
     ],
@@ -563,10 +606,75 @@ export function provisioningSetupPlan(production, review) {
       gate: "review-trigger-activation-and-proof",
       precondition: { stagedProof: resultReference("staged-readback", "proof_digest") },
       preconditionCommand: "npm run provision:workers-builds:verify-staged-proof",
-      request: { method: "PATCH",
-        path: apiPathReference("/builds/triggers/{trigger_uuid}",
-          "review-trigger-staged", "trigger_uuid"),
-        body: triggerPlanSpec(reviewFinal, "production-script", "review-build-token") },
+      operations: [
+        { id: "review-root-recheck-before-trigger", actor: "github-owner-readback",
+          action: "prove-private-random-review-staging-root-absent-from-every-current-non-main-ref-outside-sandbox",
+          mutation: false, rootDirectory: reviewStagingRoot,
+          command: "npm run provision:workers-builds:verify-review-staging-root-create",
+          proof: privateFileReference("ATRINIK_REVIEW_STAGING_ROOT_CREATE_PROOF_FILE"),
+          produces: { proof_digest: "fresh-review-staging-root-absence-proof-digest" } },
+        { id: "review-trigger-create", actor: "workers-builds-control-plane-operator",
+          action: "post-preview-role-trigger-with-private-absent-root-inert-commands-and-zero-resource-token",
+          mutation: true,
+          precondition: { reviewRootProof: resultReference(
+            "review-root-recheck-before-trigger", "proof_digest") },
+          request: { method: "POST", path: "/builds/triggers",
+            body: triggerPlanSpec(reviewStaged, "production-script", "review-build-token") },
+          produces: { trigger_uuid: "provider-trigger-uuid" } },
+        { id: "review-environment", actor: "workers-builds-control-plane-operator",
+          action: "patch-exact-nonsecret-review-environment", mutation: true,
+          request: { method: "PATCH",
+            path: apiPathReference("/builds/triggers/{trigger_uuid}/environment_variables",
+              "review-trigger-create", "trigger_uuid"),
+            body: Object.fromEntries(Object.entries(automaticReviewEnvironmentSpec(review))
+              .map(([name, value]) => [name, { is_secret: value.is_secret,
+                valueSource: { literal: value.value } }])) } },
+        { id: "review-environment-readback-before-activation",
+          actor: "workers-builds-control-plane-operator",
+          action: "prove-three-stable-reads-of-journaled-triggers-private-root-environments-and-no-competing-build-path",
+          mutation: false,
+          journalInputs: {
+            productionTriggerUuid: privateFileReference(
+              "ATRINIK_PRODUCTION_STAGED_TRIGGER_UUID_FILE"),
+            reviewTriggerUuid: privateFileReference(
+              "ATRINIK_REVIEW_STAGED_TRIGGER_UUID_FILE"),
+          },
+          requests: [
+            { method: "GET", path: apiPathReference(
+              "/builds/workers/{external_script_id}/triggers",
+              "production-script", "script_tag") },
+            { method: "GET", path: apiPathReference(
+              "/builds/triggers/{trigger_uuid}/environment_variables",
+              "review-trigger-create", "trigger_uuid") },
+          ],
+          stability: "two-complete-identical-passes-plus-final-identical-sweep",
+          validator: "exact-journaled-production-and-review-staged-triggers-environments-no-hooks-or-active-builds",
+          command: "npm run provision:workers-builds:verify-review-staged-environment",
+          produces: { proof_digest: "fresh-staged-review-environment-readback-digest" } },
+        { id: "review-root-recheck-before-activation", actor: "github-owner-readback",
+          action: "repeat-private-random-review-staging-root-absence-proof-immediately-before-final-preview-patch-outside-sandbox",
+          mutation: false, rootDirectory: reviewStagingRoot,
+          command: "npm run provision:workers-builds:verify-review-staging-root-activation",
+          proof: privateFileReference("ATRINIK_REVIEW_STAGING_ROOT_ACTIVATION_PROOF_FILE"),
+          produces: { proof_digest: "fresh-review-staging-root-absence-proof-digest" } },
+        { id: "review-trigger-activate", actor: "workers-builds-control-plane-operator",
+          action: "patch-preview-trigger-atomically-to-reviewed-root-and-commands",
+          mutation: true,
+          precondition: {
+            reviewEnvironmentProof: resultReference(
+              "review-environment-readback-before-activation", "proof_digest"),
+            reviewRootProof: resultReference(
+              "review-root-recheck-before-activation", "proof_digest"),
+          },
+          request: { method: "PATCH",
+            path: apiPathReference("/builds/triggers/{trigger_uuid}",
+              "review-trigger-create", "trigger_uuid"),
+            body: triggerPlanSpec(reviewFinal, "production-script", "review-build-token") } },
+        { id: "review-activation-readback", actor: "workers-builds-control-plane-operator",
+          action: "prove-final-review-trigger-production-staged-and-no-build-active",
+          mutation: false, command: "npm run provision:workers-builds:verify-review-activation",
+          produces: { proof_digest: "fresh-live-review-active-production-staged-proof-digest" } },
+      ],
       proof: "disposable-same-repository-non-main-build-only-branch",
     },
     productionActivation: {
@@ -605,6 +713,26 @@ export function provisioningSetupPlan(production, review) {
       productionWorkerPolicy: "never-delete-or-roll-back-existing-production-workers-versions-state-or-secrets",
     },
     rollbackOperations: [
+      { id: "delete-review-trigger-before-quiescence",
+        actor: "workers-builds-control-plane-operator",
+        action: "delete-exact-journaled-review-trigger-before-any-non-main-push-can-race-quiescence",
+        mutation: true, condition: "only-if-review-trigger-create-is-journal-bound-or-ambiguously-reconciled",
+        request: { method: "DELETE", path: apiPathReference(
+          "/builds/triggers/{trigger_uuid}", "review-trigger-create", "trigger_uuid") } },
+      { id: "prove-review-trigger-deleted-before-quiescence",
+        actor: "workers-builds-control-plane-operator",
+        action: "prove-phase-aware-exhaustive-inventory-is-empty-or-exactly-journaled-production-trigger",
+        mutation: false,
+        journalInputs: {
+          productionTriggerUuid: "optional-journal-bound-production-trigger-staged-uuid",
+          reviewTriggerUuid: "optional-journal-bound-or-ambiguously-reconciled-review-trigger-create-uuid",
+        },
+        request: { method: "GET", path: apiPathReference(
+          "/builds/workers/{external_script_id}/triggers",
+          "production-script", "script_tag") },
+        stability: "two-complete-identical-passes-plus-final-identical-sweep",
+        validator: "validateRollbackTriggerInventory",
+        produces: { proof_digest: "fresh-review-trigger-absence-readback-digest" } },
       { id: "sentinel-recheck-before-production-rollback", actor: "github-owner-readback",
         action: "repeat-exact-private-random-production-sentinel-ref-absence-proof-outside-sandbox",
         mutation: false, branch: productionSentinel,
@@ -613,38 +741,73 @@ export function provisioningSetupPlan(production, review) {
         actor: "workers-builds-control-plane-operator",
         action: "restore-production-trigger-to-its-exact-inert-production-sentinel-before-cancelling-exact-active-builds",
         mutation: true,
+        condition: "only-if-production-trigger-staged-is-journal-bound-or-ambiguously-reconciled",
         precondition: { productionSentinelProof: resultReference(
           "sentinel-recheck-before-production-rollback", "proof_digest") },
         request: { method: "PATCH",
           path: apiPathReference("/builds/triggers/{trigger_uuid}",
             "production-trigger-staged", "trigger_uuid"),
           body: triggerPlanSpec(productionStaged, "production-script", "review-build-token") } },
-      { id: "sentinel-recheck-before-review-rollback", actor: "github-owner-readback",
-        action: "repeat-exact-private-random-review-sentinel-ref-absence-proof-outside-sandbox",
-        mutation: false, branch: reviewSentinel,
-        produces: { proof_digest: "fresh-review-sentinel-absence-proof-digest" } },
-      { id: "restore-review-trigger-to-inert-sentinel",
+      { id: "prove-production-trigger-inert-before-quiescence",
         actor: "workers-builds-control-plane-operator",
-        action: "restore-review-trigger-to-its-exact-inert-review-sentinel",
-        mutation: true,
-        precondition: { reviewSentinelProof: resultReference(
-          "sentinel-recheck-before-review-rollback", "proof_digest") },
-        request: { method: "PATCH",
-          path: apiPathReference("/builds/triggers/{trigger_uuid}",
-            "review-trigger-staged", "trigger_uuid"),
-          body: triggerPlanSpec(reviewStaged, "production-script", "review-build-token") } },
+        action: "prove-phase-aware-production-trigger-is-absent-or-exactly-restored-to-inert-sentinel",
+        mutation: false,
+        journalInputs: {
+          productionTriggerUuid: "optional-journal-bound-or-ambiguously-reconciled-production-trigger-staged-uuid",
+        },
+        expectedTrigger: triggerPlanSpec(productionStaged,
+          "production-script", "review-build-token"),
+        request: { method: "GET", path: apiPathReference(
+          "/builds/workers/{external_script_id}/triggers",
+          "production-script", "script_tag") },
+        stability: "two-complete-identical-passes-plus-final-identical-sweep",
+        validator: "validateRollbackProductionTriggerReadback",
+        produces: { proof_digest: "fresh-production-trigger-inert-readback-digest" } },
       { id: "prove-rollback-quiescence", actor: "workers-builds-control-plane-operator",
-        action: "prove-no-build-or-upload-remains-active", mutation: false },
-      { id: "delete-setup-triggers", actor: "workers-builds-control-plane-operator",
-        action: "delete-exact-production-and-review-triggers", mutation: true },
+        action: "prove-no-build-or-upload-remains-active", mutation: false,
+        precondition: { reviewDeletionProof: resultReference(
+          "prove-review-trigger-deleted-before-quiescence", "proof_digest"),
+        productionInertProof: resultReference(
+          "prove-production-trigger-inert-before-quiescence", "proof_digest") } },
+      { id: "delete-production-trigger", actor: "workers-builds-control-plane-operator",
+        action: "delete-exact-journaled-production-trigger-after-quiescence",
+        mutation: true, condition: "only-if-production-trigger-staged-is-journal-bound-or-ambiguously-reconciled",
+        request: { method: "DELETE", path: apiPathReference(
+          "/builds/triggers/{trigger_uuid}", "production-trigger-staged", "trigger_uuid") } },
+      { id: "prove-setup-triggers-deleted", actor: "workers-builds-control-plane-operator",
+        action: "prove-exhaustive-shared-core-trigger-inventory-is-empty",
+        mutation: false,
+        request: { method: "GET", path: apiPathReference(
+          "/builds/workers/{external_script_id}/triggers",
+          "production-script", "script_tag") },
+        stability: "two-complete-identical-passes-plus-final-identical-sweep",
+        produces: { proof_digest: "fresh-zero-trigger-readback-digest" } },
       { id: "delete-setup-build-tokens", actor: "workers-builds-control-plane-operator",
-        action: "delete-only-the-two-recorded-build-token-uuids", mutation: true },
+        action: "delete-only-the-two-recorded-build-token-uuids", mutation: true,
+        condition: "delete-each-only-if-its-create-is-journal-bound-or-ambiguously-reconciled",
+        precondition: { triggerDeletionProof: resultReference(
+          "prove-setup-triggers-deleted", "proof_digest") },
+        requests: [
+          { method: "DELETE", path: apiPathReference(
+            "/builds/tokens/{build_token_uuid}", "production-build-token", "build_token_uuid") },
+          { method: "DELETE", path: apiPathReference(
+            "/builds/tokens/{build_token_uuid}", "review-build-token", "build_token_uuid") },
+        ] },
+      { id: "prove-setup-build-tokens-deleted", actor: "workers-builds-control-plane-operator",
+        action: "prove-exhaustive-build-token-inventory-excludes-both-journaled-token-uuids",
+        mutation: false,
+        request: { method: "GET", path: "/builds/tokens" },
+        stability: "two-complete-identical-passes-plus-final-identical-sweep",
+        produces: { proof_digest: "fresh-setup-token-absence-readback-digest" } },
       { id: "retain-repository-connection", actor: "workers-builds-control-plane-operator",
         action: "retain-shared-metaserver-repository-connection-provider-has-no-read-inventory-and-website-must-survive",
         mutation: false },
       { id: "prove-production-preserved", actor: "workers-builds-control-plane-operator",
         action: "prove-three-production-workers-and-website-app-selection-unchanged",
-        mutation: false },
+        mutation: false,
+        precondition: { tokenDeletionProof: resultReference(
+          "prove-setup-build-tokens-deleted", "proof_digest") },
+        command: "npm run provision:workers-builds:verify-preflight" },
     ],
   };
   validateSetupPlan(plan);
@@ -664,11 +827,14 @@ export function validateSetupPlan(plan) {
   }) || !same(plan?.retainedFailedRequest, {
     error: 12002, topology: "one-repository-connection-two-workers",
     disposition: "forbidden-never-retry-or-vary",
+  }) || !same(plan?.retainedRejectedPreviewRequest, {
+    error: 12002, topology: "one-worker-two-triggers-private-sentinel-preview",
+    disposition: "forbidden-never-retry-or-normalize",
   })) fail("provider trigger topology or retained failure constraint drift");
   const operations = plan?.setupOperations;
   const expectedOperations = [
     ["preflight", "workers-builds-control-plane-operator", false,
-      "require-exact-private-readback-no-competing-trigger-and-validate-two-distinct-private-random-sentinel-ref-absences"],
+      "require-exact-private-readback-no-competing-trigger-and-validate-private-random-production-sentinel-ref-absence"],
     ["production-script", "workers-builds-control-plane-operator", false,
       "select-exact-existing-production-script-tag"],
     ["repository-connection", "workers-builds-control-plane-operator", true,
@@ -685,16 +851,8 @@ export function validateSetupPlan(plan) {
       "repeat-exact-private-random-production-sentinel-ref-absence-proof-outside-sandbox"],
     ["production-environment", "workers-builds-control-plane-operator", true,
       "patch-exact-environment"],
-    ["sentinel-recheck-before-review-trigger", "github-owner-readback", false,
-      "repeat-exact-private-random-review-sentinel-ref-absence-proof-outside-sandbox"],
-    ["review-trigger-staged", "workers-builds-control-plane-operator", true,
-      "post-inert-trigger-with-zero-resource-token"],
-    ["sentinel-recheck-before-review-environment", "github-owner-readback", false,
-      "repeat-exact-private-random-review-sentinel-ref-absence-proof-outside-sandbox"],
-    ["review-environment", "workers-builds-control-plane-operator", true,
-      "patch-exact-environment"],
     ["staged-readback", "workers-builds-control-plane-operator", false,
-      "prove-both-inert-triggers-environments-tokens-and-no-deploy-hooks"],
+      "prove-one-inert-production-trigger-review-trigger-absent-tokens-and-no-deploy-hooks"],
   ];
   if (!Array.isArray(operations) || new Set(operations.map(({ id }) => id)).size !== operations.length)
     fail("setup operation identity is incomplete or duplicated");
@@ -704,8 +862,6 @@ export function validateSetupPlan(plan) {
   const expectedProduces = new Map([
     ["preflight", { production_sentinel_branch: "private-random-branch-name",
       production_sentinel_refs: "exact-empty-array",
-      review_sentinel_branch: "distinct-private-random-branch-name",
-      review_sentinel_refs: "exact-empty-array",
       repository_connection_owner_proof: "fresh-exact-cloudflare-owner-ui-proof" }],
     ["production-script", { script_tag: { sourceField: "tag", pattern: "32-lowercase-hex" } }],
     ["repository-connection", { repo_connection_uuid: "provider-repository-connection-uuid" }],
@@ -718,11 +874,6 @@ export function validateSetupPlan(plan) {
     ["production-trigger-staged", { trigger_uuid: "provider-trigger-uuid" }],
     ["sentinel-recheck-before-production-environment",
       { proof_digest: "fresh-production-sentinel-absence-proof-digest" }],
-    ["sentinel-recheck-before-review-trigger",
-      { proof_digest: "fresh-review-sentinel-absence-proof-digest" }],
-    ["review-trigger-staged", { trigger_uuid: "provider-trigger-uuid" }],
-    ["sentinel-recheck-before-review-environment",
-      { proof_digest: "fresh-review-sentinel-absence-proof-digest" }],
     ["staged-readback", { proof_digest: "fresh-private-staged-verifier-digest" }],
   ]);
   for (const operation of operations) {
@@ -747,7 +898,31 @@ export function validateSetupPlan(plan) {
     const fields = Object.keys(operation.produces ?? {});
     available.set(operation.id, new Set(fields));
   }
-  inspect(plan.reviewActivation);
+  const reviewOperations = plan.reviewActivation?.operations;
+  const expectedReviewOperations = [
+    ["review-root-recheck-before-trigger", "github-owner-readback", false,
+      "prove-private-random-review-staging-root-absent-from-every-current-non-main-ref-outside-sandbox"],
+    ["review-trigger-create", "workers-builds-control-plane-operator", true,
+      "post-preview-role-trigger-with-private-absent-root-inert-commands-and-zero-resource-token"],
+    ["review-environment", "workers-builds-control-plane-operator", true,
+      "patch-exact-nonsecret-review-environment"],
+    ["review-environment-readback-before-activation", "workers-builds-control-plane-operator",
+      false, "prove-three-stable-reads-of-journaled-triggers-private-root-environments-and-no-competing-build-path"],
+    ["review-root-recheck-before-activation", "github-owner-readback", false,
+      "repeat-private-random-review-staging-root-absence-proof-immediately-before-final-preview-patch-outside-sandbox"],
+    ["review-trigger-activate", "workers-builds-control-plane-operator", true,
+      "patch-preview-trigger-atomically-to-reviewed-root-and-commands"],
+    ["review-activation-readback", "workers-builds-control-plane-operator", false,
+      "prove-final-review-trigger-production-staged-and-no-build-active"],
+  ];
+  if (!Array.isArray(reviewOperations) || !same(reviewOperations.map(
+    ({ id, actor, mutation, action }) => [id, actor, mutation, action]), expectedReviewOperations))
+    fail("review activation operation set, order, or authority drift");
+  inspect({ ...plan.reviewActivation, operations: undefined });
+  for (const operation of reviewOperations) {
+    inspect(operation);
+    available.set(operation.id, new Set(Object.keys(operation.produces ?? {})));
+  }
   const activationOperations = plan.productionActivation?.preconditionOperations;
   const expectedActivationOperations = [
     ["production-activation-readback", "workers-builds-control-plane-operator", false,
@@ -769,20 +944,26 @@ export function validateSetupPlan(plan) {
       new Set(rollbackOperations.map(({ id }) => id)).size !== rollbackOperations.length)
     fail("rollback operation identity is incomplete or duplicated");
   const expectedRollback = [
+    ["delete-review-trigger-before-quiescence", "workers-builds-control-plane-operator", true,
+      "delete-exact-journaled-review-trigger-before-any-non-main-push-can-race-quiescence"],
+    ["prove-review-trigger-deleted-before-quiescence", "workers-builds-control-plane-operator",
+      false, "prove-phase-aware-exhaustive-inventory-is-empty-or-exactly-journaled-production-trigger"],
     ["sentinel-recheck-before-production-rollback", "github-owner-readback", false,
       "repeat-exact-private-random-production-sentinel-ref-absence-proof-outside-sandbox"],
     ["restore-production-trigger-to-inert-sentinel", "workers-builds-control-plane-operator", true,
       "restore-production-trigger-to-its-exact-inert-production-sentinel-before-cancelling-exact-active-builds"],
-    ["sentinel-recheck-before-review-rollback", "github-owner-readback", false,
-      "repeat-exact-private-random-review-sentinel-ref-absence-proof-outside-sandbox"],
-    ["restore-review-trigger-to-inert-sentinel", "workers-builds-control-plane-operator", true,
-      "restore-review-trigger-to-its-exact-inert-review-sentinel"],
+    ["prove-production-trigger-inert-before-quiescence", "workers-builds-control-plane-operator",
+      false, "prove-phase-aware-production-trigger-is-absent-or-exactly-restored-to-inert-sentinel"],
     ["prove-rollback-quiescence", "workers-builds-control-plane-operator", false,
       "prove-no-build-or-upload-remains-active"],
-    ["delete-setup-triggers", "workers-builds-control-plane-operator", true,
-      "delete-exact-production-and-review-triggers"],
+    ["delete-production-trigger", "workers-builds-control-plane-operator", true,
+      "delete-exact-journaled-production-trigger-after-quiescence"],
+    ["prove-setup-triggers-deleted", "workers-builds-control-plane-operator", false,
+      "prove-exhaustive-shared-core-trigger-inventory-is-empty"],
     ["delete-setup-build-tokens", "workers-builds-control-plane-operator", true,
       "delete-only-the-two-recorded-build-token-uuids"],
+    ["prove-setup-build-tokens-deleted", "workers-builds-control-plane-operator", false,
+      "prove-exhaustive-build-token-inventory-excludes-both-journaled-token-uuids"],
     ["retain-repository-connection", "workers-builds-control-plane-operator", false,
       "retain-shared-metaserver-repository-connection-provider-has-no-read-inventory-and-website-must-survive"],
     ["prove-production-preserved", "workers-builds-control-plane-operator", false,
@@ -816,10 +997,57 @@ export function validateAutomaticReviewEnvironment(actual, review) {
     fail("review trigger environment drift");
 }
 
+export function validateReviewStagedEnvironmentReadback({ trigger, environment },
+  expectedTrigger, review) {
+  if (!reviewStagingRootPattern.test(expectedTrigger?.root_directory ?? "") ||
+      expectedTrigger.build_command !== "exit 1" || expectedTrigger.deploy_command !== "exit 1")
+    fail("review staged trigger expectation is unsafe");
+  validateTriggerSnapshot(trigger, expectedTrigger, "staged review");
+  validateAutomaticReviewEnvironment(requireEnvelope(environment,
+    "staged review environment"), review);
+  return { outcome: "review-staged-environment-readback-valid", mutation: false,
+    proof_digest: digestJson({ trigger, environment }) };
+}
+
 export function validateNoDeployHooks(envelope, label) {
   const hooks = requireExhaustiveEnvelope(envelope, `${label} deploy hooks`);
   if (hooks.length !== 0)
     fail(`${label} gained a Deploy Hook`);
+}
+
+export function validateRollbackTriggerInventory(envelope, {
+  productionTriggerUuid = null, reviewTriggerUuid = null,
+} = {}) {
+  if (productionTriggerUuid !== null && !uuidPattern.test(productionTriggerUuid) ||
+      reviewTriggerUuid !== null && !uuidPattern.test(reviewTriggerUuid) ||
+      productionTriggerUuid !== null && productionTriggerUuid === reviewTriggerUuid)
+    fail("rollback journaled trigger identity is malformed");
+  const rows = requireExhaustiveEnvelope(envelope, "rollback shared core triggers");
+  const expected = productionTriggerUuid === null ? [] : [productionTriggerUuid];
+  if (!same(rows.map(({ trigger_uuid: id }) => id), expected) ||
+      rows.some(({ trigger_uuid: id }) => !uuidPattern.test(id ?? "")) ||
+      (reviewTriggerUuid !== null && rows.some(({ trigger_uuid: id }) => id === reviewTriggerUuid)))
+    fail("rollback trigger inventory contains a competing or unreconciled trigger");
+  return { outcome: "rollback-trigger-inventory-exact", mutation: false,
+    proof_digest: digestJson({ productionTriggerUuid, reviewTriggerUuid, rows }) };
+}
+
+export function validateRollbackProductionTriggerReadback(envelope, {
+  productionTriggerUuid = null, expectedTrigger = null,
+} = {}) {
+  if (productionTriggerUuid !== null && !uuidPattern.test(productionTriggerUuid))
+    fail("rollback production trigger identity is malformed");
+  const rows = requireExhaustiveEnvelope(envelope, "rollback production trigger readback");
+  if (productionTriggerUuid === null) {
+    if (rows.length !== 0)
+      fail("rollback production trigger must be absent before creation");
+  } else {
+    if (rows.length !== 1 || rows[0]?.trigger_uuid !== productionTriggerUuid)
+      fail("rollback production trigger inventory is not exact");
+    validateTriggerSnapshot(rows[0], expectedTrigger, "rollback production inert");
+  }
+  return { outcome: "rollback-production-trigger-inert", mutation: false,
+    proof_digest: digestJson({ productionTriggerUuid, expectedTrigger, rows }) };
 }
 
 export function validateNoActiveBuilds(envelope, label) {
@@ -844,7 +1072,7 @@ function validateRetiredReviewWorkerAbsent(scriptRows, review, label) {
 
 export function validateFreshBuildsSnapshot({ production, review, scripts,
   triggers, deployHooks, builds, buildTokens, accountTriggers,
-  productionSentinelProof, reviewSentinelProof, repositoryConnectionProof, accountId,
+  productionSentinelProof, repositoryConnectionProof, accountId,
   sourceSha }) {
   const scriptRows = requireEnvelope(scripts, "scripts");
   if (!Array.isArray(scriptRows)) fail("script inventory is invalid");
@@ -879,7 +1107,7 @@ export function validateFreshBuildsSnapshot({ production, review, scripts,
   ]);
   if (tokenRows.some(({ build_token_name: name }) => reservedNames.has(name)))
     fail("reserved Workers Builds token name already exists");
-  validateDistinctSentinelRefAbsence(productionSentinelProof, reviewSentinelProof);
+  validateSentinelRefAbsence(productionSentinelProof);
   validateRepositoryConnectionOwnerProof(repositoryConnectionProof, accountId, sourceSha);
   return { outcome: "workers-builds-fresh-preflight-valid", mutation: false,
     productionProjectCount: production.workers.length,
@@ -1171,9 +1399,9 @@ function validateActivationSnapshot({ production, review, scripts,
   productionTriggers, productionEnvironment, reviewTriggers, reviewEnvironment,
   nonEntrypointTriggers, deployHooks, builds, buildTokens, accountTriggers, reviewBuildState,
   accountId, tokenAuthorityProofs, sourceSha,
-  productionSentinelProof, reviewSentinelProof,
-  snapshotManifest, reviewResultProof }, { reviewActive }) {
-  validateDistinctSentinelRefAbsence(productionSentinelProof, reviewSentinelProof);
+  productionSentinelProof,
+  snapshotManifest, reviewResultProof }, { reviewActive, requireReviewResult = reviewActive }) {
+  validateSentinelRefAbsence(productionSentinelProof);
   const scriptRows = requireEnvelope(scripts, "scripts");
   if (!Array.isArray(scriptRows)) fail("script inventory is invalid");
   validateRetiredReviewWorkerAbsent(scriptRows, review, "staged Worker inventory");
@@ -1184,22 +1412,24 @@ function validateActivationSnapshot({ production, review, scripts,
   const productionScript = matches[0];
   const reviewScript = matches[0];
   const sharedRows = requireExhaustiveEnvelope(productionTriggers, "staged shared core triggers");
-  if (!same(productionTriggers, reviewTriggers) || sharedRows.length !== 2)
-    fail("staged core project does not have exactly two shared triggers");
+  const expectedTriggerCount = reviewActive ? 2 : 1;
+  if (!same(productionTriggers, reviewTriggers) || sharedRows.length !== expectedTriggerCount)
+    fail(`staged core project does not have exactly ${expectedTriggerCount} shared trigger(s)`);
   const productionRows = sharedRows.filter(({ trigger_name: name }) =>
     name === "Atrinik automatic production main");
   const reviewRows = sharedRows.filter(({ trigger_name: name }) =>
     name === "Atrinik build-only review");
-  if (productionRows.length !== 1 || reviewRows.length !== 1)
-    fail("staged production/preview trigger roles are missing or ambiguous");
+  if (productionRows.length !== 1 || reviewRows.length !== (reviewActive ? 1 : 0))
+    fail("staged production/preview trigger phase is missing or ambiguous");
   const tokenRows = requireExhaustiveEnvelope(buildTokens, "build tokens");
-  const reviewToken = tokenRows.find(({ build_token_uuid: id }) =>
-    id === reviewRows[0].build_token_uuid);
+  const reviewToken = tokenRows.find(({ build_token_name: name }) =>
+    name === "Atrinik metaserver review check");
   const productionToken = tokenRows.find(({ build_token_name: name }) =>
     name === "Atrinik metaserver production");
   if (!productionToken || !reviewToken ||
-      productionRows[0].build_token_uuid !== reviewRows[0].build_token_uuid)
-    fail("staged triggers do not share the zero-resource review token");
+      productionRows[0].build_token_uuid !== reviewToken.build_token_uuid ||
+      (reviewActive && reviewRows[0].build_token_uuid !== reviewToken.build_token_uuid))
+    fail("staged trigger phase does not use the zero-resource review token");
   validateBuildTokenInventory(buildTokens, [
     { uuid: productionToken.build_token_uuid, name: "Atrinik metaserver production",
       cloudflareTokenId: tokenAuthorityProofs?.find(({ kind }) => kind === "production")?.tokenId },
@@ -1214,24 +1444,24 @@ function validateActivationSnapshot({ production, review, scripts,
     buildTokenUuid: reviewToken.build_token_uuid,
   });
   productionExpected.branch_includes = [productionSentinelProof.branch];
-  const reviewExpected = automaticReviewTriggerSpec(review, {
-    externalScriptId: reviewScript.tag,
-    repositoryConnectionUuid: reviewRows[0].repo_connection?.repo_connection_uuid,
-    buildTokenUuid: reviewToken.build_token_uuid,
-  });
-  if (!reviewActive) {
-    reviewExpected.branch_includes = [reviewSentinelProof.branch];
-    reviewExpected.branch_excludes = ["main"];
-  }
   validateTriggerSnapshot(productionRows[0], productionExpected, "staged production");
-  validateTriggerSnapshot(reviewRows[0], reviewExpected, "staged review");
-  if (productionRows[0].repo_connection.repo_connection_uuid !==
-      reviewRows[0].repo_connection.repo_connection_uuid)
-    fail("staged triggers do not share the journaled repository connection");
+  if (reviewActive) {
+    const reviewExpected = automaticReviewTriggerSpec(review, {
+      externalScriptId: reviewScript.tag,
+      repositoryConnectionUuid: reviewRows[0].repo_connection?.repo_connection_uuid,
+      buildTokenUuid: reviewToken.build_token_uuid,
+    });
+    validateTriggerSnapshot(reviewRows[0], reviewExpected, "staged review");
+    if (productionRows[0].repo_connection.repo_connection_uuid !==
+        reviewRows[0].repo_connection.repo_connection_uuid)
+      fail("staged triggers do not share the journaled repository connection");
+  }
   validateBuildEnvironment(production, requireEnvelope(productionEnvironment,
     "staged production environment"));
-  validateAutomaticReviewEnvironment(requireEnvelope(reviewEnvironment,
+  if (reviewActive) validateAutomaticReviewEnvironment(requireEnvelope(reviewEnvironment,
     "staged review environment"), review);
+  else if (reviewEnvironment !== undefined)
+    fail("staged review environment exists before review activation");
   for (const [label, envelope] of exactLabeledInventories(nonEntrypointTriggers,
     production.workers.slice(1).map(({ role }) => role), "staged non-entrypoint trigger"))
     if (requireExhaustiveEnvelope(envelope, `${label} staged triggers`).length !== 0)
@@ -1241,7 +1471,8 @@ function validateActivationSnapshot({ production, review, scripts,
       connection.provider_account_id === githubRepository.provider_account_id &&
       connection.repo_id === githubRepository.repo_id);
   if (!same(sorted(metaserverTriggers.map(({ trigger_uuid: id }) => id)),
-    sorted([productionRows[0].trigger_uuid, reviewRows[0].trigger_uuid])))
+    sorted(reviewActive ? [productionRows[0].trigger_uuid, reviewRows[0].trigger_uuid] :
+      [productionRows[0].trigger_uuid])))
     fail("staged account trigger inventory drift");
   const stagedLabels = production.workers.map(({ role }) => role);
   for (const [label, envelope] of exactLabeledInventories(deployHooks, stagedLabels,
@@ -1249,7 +1480,7 @@ function validateActivationSnapshot({ production, review, scripts,
   for (const [label, envelope] of exactLabeledInventories(builds, stagedLabels,
     "staged build")) validateNoActiveBuilds(envelope, label);
   validateReviewBuildBoundary({ review, ...reviewBuildState, accountId });
-  if (reviewActive) validateReviewResultProof({ proof: reviewResultProof,
+  if (requireReviewResult) validateReviewResultProof({ proof: reviewResultProof,
     reviewTrigger: reviewRows[0], reviewToken,
     builds: reviewBuildState.builds, mainSha: sourceSha });
   validateSnapshotManifest(snapshotManifest, { accountId, sourceSha, production, review });
@@ -1261,17 +1492,16 @@ function validateActivationSnapshot({ production, review, scripts,
   const sentinelCoordinates = {
     production: { repository: productionSentinelProof.repository,
       branch: productionSentinelProof.branch, refs: productionSentinelProof.refs },
-    review: { repository: reviewSentinelProof.repository,
-      branch: reviewSentinelProof.branch, refs: reviewSentinelProof.refs },
   };
   const proof_digest = digestJson({ snapshotCoordinate, sentinelCoordinates, scripts,
     productionTriggers, productionEnvironment, reviewTriggers, reviewEnvironment,
     nonEntrypointTriggers, deployHooks, builds, buildTokens, accountTriggers,
     reviewBuildState, tokenAuthorityProofs,
-    ...(reviewActive ? { reviewResultProof } : {}) });
-  return { outcome: reviewActive ? "workers-builds-production-activation-snapshot-valid" :
-    "workers-builds-staged-snapshot-valid", mutation: false,
-    stagedTriggerCount: 2, accountId, sourceSha, capturedAt, proof_digest };
+    ...(requireReviewResult ? { reviewResultProof } : {}) });
+  return { outcome: requireReviewResult ? "workers-builds-production-activation-snapshot-valid" :
+    reviewActive ? "workers-builds-review-activation-snapshot-valid" :
+      "workers-builds-staged-snapshot-valid", mutation: false,
+    stagedTriggerCount: expectedTriggerCount, accountId, sourceSha, capturedAt, proof_digest };
 }
 
 export function validateStagedBuildsSnapshot(arguments_) {
@@ -1280,6 +1510,11 @@ export function validateStagedBuildsSnapshot(arguments_) {
 
 export function validateProductionActivationSnapshot(arguments_) {
   return validateActivationSnapshot(arguments_, { reviewActive: true });
+}
+
+export function validateReviewActivationSnapshot(arguments_) {
+  return validateActivationSnapshot(arguments_, { reviewActive: true,
+    requireReviewResult: false });
 }
 
 export function validateStagedProof(proof, current, now = Date.now()) {
@@ -1292,11 +1527,11 @@ export function validateStagedProof(proof, current, now = Date.now()) {
       proof.accountId !== current.accountId || proof.sourceSha !== current.sourceSha ||
       proof.proof_digest !== current.proof_digest ||
       proof.outcome !== "workers-builds-staged-snapshot-valid" || proof.mutation !== false ||
-      proof.stagedTriggerCount !== 2 || !/^[0-9a-f]{64}$/u.test(proof.proof_digest ?? "") ||
+      proof.stagedTriggerCount !== 1 || !/^[0-9a-f]{64}$/u.test(proof.proof_digest ?? "") ||
       !Number.isFinite(captured) || captured > now + 30_000 || now - captured > 5 * 60_000)
     fail("staged activation proof is missing, stale, or mismatched");
   if (current.outcome !== proof.outcome || current.mutation !== false ||
-      current.stagedTriggerCount !== 2 || !Number.isFinite(currentCaptured) ||
+      current.stagedTriggerCount !== 1 || !Number.isFinite(currentCaptured) ||
       currentCaptured > now + 30_000 || now - currentCaptured > 30_000)
     fail("current staged activation readback is stale or malformed");
   return { outcome: "workers-builds-staged-activation-proof-valid", mutation: false,
@@ -1305,7 +1540,7 @@ export function validateStagedProof(proof, current, now = Date.now()) {
 
 export function publicStagedProofSummary(proof) {
   return { outcome: proof.outcome, mutation: false,
-    ...(proof.stagedTriggerCount === 2 ? { stagedTriggerCount: 2 } : {}),
+    ...(proof.stagedTriggerCount === 1 ? { stagedTriggerCount: 1 } : {}),
     sourceSha: proof.sourceSha, proof_digest: proof.proof_digest };
 }
 
@@ -1547,7 +1782,7 @@ export async function readPrivateJson(path, label) {
   } finally { await handle.close(); }
 }
 
-export async function readDistinctSentinelProofs(environment = process.env, now = Date.now()) {
+export async function readProductionSentinelProof(environment = process.env, now = Date.now()) {
   const productionBranch = await readPrivateValue(
     environment.ATRINIK_PRODUCTION_STAGING_SENTINEL_BRANCH_FILE,
     "production staging sentinel branch", stagingBranchPattern);
@@ -1556,16 +1791,18 @@ export async function readDistinctSentinelProofs(environment = process.env, now 
     "production staging sentinel refs");
   if (productionProof.branch !== productionBranch)
     fail("production staging sentinel proof branch drift");
-  const reviewBranch = await readPrivateValue(
-    environment.ATRINIK_REVIEW_STAGING_SENTINEL_BRANCH_FILE,
-    "review staging sentinel branch", stagingBranchPattern);
-  const reviewProof = await readPrivateJson(
-    environment.ATRINIK_REVIEW_STAGING_SENTINEL_REFS_FILE,
-    "review staging sentinel refs");
-  if (reviewProof.branch !== reviewBranch)
-    fail("review staging sentinel proof branch drift");
-  validateDistinctSentinelRefAbsence(productionProof, reviewProof, now);
-  return { productionSentinelProof: productionProof, reviewSentinelProof: reviewProof };
+  validateSentinelRefAbsence(productionProof, now);
+  return { productionSentinelProof: productionProof };
+}
+
+export async function readReviewStagingRootProof(proofVariable, expectedPhase,
+  environment = process.env, sourceSha, now = Date.now()) {
+  const rootDirectory = await readPrivateValue(
+    environment.ATRINIK_REVIEW_STAGING_ROOT_DIRECTORY_FILE,
+    "review staging root directory", reviewStagingRootPattern);
+  const proof = await readPrivateJson(environment[proofVariable],
+    "review staging root absence proof");
+  return validateReviewStagingRootAbsence(proof, rootDirectory, sourceSha, expectedPhase, now);
 }
 
 async function writePrivateJson(path, value) {
@@ -2163,7 +2400,8 @@ async function validateConfiguredSnapshotDirectory({ snapshotDirectory, producti
 
 async function validateStagedSnapshotDirectory({ snapshotDirectory, production, review,
   accountId, tokenAuthorityProofs, sourceSha },
-{ reviewActive = false, reviewResultProof = undefined } = {}) {
+{ reviewActive = false, requireReviewResult = reviewActive,
+  reviewResultProof = undefined } = {}) {
   const snapshotManifest = await loadSnapshot(snapshotDirectory, "snapshot-manifest.json");
   validateSnapshotManifest(snapshotManifest, { accountId, sourceSha, production, review });
   const core = production.workers[0];
@@ -2173,18 +2411,20 @@ async function validateStagedSnapshotDirectory({ snapshotDirectory, production, 
   const productionTriggers = await loadSnapshot(snapshotDirectory, `${core.name}.triggers.json`);
   const reviewTriggers = productionTriggers;
   const rows = requireExhaustiveEnvelope(productionTriggers, "staged shared core triggers");
-  if (rows.length !== 2) fail("staged core trigger inventory is not exactly two");
+  const expectedTriggerCount = reviewActive ? 2 : 1;
+  if (rows.length !== expectedTriggerCount)
+    fail(`staged core trigger inventory is not exactly ${expectedTriggerCount}`);
   for (const trigger of rows)
     if (!uuidPattern.test(trigger.trigger_uuid ?? "")) fail("staged trigger UUID is malformed");
   const productionRows = rows.filter(({ trigger_name: name }) =>
     name === "Atrinik automatic production main");
   const reviewRows = rows.filter(({ trigger_name: name }) => name === "Atrinik build-only review");
-  if (productionRows.length !== 1 || reviewRows.length !== 1)
-    fail("staged production/preview trigger roles are missing or ambiguous");
+  if (productionRows.length !== 1 || reviewRows.length !== (reviewActive ? 1 : 0))
+    fail("staged production/preview trigger phase is missing or ambiguous");
   const productionEnvironment = await loadSnapshot(snapshotDirectory,
     `${core.name}.trigger-${productionRows[0].trigger_uuid}.environment.json`);
-  const reviewEnvironment = await loadSnapshot(snapshotDirectory,
-    `${reviewProject}.trigger-${reviewRows[0].trigger_uuid}.environment.json`);
+  const reviewEnvironment = reviewActive ? await loadSnapshot(snapshotDirectory,
+    `${reviewProject}.trigger-${reviewRows[0].trigger_uuid}.environment.json`) : undefined;
   const deployHooks = await Promise.all(production.workers.map(({ role, name }) =>
     [role, name]).map(async ([label, name]) =>
     [label, await loadSnapshot(snapshotDirectory, `${name}.deploy-hooks.json`)]));
@@ -2200,16 +2440,107 @@ async function validateStagedSnapshotDirectory({ snapshotDirectory, production, 
     buildUsageProof: await readPrivateJson(process.env.ATRINIK_WORKERS_BUILDS_USAGE_PROOF_FILE,
       "Workers Builds usage proof"),
   };
-  const { productionSentinelProof, reviewSentinelProof } =
-    await readDistinctSentinelProofs();
+  const { productionSentinelProof } = await readProductionSentinelProof();
   const arguments_ = { production, review, scripts, productionTriggers,
     productionEnvironment, reviewTriggers, reviewEnvironment, nonEntrypointTriggers,
     deployHooks, builds, buildTokens,
     accountTriggers: await loadSnapshot(snapshotDirectory, "account-triggers.json"),
     reviewBuildState, accountId, tokenAuthorityProofs, sourceSha,
-    productionSentinelProof, reviewSentinelProof, snapshotManifest, reviewResultProof };
-  return reviewActive ? validateProductionActivationSnapshot(arguments_) :
-    validateStagedBuildsSnapshot(arguments_);
+    productionSentinelProof, snapshotManifest, reviewResultProof };
+  return reviewActive ? (requireReviewResult ? validateProductionActivationSnapshot(arguments_) :
+    validateReviewActivationSnapshot(arguments_)) : validateStagedBuildsSnapshot(arguments_);
+}
+
+export async function validateReviewStagedEnvironmentSnapshotDirectory({ snapshotDirectory,
+  production, review, accountId, sourceSha, tokenAuthorityProofs }) {
+  const manifest = await loadSnapshot(snapshotDirectory, "snapshot-manifest.json");
+  validateSnapshotManifest(manifest, { accountId, sourceSha, production, review });
+  const core = production.workers[0];
+  const scripts = requireEnvelope(await loadSnapshot(snapshotDirectory, "scripts.json"),
+    "review staged scripts");
+  const script = scripts.filter(({ id }) => id === core.name);
+  if (script.length !== 1 || !scriptTagPattern.test(script[0].tag ?? ""))
+    fail("review staged core script is missing or ambiguous");
+  const triggerEnvelope = await loadSnapshot(snapshotDirectory, `${core.name}.triggers.json`);
+  const triggerRows = requireExhaustiveEnvelope(triggerEnvelope, "review staged core triggers");
+  const productionTriggerUuid = await readPrivateValue(
+    process.env.ATRINIK_PRODUCTION_STAGED_TRIGGER_UUID_FILE,
+    "journaled production staged trigger UUID", uuidPattern);
+  const reviewTriggerUuid = await readPrivateValue(
+    process.env.ATRINIK_REVIEW_STAGED_TRIGGER_UUID_FILE,
+    "journaled review staged trigger UUID", uuidPattern);
+  if (productionTriggerUuid === reviewTriggerUuid)
+    fail("journaled staged trigger identities overlap");
+  const productionRows = triggerRows.filter(({ trigger_uuid: id }) => id === productionTriggerUuid);
+  const reviewRows = triggerRows.filter(({ trigger_name: name, trigger_uuid: id }) =>
+    name === "Atrinik build-only review" && id === reviewTriggerUuid);
+  if (triggerRows.length !== 2 || productionRows.length !== 1 || reviewRows.length !== 1 ||
+      reviewRows[0].trigger_uuid !== reviewTriggerUuid)
+    fail("review staged trigger inventory is incomplete or competing");
+  const productionActual = productionRows[0];
+  const reviewActual = reviewRows[0];
+  const tokenEnvelope = await loadSnapshot(snapshotDirectory, "build-tokens.json");
+  const tokenRows = requireExhaustiveEnvelope(tokenEnvelope, "review staged build tokens");
+  const productionToken = tokenRows.filter(({ build_token_name: name }) =>
+    name === "Atrinik metaserver production");
+  const reviewToken = tokenRows.filter(({ build_token_name: name }) =>
+    name === "Atrinik metaserver review check");
+  if (productionToken.length !== 1 || reviewToken.length !== 1)
+    fail("review staged token inventory is incomplete or ambiguous");
+  validateBuildTokenInventory(tokenEnvelope, [
+    { uuid: productionToken[0].build_token_uuid, name: "Atrinik metaserver production" },
+    { uuid: reviewToken[0].build_token_uuid, name: "Atrinik metaserver review check" },
+  ]);
+  validateTokenAuthorityProofs({ production, review, accountId, proofs: tokenAuthorityProofs,
+    tokenRows: { production: productionToken[0], review: reviewToken[0] }, sourceSha });
+  const rootDirectory = await readPrivateValue(
+    process.env.ATRINIK_REVIEW_STAGING_ROOT_DIRECTORY_FILE,
+    "review staging root directory", reviewStagingRootPattern);
+  const { productionSentinelProof } = await readProductionSentinelProof();
+  const productionExpected = productionTriggerSpec(production, {
+    externalScriptId: script[0].tag,
+    repositoryConnectionUuid: productionActual.repo_connection?.repo_connection_uuid,
+    buildTokenUuid: reviewToken[0].build_token_uuid,
+  });
+  productionExpected.branch_includes = [productionSentinelProof.branch];
+  validateTriggerSnapshot(productionActual, productionExpected, "review staged production");
+  const expected = automaticReviewTriggerSpec(review, {
+    externalScriptId: script[0].tag,
+    repositoryConnectionUuid: reviewActual.repo_connection?.repo_connection_uuid,
+    buildTokenUuid: reviewToken[0].build_token_uuid,
+  });
+  expected.root_directory = rootDirectory;
+  expected.build_command = "exit 1";
+  expected.deploy_command = "exit 1";
+  if (productionActual.repo_connection?.repo_connection_uuid !==
+      reviewActual.repo_connection?.repo_connection_uuid)
+    fail("review staged triggers do not share the repository connection");
+  const environment = await loadSnapshot(snapshotDirectory,
+    `${core.name}.trigger-${reviewActual.trigger_uuid}.environment.json`);
+  const result = validateReviewStagedEnvironmentReadback({ trigger: reviewActual, environment },
+    expected, review);
+  for (const { role, name } of production.workers) {
+    validateNoDeployHooks(await loadSnapshot(snapshotDirectory, `${name}.deploy-hooks.json`), role);
+    validateNoActiveBuilds(await loadSnapshot(snapshotDirectory, `${name}.builds.json`), role);
+  }
+  for (const { role, name } of production.workers.slice(1)) {
+    const rows = requireExhaustiveEnvelope(await loadSnapshot(snapshotDirectory,
+      `${name}.triggers.json`), `${role} review staged triggers`);
+    if (rows.length !== 0) fail(`${role} has an independent review staged trigger`);
+  }
+  const accountRows = requireExhaustiveEnvelope(await loadSnapshot(snapshotDirectory,
+    "account-triggers.json"), "review staged account triggers").filter(
+    ({ repo_connection: connection }) => connection?.provider_type === "github" &&
+      connection.provider_account_id === githubRepository.provider_account_id &&
+      connection.repo_id === githubRepository.repo_id);
+  if (!same(sorted(accountRows.map(({ trigger_uuid: id }) => id)),
+    sorted([productionTriggerUuid, reviewTriggerUuid])))
+    fail("review staged account trigger inventory drift");
+  const capturedAt = new Date().toISOString();
+  return { outcome: result.outcome, mutation: false, accountId, sourceSha, capturedAt,
+    proof_digest: digestJson({ manifest, productionTrigger: productionActual,
+      reviewTrigger: reviewActual, environment,
+      tokenIds: [productionToken[0].build_token_uuid, reviewToken[0].build_token_uuid] }) };
 }
 
 async function validateFreshSnapshotDirectory({ snapshotDirectory, production, review,
@@ -2234,15 +2565,14 @@ async function validateFreshSnapshotDirectory({ snapshotDirectory, production, r
     [label, await loadSnapshot(snapshotDirectory, `${name}.builds.json`)]));
   const buildTokens = await loadSnapshot(snapshotDirectory, "build-tokens.json");
   const accountTriggers = await loadSnapshot(snapshotDirectory, "account-triggers.json");
-  const { productionSentinelProof, reviewSentinelProof } =
-    await readDistinctSentinelProofs();
+  const { productionSentinelProof } = await readProductionSentinelProof();
   const repositoryConnectionProof = await readPrivateJson(
     process.env.ATRINIK_REPOSITORY_CONNECTION_OWNER_PROOF_FILE,
     "shared repository connection owner proof");
   return validateFreshBuildsSnapshot({
     production, review, scripts, triggers, deployHooks, builds, buildTokens,
     accountTriggers,
-    productionSentinelProof, reviewSentinelProof, repositoryConnectionProof, accountId,
+    productionSentinelProof, repositoryConnectionProof, accountId,
     sourceSha,
   });
 }
@@ -2262,6 +2592,20 @@ export async function validateCheckedInProvisioning() {
   return { production, review };
 }
 
+export function provisioningDryRunSummary(production, review) {
+  const setupPlan = provisioningSetupPlan(production, review);
+  return {
+    outcome: "workers-builds-provisioning-plan-valid", mutation: false,
+    production: { project: production.workers[0].name, branch: production.productionBranch,
+      triggerCount: 1, protectedInputCount: Object.keys(production.protectedInputs).length },
+    automaticReview: { project: review.automaticReview.project, triggerCount: 1,
+      protectedInputCount: review.automaticReview.protectedInputs.length },
+    setupOperationCount: setupPlan.setupOperations.length,
+    rollbackOperationCount: setupPlan.rollbackOperations.length,
+    gates: structuredClone(setupPlan.gates),
+  };
+}
+
 async function main() {
   const mode = process.argv[2] ?? "--validate-only";
   const { production, review } = await validateCheckedInProvisioning();
@@ -2270,17 +2614,7 @@ async function main() {
     return;
   }
   if (mode === "--dry-run") {
-    const setupPlan = provisioningSetupPlan(production, review);
-    process.stdout.write(`${JSON.stringify({
-      outcome: "workers-builds-provisioning-plan-valid", mutation: false,
-      production: { project: production.workers[0].name, branch: production.productionBranch,
-        triggerCount: 1, protectedInputCount: Object.keys(production.protectedInputs).length },
-      automaticReview: { project: review.automaticReview.project, triggerCount: 1,
-        protectedInputCount: review.automaticReview.protectedInputs.length },
-      setupOperationCount: setupPlan.setupOperations.length,
-      rollbackOperationCount: setupPlan.rollbackOperations.length,
-      gates: ["provider-setup-approval", "migration-0010", "initial-production-proof"],
-    })}\n`);
+    process.stdout.write(`${JSON.stringify(provisioningDryRunSummary(production, review))}\n`);
     return;
   }
   if (mode === "--plan-setup") {
@@ -2342,6 +2676,51 @@ async function main() {
     process.stdout.write(`${JSON.stringify(publicStagedProofSummary(stagedProof))}\n`);
     return;
   }
+  if (mode === "--verify-review-staging-root-create" ||
+      mode === "--verify-review-staging-root-activation") {
+    const sourceSha = await reviewedCurrentMainSha();
+    const activation = mode === "--verify-review-staging-root-activation";
+    const proofVariable = activation ? "ATRINIK_REVIEW_STAGING_ROOT_ACTIVATION_PROOF_FILE" :
+      "ATRINIK_REVIEW_STAGING_ROOT_CREATE_PROOF_FILE";
+    const proof = await readReviewStagingRootProof(proofVariable,
+      activation ? "activation" : "create", process.env, sourceSha);
+    if (activation) {
+      const create = await readReviewStagingRootProof(
+        "ATRINIK_REVIEW_STAGING_ROOT_CREATE_PROOF_FILE", "create", process.env, sourceSha);
+      validateReviewStagingRootProofSequence(create, proof);
+    }
+    process.stdout.write(`${JSON.stringify({ outcome: proof.outcome, mutation: false,
+      sourceSha: proof.sourceSha, proof_digest: proof.proof_digest })}\n`);
+    return;
+  }
+  if (mode === "--verify-review-staged-environment") {
+    const accountId = await readPrivateValue(process.env.ATRINIK_CLOUDFLARE_ACCOUNT_ID_FILE,
+      "Cloudflare account ID", accountIdPattern);
+    const token = await readPrivateValue(process.env.ATRINIK_WORKERS_BUILDS_API_TOKEN_FILE,
+      "Workers Builds API token");
+    const productionReadToken = await readPrivateValue(
+      process.env.ATRINIK_PRODUCTION_BUILD_TOKEN_SECRET_FILE,
+      "production D1 read API token");
+    const tokenAuthorityProofs = [
+      await readPrivateJson(process.env.ATRINIK_PRODUCTION_BUILD_TOKEN_PERMISSION_PROOF_FILE,
+        "production build token permission proof"),
+      await readPrivateJson(process.env.ATRINIK_REVIEW_BUILD_TOKEN_PERMISSION_PROOF_FILE,
+        "review build token permission proof"),
+    ];
+    const sourceSha = await reviewedCurrentMainSha();
+    const outputDirectory = process.env.ATRINIK_PROVIDER_SNAPSHOT_OUTPUT;
+    await readProviderSnapshot({ accountId, token, productionReadToken, outputDirectory,
+      production, review, sourceSha });
+    const proof = await validateReviewStagedEnvironmentSnapshotDirectory({
+      snapshotDirectory: outputDirectory, production, review, accountId, sourceSha,
+      tokenAuthorityProofs,
+    });
+    await writePrivateProof(process.env.ATRINIK_REVIEW_STAGED_ENVIRONMENT_PROOF_OUTPUT_FILE,
+      proof);
+    process.stdout.write(`${JSON.stringify({ outcome: proof.outcome, mutation: false,
+      sourceSha, proof_digest: proof.proof_digest })}\n`);
+    return;
+  }
   if (mode === "--verify-staged-proof") {
     const accountId = await readPrivateValue(process.env.ATRINIK_CLOUDFLARE_ACCOUNT_ID_FILE,
       "Cloudflare account ID", accountIdPattern);
@@ -2369,7 +2748,7 @@ async function main() {
     process.stdout.write(`${JSON.stringify(validateStagedProof(proof, current))}\n`);
     return;
   }
-  if (mode === "--verify-production-activation") {
+  if (mode === "--verify-review-activation" || mode === "--verify-production-activation") {
     const accountId = await readPrivateValue(process.env.ATRINIK_CLOUDFLARE_ACCOUNT_ID_FILE,
       "Cloudflare account ID", accountIdPattern);
     const token = await readPrivateValue(process.env.ATRINIK_WORKERS_BUILDS_API_TOKEN_FILE,
@@ -2387,12 +2766,15 @@ async function main() {
     const outputDirectory = process.env.ATRINIK_PROVIDER_SNAPSHOT_OUTPUT;
     await readProviderSnapshot({ accountId, token, productionReadToken, outputDirectory,
       production, review, sourceSha });
-    const reviewResultProof = await readPrivateJson(
-      process.env.ATRINIK_REVIEW_RESULT_PROOF_FILE, "disposable review result proof");
+    const requireReviewResult = mode === "--verify-production-activation";
+    const reviewResultProof = requireReviewResult ? await readPrivateJson(
+      process.env.ATRINIK_REVIEW_RESULT_PROOF_FILE, "disposable review result proof") : undefined;
     const proof = await validateStagedSnapshotDirectory({ snapshotDirectory: outputDirectory,
       production, review, accountId, tokenAuthorityProofs, sourceSha,
-    }, { reviewActive: true, reviewResultProof });
-    await writePrivateProof(process.env.ATRINIK_PRODUCTION_ACTIVATION_PROOF_OUTPUT_FILE, proof);
+    }, { reviewActive: true, requireReviewResult, reviewResultProof });
+    await writePrivateProof(requireReviewResult ?
+      process.env.ATRINIK_PRODUCTION_ACTIVATION_PROOF_OUTPUT_FILE :
+      process.env.ATRINIK_REVIEW_ACTIVATION_PROOF_OUTPUT_FILE, proof);
     process.stdout.write(`${JSON.stringify(publicStagedProofSummary(proof))}\n`);
     return;
   }
