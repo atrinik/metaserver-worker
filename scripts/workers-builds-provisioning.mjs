@@ -26,7 +26,11 @@ const maximumProviderPages = 100;
 const stagingBranchPattern = /^review-build-only-sentinel-[0-9a-f]{32}$/u;
 const reviewStagingRootPattern = /^\/review-build-only-staging-[0-9a-f]{32}$/u;
 const gitShaPattern = /^[0-9a-f]{40}$/u;
-const expectedSetupPlanSha256 = "856f64dc2027a81ed5fcd7d85b687680e01c950400dbf8965ea40c076b09eb34";
+const expectedSetupPlanSha256 = "b44472d85573e30083a7ba0386416d9356b773a12220ea7c9909dc4001b713df";
+const currentMainProofSource = "authenticated-gh-api-current-main-readback";
+const currentMainProofEndpoint = "repos/atrinik/metaserver-worker/git/ref/heads/main";
+const currentMainRef = "refs/heads/main";
+const currentMainRepository = Object.freeze({ owner: "atrinik", name: "metaserver-worker" });
 const githubRepository = Object.freeze({
   provider_account_id: "6371603",
   provider_account_name: "atrinik",
@@ -62,6 +66,26 @@ function sorted(values) {
   return [...values].sort((left, right) => left.localeCompare(right));
 }
 
+function isUtcTimestamp(value) {
+  if (typeof value !== "string") return false;
+  const match = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})(?:\.(\d{1,3}))?Z$/u
+    .exec(value);
+  if (!match) return false;
+  const [, yearText, monthText, dayText, hourText, minuteText, secondText,
+    fractionText = "0"] = match;
+  const [year, month, day, hour, minute, second, milliseconds] = [
+    Number(yearText), Number(monthText), Number(dayText), Number(hourText),
+    Number(minuteText), Number(secondText), Number(fractionText.padEnd(3, "0")),
+  ];
+  if (year < 2000 || month < 1 || month > 12 || day < 1 || day > 31 ||
+      hour > 23 || minute > 59 || second > 59) return false;
+  const date = new Date(Date.UTC(year, month - 1, day, hour, minute, second, milliseconds));
+  return date.getUTCFullYear() === year && date.getUTCMonth() === month - 1 &&
+    date.getUTCDate() === day && date.getUTCHours() === hour &&
+    date.getUTCMinutes() === minute && date.getUTCSeconds() === second &&
+    date.getUTCMilliseconds() === milliseconds;
+}
+
 function digestJson(value) {
   return createHash("sha256").update(JSON.stringify(value)).digest("hex");
 }
@@ -72,6 +96,39 @@ export function validateReviewedSourceCoordinates({ expected, head, dirty, curre
       dirty !== "")
     fail("reviewed source is not the exact clean current GitHub main checkout");
   return head;
+}
+
+export function validateCurrentMainProof(proof, sourceSha, now = Date.now()) {
+  const keys = ["capturedAt", "endpoint", "raw", "ref", "repository", "sha", "source"];
+  const rawKeys = ["node_id", "object", "ref", "url"];
+  const objectKeys = ["sha", "type", "url"];
+  const captured = Date.parse(proof?.capturedAt ?? "");
+  const sha = proof?.sha;
+  if (!proof || !same(sorted(Object.keys(proof)), keys) ||
+      proof.source !== currentMainProofSource || proof.endpoint !== currentMainProofEndpoint ||
+      !same(proof.repository, currentMainRepository) || proof.ref !== currentMainRef ||
+      !gitShaPattern.test(sha ?? "") || sha !== sourceSha ||
+      !isUtcTimestamp(proof.capturedAt) || !Number.isFinite(captured) ||
+      captured > now + 30_000 || now - captured > 5 * 60_000 ||
+      !proof.raw || !same(sorted(Object.keys(proof.raw)), rawKeys) ||
+      proof.raw.ref !== currentMainRef ||
+      typeof proof.raw.node_id !== "string" ||
+      !/^[A-Za-z0-9_=-]{1,256}$/u.test(proof.raw.node_id) ||
+      proof.raw.url !==
+        "https://api.github.com/repos/atrinik/metaserver-worker/git/refs/heads/main" ||
+      !proof.raw.object || !same(sorted(Object.keys(proof.raw.object)), objectKeys) ||
+      proof.raw.object.sha !== sha || proof.raw.object.type !== "commit" ||
+      proof.raw.object.url !==
+        `https://api.github.com/repos/atrinik/metaserver-worker/git/commits/${sha}`)
+    fail("authenticated GitHub current main proof is stale or malformed");
+  return sha;
+}
+
+export async function readCurrentMainProof(environment, sourceSha, now = Date.now()) {
+  const proof = await readPrivateJson(environment.ATRINIK_GITHUB_CURRENT_MAIN_PROOF_FILE,
+    "authenticated GitHub current main proof");
+  validateCurrentMainProof(proof, sourceSha, now);
+  return proof;
 }
 
 async function reviewedSourceSha() {
@@ -90,25 +147,11 @@ async function reviewedSourceSha() {
   return { expected, head, dirty };
 }
 
-async function currentMainSha() {
-  const response = await fetch(
-    "https://api.github.com/repos/atrinik/metaserver-worker/git/ref/heads/main",
-    { redirect: "error", headers: { Accept: "application/vnd.github+json",
-      "User-Agent": "atrinik-workers-builds-provisioning" },
-    signal: AbortSignal.timeout(10_000) });
-  let body;
-  try { body = JSON.parse(await boundedResponseText(response, "GitHub current main")); }
-  catch { fail("GitHub current main proof is malformed"); }
-  const sha = body?.object?.sha;
-  if (!response.ok || body?.ref !== "refs/heads/main" || !gitShaPattern.test(sha ?? ""))
-    fail("GitHub current main proof failed");
-  return sha;
-}
-
-async function reviewedCurrentMainSha() {
+async function reviewedCurrentMainSha(environment = process.env, now = Date.now()) {
   const coordinates = await reviewedSourceSha();
+  const proof = await readCurrentMainProof(environment, coordinates.head, now);
   return validateReviewedSourceCoordinates({ ...coordinates,
-    currentMain: await currentMainSha() });
+    currentMain: proof.sha });
 }
 
 export function validateSnapshotManifest(manifest, { accountId, sourceSha, production, review },
@@ -479,6 +522,7 @@ export function provisioningSetupPlan(production, review) {
     ],
     privateInputs: [
       "ATRINIK_CLOUDFLARE_ACCOUNT_ID_FILE",
+      "ATRINIK_GITHUB_CURRENT_MAIN_PROOF_FILE",
       "ATRINIK_REVIEWED_SOURCE_SHA_FILE",
       "ATRINIK_WORKERS_BUILDS_API_TOKEN_FILE",
       "ATRINIK_PRODUCTION_STAGING_SENTINEL_BRANCH_FILE",
@@ -2606,6 +2650,24 @@ export function provisioningDryRunSummary(production, review) {
   };
 }
 
+export const credentialedProvisioningModes = Object.freeze([
+  "--materialize-production",
+  "--readback",
+  "--verify-configured",
+  "--verify-preflight",
+  "--verify-production-activation",
+  "--verify-review-activation",
+  "--verify-review-staged-environment",
+  "--verify-review-staging-root-activation",
+  "--verify-review-staging-root-create",
+  "--verify-staged",
+  "--verify-staged-proof",
+]);
+
+export async function credentialedSourceSha(mode, load = reviewedCurrentMainSha) {
+  return credentialedProvisioningModes.includes(mode) ? await load() : undefined;
+}
+
 async function main() {
   const mode = process.argv[2] ?? "--validate-only";
   const { production, review } = await validateCheckedInProvisioning();
@@ -2621,6 +2683,7 @@ async function main() {
     process.stdout.write(`${JSON.stringify(provisioningSetupPlan(production, review))}\n`);
     return;
   }
+  const sourceSha = await credentialedSourceSha(mode);
   if (mode === "--readback") {
     const accountId = await readPrivateValue(process.env.ATRINIK_CLOUDFLARE_ACCOUNT_ID_FILE,
       "Cloudflare account ID", accountIdPattern);
@@ -2629,7 +2692,6 @@ async function main() {
     const productionReadToken = await readPrivateValue(
       process.env.ATRINIK_PRODUCTION_BUILD_TOKEN_SECRET_FILE,
       "production D1 read API token");
-    const sourceSha = await reviewedCurrentMainSha();
     const outputDirectory = process.env.ATRINIK_PROVIDER_SNAPSHOT_OUTPUT;
     process.stdout.write(`${JSON.stringify(await readProviderSnapshot({
       accountId, token, productionReadToken, outputDirectory, production, review, sourceSha,
@@ -2640,7 +2702,6 @@ async function main() {
     const accountId = await readPrivateValue(process.env.ATRINIK_CLOUDFLARE_ACCOUNT_ID_FILE,
       "Cloudflare account ID", accountIdPattern);
     const { bases } = await checkedInInputs();
-    const sourceSha = await reviewedCurrentMainSha();
     process.stdout.write(`${JSON.stringify(await materializeSnapshot({
       snapshotDirectory: process.env.ATRINIK_PROVIDER_SNAPSHOT_DIRECTORY,
       outputDirectory: process.env.ATRINIK_PRODUCTION_CONFIG_OUTPUT,
@@ -2651,7 +2712,6 @@ async function main() {
   if (mode === "--verify-preflight") {
     const accountId = await readPrivateValue(process.env.ATRINIK_CLOUDFLARE_ACCOUNT_ID_FILE,
       "Cloudflare account ID", accountIdPattern);
-    const sourceSha = await reviewedCurrentMainSha();
     process.stdout.write(`${JSON.stringify(await validateFreshSnapshotDirectory({
       snapshotDirectory: process.env.ATRINIK_PROVIDER_SNAPSHOT_DIRECTORY,
       production, review, accountId, sourceSha,
@@ -2667,7 +2727,6 @@ async function main() {
       await readPrivateJson(process.env.ATRINIK_REVIEW_BUILD_TOKEN_PERMISSION_PROOF_FILE,
         "review build token permission proof"),
     ];
-    const sourceSha = await reviewedCurrentMainSha();
     const stagedProof = await validateStagedSnapshotDirectory({
       snapshotDirectory: process.env.ATRINIK_PROVIDER_SNAPSHOT_DIRECTORY,
       production, review, accountId, tokenAuthorityProofs, sourceSha,
@@ -2678,7 +2737,6 @@ async function main() {
   }
   if (mode === "--verify-review-staging-root-create" ||
       mode === "--verify-review-staging-root-activation") {
-    const sourceSha = await reviewedCurrentMainSha();
     const activation = mode === "--verify-review-staging-root-activation";
     const proofVariable = activation ? "ATRINIK_REVIEW_STAGING_ROOT_ACTIVATION_PROOF_FILE" :
       "ATRINIK_REVIEW_STAGING_ROOT_CREATE_PROOF_FILE";
@@ -2707,7 +2765,6 @@ async function main() {
       await readPrivateJson(process.env.ATRINIK_REVIEW_BUILD_TOKEN_PERMISSION_PROOF_FILE,
         "review build token permission proof"),
     ];
-    const sourceSha = await reviewedCurrentMainSha();
     const outputDirectory = process.env.ATRINIK_PROVIDER_SNAPSHOT_OUTPUT;
     await readProviderSnapshot({ accountId, token, productionReadToken, outputDirectory,
       production, review, sourceSha });
@@ -2735,7 +2792,6 @@ async function main() {
       await readPrivateJson(process.env.ATRINIK_REVIEW_BUILD_TOKEN_PERMISSION_PROOF_FILE,
         "review build token permission proof"),
     ];
-    const sourceSha = await reviewedCurrentMainSha();
     const activationSnapshotDirectory = process.env.ATRINIK_PROVIDER_SNAPSHOT_OUTPUT;
     await readProviderSnapshot({ accountId, token, productionReadToken,
       outputDirectory: activationSnapshotDirectory, production, review, sourceSha });
@@ -2762,7 +2818,6 @@ async function main() {
       await readPrivateJson(process.env.ATRINIK_REVIEW_BUILD_TOKEN_PERMISSION_PROOF_FILE,
         "review build token permission proof"),
     ];
-    const sourceSha = await reviewedCurrentMainSha();
     const outputDirectory = process.env.ATRINIK_PROVIDER_SNAPSHOT_OUTPUT;
     await readProviderSnapshot({ accountId, token, productionReadToken, outputDirectory,
       production, review, sourceSha });
@@ -2787,7 +2842,6 @@ async function main() {
       await readPrivateJson(process.env.ATRINIK_REVIEW_BUILD_TOKEN_PERMISSION_PROOF_FILE,
         "review build token permission proof"),
     ];
-    const sourceSha = await reviewedCurrentMainSha();
     process.stdout.write(`${JSON.stringify(await validateConfiguredSnapshotDirectory({
       snapshotDirectory: process.env.ATRINIK_PROVIDER_SNAPSHOT_DIRECTORY,
       production, review, accountId, tokenAuthorityProofs, sourceSha,

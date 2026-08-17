@@ -10,6 +10,8 @@ import {
   boundedResponseText,
   combineProviderPages,
   combineWorkerVersionPages,
+  credentialedSourceSha,
+  credentialedProvisioningModes,
   createPrivateDirectory,
   initialBootstrapPredecessorConfiguration,
   loadSnapshot,
@@ -23,12 +25,14 @@ import {
   provisioningDryRunSummary,
   provisioningSetupPlan,
   readProductionSentinelProof,
+  readCurrentMainProof,
   readProviderSnapshot,
   readPrivateValue,
   validateAutomaticReviewEnvironment,
   validateBuildTokenInventory,
   validateCheckedInProvisioning,
   validateConfiguredBuildsSnapshot,
+  validateCurrentMainProof,
   validateDistinctSentinelRefAbsence,
   validateFreshBuildsSnapshot,
   validateInitialBootstrapSnapshot,
@@ -74,6 +78,28 @@ function envelope(result) {
   return Array.isArray(result) ? { success: true, result, result_info: {
     page: 1, total_pages: 1, total_count: result.length, exhaustive: true,
   } } : { success: true, result };
+}
+
+function authenticatedCurrentMainProof(sha = "a".repeat(40),
+  capturedAt = new Date().toISOString()) {
+  return {
+    source: "authenticated-gh-api-current-main-readback",
+    repository: { owner: "atrinik", name: "metaserver-worker" },
+    endpoint: "repos/atrinik/metaserver-worker/git/ref/heads/main",
+    ref: "refs/heads/main",
+    sha,
+    capturedAt,
+    raw: {
+      ref: "refs/heads/main",
+      node_id: "REF_kwDOTu8rSLByZWZzL2hlYWRzL21haW4",
+      url: "https://api.github.com/repos/atrinik/metaserver-worker/git/refs/heads/main",
+      object: {
+        sha,
+        type: "commit",
+        url: `https://api.github.com/repos/atrinik/metaserver-worker/git/commits/${sha}`,
+      },
+    },
+  };
 }
 
 function freshSnapshotManifest(sourceSha = "a".repeat(40)) {
@@ -934,6 +960,103 @@ test("requires the reviewed source to be clean HEAD and live current main", () =
     currentMain: sha, dirty: " M README.md\n" }), /clean current GitHub main/u);
 });
 
+test("validates an exact fresh authenticated current-main proof", () => {
+  const sha = "a".repeat(40);
+  const now = Date.parse("2026-08-17T12:00:00.000Z");
+  const proof = authenticatedCurrentMainProof(sha, "2026-08-17T11:59:00.000Z");
+  assert.equal(validateCurrentMainProof(proof, sha, now), sha);
+  assert.throws(() => validateCurrentMainProof({ ...proof,
+    capturedAt: "2026-08-17T11:54:59.000Z" }, sha, now), /stale or malformed/u);
+  assert.throws(() => validateCurrentMainProof({ ...proof,
+    capturedAt: "2026-08-17T12:00:31.000Z" }, sha, now), /stale or malformed/u);
+  assert.throws(() => validateCurrentMainProof({ ...proof,
+    capturedAt: "2026-99-99T99:99:99Z" }, sha, now), /stale or malformed/u);
+  assert.throws(() => validateCurrentMainProof({ ...proof,
+    capturedAt: ["2026-08-17T11:59:00.000Z"] }, sha, now), /stale or malformed/u);
+  assert.throws(() => validateCurrentMainProof({ ...proof,
+    repository: { owner: "atrinik", name: "website" } }, sha, now), /stale or malformed/u);
+  assert.throws(() => validateCurrentMainProof({ ...proof,
+    ref: "refs/heads/review/example" }, sha, now), /stale or malformed/u);
+  assert.throws(() => validateCurrentMainProof({ ...proof,
+    endpoint: "repos/atrinik/website/git/ref/heads/main" }, sha, now), /stale or malformed/u);
+  assert.throws(() => validateCurrentMainProof({ ...proof,
+    sha: "b".repeat(40) }, sha, now), /stale or malformed/u);
+  assert.throws(() => validateCurrentMainProof({ ...proof,
+    unexpected: true }, sha, now), /stale or malformed/u);
+  assert.throws(() => validateCurrentMainProof({ ...proof,
+    raw: { ...proof.raw, object: { ...proof.raw.object, type: "tag" } } }, sha, now),
+  /stale or malformed/u);
+  assert.throws(() => validateCurrentMainProof({ ...proof,
+    raw: { ...proof.raw, ref: "refs/heads/review/example" } }, sha, now),
+  /stale or malformed/u);
+  assert.throws(() => validateCurrentMainProof({ ...proof,
+    raw: { ...proof.raw, object: { ...proof.raw.object, sha: "b".repeat(40) } } }, sha, now),
+  /stale or malformed/u);
+});
+
+test("loads current-main evidence only from an owner-only regular file", async () => {
+  const temporary = await mkdtemp(resolve(tmpdir(), "atrinik-current-main-proof-"));
+  const proofPath = resolve(temporary, "proof.json");
+  const linkedPath = resolve(temporary, "linked-proof.json");
+  const sha = "a".repeat(40);
+  const now = Date.parse("2026-08-17T12:00:00.000Z");
+  await chmod(temporary, 0o700);
+  await writeFile(proofPath, `${JSON.stringify(authenticatedCurrentMainProof(
+    sha, "2026-08-17T11:59:00.000Z"))}\n`, { mode: 0o600 });
+  try {
+    const environment = { ATRINIK_GITHUB_CURRENT_MAIN_PROOF_FILE: proofPath };
+    assert.equal((await readCurrentMainProof(environment, sha, now)).sha, sha);
+    await chmod(proofPath, 0o644);
+    await assert.rejects(readCurrentMainProof(environment, sha, now),
+      /bounded private regular file/u);
+    await chmod(proofPath, 0o600);
+    await symlink(proofPath, linkedPath);
+    await assert.rejects(readCurrentMainProof({
+      ATRINIK_GITHUB_CURRENT_MAIN_PROOF_FILE: linkedPath,
+    }, sha, now), /without following links/u);
+    await assert.rejects(readCurrentMainProof({}, sha, now), /path must be absolute/u);
+  } finally {
+    await rm(temporary, { recursive: true, force: true });
+  }
+});
+
+test("gates every credentialed mode on the private current-main proof", async () => {
+  assert.deepEqual(credentialedProvisioningModes, [
+    "--materialize-production",
+    "--readback",
+    "--verify-configured",
+    "--verify-preflight",
+    "--verify-production-activation",
+    "--verify-review-activation",
+    "--verify-review-staged-environment",
+    "--verify-review-staging-root-activation",
+    "--verify-review-staging-root-create",
+    "--verify-staged",
+    "--verify-staged-proof",
+  ]);
+  for (const mode of credentialedProvisioningModes) {
+    let proofLoads = 0;
+    const sourceSha = await credentialedSourceSha(mode, async () => {
+      proofLoads += 1;
+      return "a".repeat(40);
+    });
+    assert.equal(sourceSha, "a".repeat(40));
+    assert.equal(proofLoads, 1);
+    await assert.rejects(credentialedSourceSha(mode, async () => {
+      throw new Error("proof stopped before provider mode");
+    }), /proof stopped before provider mode/u);
+  }
+  assert.equal(await credentialedSourceSha("--dry-run", async () => {
+    assert.fail("credential-free mode must not load a current-main proof");
+  }), undefined);
+  const implementation = await readFile(resolve(root,
+    "scripts/workers-builds-provisioning.mjs"), "utf8");
+  assert.doesNotMatch(implementation,
+    /fetch\([\s\S]{0,200}api\.github\.com\/repos\/atrinik\/metaserver-worker/u);
+  assert.ok(implementation.indexOf("await credentialedSourceSha(mode)") <
+    implementation.indexOf('if (mode === "--readback")'));
+});
+
 test("requires fresh owner proof for the unreadable shared repository connection", () => {
   const proof = freshBoundary().repositoryConnectionProof;
   assert.doesNotThrow(() => validateRepositoryConnectionOwnerProof(proof, accountId,
@@ -1425,6 +1548,7 @@ test("plans inert setup, separately gated activation, and ordered rollback", () 
   assert.ok(requestPaths.every((path) => !path.includes("deploy_hooks") &&
     !path.includes("/builds/builds")));
   assert.ok(plan.privateInputs.every((name) => name.endsWith("_FILE")));
+  assert.ok(plan.privateInputs.includes("ATRINIK_GITHUB_CURRENT_MAIN_PROOF_FILE"));
   assert.equal(plan.privateInputs.includes("ATRINIK_REVIEW_BOOTSTRAP_API_TOKEN_FILE"), false);
   assert.ok(plan.privateInputs.includes("ATRINIK_PRODUCTION_STAGING_SENTINEL_REFS_FILE"));
   assert.equal(plan.privateInputs.includes("ATRINIK_REVIEW_STAGING_SENTINEL_REFS_FILE"), false);

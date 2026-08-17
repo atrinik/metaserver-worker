@@ -130,7 +130,9 @@ production GitHub ref with the zero-resource review token while the review
 trigger remains absent; the
 production selector and token change
 together only at activation. Its separately credentialed exhaustive provider
-readback, D1-ledger proof, and local materializer write only private mode-`0600` provider
+readback, D1-ledger proof, and local materializer first consume a fresh
+owner-only current-`main` proof captured through authenticated `gh api` outside
+the sandbox; they perform no direct GitHub request. They write only private mode-`0600` provider
 snapshots/configurations and have no remote mutation path. A post-setup
 `npm run provision:workers-builds:verify-staged` gate proves the production
 trigger is private-sentinel-only on the zero-resource review token and the
