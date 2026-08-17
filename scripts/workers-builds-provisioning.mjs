@@ -1029,28 +1029,6 @@ function validateReviewTokenRotationPredecessorProof(proof, authorityProof, {
   return proof;
 }
 
-function validateReviewTokenRotationRollbackResidualProof(proof, residualState, authorityProof, {
-  accountId, sourceSha,
-}, now = Date.now()) {
-  const keys = ["accountId", "capturedAt", "mutation", "outcome", "phase",
-    "productionPreservationDigest", "providerSnapshotDigest", "residualState", "sourceSha",
-    "proof_digest"];
-  const captured = Date.parse(proof?.capturedAt ?? "");
-  const unsigned = { ...proof };
-  delete unsigned.proof_digest;
-  if (!proof || !same(sorted(Object.keys(proof)), sorted(keys)) ||
-      proof.outcome !== "workers-builds-review-token-rotation-rollback-residual-valid" ||
-      proof.mutation !== false || proof.phase !== "rollback-blocked" ||
-      proof.accountId !== accountId || proof.sourceSha !== sourceSha ||
-      proof.productionPreservationDigest !== authorityProof.productionPreservationDigest ||
-      !/^[0-9a-f]{64}$/u.test(proof.providerSnapshotDigest ?? "") ||
-      !isUtcTimestamp(proof.capturedAt) || !Number.isFinite(captured) ||
-      captured > now + 30_000 || !same(proof.residualState, residualState) ||
-      proof.proof_digest !== digestJson(unsigned))
-    fail("review token rotation rollback residual proof drift");
-  return proof;
-}
-
 function validateReviewTokenRotationTerminalProof(proof, { accountId, sourceSha,
   authorityProof },
 now = Date.now(), maximumAgeMs = 5 * 60_000) {
@@ -1284,9 +1262,11 @@ function validateReviewTokenRotationJournal(records, terminalProof, authorityPro
     repositoryConnectionUuid: identity.repositoryConnectionUuid };
 }
 
-export function validateReviewTokenRotationRollbackJournal(records, authorityProof, {
+export async function validateReviewTokenRotationRollbackJournal(records, authorityProof, {
   production, review, accountId, sourceSha, restoredProof, completeProof,
-  replacementReviewTokenUuid, blockedProof,
+  replacementReviewTokenUuid, blockedSnapshotDirectory, productionSentinelProof,
+  predecessorTokenAuthorityProofs, replacementTokenAuthorityProof, replacementTokenId,
+  productionBaselineProof, blockedProof,
 }) {
   validateHistoricalReviewTokenRotationAuthority(authorityProof,
     { production, review, accountId, sourceSha });
@@ -1349,6 +1329,7 @@ export function validateReviewTokenRotationRollbackJournal(records, authorityPro
     const expectedRequest = reviewTokenRotationRollbackRequestDigest({ production, review,
       authorityProof, operation, replacementReviewTokenUuid });
     const explicit = classified?.outcome === "explicit-success";
+    const explicitFailure = classified?.outcome === "explicit-failure";
     const resourceUuid = operation === "rotation-restore-review-trigger-old-token" ?
       authorityProof.journalIdentities.reviewTriggerUuid :
       operation === "rotation-restore-production-trigger-old-token" ?
@@ -1364,7 +1345,9 @@ export function validateReviewTokenRotationRollbackJournal(records, authorityPro
           authority.historicalRollbackAuthority !== true) ||
         intent && (intent.method !== expectedRequest.method || intent.path !== expectedRequest.path ||
           intent.requestDigestSha256 !== expectedRequest.requestDigestSha256) ||
-        classified && !["explicit-success", "ambiguous"].includes(classified.outcome) ||
+        classified && !["explicit-success", "ambiguous",
+          ...(terminalBlocked ? ["explicit-failure"] : [])].includes(classified.outcome) ||
+        explicitFailure && bound ||
         bound && (bound.requestDigestSha256 !== intent?.requestDigestSha256 ||
           bound.providerResponseExplicitSuccess !== explicit || bound.resourceUuid !== resourceUuid ||
           !/^[0-9a-f]{64}$/u.test(bound.readbackDigestSha256 ?? "") ||
@@ -1391,8 +1374,7 @@ export function validateReviewTokenRotationRollbackJournal(records, authorityPro
     const completed = new Set(mutationOperations.filter((operation) =>
       find("mutation-bound", operation)));
     const active = mutationOperations.find((operation) => !completed.has(operation) &&
-      ["current-main-proof-bound", "rollback-authority-checked", "mutation-intent",
-        "provider-response-classified"].some((event) => find(event, operation))) ?? null;
+      find("mutation-intent", operation)) ?? null;
     const predecessor = authorityProof.journalIdentities.predecessorReviewBuildTokenUuid;
     const replacement = replacementReviewTokenUuid;
     const state = startingPhase === "predecessor" ? {
@@ -1422,16 +1404,39 @@ export function validateReviewTokenRotationRollbackJournal(records, authorityPro
     for (const operation of mutationOperations) {
       if (completed.has(operation)) completedState = apply(completedState, operation);
     }
-    const allowedStates = [completedState, ...(active ? [apply(completedState, active)] : [])];
+    const activeClassification = active ? find("provider-response-classified", active) : null;
+    const allowedStates = !active ? [completedState] :
+      activeClassification?.outcome === "explicit-success" ? [apply(completedState, active)] :
+        activeClassification?.outcome === "explicit-failure" ? [completedState] :
+          [completedState, apply(completedState, active)];
     const residualWithoutActive = { ...residual };
     delete residualWithoutActive.activeMutation;
-    validateReviewTokenRotationRollbackResidualProof(blockedProof, residual, authorityProof,
-      { accountId, sourceSha }, Date.parse(terminal.at));
+    const residualPhase = !residual.replacementWrapperPresent ? "predecessor" :
+      residual.liveProductionTokenReference === predecessor &&
+        residual.liveReviewTokenReference === predecessor ? "predecessor-restored" :
+        residual.liveProductionTokenReference === replacement &&
+          residual.liveReviewTokenReference === predecessor ? "production-repointed" :
+          residual.liveProductionTokenReference === replacement &&
+            residual.liveReviewTokenReference === replacement ? "review-repointed" : null;
+    if (!residualPhase) fail("review token rotation rollback residual phase drift");
+    const validatedBlockedProof = await validateReviewTokenRotationSnapshotDirectory({
+      snapshotDirectory: blockedSnapshotDirectory, production, review, accountId, sourceSha,
+      phase: residualPhase, productionSentinelProof, predecessorTokenAuthorityProofs,
+      replacementTokenAuthorityProof, replacementTokenId,
+      productionTriggerUuid: authorityProof.journalIdentities.productionTriggerUuid,
+      reviewTriggerUuid: authorityProof.journalIdentities.reviewTriggerUuid,
+      predecessorReviewTokenUuid:
+        authorityProof.journalIdentities.predecessorReviewBuildTokenUuid,
+      replacementReviewTokenUuid, productionPreservationDigest:
+        authorityProof.productionPreservationDigest, authorityProof, productionBaselineProof,
+      now: Date.parse(blockedProof?.capturedAt ?? ""),
+    });
     const prefixAt = Date.parse(records.at(-2)?.at ?? records[0].at);
     if (!same(sorted(Object.keys(terminal ?? {})), sorted(terminalKeys)) ||
         !same(sorted(Object.keys(residual ?? {})), sorted(residualKeys)) ||
         residual.activeMutation !== active ||
         !allowedStates.some((allowed) => same(residualWithoutActive, allowed)) ||
+        !same(blockedProof, validatedBlockedProof) ||
         terminal.residualProofDigest !== blockedProof.proof_digest ||
         terminal.residualProofFileSha256 !== digestJson(blockedProof) ||
         Date.parse(blockedProof.capturedAt) < prefixAt ||
@@ -1513,8 +1518,13 @@ export function issueDisposableReviewAuthority({ production, review, accountId, 
     ownerUserId: reviewTokenRotationAuthorityProof.replacementToken.ownerUserId }, now);
   validateCurrentDisposableReviewSnapshotProof(currentReviewActiveProof,
     { accountId, sourceSha }, now);
-  if (Date.parse(currentReviewActiveProof.snapshotStartedAt) <
-      Date.parse(rotation.terminalAt))
+  const currentMembershipCaptured = Date.parse(
+    currentReplacementTokenOwnerMembershipProof.capturedAt);
+  if (digestJson(currentReplacementTokenOwnerMembershipProof) ===
+      digestJson(replacementTokenOwnerMembershipProof) ||
+      currentMembershipCaptured < Date.parse(rotation.terminalAt) ||
+      currentMembershipCaptured > Date.parse(currentReviewActiveProof.snapshotStartedAt) ||
+      Date.parse(currentReviewActiveProof.snapshotStartedAt) < Date.parse(rotation.terminalAt))
     fail("disposable review authority observations overlap");
   const identities = currentReviewActiveProof.liveIdentities;
   if (rotation.productionTriggerUuid !== setupProvenance.productionTriggerUuid ||
@@ -1639,6 +1649,8 @@ minimumRemainingMs = reviewActivationTransitionBudgetMs) {
     ownerUserId: reviewTokenRotationAuthorityProof.replacementToken.ownerUserId }, captured);
   validateCurrentDisposableReviewSnapshotProof(currentReviewActiveProof,
     { accountId, sourceSha }, captured);
+  const currentMembershipCaptured = Date.parse(
+    currentReplacementTokenOwnerMembershipProof.capturedAt);
   validateRepositoryConnectionOwnerProof(repositoryConnectionProof, accountId, sourceSha, captured);
   const sentinel = validateSentinelRefAbsence(productionSentinelProof, captured);
   const proofByKind = Object.fromEntries(tokenAuthorityProofs.map((item) => [item.kind, item]));
@@ -1660,6 +1672,10 @@ minimumRemainingMs = reviewActivationTransitionBudgetMs) {
       active.completedAt !== currentReviewActiveProof.snapshotCompletedAt ||
       Date.parse(reviewActivationProof.capturedAt) > Date.parse(journal.terminalAt) ||
       Date.parse(journal.terminalAt) > Date.parse(rotation.terminalAt) ||
+      digestJson(currentReplacementTokenOwnerMembershipProof) ===
+        digestJson(replacementTokenOwnerMembershipProof) ||
+      currentMembershipCaptured < Date.parse(rotation.terminalAt) ||
+      currentMembershipCaptured > Date.parse(currentReviewActiveProof.snapshotStartedAt) ||
       Date.parse(rotation.terminalAt) > Date.parse(currentReviewActiveProof.snapshotStartedAt) ||
       !same(active.liveIdentities, currentReviewActiveProof.liveIdentities) ||
       !same(proof.reviewActivationJournal, journal) ||
@@ -3121,8 +3137,8 @@ export function validateReviewTokenRotationReadback({ production, review, phase,
   buildTokens, accountTriggers, productionScriptTag, productionSentinel,
   productionTriggerUuid, reviewTriggerUuid, predecessorReviewTokenUuid,
   replacementReviewTokenUuid, repositoryConnectionUuid }) {
-  if (!["predecessor", "predecessor-restored", "production-repointed",
-    "old-wrapper-unreferenced", "complete"]
+  if (!["predecessor", "replacement-created", "predecessor-restored",
+    "production-repointed", "review-repointed", "old-wrapper-unreferenced", "complete"]
     .includes(phase)) fail("review token rotation phase is malformed");
   for (const value of [productionTriggerUuid, reviewTriggerUuid, predecessorReviewTokenUuid,
     repositoryConnectionUuid]) if (!uuidPattern.test(value ?? ""))
@@ -3155,8 +3171,10 @@ export function validateReviewTokenRotationReadback({ production, review, phase,
   if (!uuidPattern.test(productionTokenUuid ?? "") || productionTokenUuid ===
       predecessorReviewTokenUuid || productionTokenUuid === replacementReviewTokenUuid)
     fail("review token rotation production wrapper drift");
-  const productionUsesReplacement = !["predecessor", "predecessor-restored"].includes(phase);
-  const reviewUsesReplacement = ["old-wrapper-unreferenced", "complete"].includes(phase);
+  const productionUsesReplacement = ["production-repointed", "review-repointed",
+    "old-wrapper-unreferenced", "complete"].includes(phase);
+  const reviewUsesReplacement = ["review-repointed", "old-wrapper-unreferenced",
+    "complete"].includes(phase);
   const expectedProduction = productionTriggerSpec(production, {
     externalScriptId: productionScriptTag,
     repositoryConnectionUuid,
@@ -4696,7 +4714,7 @@ export async function validateReviewTokenRotationSnapshotDirectory({ snapshotDir
   predecessorTokenAuthorityProofs, replacementTokenAuthorityProof, replacementTokenId,
   productionTriggerUuid, reviewTriggerUuid, predecessorReviewTokenUuid,
   replacementReviewTokenUuid, productionPreservationDigest, authorityProof,
-  productionBaselineProof }) {
+  productionBaselineProof, now = Date.now() }) {
   const proofValidationTime = Date.parse(authorityProof?.capturedAt ?? "");
   if (!Number.isFinite(proofValidationTime) ||
       authorityProof?.evidenceDigests?.productionSentinel !==
@@ -4797,7 +4815,7 @@ export async function validateReviewTokenRotationSnapshotDirectory({ snapshotDir
       tokenRows: { production: productionToken, review: replacementToken }, sourceSha },
     proofValidationTime);
   }
-  const capturedAt = new Date().toISOString();
+  const capturedAt = new Date(now).toISOString();
   return { ...result, accountId, sourceSha, capturedAt, productionPreservationDigest,
     proof_digest: digestJson({ manifest, result, productionTrigger, reviewTrigger,
       productionEnvironment, reviewEnvironment, buildTokens, accountTriggers,

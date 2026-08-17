@@ -600,6 +600,9 @@ rollback mutation. The old wrapper must be unreferenced across the complete
 account trigger inventory, not merely this repository. The replacement owner's
 accepted-membership artifact remains part of terminal and disposable handoff
 evidence and is revalidated at the original rotation-authority observation time.
+Before disposable-proof authority is issued, capture a distinct membership
+observation after the rotation terminal and no later than the new review-active
+snapshot; replaying the issuance-time membership artifact fails closed.
 Production activation, migration
 `0010`, manual/API builds, the initial production build, and all Worker,
 version, deployment, binding, route, domain, schedule, URL, state, secret, and
