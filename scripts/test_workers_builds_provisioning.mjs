@@ -4974,7 +4974,7 @@ test("authorizes and journals only the blocked replacement-wrapper delete", asyn
     laterMainRecords[index] = checksummedRecord(payload);
   }
   const laterMainArguments = { ...arguments_, completeProof: laterMainCompleteProof,
-    historicalTerminalValidation: true, terminalObservationSourceSha: laterMainSourceSha };
+    historicalTerminalValidation: true };
   await Promise.all([
     writeSnapshot("snapshot-manifest.json", manifest(now + 80)),
     writeSnapshot("build-tokens.json", envelope([
@@ -4990,15 +4990,18 @@ test("authorizes and journals only the blocked replacement-wrapper delete", asyn
   ]);
   const originalWrite = process.stdout.write;
   const cliOutput = [];
+  const terminalVerifierSourceSha = "9".repeat(40);
   try {
     process.stdout.write = (chunk) => { cliOutput.push(String(chunk)); return true; };
     await runProvisioningCliForTest(
-      "--verify-review-token-rotation-blocked-delete-complete", async () => laterMainSourceSha,
+      "--verify-review-token-rotation-blocked-delete-complete",
+      async () => terminalVerifierSourceSha,
       async () => { throw new Error("terminal validation must not read provider state"); },
       undefined, createBlockedDeleteTerminalContextReaderForTest(async () =>
         ({ records: laterMainRecords, authority, arguments: laterMainArguments, now })));
     await runProvisioningCliForTest(
-      "--verify-review-token-rotation-blocked-delete-blocked", async () => sourceSha,
+      "--verify-review-token-rotation-blocked-delete-blocked",
+      async () => terminalVerifierSourceSha,
       async () => { throw new Error("terminal validation must not read provider state"); },
       undefined, createBlockedDeleteTerminalContextReaderForTest(async () =>
         ({ records: preReceiptBlockedRecords, authority,
@@ -5006,9 +5009,14 @@ test("authorizes and journals only the blocked replacement-wrapper delete", asyn
   } finally { process.stdout.write = originalWrite; }
   assert.equal(cliOutput.length, 2);
   assert.match(cliOutput[0], /blocked-delete-recovery-complete/u);
-  assert.match(cliOutput[0], new RegExp(`"sourceSha":"${laterMainSourceSha}"`, "u"));
+  assert.match(cliOutput[0], new RegExp(`"sourceSha":"${terminalVerifierSourceSha}"`, "u"));
   assert.match(cliOutput[0], new RegExp(`"authoritySourceSha":"${sourceSha}"`, "u"));
+  assert.match(cliOutput[0], new RegExp(
+    `"terminalObservationSourceSha":"${laterMainSourceSha}"`, "u"));
   assert.match(cliOutput[1], /blocked-delete-recovery-blocked/u);
+  assert.match(cliOutput[1], new RegExp(`"sourceSha":"${terminalVerifierSourceSha}"`, "u"));
+  assert.match(cliOutput[1], new RegExp(
+    `"terminalObservationSourceSha":"${sourceSha}"`, "u"));
   const staleBlockedRecords = structuredClone(blockedRecords);
   const staleManifest = manifest(now + 40);
   await writeSnapshot("snapshot-manifest.json", staleManifest);

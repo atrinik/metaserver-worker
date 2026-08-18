@@ -1513,7 +1513,6 @@ async function classifyReviewTokenRotationBlockedDeleteRecoveryPrefixCore(record
   productionSentinelProof = undefined, predecessorTokenAuthorityProofs = undefined,
   replacementTokenAuthorityProof = undefined, replacementTokenId = undefined,
   productionBaselineProof = undefined, historicalTerminalValidation = false,
-  terminalObservationSourceSha = sourceSha,
 } = {}, now = Date.now()) {
   const operation = "rotation-delete-blocked-replacement-wrapper";
   if (historicalTerminalValidation && ![
@@ -1521,6 +1520,10 @@ async function classifyReviewTokenRotationBlockedDeleteRecoveryPrefixCore(record
     "review-token-rotation-blocked-delete-recovery-blocked",
   ].includes(records?.at(-1)?.event))
     fail("blocked delete historical validation requires a terminal journal");
+  const terminalObservationSourceSha = historicalTerminalValidation ?
+    (completeProof?.sourceSha ?? blockedProof?.sourceSha) : sourceSha;
+  if (!gitShaPattern.test(terminalObservationSourceSha ?? ""))
+    fail("blocked delete terminal observation source drift");
   validateReviewTokenRotationBlockedDeleteAuthority(authorityProof, { production, review,
     accountId, sourceSha, currentMainProof, currentPhaseProof, historicalAuthorityProof,
     blockedIncidentValidation, recoveryCoordinate,
@@ -7042,7 +7045,9 @@ async function runProvisioningCliCore(mode = process.argv[2] ?? "--validate-only
       if (result.terminal !== expectedTerminal)
         fail("blocked delete recovery terminal mode drift");
       process.stdout.write(`${JSON.stringify({ ...result, sourceSha,
-        authoritySourceSha: injected.authority.sourceSha })}\n`);
+        authoritySourceSha: injected.authority.sourceSha,
+        terminalObservationSourceSha: (injected.arguments.completeProof ??
+          injected.arguments.blockedProof).sourceSha })}\n`);
       return;
     }
     const accountId = await readPrivateValue(process.env.ATRINIK_CLOUDFLARE_ACCOUNT_ID_FILE,
@@ -7090,14 +7095,15 @@ async function runProvisioningCliCore(mode = process.argv[2] ?? "--validate-only
         replacementTokenAuthorityProof: incident.evidence.replacementTokenAuthorityProof,
         replacementTokenId: incident.evidence.replacementTokenId,
         productionBaselineProof: incident.evidence.productionBaselineProof,
-        historicalTerminalValidation: true, terminalObservationSourceSha: sourceSha });
+        historicalTerminalValidation: true });
     const expectedTerminal = completeMode ?
       "review-token-rotation-blocked-delete-recovery-complete" :
       "review-token-rotation-blocked-delete-recovery-blocked";
     if (result.terminal !== expectedTerminal)
       fail("blocked delete recovery terminal mode drift");
     process.stdout.write(`${JSON.stringify({ ...result, sourceSha,
-      authoritySourceSha: authority.sourceSha })}\n`);
+      authoritySourceSha: authority.sourceSha,
+      terminalObservationSourceSha: (completeProof ?? blockedProof).sourceSha })}\n`);
     return;
   }
   if (mode === "--verify-review-token-rotation-authority") {
