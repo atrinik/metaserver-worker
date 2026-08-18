@@ -582,6 +582,23 @@ the terminal predecessor with
 `provision:workers-builds:verify-review-token-rotation-rollback-complete`. Once
 predecessor absence is durably reconciled, rollback
 must roll forward: never recreate it; prove the terminal replacement state.
+If the DELETE took effect but its ordinary tombstone or terminal proof was not
+durable before the write authority expired, use the read-only
+`provision:workers-builds:verify-review-token-rotation-complete-historical`
+command. The recovery journal must retain the original pre-expiry authorized
+DELETE intent, bind a fresh exhaustive complete-state proof, and record a
+distinct historical-authority absence tombstone and recovered terminal. It must
+never backdate the ordinary tombstone, retry DELETE, recreate either wrapper,
+or mutate a trigger or any other provider resource. The ordinary and recovered
+terminal proofs are the two explicit alternatives for the later disposable
+authority; a rollback-blocked predecessor proof is never such an alternative.
+If the first create operation has only a journaled authorization prefix and no
+mutation intent when that prefix expires, derive the unresolved replacement
+coordinate from the authority digest, take a fresh exhaustive predecessor
+snapshot, and terminalize a separate rollback-blocked journal with both
+journaled triggers on the predecessor wrapper, that wrapper present, the
+replacement absent, and no active mutation. This terminal is read-only and
+cannot be used as successful rotation or disposable-proof evidence.
 Every intent digest is computed from the exact method, path, and authority-bound
 request body. Explicit success binds its returned identity; only a journaled
 ambiguous response may reconcile by exact stable readback, and deletions require

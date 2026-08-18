@@ -26,7 +26,7 @@ const maximumProviderPages = 100;
 const stagingBranchPattern = /^review-build-only-sentinel-[0-9a-f]{32}$/u;
 const reviewStagingRootPattern = /^\/review-build-only-staging-[0-9a-f]{32}$/u;
 const gitShaPattern = /^[0-9a-f]{40}$/u;
-const expectedSetupPlanSha256 = "5438a3565025756661e7c435b77fb015bcf3b64e6e5a0dd4f3fcaefd1ff8fba7";
+const expectedSetupPlanSha256 = "ab71b8d99980ccdbfe9384bd29e8d690b7d8e91b6b17199e0e1baad182f7b6c1";
 const currentMainProofSource = "authenticated-gh-api-current-main-readback";
 const currentMainProofEndpoint = "repos/atrinik/metaserver-worker/git/ref/heads/main";
 const currentMainRef = "refs/heads/main";
@@ -1099,17 +1099,18 @@ export function reviewTokenRotationRollbackRequestDigest({ production, review, a
   return { method, path, requestDigestSha256: digestJson({ method, path, body }) };
 }
 
-function validateReviewTokenRotationJournal(records, terminalProof, authorityProof, {
-  production, review, accountId, sourceSha, intermediateProof, unreferencedProof }) {
+export function validateReviewTokenRotationJournal(records, terminalProof, authorityProof, {
+  production, review, accountId, sourceSha, intermediateProof, unreferencedProof },
+now = Date.now()) {
   validateHistoricalReviewTokenRotationAuthority(authorityProof,
     { production, review, accountId, sourceSha });
   validateReviewTokenRotationPhaseProof(intermediateProof, "production-repointed",
-    authorityProof, { accountId, sourceSha });
+    authorityProof, { accountId, sourceSha }, now, Infinity);
   validateReviewTokenRotationPhaseProof(unreferencedProof, "old-wrapper-unreferenced",
-    authorityProof, { accountId, sourceSha });
+    authorityProof, { accountId, sourceSha }, now, Infinity);
   validateReviewTokenRotationTerminalProof(terminalProof,
-    { accountId, sourceSha, authorityProof }, Date.now(), Infinity);
-  const expected = [
+    { accountId, sourceSha, authorityProof }, now, Infinity);
+  const forwardExpected = [
     ["attempt-started", "review-token-rotation"],
     ["rotation-authorized", undefined],
     ["current-main-proof-bound", "replacement-review-build-token"],
@@ -1137,8 +1138,28 @@ function validateReviewTokenRotationJournal(records, terminalProof, authorityPro
     ["provider-proof-bound", "review-token-rotation-readback"],
     ["review-token-rotation-complete", undefined],
   ];
-  if (!Array.isArray(records) || !same(records.map(({ event, operation }) =>
-    [event, operation]), expected)) fail("review token rotation journal operation sequence drift");
+  const recoveryStartIndex = Array.isArray(records) ? records.findIndex(({ event }) =>
+    event === "review-token-rotation-complete-recovery-started") : -1;
+  const recovered = recoveryStartIndex !== -1;
+  const recoveryExpected = [
+    ["review-token-rotation-complete-recovery-started", undefined],
+    ["provider-proof-bound", "review-token-rotation-recovery-readback"],
+    ["deletion-recovery-bound", "retire-superseded-review-build-token"],
+    ["review-token-rotation-complete-recovered", undefined],
+  ];
+  const actualPairs = Array.isArray(records) ? records.map(({ event, operation }) =>
+    [event, operation]) : [];
+  const recoveryMinimumPrefixLength = forwardExpected.findIndex(([event, operation]) =>
+    event === "mutation-intent" && operation === "retire-superseded-review-build-token") + 1;
+  const recoveryMaximumPrefixLength = forwardExpected.findIndex(([event, operation]) =>
+    event === "provider-proof-bound" && operation === "review-token-rotation-readback");
+  if (!Array.isArray(records) || (!recovered && !same(actualPairs, forwardExpected)) ||
+      recovered && (recoveryStartIndex < recoveryMinimumPrefixLength ||
+        recoveryStartIndex > recoveryMaximumPrefixLength ||
+        !same(actualPairs.slice(0, recoveryStartIndex),
+          forwardExpected.slice(0, recoveryStartIndex)) ||
+        !same(actualPairs.slice(recoveryStartIndex), recoveryExpected)))
+    fail("review token rotation journal operation sequence drift");
   let previousAt = -Infinity;
   for (const record of records) {
     const { recordSha256, ...payload } = record ?? {};
@@ -1158,7 +1179,7 @@ function validateReviewTokenRotationJournal(records, terminalProof, authorityPro
     ["repoint-final-review-trigger", identity.reviewTriggerUuid],
     ["retire-superseded-review-build-token", identity.predecessorReviewBuildTokenUuid],
   ];
-  const mutationsValid = semantics.every(([operation, resourceUuid]) => {
+  const mutationsValid = semantics.every(([operation, resourceUuid], operationIndex) => {
     const intent = mutation("mutation-intent", operation);
     const classified = mutation("provider-response-classified", operation);
     const bound = mutation("mutation-bound", operation);
@@ -1166,22 +1187,25 @@ function validateReviewTokenRotationJournal(records, terminalProof, authorityPro
       authorityProof, operation, replacementReviewTokenUuid: replacement });
     const explicit = classified?.outcome === "explicit-success";
     const ambiguous = classified?.outcome === "ambiguous";
+    const recoveryDelete = recovered && operationIndex === semantics.length - 1;
     return intent?.method === expectedRequest.method && intent.path === expectedRequest.path &&
       intent.requestDigestSha256 === expectedRequest.requestDigestSha256 &&
-      (explicit || ambiguous) &&
+      (recoveryDelete ? (!classified || explicit || ambiguous) : (explicit || ambiguous)) &&
       (!explicit || operation !== "replacement-review-build-token" ||
-        classified.resourceUuid === resourceUuid) && bound?.resourceUuid === resourceUuid &&
-      bound.providerResponseExplicitSuccess === explicit &&
-      bound.reconciliation === (operation === "retire-superseded-review-build-token" ?
-        (explicit ? "explicit-success-exact-absence" : "ambiguous-exact-absence") :
-        (explicit ? "explicit-success-exact-readback" : "ambiguous-exact-readback")) &&
-      (operation !== "retire-superseded-review-build-token" ||
-        bound.deletionTombstone === true) &&
-      bound.requestDigestSha256 === intent.requestDigestSha256 &&
-      /^[0-9a-f]{64}$/u.test(bound.readbackDigestSha256 ?? "");
+        classified.resourceUuid === resourceUuid) && (recoveryDelete && !bound ||
+        bound?.resourceUuid === resourceUuid &&
+        bound.providerResponseExplicitSuccess === explicit &&
+        bound.reconciliation === (operation === "retire-superseded-review-build-token" ?
+          (explicit ? "explicit-success-exact-absence" : "ambiguous-exact-absence") :
+          (explicit ? "explicit-success-exact-readback" : "ambiguous-exact-readback")) &&
+        (operation !== "retire-superseded-review-build-token" ||
+          bound.deletionTombstone === true) &&
+        bound.requestDigestSha256 === intent.requestDigestSha256 &&
+        /^[0-9a-f]{64}$/u.test(bound.readbackDigestSha256 ?? ""));
   });
   const terminal = records.at(-1);
-  const proofBound = mutation("provider-proof-bound", "review-token-rotation-readback");
+  const proofBound = mutation("provider-proof-bound", recovered ?
+    "review-token-rotation-recovery-readback" : "review-token-rotation-readback");
   const intermediateBound = mutation("provider-proof-bound",
     "prove-production-repointed-review-still-predecessor");
   const unreferencedBound = mutation("provider-proof-bound",
@@ -1197,26 +1221,30 @@ function validateReviewTokenRotationJournal(records, terminalProof, authorityPro
       /^[0-9a-f]{64}$/u.test(record.rawFileSha256 ?? "") &&
       isUtcTimestamp(record.capturedAt) && captured <= at && at - captured <= 5 * 60_000;
   });
-  const operationChronologyValid = semantics.every(([operation]) => {
+  const operationChronologyValid = semantics.every(([operation], operationIndex) => {
     const main = mutation("current-main-proof-bound", operation);
     const checked = mutation("review-token-rotation-authority-checked", operation);
     const intent = mutation("mutation-intent", operation);
     const classified = mutation("provider-response-classified", operation);
     const bound = mutation("mutation-bound", operation);
+    const recoveryDelete = recovered && operationIndex === semantics.length - 1;
     return Date.parse(main?.at ?? "") <= Date.parse(checked?.at ?? "") &&
       Date.parse(checked?.at ?? "") <= Date.parse(intent?.at ?? "") &&
-      Date.parse(intent?.at ?? "") <= Date.parse(classified?.at ?? "") &&
-      Date.parse(classified?.at ?? "") <= Date.parse(bound?.at ?? "") &&
       Date.parse(intent?.at ?? "") - Date.parse(checked?.at ?? "") <= 30_000 &&
-      Date.parse(bound?.at ?? "") < Date.parse(authorityProof.expiresAt);
+      (recoveryDelete ? (!classified || Date.parse(intent.at) <= Date.parse(classified.at)) &&
+        (!bound || classified && Date.parse(classified.at) <= Date.parse(bound.at) &&
+          Date.parse(bound.at) < Date.parse(authorityProof.expiresAt)) :
+        Date.parse(intent?.at ?? "") <= Date.parse(classified?.at ?? "") &&
+        Date.parse(classified?.at ?? "") <= Date.parse(bound?.at ?? "") &&
+        Date.parse(bound?.at ?? "") < Date.parse(authorityProof.expiresAt));
   });
   const proofChronologyValid = [
     ["repoint-inert-production-trigger", intermediateProof,
       "prove-production-repointed-review-still-predecessor"],
     ["repoint-final-review-trigger", unreferencedProof,
       "prove-superseded-wrapper-unreferenced"],
-    ["retire-superseded-review-build-token", terminalProof,
-      "review-token-rotation-readback"],
+    ...(recovered ? [] : [["retire-superseded-review-build-token", terminalProof,
+      "review-token-rotation-readback"]]),
   ].every(([mutationOperation, proof, proofOperation]) =>
     Date.parse(mutation("mutation-bound", mutationOperation)?.at ?? "") <=
       Date.parse(proof?.capturedAt ?? "") &&
@@ -1230,10 +1258,51 @@ function validateReviewTokenRotationJournal(records, terminalProof, authorityPro
   } catch {
     unreferencedDeleteChronologyValid = false;
   }
+  const recoveryStart = recovered ? records[recoveryStartIndex] : null;
+  const recoveryBound = recovered ? mutation("deletion-recovery-bound",
+    "retire-superseded-review-build-token") : null;
+  const recoveryStartKeys = ["at", "attempt", "authorityProofDigest", "event",
+    "predecessorReviewTokenUuid", "providerMutation", "recordSha256",
+    "replacementReviewTokenUuid"];
+  const recoveryProofBoundKeys = ["at", "attempt", "event", "operation", "proofDigest",
+    "proofFileSha256", "recordSha256"];
+  const recoveryBoundKeys = ["at", "attempt", "authorityProofDigest", "deletionTombstone",
+    "event", "operation", "proofDigest", "proofFileSha256", "providerMutation",
+    "readbackDigestSha256", "reconciliation", "recordSha256", "requestDigestSha256",
+    "resourceUuid"];
+  const recoveredTerminalKeys = ["at", "attempt", "event", "historicalAuthorityRecovery",
+    "initialProductionBuild", "migration0010", "predecessorReviewTokenUuid",
+    "productionActivation", "productionPreservationDigest", "productionTriggerUuid",
+    "proofDigest", "providerMutation", "recordSha256",
+    "replacementReviewTokenUuid", "replacementTokenOwnerMembershipProofDigest",
+    "reviewTriggerUuid"];
+  const recoveryValid = !recovered ||
+      same(sorted(Object.keys(recoveryStart ?? {})), sorted(recoveryStartKeys)) &&
+      same(sorted(Object.keys(proofBound ?? {})), sorted(recoveryProofBoundKeys)) &&
+      same(sorted(Object.keys(recoveryBound ?? {})), sorted(recoveryBoundKeys)) &&
+      same(sorted(Object.keys(terminal ?? {})), sorted(recoveredTerminalKeys)) &&
+      recoveryStart?.authorityProofDigest ===
+      authorityProof.proof_digest && recoveryStart.predecessorReviewTokenUuid ===
+      identity.predecessorReviewBuildTokenUuid && recoveryStart.replacementReviewTokenUuid ===
+      replacement && recoveryStart.providerMutation === false &&
+      Date.parse(recoveryStart.at) >= Date.parse(authorityProof.expiresAt) &&
+      proofBound?.proofDigest === terminalProof?.proof_digest &&
+      proofBound?.proofFileSha256 === digestJson(terminalProof) &&
+      Date.parse(recoveryStart.at) <= Date.parse(terminalProof?.capturedAt ?? "") &&
+      Date.parse(terminalProof?.capturedAt ?? "") <= Date.parse(proofBound?.at ?? "") &&
+      recoveryBound?.authorityProofDigest === authorityProof.proof_digest &&
+      recoveryBound?.requestDigestSha256 === retireIntent?.requestDigestSha256 &&
+      recoveryBound?.resourceUuid === identity.predecessorReviewBuildTokenUuid &&
+      recoveryBound?.proofDigest === terminalProof?.proof_digest &&
+      recoveryBound?.proofFileSha256 === digestJson(terminalProof) &&
+      recoveryBound?.readbackDigestSha256 === terminalProof?.proof_digest &&
+      recoveryBound?.reconciliation === "historical-authority-exact-absence" &&
+      recoveryBound?.deletionTombstone === true && recoveryBound?.providerMutation === false &&
+      Date.parse(proofBound?.at ?? "") <= Date.parse(recoveryBound?.at ?? "");
   if (!mutationsValid || records.some(({ event }) => event.startsWith("rollback")) ||
       records[1]?.authorityProofDigest !== authorityProof?.proof_digest ||
       !currentMainValid || !operationChronologyValid || !proofChronologyValid ||
-      !unreferencedDeleteChronologyValid ||
+      !unreferencedDeleteChronologyValid || !recoveryValid ||
       authorityChecks.length !== 4 || authorityChecks.some(({ proofDigest }) =>
         proofDigest !== authorityProof?.proof_digest) || authorityChecks.some((record) =>
         record.expiresAt !== authorityProof.expiresAt ||
@@ -1257,7 +1326,10 @@ function validateReviewTokenRotationJournal(records, terminalProof, authorityPro
       terminal?.productionActivation !== false || terminal?.migration0010 !== false ||
       terminal?.initialProductionBuild !== false ||
       Date.parse(terminalProof?.capturedAt ?? "") > Date.parse(proofBound?.at ?? "") ||
-      Date.parse(proofBound?.at ?? "") > Date.parse(terminal?.at ?? ""))
+      Date.parse(proofBound?.at ?? "") > Date.parse(terminal?.at ?? "") ||
+      recovered && (terminal?.event !== "review-token-rotation-complete-recovered" ||
+        terminal?.historicalAuthorityRecovery !== true || terminal?.providerMutation !== false ||
+        Date.parse(recoveryBound?.at ?? "") > Date.parse(terminal?.at ?? "")))
     fail("review token rotation journal terminal provenance drift");
   return { digest: digestJson(records), terminalAt: terminal.at,
     productionTriggerUuid: identity.productionTriggerUuid,
@@ -1271,6 +1343,239 @@ function validateReviewTokenRotationJournal(records, terminalProof, authorityPro
     repositoryConnectionUuid: identity.repositoryConnectionUuid };
 }
 
+export function classifyReviewTokenRotationCompleteRecoveryPrefix(records, terminalProof,
+authorityProof, { production, review, accountId, sourceSha, intermediateProof,
+  unreferencedProof }, now = Date.now()) {
+  validateHistoricalReviewTokenRotationAuthority(authorityProof,
+    { production, review, accountId, sourceSha });
+  if (!Number.isFinite(now) || now < Date.parse(authorityProof.expiresAt))
+    fail("review token rotation recovery prefix authority remains active");
+  const forwardExpected = [
+    ["attempt-started", "review-token-rotation"],
+    ["rotation-authorized", undefined],
+    ["current-main-proof-bound", "replacement-review-build-token"],
+    ["review-token-rotation-authority-checked", "replacement-review-build-token"],
+    ["mutation-intent", "replacement-review-build-token"],
+    ["provider-response-classified", "replacement-review-build-token"],
+    ["mutation-bound", "replacement-review-build-token"],
+    ["current-main-proof-bound", "repoint-inert-production-trigger"],
+    ["review-token-rotation-authority-checked", "repoint-inert-production-trigger"],
+    ["mutation-intent", "repoint-inert-production-trigger"],
+    ["provider-response-classified", "repoint-inert-production-trigger"],
+    ["mutation-bound", "repoint-inert-production-trigger"],
+    ["provider-proof-bound", "prove-production-repointed-review-still-predecessor"],
+    ["current-main-proof-bound", "repoint-final-review-trigger"],
+    ["review-token-rotation-authority-checked", "repoint-final-review-trigger"],
+    ["mutation-intent", "repoint-final-review-trigger"],
+    ["provider-response-classified", "repoint-final-review-trigger"],
+    ["mutation-bound", "repoint-final-review-trigger"],
+    ["current-main-proof-bound", "retire-superseded-review-build-token"],
+    ["review-token-rotation-authority-checked", "retire-superseded-review-build-token"],
+    ["provider-proof-bound", "prove-superseded-wrapper-unreferenced"],
+    ["mutation-intent", "retire-superseded-review-build-token"],
+    ["provider-response-classified", "retire-superseded-review-build-token"],
+    ["mutation-bound", "retire-superseded-review-build-token"],
+  ];
+  const recoveryExpected = [
+    ["review-token-rotation-complete-recovery-started", undefined],
+    ["provider-proof-bound", "review-token-rotation-recovery-readback"],
+    ["deletion-recovery-bound", "retire-superseded-review-build-token"],
+    ["review-token-rotation-complete-recovered", undefined],
+  ];
+  const recoveryIndex = records.findIndex(({ event }) =>
+    event === "review-token-rotation-complete-recovery-started");
+  const originalLength = recoveryIndex === -1 ? records.length : recoveryIndex;
+  const recoveryRecords = recoveryIndex === -1 ? [] : records.slice(recoveryIndex);
+  const pairs = records.slice(0, originalLength).map(({ event, operation }) =>
+    [event, operation]);
+  const recoveryPairs = recoveryRecords.map(({ event, operation }) => [event, operation]);
+  if (![22, 23, 24].includes(originalLength) ||
+      !same(pairs, forwardExpected.slice(0, originalLength)) ||
+      recoveryRecords.length > recoveryExpected.length ||
+      !same(recoveryPairs, recoveryExpected.slice(0, recoveryRecords.length)))
+    fail("review token rotation recovery prefix drift");
+  let previousAt = -Infinity;
+  for (const record of records) {
+    const { recordSha256, ...payload } = record ?? {};
+    const at = Date.parse(record?.at ?? "");
+    if (!/^[0-9a-f]{64}$/u.test(recordSha256 ?? "") || digestJson(payload) !== recordSha256 ||
+        !isUtcTimestamp(record.at) || !Number.isFinite(at) || at <= previousAt ||
+        record.attempt !== 1) fail("review token rotation recovery prefix checksum drift");
+    previousAt = at;
+  }
+  const identity = authorityProof.journalIdentities;
+  const replacementReviewTokenUuid = records[6]?.resourceUuid;
+  if (!uuidPattern.test(replacementReviewTokenUuid ?? ""))
+    fail("review token rotation recovery prefix replacement identity drift");
+  validateReviewTokenRotationPhaseProof(intermediateProof, "production-repointed",
+    authorityProof, { accountId, sourceSha }, now, Infinity);
+  validateReviewTokenRotationPhaseProof(unreferencedProof, "old-wrapper-unreferenced",
+    authorityProof, { accountId, sourceSha }, now, Infinity);
+  if (records[1]?.authorityProofDigest !== authorityProof.proof_digest)
+    fail("review token rotation recovery prefix authority drift");
+  const completedOperations = [
+    ["replacement-review-build-token", replacementReviewTokenUuid],
+    ["repoint-inert-production-trigger", identity.productionTriggerUuid],
+    ["repoint-final-review-trigger", identity.reviewTriggerUuid],
+  ];
+  for (const [operation, resourceUuid] of completedOperations) {
+    const operationMain = records.find((record) =>
+      record.event === "current-main-proof-bound" && record.operation === operation);
+    const operationAuthority = records.find((record) =>
+      record.event === "review-token-rotation-authority-checked" &&
+      record.operation === operation);
+    const operationIntent = records.find((record) =>
+      record.event === "mutation-intent" && record.operation === operation);
+    const operationClassified = records.find((record) =>
+      record.event === "provider-response-classified" && record.operation === operation);
+    const operationBound = records.find((record) =>
+      record.event === "mutation-bound" && record.operation === operation);
+    const expected = reviewTokenRotationRequestDigest({ production, review, authorityProof,
+      operation, replacementReviewTokenUuid });
+    const explicit = operationClassified?.outcome === "explicit-success";
+    if (operationIntent?.method !== expected.method || operationIntent.path !== expected.path ||
+        operationIntent.requestDigestSha256 !== expected.requestDigestSha256 ||
+        !["explicit-success", "ambiguous"].includes(operationClassified?.outcome) ||
+        explicit && operation === "replacement-review-build-token" &&
+          operationClassified.resourceUuid !== resourceUuid ||
+        operationBound?.resourceUuid !== resourceUuid ||
+        operationBound.requestDigestSha256 !== operationIntent.requestDigestSha256 ||
+        operationBound.providerResponseExplicitSuccess !== explicit ||
+        operationBound.reconciliation !== (explicit ?
+          "explicit-success-exact-readback" : "ambiguous-exact-readback") ||
+        !/^[0-9a-f]{64}$/u.test(operationBound.readbackDigestSha256 ?? "") ||
+        Date.parse(operationMain?.at ?? "") > Date.parse(operationAuthority?.at ?? "") ||
+        Date.parse(operationAuthority?.at ?? "") > Date.parse(operationIntent?.at ?? "") ||
+        Date.parse(operationIntent?.at ?? "") > Date.parse(operationClassified?.at ?? "") ||
+        Date.parse(operationClassified?.at ?? "") > Date.parse(operationBound?.at ?? "") ||
+        Date.parse(operationIntent?.at ?? "") - Date.parse(operationAuthority?.at ?? "") >
+          30_000 || Date.parse(operationBound?.at ?? "") >=
+          Date.parse(authorityProof.expiresAt))
+      fail("review token rotation recovery prefix mutation drift");
+  }
+  const currentMainRecords = records.filter(({ event }) => event === "current-main-proof-bound");
+  const authorityRecords = records.filter(({ event }) =>
+    event === "review-token-rotation-authority-checked");
+  if (currentMainRecords.length !== 4 || authorityRecords.length !== 4 ||
+      currentMainRecords.some((record) => {
+        const capturedAt = Date.parse(record.capturedAt ?? "");
+        const recordAt = Date.parse(record.at ?? "");
+        return record.sourceSha !== sourceSha || record.ref !== currentMainRef ||
+          !/^[0-9a-f]{64}$/u.test(record.proofFileSha256 ?? "") ||
+          !/^[0-9a-f]{64}$/u.test(record.rawFileSha256 ?? "") ||
+          !isUtcTimestamp(record.capturedAt) || capturedAt > recordAt ||
+          recordAt - capturedAt > 5 * 60_000;
+      }) || authorityRecords.some((record) =>
+        record.proofDigest !== authorityProof.proof_digest ||
+        record.expiresAt !== authorityProof.expiresAt ||
+        Date.parse(record.at) < Date.parse(authorityProof.capturedAt) ||
+        Date.parse(authorityProof.expiresAt) - Date.parse(record.at) <
+          reviewTokenRotationTransitionBudgetMs))
+    fail("review token rotation recovery prefix authorization drift");
+  const intermediateBound = records.find(({ event, operation }) =>
+    event === "provider-proof-bound" &&
+    operation === "prove-production-repointed-review-still-predecessor");
+  const unreferencedBound = records.find(({ event, operation }) =>
+    event === "provider-proof-bound" && operation === "prove-superseded-wrapper-unreferenced");
+  if (intermediateBound?.proofDigest !== intermediateProof.proof_digest ||
+      intermediateBound.proofFileSha256 !== digestJson(intermediateProof) ||
+      unreferencedBound?.proofDigest !== unreferencedProof.proof_digest ||
+      unreferencedBound.proofFileSha256 !== digestJson(unreferencedProof) ||
+      Date.parse(records.find(({ event, operation }) => event === "mutation-bound" &&
+        operation === "repoint-inert-production-trigger")?.at ?? "") >
+        Date.parse(intermediateProof.capturedAt) ||
+      Date.parse(intermediateProof.capturedAt) > Date.parse(intermediateBound?.at ?? "") ||
+      Date.parse(records.find(({ event, operation }) => event === "mutation-bound" &&
+        operation === "repoint-final-review-trigger")?.at ?? "") >
+        Date.parse(unreferencedProof.capturedAt) ||
+      Date.parse(unreferencedProof.capturedAt) > Date.parse(unreferencedBound?.at ?? ""))
+    fail("review token rotation recovery prefix phase proof drift");
+  const intent = records[21];
+  const expectedDelete = reviewTokenRotationRequestDigest({ production, review, authorityProof,
+    operation: "retire-superseded-review-build-token",
+    replacementReviewTokenUuid });
+  if (intent?.method !== expectedDelete.method || intent?.path !== expectedDelete.path ||
+      intent?.requestDigestSha256 !== expectedDelete.requestDigestSha256 ||
+      Date.parse(records[18]?.at ?? "") > Date.parse(records[19]?.at ?? "") ||
+      Date.parse(records[19]?.at ?? "") > Date.parse(unreferencedBound?.at ?? "") ||
+      Date.parse(unreferencedBound?.at ?? "") > Date.parse(intent?.at ?? "") ||
+      Date.parse(intent?.at ?? "") - Date.parse(records[19]?.at ?? "") > 30_000 ||
+      Date.parse(intent?.at ?? "") >= Date.parse(authorityProof.expiresAt))
+    fail("review token rotation recovery prefix delete intent drift");
+  try {
+    validateReviewTokenRotationDeleteProofChronology(unreferencedProof,
+      unreferencedBound, intent);
+  } catch {
+    fail("review token rotation recovery prefix delete proof chronology drift");
+  }
+  const classified = originalLength >= 23 ? records[22] : null;
+  const bound = originalLength >= 24 ? records[23] : null;
+  const deleteExplicit = classified?.outcome === "explicit-success";
+  if (classified && (!deleteExplicit && classified.outcome !== "ambiguous" ||
+        Date.parse(intent.at) > Date.parse(classified.at)) ||
+      bound && (bound.resourceUuid !== identity.predecessorReviewBuildTokenUuid ||
+        bound.requestDigestSha256 !== intent.requestDigestSha256 ||
+        !classified || Date.parse(classified.at) > Date.parse(bound.at) ||
+        Date.parse(bound.at) >= Date.parse(authorityProof.expiresAt) ||
+        bound.providerResponseExplicitSuccess !== deleteExplicit ||
+        bound.reconciliation !== (deleteExplicit ? "explicit-success-exact-absence" :
+          "ambiguous-exact-absence") ||
+        bound.deletionTombstone !== true ||
+        !/^[0-9a-f]{64}$/u.test(bound.readbackDigestSha256 ?? "")))
+    fail("review token rotation recovery prefix deletion evidence drift");
+  if (recoveryRecords.length > 0) {
+    const start = recoveryRecords[0];
+    if (!same(sorted(Object.keys(start)), sorted(["at", "attempt", "authorityProofDigest",
+      "event", "predecessorReviewTokenUuid", "providerMutation", "recordSha256",
+      "replacementReviewTokenUuid"])) ||
+        start.authorityProofDigest !== authorityProof.proof_digest ||
+        start.predecessorReviewTokenUuid !== identity.predecessorReviewBuildTokenUuid ||
+        start.replacementReviewTokenUuid !== replacementReviewTokenUuid ||
+        start.providerMutation !== false ||
+        Date.parse(start.at) < Date.parse(authorityProof.expiresAt))
+      fail("review token rotation recovery prefix start drift");
+  }
+  if (recoveryRecords.length > 1) {
+    validateReviewTokenRotationTerminalProof(terminalProof,
+      { accountId, sourceSha, authorityProof }, now, Infinity);
+    const proofBound = recoveryRecords[1];
+    if (terminalProof.replacementReviewTokenUuid !== replacementReviewTokenUuid ||
+        !same(sorted(Object.keys(proofBound)), sorted(["at", "attempt", "event", "operation",
+      "proofDigest", "proofFileSha256", "recordSha256"])) ||
+        proofBound.proofDigest !== terminalProof.proof_digest ||
+        proofBound.proofFileSha256 !== digestJson(terminalProof) ||
+        Date.parse(recoveryRecords[0].at) > Date.parse(terminalProof.capturedAt) ||
+        Date.parse(terminalProof.capturedAt) > Date.parse(proofBound.at))
+      fail("review token rotation recovery prefix proof drift");
+  }
+  if (recoveryRecords.length > 2) {
+    const recoveryBound = recoveryRecords[2];
+    if (!same(sorted(Object.keys(recoveryBound)), sorted(["at", "attempt",
+      "authorityProofDigest", "deletionTombstone", "event", "operation", "proofDigest",
+      "proofFileSha256", "providerMutation", "readbackDigestSha256", "reconciliation",
+      "recordSha256", "requestDigestSha256", "resourceUuid"])) ||
+        recoveryBound.authorityProofDigest !== authorityProof.proof_digest ||
+        recoveryBound.requestDigestSha256 !== intent.requestDigestSha256 ||
+        recoveryBound.resourceUuid !== identity.predecessorReviewBuildTokenUuid ||
+        recoveryBound.proofDigest !== terminalProof.proof_digest ||
+        recoveryBound.proofFileSha256 !== digestJson(terminalProof) ||
+        recoveryBound.readbackDigestSha256 !== terminalProof.proof_digest ||
+        recoveryBound.reconciliation !== "historical-authority-exact-absence" ||
+        recoveryBound.deletionTombstone !== true || recoveryBound.providerMutation !== false)
+      fail("review token rotation recovery prefix tombstone drift");
+  }
+  if (recoveryRecords.length === recoveryExpected.length) {
+    validateReviewTokenRotationJournal(records, terminalProof, authorityProof,
+      { production, review, accountId, sourceSha, intermediateProof, unreferencedProof }, now);
+    return { outcome: "workers-builds-review-token-rotation-recovery-terminal",
+      mutation: false, terminal: true, nextEvent: null };
+  }
+  return { outcome: "workers-builds-review-token-rotation-recovery-prefix-valid",
+    mutation: false, terminal: false,
+    nextEvent: recoveryExpected[recoveryRecords.length][0],
+    nextOperation: recoveryExpected[recoveryRecords.length][1] ?? null };
+}
+
 export function validateReviewTokenRotationDeleteProofChronology(proof, bound, intent) {
   const capturedAt = Date.parse(proof?.capturedAt ?? "");
   const boundAt = Date.parse(bound?.at ?? "");
@@ -1279,6 +1584,89 @@ export function validateReviewTokenRotationDeleteProofChronology(proof, bound, i
       capturedAt > boundAt || boundAt > intentAt || intentAt - boundAt > 30_000)
     fail("review token rotation delete proof chronology drift");
   return true;
+}
+
+export function reviewTokenRotationUnresolvedReplacementCoordinate(authorityProof) {
+  const value = digestJson({ kind: "unresolved-review-token-rotation-coordinate",
+    authority: authorityProof?.proof_digest });
+  if (!/^[0-9a-f]{64}$/u.test(value))
+    fail("review token rotation unresolved coordinate drift");
+  return `${value.slice(0, 8)}-${value.slice(8, 12)}-4${value.slice(13, 16)}-` +
+    `8${value.slice(17, 20)}-${value.slice(20, 32)}`;
+}
+
+export async function validateReviewTokenRotationNoOwnedPreIntentTerminal(forwardRecords,
+authorityProof, { production, review, accountId, sourceSha, rollbackRecords, rollbackArguments },
+now = Date.now()) {
+  validateHistoricalReviewTokenRotationAuthority(authorityProof,
+    { production, review, accountId, sourceSha });
+  const expected = [
+    ["attempt-started", "review-token-rotation"],
+    ["rotation-authorized", undefined],
+    ["current-main-proof-bound", "replacement-review-build-token"],
+    ["review-token-rotation-authority-checked", "replacement-review-build-token"],
+  ];
+  const pairs = Array.isArray(forwardRecords) ? forwardRecords.map(({ event, operation }) =>
+    [event, operation]) : [];
+  if (pairs.length < 1 || pairs.length > expected.length ||
+      !same(pairs, expected.slice(0, pairs.length)) ||
+      now < Date.parse(authorityProof.expiresAt))
+    fail("review token rotation no-owned prefix drift");
+  let previousAt = -Infinity;
+  for (const record of forwardRecords) {
+    const { recordSha256, ...payload } = record ?? {};
+    const at = Date.parse(record?.at ?? "");
+    if (!/^[0-9a-f]{64}$/u.test(recordSha256 ?? "") || digestJson(payload) !== recordSha256 ||
+        !isUtcTimestamp(record.at) || !Number.isFinite(at) || at <= previousAt ||
+        record.attempt !== 1) fail("review token rotation no-owned prefix checksum drift");
+    previousAt = at;
+  }
+  const authorized = forwardRecords.find(({ event }) => event === "rotation-authorized");
+  const currentMain = forwardRecords.find(({ event }) => event === "current-main-proof-bound");
+  const checked = forwardRecords.find(({ event }) =>
+    event === "review-token-rotation-authority-checked");
+  const captured = Date.parse(currentMain?.capturedAt ?? "");
+  const firstAt = Date.parse(forwardRecords[0]?.at ?? "");
+  const expiresAt = Date.parse(authorityProof.expiresAt);
+  const authorityCapturedAt = Date.parse(authorityProof.capturedAt);
+  if (firstAt < authorityCapturedAt || previousAt >= expiresAt ||
+      authorized && (authorized.authorityProofDigest !== authorityProof.proof_digest ||
+        Date.parse(authorized.at) < authorityCapturedAt ||
+        Date.parse(authorized.at) >= expiresAt) ||
+      currentMain && (currentMain.sourceSha !== sourceSha || currentMain.ref !== currentMainRef ||
+        !/^[0-9a-f]{64}$/u.test(currentMain.proofFileSha256 ?? "") ||
+        !/^[0-9a-f]{64}$/u.test(currentMain.rawFileSha256 ?? "") ||
+        !isUtcTimestamp(currentMain.capturedAt) || !Number.isFinite(captured) ||
+        captured > Date.parse(currentMain.at) || Date.parse(currentMain.at) - captured > 5 * 60_000) ||
+      checked && (!currentMain || checked.proofDigest !== authorityProof.proof_digest ||
+        checked.expiresAt !== authorityProof.expiresAt ||
+        Date.parse(checked.at) < Date.parse(currentMain.at) ||
+        Date.parse(authorityProof.expiresAt) - Date.parse(checked.at) <
+          reviewTokenRotationTransitionBudgetMs))
+    fail("review token rotation no-owned prefix provenance drift");
+  const replacementReviewTokenUuid =
+    reviewTokenRotationUnresolvedReplacementCoordinate(authorityProof);
+  if (rollbackRecords?.[0]?.replacementReviewTokenUuid !== replacementReviewTokenUuid ||
+      Date.parse(rollbackRecords?.[0]?.at ?? "") < Date.parse(authorityProof.expiresAt) ||
+      Date.parse(rollbackRecords?.[0]?.at ?? "") <=
+        Date.parse(forwardRecords.at(-1)?.at ?? ""))
+    fail("review token rotation no-owned residual coordinate drift");
+  const validation = await validateReviewTokenRotationRollbackJournal(rollbackRecords,
+    authorityProof, { ...rollbackArguments, production, review, accountId, sourceSha,
+      replacementReviewTokenUuid });
+  const residual = validation?.residualState;
+  if (validation?.outcome !== "workers-builds-review-token-rotation-rollback-blocked-valid" ||
+      rollbackRecords[0]?.startingPhase !== "predecessor" || residual?.activeMutation !== null ||
+      residual?.liveProductionTokenReference !==
+        authorityProof.journalIdentities.predecessorReviewBuildTokenUuid ||
+      residual?.liveReviewTokenReference !==
+        authorityProof.journalIdentities.predecessorReviewBuildTokenUuid ||
+      residual?.predecessorWrapperPresent !== true ||
+      residual?.replacementWrapperPresent !== false)
+    fail("review token rotation no-owned residual terminal drift");
+  return { outcome: "workers-builds-review-token-rotation-no-owned-predecessor-blocked-valid",
+    mutation: false, replacementReviewTokenUuid,
+    forwardJournalDigest: digestJson(forwardRecords), rollbackJournalDigest: digestJson(rollbackRecords) };
 }
 
 export async function validateReviewTokenRotationRollbackJournal(records, authorityProof, {
@@ -2454,6 +2842,12 @@ export function provisioningSetupPlan(production, review) {
           produces: { proof_digest: "fresh-terminal-review-token-rotation-proof-digest" } },
       ],
       rollbackOperations: [
+        { id: "rotation-terminalize-no-owned-pre-intent-prefix",
+          actor: "workers-builds-control-plane-operator", mutation: false,
+          action: "after-expired-first-create-authorization-prefix-prove-exact-predecessor-state-and-journal-no-owned-replacement-residual",
+          condition: "no-replacement-create-intent-or-provider-mutation-exists",
+          produces: { residual_proof_digest:
+            "fresh-exhaustive-predecessor-no-owned-replacement-residual-digest" } },
         { id: "rotation-reconcile-superseded-wrapper",
           actor: "workers-builds-control-plane-operator", mutation: false,
           action: "reconcile-journaled-delete-intent-by-exact-uuid-and-complete-forward-if-absent",
@@ -2461,9 +2855,9 @@ export function provisioningSetupPlan(production, review) {
           produces: { disposition: "exact-predecessor-present-or-exact-predecessor-absent" } },
         { id: "rotation-forward-complete-after-old-wrapper-absent",
           actor: "workers-builds-control-plane-operator", mutation: false,
-          action: "after-bound-old-wrapper-absence-prove-terminal-replacement-state-never-recreate-old-wrapper",
+          action: "after-old-wrapper-absence-prove-terminal-replacement-state-never-recreate-old-wrapper-including-historical-authority-crash-recovery",
           condition: "predecessor-wrapper-delete-is-bound-or-reconciled-absent",
-          command: "npm run provision:workers-builds:verify-review-token-rotation-complete",
+          command: "npm run provision:workers-builds:verify-review-token-rotation-complete-historical",
           produces: { proof_digest: "fresh-terminal-review-token-rotation-proof-digest" } },
         { id: "rotation-restore-review-trigger-old-token",
           actor: "workers-builds-control-plane-operator", mutation: true,
@@ -2522,12 +2916,14 @@ export function provisioningSetupPlan(production, review) {
         action: "bind-fresh-post-rotation-review-active-owner-token-sentinel-usage-evidence-into-bounded-disposable-proof-authority",
         mutation: false,
         command: "npm run provision:workers-builds:verify-disposable-review-authority",
-        precondition: { reviewTokenRotationProof: resultReference(
-          "review-token-rotation-readback", "proof_digest") },
+        precondition: { reviewTokenRotationProof: { oneOf: [resultReference(
+          "review-token-rotation-readback", "proof_digest"), resultReference(
+          "rotation-forward-complete-after-old-wrapper-absent", "proof_digest")] } },
         produces: { proof_digest: "bounded-disposable-review-proof-authority-digest" } },
       precondition: { disposableReviewAuthority: disposableReviewAuthorityPrecondition(),
-        reviewTokenRotationProof: resultReference(
-          "review-token-rotation-readback", "proof_digest") },
+        reviewTokenRotationProof: { oneOf: [resultReference(
+          "review-token-rotation-readback", "proof_digest"), resultReference(
+          "rotation-forward-complete-after-old-wrapper-absent", "proof_digest")] } },
       authorityLifetimeMinutes: disposableReviewAuthorityLifetimeMs / 60_000,
       pushMinimumRemainingMinutes: disposableReviewPushReserveMs / 60_000,
       maximumAutomaticBuildMinutes: review.automaticReview.providerBuildTimeoutMinutes,
@@ -5037,6 +5433,7 @@ export const credentialedProvisioningModes = Object.freeze([
   "--verify-review-token-rotation-authority-proof-historical",
   "--verify-review-token-rotation-authority-proof",
   "--verify-review-token-rotation-complete",
+  "--verify-review-token-rotation-complete-historical",
   "--verify-review-token-rotation-intermediate",
   "--verify-review-token-rotation-rollback-restored",
   "--verify-review-token-rotation-rollback-complete",
@@ -5053,7 +5450,7 @@ export async function credentialedSourceSha(mode, load = reviewedCurrentMainSha)
 }
 
 export async function runProvisioningCli(mode = process.argv[2] ?? "--validate-only",
-  sourceShaLoader = reviewedCurrentMainSha) {
+  sourceShaLoader = reviewedCurrentMainSha, providerSnapshotReader = readProviderSnapshot) {
   const { production, review } = await validateCheckedInProvisioning();
   if (mode === "--validate-only") {
     process.stdout.write(`${JSON.stringify({ outcome: "workers-builds-provisioning-valid" })}\n`);
@@ -5077,7 +5474,7 @@ export async function runProvisioningCli(mode = process.argv[2] ?? "--validate-o
       process.env.ATRINIK_PRODUCTION_BUILD_TOKEN_SECRET_FILE,
       "production D1 read API token");
     const outputDirectory = process.env.ATRINIK_PROVIDER_SNAPSHOT_OUTPUT;
-    process.stdout.write(`${JSON.stringify(await readProviderSnapshot({
+    process.stdout.write(`${JSON.stringify(await providerSnapshotReader({
       accountId, token, productionReadToken, outputDirectory, production, review, sourceSha,
     }))}\n`);
     return;
@@ -5258,6 +5655,7 @@ export async function runProvisioningCli(mode = process.argv[2] ?? "--validate-o
   if (["--verify-review-token-rotation-intermediate",
     "--verify-review-token-rotation-unreferenced",
     "--verify-review-token-rotation-complete",
+    "--verify-review-token-rotation-complete-historical",
     "--verify-review-token-rotation-rollback-restored",
     "--verify-review-token-rotation-rollback-complete"].includes(mode)) {
     const accountId = await readPrivateValue(process.env.ATRINIK_CLOUDFLARE_ACCOUNT_ID_FILE,
@@ -5268,19 +5666,21 @@ export async function runProvisioningCli(mode = process.argv[2] ?? "--validate-o
       process.env.ATRINIK_PRODUCTION_BUILD_TOKEN_SECRET_FILE,
       "production D1 read API token");
     const rollbackMode = mode.includes("-rollback-");
-    const authority = rollbackMode ? {
+    const historicalCompleteMode = mode.endsWith("-complete-historical");
+    const authority = rollbackMode || historicalCompleteMode ? {
       proof: await readPrivateJson(process.env.ATRINIK_REVIEW_TOKEN_ROTATION_AUTHORITY_PROOF_FILE,
         "review token rotation authority proof"),
       evidence: await readReviewTokenRotationAuthorityEvidence(process.env),
     } : await readAndValidateReviewTokenRotationAuthority({ production, review,
       accountId, sourceSha });
-    if (rollbackMode) validateHistoricalReviewTokenRotationAuthority(authority.proof,
+    if (rollbackMode || historicalCompleteMode)
+      validateHistoricalReviewTokenRotationAuthority(authority.proof,
       { production, review, accountId, sourceSha });
     const replacementReviewTokenUuid = await readPrivateValue(
       process.env.ATRINIK_REPLACEMENT_REVIEW_BUILD_TOKEN_UUID_FILE,
       "replacement review build token UUID", uuidPattern);
     const outputDirectory = process.env.ATRINIK_PROVIDER_SNAPSHOT_OUTPUT;
-    await readProviderSnapshot({ accountId, token, productionReadToken,
+    await providerSnapshotReader({ accountId, token, productionReadToken,
       outputDirectory, production, review, sourceSha });
     const phase = mode.endsWith("-intermediate") ? "production-repointed" :
       mode.endsWith("-unreferenced") ? "old-wrapper-unreferenced" :
@@ -5384,7 +5784,7 @@ export async function runProvisioningCli(mode = process.argv[2] ?? "--validate-o
       accountId, sourceSha });
     const tokenAuthorityProofs = authority.evidence.tokenAuthorityProofs;
     const outputDirectory = process.env.ATRINIK_PROVIDER_SNAPSHOT_OUTPUT;
-    await readProviderSnapshot({ accountId, token, productionReadToken, outputDirectory,
+    await providerSnapshotReader({ accountId, token, productionReadToken, outputDirectory,
       production, review, sourceSha });
     const proof = await validateReviewStagedEnvironmentSnapshotDirectory({
       snapshotDirectory: outputDirectory, production, review, accountId, sourceSha,
@@ -5413,7 +5813,7 @@ export async function runProvisioningCli(mode = process.argv[2] ?? "--validate-o
         "review build token permission proof"),
     ];
     const activationSnapshotDirectory = process.env.ATRINIK_PROVIDER_SNAPSHOT_OUTPUT;
-    await readProviderSnapshot({ accountId, token, productionReadToken,
+    await providerSnapshotReader({ accountId, token, productionReadToken,
       outputDirectory: activationSnapshotDirectory, production, review, sourceSha });
     const current = await validateStagedSnapshotDirectory({
       snapshotDirectory: activationSnapshotDirectory,
@@ -5442,7 +5842,7 @@ export async function runProvisioningCli(mode = process.argv[2] ?? "--validate-o
     const authority = requireReviewResult ? null :
       await readAndValidateReviewActivationAuthority({ production, review, accountId, sourceSha });
     const outputDirectory = process.env.ATRINIK_PROVIDER_SNAPSHOT_OUTPUT;
-    await readProviderSnapshot({ accountId, token, productionReadToken, outputDirectory,
+    await providerSnapshotReader({ accountId, token, productionReadToken, outputDirectory,
       production, review, sourceSha });
     const reviewResultProof = requireReviewResult ? await readPrivateJson(
       process.env.ATRINIK_REVIEW_RESULT_PROOF_FILE, "disposable review result proof") : undefined;

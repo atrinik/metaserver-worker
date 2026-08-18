@@ -117,6 +117,9 @@
   unreferenced across the exhaustive account inventory, then delete only that wrapper. Bind
   the terminal rotation proof and checksum-valid journal into every later disposable authority;
   the original setup wrapper remains predecessor provenance and is never treated as live.
+  If predecessor deletion succeeds before terminal evidence is durable, recover only through the
+  historical-authority exact-state readback terminal; never backdate the deletion tombstone,
+  retry the deletion, or recreate the predecessor wrapper.
   The disposable automatic-build proof uses a separate renewable 60-minute
   authority issued only from the exact review-active state; it permits only the
   journaled disposable push/delete and exact owned-build cleanup, never production activation.
