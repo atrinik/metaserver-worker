@@ -133,7 +133,10 @@
   still-present wrapper only through the separate #104 one-write successor: pin the exact blocked
   journal, proof, snapshot, executor, and failed guard; recapture the account trigger inventory by
   stable Worker-script enumeration plus per-script trigger reads; issue a fresh current-main-bound
-  authority; and delete only the freshly proven globally unreferenced replacement UUID. Never
+  authority bound to the full proof document and one canonical receipt; and delete only the
+  freshly proven globally unreferenced replacement UUID. A blocked residual sweep must start after
+  the failed prefix, and exact complete/blocked terminals require the dedicated successor-journal
+  verifier before handoff or rerun. Never
   resume the old intent, repeat either trigger PATCH, or use the unsupported account-wide route.
   The disposable automatic-build proof uses a separate renewable 60-minute
   authority issued only from the exact review-active state; it permits only the

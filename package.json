@@ -50,6 +50,8 @@
     "provision:workers-builds:verify-review-token-rotation-provider-normalized-authority-proof-historical": "node scripts/workers-builds-provisioning.mjs --verify-review-token-rotation-provider-normalized-authority-proof-historical",
     "provision:workers-builds:verify-review-token-rotation-blocked-delete-authority": "node scripts/workers-builds-provisioning.mjs --verify-review-token-rotation-blocked-delete-authority",
     "provision:workers-builds:verify-review-token-rotation-blocked-delete-authority-proof": "node scripts/workers-builds-provisioning.mjs --verify-review-token-rotation-blocked-delete-authority-proof",
+    "provision:workers-builds:verify-review-token-rotation-blocked-delete-complete": "node scripts/workers-builds-provisioning.mjs --verify-review-token-rotation-blocked-delete-complete",
+    "provision:workers-builds:verify-review-token-rotation-blocked-delete-blocked": "node scripts/workers-builds-provisioning.mjs --verify-review-token-rotation-blocked-delete-blocked",
     "provision:workers-builds:verify-review-token-rotation-intermediate": "node scripts/workers-builds-provisioning.mjs --verify-review-token-rotation-intermediate",
     "provision:workers-builds:verify-review-token-rotation-provider-normalized-incident": "node scripts/workers-builds-provisioning.mjs --verify-review-token-rotation-provider-normalized-incident",
     "provision:workers-builds:verify-review-token-rotation-provider-peer-normalization": "node scripts/workers-builds-provisioning.mjs --verify-review-token-rotation-provider-peer-normalization",

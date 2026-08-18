@@ -631,11 +631,18 @@ snapshot using the supported stable scripts inventory plus every script's
 paginated `/builds/workers/{script_tag}/triggers` inventory and a final scripts
 stability check. The fresh proof must reproduce exact predecessor triggers,
 both wrappers, global replacement unreference, unchanged production resources,
-and no active build or Deploy Hook. The bounded authority permits only DELETE
-of the exact journal-created replacement UUID. A separate journal binds fresh
-current-main, authority, and unreference proof before one DELETE attempt;
+and no active build or Deploy Hook. The bounded authority binds both the state
+digest and complete fresh proof document, plus one canonical owner-only empty
+journal and exclusive authorization-receipt path; rewriting timestamps or
+choosing another receipt cannot renew it. It permits only DELETE of the exact
+journal-created replacement UUID. A separate journal binds fresh current-main,
+the exclusive receipt, authority, and unreference proof before one DELETE attempt;
 after intent, ambiguity is reconciled by exact absence and never retried.
-Explicit failure or drift terminal-blocks with a fresh exhaustive residual.
+Explicit failure or drift terminal-blocks with a fresh exhaustive residual whose
+manifest starts after the last nonterminal journal event. Complete and blocked
+terminals use exact schemas, explicitly attest that no forbidden write occurred,
+and must be checked with the dedicated blocked-delete terminal verifier before
+handoff or inert rerun.
 No trigger POST/PATCH, production activation, migration, build, or Worker
 resource mutation is part of this successor.
 

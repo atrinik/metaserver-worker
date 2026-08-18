@@ -16,6 +16,8 @@ import {
   classifyReviewTokenRotationProviderNormalizedRollbackPrefixForTest,
   combineProviderPages,
   combineWorkerVersionPages,
+  createBlockedDeleteIncidentTestCapability,
+  createBlockedDeleteTerminalContextReaderForTest,
   createProviderNormalizedIncidentTestCapability,
   issueReviewTokenRotationBlockedDeleteAuthority,
   credentialedSourceSha,
@@ -72,7 +74,9 @@ import {
   reviewTokenRotationBlockedDeleteIncident,
   validateReviewTokenRotationAuthority,
   validateReviewTokenRotationBlockedDeleteAuthority,
+  validateReviewTokenRotationBlockedDeleteIncidentForTest,
   validateReviewTokenRotationBlockedDeleteRecoveryJournal,
+  validateReviewTokenRotationBlockedDeleteResidualChronology,
   validateReviewTokenRotationDeleteProofChronology,
   validateReviewTokenRotationJournal,
   validateReviewTokenRotationNoOwnedPreIntentTerminal,
@@ -1598,6 +1602,8 @@ test("gates every credentialed mode on the private current-main proof", async ()
     "--verify-review-token-rotation-authority-proof",
     "--verify-review-token-rotation-blocked-delete-authority",
     "--verify-review-token-rotation-blocked-delete-authority-proof",
+    "--verify-review-token-rotation-blocked-delete-complete",
+    "--verify-review-token-rotation-blocked-delete-blocked",
     "--verify-review-token-rotation-complete",
     "--verify-review-token-rotation-complete-historical",
     "--verify-review-token-rotation-intermediate",
@@ -2666,11 +2672,44 @@ test("validates exact review-token rotation rollback and residual journals", asy
   const ambiguousDeletePresent = [...restoredPrefix];
   appendIncidentMutation(ambiguousDeletePresent,
     "rotation-delete-replacement-wrapper", "ambiguous");
-  await assertIncidentBlocked(ambiguousDeletePresent, { offset: 310,
+  const ambiguousDeleteBoundary = await assertIncidentBlocked(ambiguousDeletePresent, { offset: 310,
     productionTrigger: predecessorProduction, reviewTrigger: predecessorReview,
     phase: "predecessor-restored",
     activeMutation: "rotation-delete-replacement-wrapper", reviewPeerAugmented: false,
     peerNormalizationProof: retainedPeerProof, restoredProof: incidentRestoredProof });
+  const blockedDeleteCoordinate = { sourceSha, planDigest: authorityProof.planDigest,
+    executorSha256: "1".repeat(64), rollbackJournalSha256: "2".repeat(64),
+    rollbackJournalDigest: createHash("sha256").update(JSON.stringify(
+      ambiguousDeleteBoundary.blockedRecords)).digest("hex"),
+    rollbackTerminalRecordSha256: ambiguousDeleteBoundary.blockedRecords.at(-1).recordSha256,
+    residualSnapshotManifestSha256: createHash("sha256").update(await readFile(
+      resolve(blockedSnapshotDirectory, "snapshot-manifest.json"))).digest("hex"),
+    residualProofDigest: ambiguousDeleteBoundary.boundaryProof.proof_digest,
+    residualProofDocumentSha256: createHash("sha256").update(JSON.stringify(
+      ambiguousDeleteBoundary.boundaryProof)).digest("hex"),
+    failedGuardResponseSha256: "3".repeat(64) };
+  const blockedDeleteCapability = createBlockedDeleteIncidentTestCapability(
+    blockedDeleteCoordinate);
+  const blockedDeleteValidation = await validateReviewTokenRotationBlockedDeleteIncidentForTest(
+    ambiguousDeleteBoundary.blockedRecords, ambiguousDeleteBoundary.boundaryProof, authorityProof,
+    { production, review, accountId, sourceSha,
+      executorSha256: blockedDeleteCoordinate.executorSha256,
+      rollbackJournalSha256: blockedDeleteCoordinate.rollbackJournalSha256,
+      residualSnapshotManifestSha256: blockedDeleteCoordinate.residualSnapshotManifestSha256,
+      failedGuardResponseSha256: blockedDeleteCoordinate.failedGuardResponseSha256,
+      blockedSnapshotDirectory, incidentProof, incidentForwardRecords,
+      incidentForwardJournalSha256: incidentCoordinate.forwardJournalSha256,
+      incidentSnapshotManifestSha256: incidentCoordinate.incidentSnapshotManifestSha256,
+      incidentAuthorityFileSha256: incidentCoordinate.authorityFileSha256,
+      peerNormalizationProof: retainedPeerProof, restoredProof: incidentRestoredProof,
+      productionSentinelProof: evidence.productionSentinelProof,
+      predecessorTokenAuthorityProofs: evidence.predecessorTokenAuthorityProofs,
+      replacementTokenAuthorityProof: evidence.replacementTokenAuthorityProof,
+      replacementTokenId: evidence.replacementTokenId,
+      productionBaselineProof: evidence.productionBaselineProof,
+      providerNormalizedTestCapability: testCapability }, blockedDeleteCapability);
+  assert.equal(blockedDeleteValidation.replacementReviewTokenUuid,
+    replacementReviewTokenUuid);
 
   incidentAt = base + 315;
   const ambiguousDeleteAbsent = [...restoredPrefix];
@@ -4610,15 +4649,100 @@ test("semantically classifies every provider-normalized rollback boundary", asyn
     testCapability), /incident coordinate drift/u);
 });
 
-test("authorizes and journals only the blocked replacement-wrapper delete", async () => {
+test("authorizes and journals only the blocked replacement-wrapper delete", async (t) => {
   const now = Date.now();
-  const fixture = disposableReviewAuthorityFixture(now);
-  const { evidence, production, review, accountId, sourceSha } = fixture;
-  const historicalAuthorityProof = evidence.reviewTokenRotationAuthorityProof;
-  const replacementReviewTokenUuid =
+  const seedFixture = disposableReviewAuthorityFixture(now);
+  const { production, review, accountId, sourceSha } = seedFixture;
+  let evidence = seedFixture.evidence;
+  let historicalAuthorityProof = evidence.reviewTokenRotationAuthorityProof;
+  let replacementReviewTokenUuid =
     evidence.reviewTokenRotationProof.replacementReviewTokenUuid;
   const currentMainProof = authenticatedCurrentMainProof(sourceSha,
     new Date(now - 500).toISOString());
+  const temporary = await mkdtemp(resolve(tmpdir(), "atrinik-blocked-delete-journal-"));
+  await chmod(temporary, 0o700);
+  t.after(() => rm(temporary, { recursive: true, force: true }));
+  const blockedSnapshotDirectory = resolve(temporary, "snapshot");
+  await mkdir(blockedSnapshotDirectory, { mode: 0o700 });
+  const writeSnapshot = async (name, value) => {
+    const path = resolve(blockedSnapshotDirectory, name);
+    await writeFile(path, `${JSON.stringify(value)}\n`, { mode: 0o600 });
+    await chmod(path, 0o600);
+  };
+  const repositoryConnectionUuid = "55555555-5555-4555-8555-555555555555";
+  const providerTrigger = (spec, uuid) => ({ ...spec, trigger_uuid: uuid, deleted_on: null,
+    repo_connection: { repo_connection_uuid: repositoryConnectionUuid,
+      provider_type: "github", provider_account_id: "6371603",
+      provider_account_name: "atrinik", repo_id: "1324297032",
+      repo_name: "metaserver-worker" } });
+  const predecessorUuid = historicalAuthorityProof.journalIdentities
+    .predecessorReviewBuildTokenUuid;
+  const productionTriggerUuid = historicalAuthorityProof.journalIdentities.productionTriggerUuid;
+  const currentReviewTriggerUuid = historicalAuthorityProof.journalIdentities.reviewTriggerUuid;
+  const productionActual = providerTrigger(productionTriggerSpec(production, {
+    externalScriptId: scriptTag, repositoryConnectionUuid, buildTokenUuid: predecessorUuid,
+  }), productionTriggerUuid);
+  productionActual.branch_includes = [evidence.productionSentinelProof.branch];
+  const reviewActual = providerTrigger(automaticReviewTriggerSpec(review, {
+    externalScriptId: scriptTag, repositoryConnectionUuid, buildTokenUuid: predecessorUuid,
+  }), currentReviewTriggerUuid);
+  const productionEnvironment = productionEnvironmentSpec(production,
+    Object.fromEntries(Object.values(production.protectedInputs)
+      .map((name) => [name, `${name}-value`])));
+  for (const name of Object.values(production.protectedInputs))
+    productionEnvironment[name].value = null;
+  const manifest = (at) => ({ accountId, sourceSha, startedAt: new Date(at).toISOString(),
+    completedAt: new Date(at).toISOString(),
+    productionContractSha256: createHash("sha256").update(JSON.stringify(production))
+      .digest("hex"),
+    reviewContractSha256: createHash("sha256").update(JSON.stringify(review)).digest("hex") });
+  await Promise.all([
+    writeSnapshot("snapshot-manifest.json", manifest(now - 200)),
+    writeSnapshot("scripts.json", envelope([{ id: production.workers[0].name, tag: scriptTag }])),
+    writeSnapshot("domains.json", envelope([])),
+    writeSnapshot("production-migrations.json", envelope([])),
+    writeSnapshot(`${production.workers[0].name}.triggers.json`,
+      envelope([productionActual, reviewActual])),
+    ...production.workers.slice(1).map(({ name }) =>
+      writeSnapshot(`${name}.triggers.json`, envelope([]))),
+    writeSnapshot(`${production.workers[0].name}.trigger-${productionTriggerUuid}.environment.json`,
+      envelope(productionEnvironment)),
+    writeSnapshot(`${production.workers[0].name}.trigger-${currentReviewTriggerUuid}.environment.json`,
+      envelope(automaticReviewEnvironmentSpec(review))),
+    writeSnapshot("build-tokens.json", envelope([
+      { build_token_name: "Atrinik metaserver production",
+        build_token_uuid: evidence.reviewTokenRotationProof.productionBuildTokenUuid,
+        cloudflare_token_id: "production-token-id", owner_type: "user" },
+      { build_token_name: reviewBuildTokenNames.predecessor, build_token_uuid: predecessorUuid,
+        cloudflare_token_id: "review-token-id", owner_type: "user" },
+      { build_token_name: reviewBuildTokenNames.current,
+        build_token_uuid: replacementReviewTokenUuid,
+        cloudflare_token_id: "replacement-review-token-id", owner_type: "user" },
+    ])),
+    writeSnapshot("account-triggers.json", envelope([productionActual, reviewActual])),
+    ...production.workers.flatMap(({ name }) => [
+      writeSnapshot(`${name}.settings.json`, envelope([])),
+      writeSnapshot(`${name}.subdomain.json`, envelope([])),
+      writeSnapshot(`${name}.schedules.json`, envelope([])),
+      writeSnapshot(`${name}.routes.json`, envelope([])),
+      writeSnapshot(`${name}.script-settings.json`, envelope([])),
+      writeSnapshot(`${name}.deployments.json`, envelope([])),
+      writeSnapshot(`${name}.deployments-final.json`, envelope([])),
+      writeSnapshot(`${name}.active-version.json`, envelope([])),
+      writeSnapshot(`${name}.versions.json`, envelope([])),
+      writeSnapshot(`${name}.deploy-hooks.json`, envelope([])),
+      writeSnapshot(`${name}.builds.json`, envelope([])),
+    ]),
+  ]);
+  const productionPreservationDigest = await snapshotProductionPreservationDigest(
+    blockedSnapshotDirectory, production);
+  const authoritativeFixture = disposableReviewAuthorityFixture(now,
+    "/secure/issue-66/disposable-proof", productionPreservationDigest);
+  evidence = authoritativeFixture.evidence;
+  historicalAuthorityProof = evidence.reviewTokenRotationAuthorityProof;
+  assert.equal(evidence.reviewTokenRotationProof.replacementReviewTokenUuid,
+    replacementReviewTokenUuid);
+  replacementReviewTokenUuid = evidence.reviewTokenRotationProof.replacementReviewTokenUuid;
   const currentPhaseProof = { ...evidence.reviewTokenRotationProof,
     outcome: "workers-builds-review-token-rotation-predecessor-restored-valid",
     phase: "predecessor-restored", capturedAt: new Date(now - 250).toISOString(),
@@ -4704,6 +4828,9 @@ test("authorizes and journals only the blocked replacement-wrapper delete", asyn
     proofDigest: completeProof.proof_digest,
     proofFileSha256: createHash("sha256").update(JSON.stringify(completeProof)).digest("hex") });
   append({ event: "review-token-rotation-blocked-delete-recovery-complete",
+    outcome: "complete", mutation: false, triggerPostOrPatch: false,
+    productionActivation: false, migration0010: false,
+    manualApiOrInitialProductionBuild: false, workerResourceMutation: false,
     proofDigest: completeProof.proof_digest,
     proofFileSha256: createHash("sha256").update(JSON.stringify(completeProof)).digest("hex") });
   const arguments_ = { production, review, accountId, sourceSha, currentMainProof,
@@ -4722,6 +4849,96 @@ test("authorizes and journals only the blocked replacement-wrapper delete", asyn
     records, authority, arguments_, now),
   await validateReviewTokenRotationBlockedDeleteRecoveryJournal(
     records, authority, arguments_, now));
+  const explicitFailure = structuredClone(records.slice(0, 6));
+  const { recordSha256: _explicitFailureChecksum, ...explicitFailurePayload } =
+    explicitFailure.at(-1);
+  Object.assign(explicitFailurePayload, { outcome: "explicit-failure", status: 403,
+    responseDigestSha256: "a".repeat(64) });
+  explicitFailure[explicitFailure.length - 1] = checksummedRecord(explicitFailurePayload);
+  assert.equal((await classifyReviewTokenRotationBlockedDeleteRecoveryPrefix(
+    explicitFailure, authority, arguments_, now)).nextEvent,
+  "review-token-rotation-blocked-delete-recovery-blocked");
+  const ambiguous = structuredClone(records.slice(0, 6));
+  const { recordSha256: _ambiguousChecksum, ...ambiguousPayload } = ambiguous.at(-1);
+  ambiguousPayload.outcome = "ambiguous";
+  ambiguous[ambiguous.length - 1] = checksummedRecord(ambiguousPayload);
+  const ambiguousClassification = await classifyReviewTokenRotationBlockedDeleteRecoveryPrefix(
+    ambiguous, authority, arguments_, now);
+  assert.equal(ambiguousClassification.nextEvent, "mutation-bound");
+  assert.equal(ambiguousClassification.reconcile, true);
+  await writeSnapshot("snapshot-manifest.json", manifest(now + 80));
+  const blockedProof = await validateReviewTokenRotationSnapshotDirectory({
+    snapshotDirectory: blockedSnapshotDirectory, production, review, accountId, sourceSha,
+    phase: "predecessor-restored",
+    productionSentinelProof: evidence.productionSentinelProof,
+    predecessorTokenAuthorityProofs: evidence.predecessorTokenAuthorityProofs,
+    replacementTokenAuthorityProof: evidence.replacementTokenAuthorityProof,
+    replacementTokenId: evidence.replacementTokenId, productionTriggerUuid,
+    reviewTriggerUuid: currentReviewTriggerUuid, predecessorReviewTokenUuid: predecessorUuid,
+    replacementReviewTokenUuid, productionPreservationDigest,
+    authorityProof: historicalAuthorityProof,
+    productionBaselineProof: evidence.productionBaselineProof,
+    authoritySourceSha: historicalAuthorityProof.sourceSha,
+    authorityPlanDigest: historicalAuthorityProof.planDigest, now: now + 80,
+  });
+  const manifestSha256 = createHash("sha256").update(await readFile(
+    resolve(blockedSnapshotDirectory, "snapshot-manifest.json"))).digest("hex");
+  const blockedRecords = [...ambiguous, checksummedRecord({
+    event: "review-token-rotation-blocked-delete-recovery-blocked", attempt: 1,
+    at: new Date(now + 90).toISOString(), outcome: "blocked", mutation: false,
+    triggerPostOrPatch: false, productionActivation: false, migration0010: false,
+    manualApiOrInitialProductionBuild: false, workerResourceMutation: false,
+    residualState: { activeMutation: operation,
+      liveProductionTokenReference: predecessorUuid,
+      liveReviewTokenReference: predecessorUuid,
+      predecessorWrapperPresent: true, replacementWrapperPresent: true },
+    residualProofDigest: blockedProof.proof_digest,
+    residualProofFileSha256: createHash("sha256")
+      .update(JSON.stringify(blockedProof)).digest("hex"),
+    residualSnapshotManifestSha256: manifestSha256,
+  })];
+  const blockedArguments = { ...arguments_, blockedProof, blockedSnapshotDirectory,
+    productionSentinelProof: evidence.productionSentinelProof,
+    predecessorTokenAuthorityProofs: evidence.predecessorTokenAuthorityProofs,
+    replacementTokenAuthorityProof: evidence.replacementTokenAuthorityProof,
+    replacementTokenId: evidence.replacementTokenId,
+    productionBaselineProof: evidence.productionBaselineProof };
+  assert.equal((await validateReviewTokenRotationBlockedDeleteRecoveryJournal(
+    blockedRecords, authority, blockedArguments, now + 90)).terminal,
+  "review-token-rotation-blocked-delete-recovery-blocked");
+  assert.deepEqual(await validateReviewTokenRotationBlockedDeleteRecoveryJournal(
+    blockedRecords, authority, blockedArguments, now + 90),
+  await validateReviewTokenRotationBlockedDeleteRecoveryJournal(
+    blockedRecords, authority, blockedArguments, now + 90));
+  const originalWrite = process.stdout.write;
+  const cliOutput = [];
+  try {
+    process.stdout.write = (chunk) => { cliOutput.push(String(chunk)); return true; };
+    await runProvisioningCliForTest(
+      "--verify-review-token-rotation-blocked-delete-complete", async () => sourceSha,
+      async () => { throw new Error("terminal validation must not read provider state"); },
+      undefined, createBlockedDeleteTerminalContextReaderForTest(async () =>
+        ({ records, authority, arguments: arguments_, now })));
+    await runProvisioningCliForTest(
+      "--verify-review-token-rotation-blocked-delete-blocked", async () => sourceSha,
+      async () => { throw new Error("terminal validation must not read provider state"); },
+      undefined, createBlockedDeleteTerminalContextReaderForTest(async () =>
+        ({ records: blockedRecords, authority,
+          arguments: blockedArguments, now: now + 90 })));
+  } finally { process.stdout.write = originalWrite; }
+  assert.equal(cliOutput.length, 2);
+  assert.match(cliOutput[0], /blocked-delete-recovery-complete/u);
+  assert.match(cliOutput[1], /blocked-delete-recovery-blocked/u);
+  const staleBlockedRecords = structuredClone(blockedRecords);
+  const staleManifest = manifest(now + 40);
+  await writeSnapshot("snapshot-manifest.json", staleManifest);
+  const { recordSha256: _staleTerminalChecksum, ...staleTerminal } = staleBlockedRecords.at(-1);
+  staleTerminal.residualSnapshotManifestSha256 = createHash("sha256").update(await readFile(
+    resolve(blockedSnapshotDirectory, "snapshot-manifest.json"))).digest("hex");
+  staleBlockedRecords[staleBlockedRecords.length - 1] = checksummedRecord(staleTerminal);
+  await assert.rejects(validateReviewTokenRotationBlockedDeleteRecoveryJournal(
+    staleBlockedRecords, authority, blockedArguments, now + 90), /residual chronology drift/u);
+  await writeSnapshot("snapshot-manifest.json", manifest(now + 80));
   const wrongPath = structuredClone(records.slice(0, 5));
   const { recordSha256: _wrongChecksum, ...wrongIntent } = wrongPath.at(-1);
   wrongIntent.path = "/builds/tokens/11111111-1111-4111-8111-111111111111";
@@ -4734,6 +4951,47 @@ test("authorizes and journals only the blocked replacement-wrapper delete", asyn
   assert.throws(() => validateReviewTokenRotationBlockedDeleteAuthority(authority,
     { ...arguments_, blockedIncidentValidation: { ...blockedIncidentValidation,
       incidentCoordinateDigest: "0".repeat(64) } }, now), /evidence drift/u);
+  assert.equal(validateReviewTokenRotationBlockedDeleteResidualChronology({
+    prefixAt: new Date(now).toISOString(), snapshotStartedAt: new Date(now + 1).toISOString(),
+    snapshotCompletedAt: new Date(now + 2).toISOString(),
+    proofCapturedAt: new Date(now + 3).toISOString(), terminalAt: new Date(now + 4).toISOString(),
+  }), true);
+  assert.throws(() => validateReviewTokenRotationBlockedDeleteResidualChronology({
+    prefixAt: new Date(now + 2).toISOString(), snapshotStartedAt: new Date(now + 1).toISOString(),
+    snapshotCompletedAt: new Date(now + 3).toISOString(),
+    proofCapturedAt: new Date(now + 4).toISOString(), terminalAt: new Date(now + 5).toISOString(),
+  }), /residual chronology drift/u);
+  const blockedAfterComplete = [...records, checksummedRecord({
+    event: "review-token-rotation-blocked-delete-recovery-blocked", attempt: 1,
+    at: new Date(timestamp + 100).toISOString(), outcome: "blocked", mutation: false,
+    triggerPostOrPatch: false, productionActivation: false, migration0010: false,
+    manualApiOrInitialProductionBuild: false, workerResourceMutation: false,
+    residualState: { activeMutation: null,
+      liveProductionTokenReference: historicalAuthorityProof.journalIdentities
+        .predecessorReviewBuildTokenUuid,
+      liveReviewTokenReference: historicalAuthorityProof.journalIdentities
+        .predecessorReviewBuildTokenUuid,
+      predecessorWrapperPresent: true, replacementWrapperPresent: false },
+    residualProofDigest: completeProof.proof_digest,
+    residualProofFileSha256: createHash("sha256")
+      .update(JSON.stringify(completeProof)).digest("hex"),
+    residualSnapshotManifestSha256: "a".repeat(64),
+  })];
+  await assert.rejects(classifyReviewTokenRotationBlockedDeleteRecoveryPrefix(
+    blockedAfterComplete, authority, arguments_, now), /journal sequence drift/u);
+  const alteredCurrentProof = { ...currentPhaseProof,
+    capturedAt: new Date(now + 1).toISOString() };
+  assert.throws(() => validateReviewTokenRotationBlockedDeleteAuthority(authority,
+    { ...arguments_, currentPhaseProof: alteredCurrentProof }, now), /evidence drift/u);
+  const staleReceiptArguments = structuredClone(arguments_);
+  staleReceiptArguments.authorizationReceipt.capturedAt = new Date(now - 1).toISOString();
+  const staleReceiptUnsigned = { ...staleReceiptArguments.authorizationReceipt };
+  delete staleReceiptUnsigned.proof_digest;
+  staleReceiptArguments.authorizationReceipt.proof_digest = createHash("sha256")
+    .update(JSON.stringify(staleReceiptUnsigned)).digest("hex");
+  await assert.rejects(classifyReviewTokenRotationBlockedDeleteRecoveryPrefix(
+    records.slice(0, 3), authority, staleReceiptArguments, now),
+  /authorization receipt drift/u);
 });
 
 test("binds one canonical blocked-delete executor, empty journal, and receipt", async () => {
