@@ -131,7 +131,9 @@
   The #102 rollback-blocked terminal is immutable. Its final delete intent stopped before any
   provider DELETE because the account-wide `/builds/triggers` guard is unsupported. Retire that
   still-present wrapper only through the separate #104 one-write successor: pin the exact blocked
-  journal, proof, snapshot, executor, and failed guard; recapture the account trigger inventory by
+  journal, proof, snapshot, executor, and failed guard. Only that exact pinned 96,731-byte
+  historical executor may use the narrow 128 KiB incident-evidence limit; the successor executor
+  and every other private document retain the 64 KiB limit. Recapture the account trigger inventory by
   stable Worker-script enumeration plus per-script trigger reads; issue a fresh current-main-bound
   authority bound to the full proof document and one canonical receipt; and delete only the
   freshly proven globally unreferenced replacement UUID. Bind the terminal provider observation to

@@ -626,7 +626,9 @@ present and the replacement globally unreferenced.
 Retire that wrapper only through the separate #104
 `blocked-review-token-delete-recovery` authority. Issuance pins the exact
 executor, rollback journal and terminal, residual proof and exhaustive
-snapshot, and failed guard response. It then captures a new full provider
+snapshot, and failed guard response. The exact retained 96,731-byte incident
+executor alone has a 128 KiB private-evidence ceiling; the new recovery
+executor and every other private document remain capped at 64 KiB. It then captures a new full provider
 snapshot using the supported stable scripts inventory plus every script's
 paginated `/builds/workers/{script_tag}/triggers` inventory and a final scripts
 stability check. The fresh proof must reproduce exact predecessor triggers,

@@ -22,6 +22,7 @@ const scriptTagPattern = /^[0-9a-f]{32}$/u;
 const uuidPattern = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/u;
 const maximumProviderResponseBytes = 1024 * 1024;
 const maximumPrivateDocumentBytes = 64 * 1024;
+const maximumPinnedIncidentExecutorBytes = 128 * 1024;
 const maximumProviderPages = 100;
 const stagingBranchPattern = /^review-build-only-sentinel-[0-9a-f]{32}$/u;
 const reviewStagingRootPattern = /^\/review-build-only-staging-[0-9a-f]{32}$/u;
@@ -5507,7 +5508,8 @@ export async function readPrivateJson(path, label) {
   } finally { await handle.close(); }
 }
 
-async function readPrivateFileSha256(path, label) {
+async function readPrivateFileSha256(path, label,
+maximumBytes = maximumPrivateDocumentBytes) {
   if (!isAbsolute(path ?? "")) fail(`${label} file path must be absolute`);
   if (await realpath(path).catch(() => null) !== resolve(path))
     fail(`${label} file path must be canonical without linked ancestors`);
@@ -5516,10 +5518,19 @@ async function readPrivateFileSha256(path, label) {
   try {
     const metadata = await handle.stat();
     if (!metadata.isFile() || !isCurrentUserOwned(metadata) ||
-        (metadata.mode & 0o077) !== 0 || metadata.size > maximumPrivateDocumentBytes)
+        (metadata.mode & 0o077) !== 0 || metadata.size > maximumBytes)
       fail(`${label} file must be a bounded private regular file`);
     return createHash("sha256").update(await handle.readFile()).digest("hex");
   } finally { await handle.close(); }
+}
+
+export async function readPinnedIncidentExecutorSha256(path,
+expectedSha256 = reviewTokenRotationBlockedDeleteIncident.executorSha256) {
+  const actual = await readPrivateFileSha256(path, "blocked delete incident executor",
+    maximumPinnedIncidentExecutorBytes);
+  if (!/^[0-9a-f]{64}$/u.test(expectedSha256 ?? "") || actual !== expectedSha256)
+    fail("blocked delete incident executor digest drift");
+  return actual;
 }
 
 async function readPrivateJsonLines(path, label) {
@@ -5717,9 +5728,9 @@ async function readBlockedReviewTokenDeleteIncident({ production, review, accoun
   const validation = await validateReviewTokenRotationBlockedDeleteIncidentCore(
     rollbackRecords, blockedProof, authorityProof, { production, review, accountId,
       sourceSha: blockedDeleteIncidentCoordinate(testCapability).sourceSha,
-      executorSha256: await readPrivateFileSha256(
+      executorSha256: await readPinnedIncidentExecutorSha256(
         environment.ATRINIK_REVIEW_TOKEN_ROTATION_PROVIDER_NORMALIZED_EXECUTOR_FILE,
-        "blocked delete incident executor"),
+        blockedDeleteIncidentCoordinate(testCapability).executorSha256),
       rollbackJournalSha256: await readPrivateFileSha256(rollbackPath,
         "blocked delete provider-normalized rollback journal"),
       residualSnapshotManifestSha256: await readPrivateFileSha256(
