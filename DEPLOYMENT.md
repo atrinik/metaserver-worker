@@ -579,8 +579,42 @@ review-active state with
 `provision:workers-builds:verify-review-token-rotation-rollback-restored`, then
 deletes only the unreferenced journal-created replacement wrapper and proves
 the terminal predecessor with
-`provision:workers-builds:verify-review-token-rotation-rollback-complete`. Once
-predecessor absence is durably reconciled, rollback
+`provision:workers-builds:verify-review-token-rotation-rollback-complete`.
+
+The retained #96 incident is a distinct
+`production-repointed-review-augmented` phase, not ordinary
+`production-repointed` or `review-repointed`. It is accepted only when the
+exact 12-record forward prefix, historical authority, authority file,
+exhaustive incident snapshot manifest, replacement UUID, production trigger,
+wrappers, and unchanged production preservation digest match the pinned
+coordinates. The only allowed peer delta is the provider-added production
+sentinel in the predecessor-token review trigger's `branch_excludes` array.
+Any other trigger, environment, token, build, hook, connection, or production
+resource drift blocks recovery. Forward rotation must never resume from this
+phase.
+
+Incident rollback restores the inert production trigger first. Immediately
+before each incident write, use the incident-only
+`provision:workers-builds:verify-review-token-rotation-provider-normalized-authority-proof-historical`
+precondition: it authenticates current `main` independently while validating the retained
+authority against the immutable incident source, plan, and authority-file digest.
+The generic historical-authority command is not an incident write precondition. After the
+production restoration's stable exhaustive two-trigger readback, run
+`provision:workers-builds:verify-review-token-rotation-provider-peer-normalization`.
+That proof accepts exactly one of two results: Cloudflare automatically removed
+the peer sentinel exclusion and both triggers are predecessor-exact, or the
+review trigger still has only that one augmented exclusion. In the first case,
+journal read-only reconciliation and do not PATCH review. In the second case,
+PATCH only the exact journaled review trigger to its predecessor body. Then
+take a new predecessor-restored proof, prove the journal-created replacement
+wrapper globally unreferenced, delete only that wrapper, and bind the terminal
+rollback proof. The rollback prefix classifier is nonmutating and covers every
+durable boundary, explicit failure, and ambiguous response; blocked terminals
+must bind the exact augmented or normalized residual phase and an exhaustive
+post-prefix snapshot. Production activation, builds, migration `0010`, and all
+Worker resource writes remain forbidden.
+
+Once predecessor absence is durably reconciled, rollback
 must roll forward: never recreate it; prove the terminal replacement state.
 If the DELETE took effect but its ordinary tombstone or terminal proof was not
 durable before the write authority expired, use the read-only
