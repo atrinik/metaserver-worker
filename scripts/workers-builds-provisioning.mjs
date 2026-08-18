@@ -1128,9 +1128,9 @@ function validateReviewTokenRotationJournal(records, terminalProof, authorityPro
     ["mutation-intent", "repoint-final-review-trigger"],
     ["provider-response-classified", "repoint-final-review-trigger"],
     ["mutation-bound", "repoint-final-review-trigger"],
-    ["provider-proof-bound", "prove-superseded-wrapper-unreferenced"],
     ["current-main-proof-bound", "retire-superseded-review-build-token"],
     ["review-token-rotation-authority-checked", "retire-superseded-review-build-token"],
+    ["provider-proof-bound", "prove-superseded-wrapper-unreferenced"],
     ["mutation-intent", "retire-superseded-review-build-token"],
     ["provider-response-classified", "retire-superseded-review-build-token"],
     ["mutation-bound", "retire-superseded-review-build-token"],
@@ -1222,9 +1222,18 @@ function validateReviewTokenRotationJournal(records, terminalProof, authorityPro
       Date.parse(proof?.capturedAt ?? "") &&
     Date.parse(proof?.capturedAt ?? "") <=
       Date.parse(mutation("provider-proof-bound", proofOperation)?.at ?? ""));
+  const retireIntent = mutation("mutation-intent", "retire-superseded-review-build-token");
+  let unreferencedDeleteChronologyValid = true;
+  try {
+    validateReviewTokenRotationDeleteProofChronology(unreferencedProof,
+      unreferencedBound, retireIntent);
+  } catch {
+    unreferencedDeleteChronologyValid = false;
+  }
   if (!mutationsValid || records.some(({ event }) => event.startsWith("rollback")) ||
       records[1]?.authorityProofDigest !== authorityProof?.proof_digest ||
       !currentMainValid || !operationChronologyValid || !proofChronologyValid ||
+      !unreferencedDeleteChronologyValid ||
       authorityChecks.length !== 4 || authorityChecks.some(({ proofDigest }) =>
         proofDigest !== authorityProof?.proof_digest) || authorityChecks.some((record) =>
         record.expiresAt !== authorityProof.expiresAt ||
@@ -1260,6 +1269,16 @@ function validateReviewTokenRotationJournal(records, terminalProof, authorityPro
       authorityProof.evidenceDigests.replacementTokenOwnerMembership,
     productionPreservationDigest: authorityProof.productionPreservationDigest,
     repositoryConnectionUuid: identity.repositoryConnectionUuid };
+}
+
+export function validateReviewTokenRotationDeleteProofChronology(proof, bound, intent) {
+  const capturedAt = Date.parse(proof?.capturedAt ?? "");
+  const boundAt = Date.parse(bound?.at ?? "");
+  const intentAt = Date.parse(intent?.at ?? "");
+  if (!Number.isFinite(capturedAt) || !Number.isFinite(boundAt) || !Number.isFinite(intentAt) ||
+      capturedAt > boundAt || boundAt > intentAt || intentAt - boundAt > 30_000)
+    fail("review token rotation delete proof chronology drift");
+  return true;
 }
 
 export async function validateReviewTokenRotationRollbackJournal(records, authorityProof, {
