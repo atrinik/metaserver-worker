@@ -26,7 +26,7 @@ const maximumProviderPages = 100;
 const stagingBranchPattern = /^review-build-only-sentinel-[0-9a-f]{32}$/u;
 const reviewStagingRootPattern = /^\/review-build-only-staging-[0-9a-f]{32}$/u;
 const gitShaPattern = /^[0-9a-f]{40}$/u;
-const expectedSetupPlanSha256 = "7d60084f915dad13e7fa0f5f4c34734650c8b9a4cd0344edef1ff09f15a41899";
+const expectedSetupPlanSha256 = "91cda3c359f7d08aa72bdff9cdb0c863c176de6feb5713473d81e84bce88db05";
 const currentMainProofSource = "authenticated-gh-api-current-main-readback";
 const currentMainProofEndpoint = "repos/atrinik/metaserver-worker/git/ref/heads/main";
 const currentMainRef = "refs/heads/main";
@@ -1443,6 +1443,7 @@ export function issueReviewTokenRotationBlockedDeleteAuthority({ production, rev
 export function validateReviewTokenRotationBlockedDeleteAuthority(proof, {
   production, review, accountId, sourceSha, currentMainProof, currentPhaseProof,
   historicalAuthorityProof, blockedIncidentValidation, recoveryCoordinate,
+  expectedPlanDigest = digestJson(provisioningSetupPlan(production, review)),
 }, now = Date.now(), minimumRemainingMs = blockedReviewTokenDeleteTransitionBudgetMs) {
   const keys = ["accountId", "allowedWrites", "authorizationReceiptPath",
     "blockedIncidentCoordinateDigest", "capturedAt",
@@ -1461,7 +1462,7 @@ export function validateReviewTokenRotationBlockedDeleteAuthority(proof, {
       proof.outcome !== "workers-builds-review-token-rotation-blocked-delete-authority-valid" ||
       proof.mutation !== false || proof.phase !== "blocked-review-token-delete-recovery" ||
       proof.accountId !== accountId || proof.sourceSha !== sourceSha ||
-      proof.planDigest !== digestJson(provisioningSetupPlan(production, review)) ||
+      proof.planDigest !== expectedPlanDigest ||
       proof.productionContractDigest !== digestJson(production) ||
       proof.reviewContractDigest !== digestJson(review) ||
       !Number.isFinite(captured) || !Number.isFinite(expires) ||
@@ -1511,12 +1512,18 @@ async function classifyReviewTokenRotationBlockedDeleteRecoveryPrefixCore(record
   blockedProof = undefined, blockedSnapshotDirectory = undefined,
   productionSentinelProof = undefined, predecessorTokenAuthorityProofs = undefined,
   replacementTokenAuthorityProof = undefined, replacementTokenId = undefined,
-  productionBaselineProof = undefined,
+  productionBaselineProof = undefined, historicalTerminalValidation = false,
 } = {}, now = Date.now()) {
   const operation = "rotation-delete-blocked-replacement-wrapper";
+  if (historicalTerminalValidation && ![
+    "review-token-rotation-blocked-delete-recovery-complete",
+    "review-token-rotation-blocked-delete-recovery-blocked",
+  ].includes(records?.at(-1)?.event))
+    fail("blocked delete historical validation requires a terminal journal");
   validateReviewTokenRotationBlockedDeleteAuthority(authorityProof, { production, review,
     accountId, sourceSha, currentMainProof, currentPhaseProof, historicalAuthorityProof,
-    blockedIncidentValidation, recoveryCoordinate },
+    blockedIncidentValidation, recoveryCoordinate,
+    expectedPlanDigest: historicalTerminalValidation ? authorityProof?.planDigest : undefined },
   Date.parse(authorityProof?.capturedAt ?? ""), 0);
   const expected = [
     ["review-token-rotation-blocked-delete-recovery-started", undefined],
@@ -1643,6 +1650,7 @@ async function classifyReviewTokenRotationBlockedDeleteRecoveryPrefixCore(record
       Date.parse(intent.at) - Date.parse(checked?.at ?? "") > 30_000 ||
       Date.parse(unreferencedBound?.at ?? "") > Date.parse(intent.at) ||
       Date.parse(intent.at) - Date.parse(unreferencedBound?.at ?? "") > 30_000 ||
+      Date.parse(intent.at) - Date.parse(mainRecord?.capturedAt ?? "") > 5 * 60_000 ||
       Date.parse(intent.at) >= Date.parse(authorityProof.expiresAt)))
     fail("blocked delete recovery intent drift");
   if (classified) {
@@ -1802,7 +1810,8 @@ authorityProof, arguments_ = {}, now = Date.now()) {
     "review-token-rotation-blocked-delete-recovery-blocked"].includes(records.at(-1)?.event))
     fail("blocked delete recovery journal is not terminal");
   return { outcome: "workers-builds-review-token-rotation-blocked-delete-journal-valid",
-    mutation: false, terminal: records.at(-1).event };
+    mutation: false, terminal: records.at(-1).event,
+    proof_digest: records.at(-1).proofDigest ?? records.at(-1).residualProofDigest };
 }
 
 export function validateReviewTokenRotationJournal(records, terminalProof, authorityProof, {
@@ -4036,13 +4045,29 @@ export function provisioningSetupPlan(production, review) {
               "/builds/tokens/{build_token_uuid}", "rotation-blocked-delete-authority",
               "replacement_review_build_token_uuid") },
             produces: { deletion_tombstone: "exact-replacement-wrapper-uuid-absent" } },
-          { id: "rotation-blocked-delete-prove-complete",
+          { id: "rotation-blocked-delete-prove-provider-complete",
             actor: "workers-builds-control-plane-operator", mutation: false,
-            action: "prove-exact-predecessor-state-and-checksum-valid-successor-journal",
-            command: "npm run provision:workers-builds:verify-review-token-rotation-blocked-delete-complete",
+            action: "capture-fresh-exact-predecessor-state-after-replacement-absence",
+            command: "npm run provision:workers-builds:verify-review-token-rotation-rollback-complete",
             produces: { proof_digest: "fresh-exact-predecessor-state-digest" } },
+          { id: "rotation-blocked-delete-finalize-journal",
+            actor: "journaled-blocked-delete-executor", mutation: false,
+            action: "bind-complete-proof-and-append-exact-successor-terminal",
+            precondition: { completeProof: resultReference(
+              "rotation-blocked-delete-prove-provider-complete", "proof_digest") },
+            produces: { terminal: "checksum-valid-blocked-delete-recovery-complete" } },
+          { id: "rotation-blocked-delete-validate-terminal",
+            actor: "workers-builds-control-plane-operator", mutation: false,
+            action: "validate-exact-complete-successor-journal-and-bound-proof",
+            command: "npm run provision:workers-builds:verify-review-token-rotation-blocked-delete-complete",
+            precondition: { terminal: resultReference(
+              "rotation-blocked-delete-finalize-journal", "terminal") },
+            produces: { proof_digest: "validated-terminal-predecessor-state-digest" } },
         ],
-        blockedTerminal: "fresh-exhaustive-predecessor-or-predecessor-restored-residual-snapshot",
+        blockedTerminal: {
+          evidence: "fresh-exhaustive-predecessor-or-predecessor-restored-residual-snapshot",
+          command: "npm run provision:workers-builds:verify-review-token-rotation-blocked-delete-blocked",
+        },
         forbidden: ["trigger-post-or-patch", "production-trigger-activation", "migration-0010",
           "manual-build", "initial-production-build",
           "worker-version-deployment-binding-route-domain-schedule-url-state-secret-or-repository-connection-mutation"],
@@ -4401,7 +4426,12 @@ export function validateSetupPlan(plan) {
       "npm run provision:workers-builds:verify-review-token-rotation-blocked-delete-authority"],
     ["rotation-blocked-delete-replacement-wrapper", "workers-builds-control-plane-operator",
       true, "rotation-delete-blocked-replacement-wrapper", undefined],
-    ["rotation-blocked-delete-prove-complete", "workers-builds-control-plane-operator", false,
+    ["rotation-blocked-delete-prove-provider-complete", "workers-builds-control-plane-operator", false,
+      undefined,
+      "npm run provision:workers-builds:verify-review-token-rotation-rollback-complete"],
+    ["rotation-blocked-delete-finalize-journal", "journaled-blocked-delete-executor", false,
+      undefined, undefined],
+    ["rotation-blocked-delete-validate-terminal", "workers-builds-control-plane-operator", false,
       undefined,
       "npm run provision:workers-builds:verify-review-token-rotation-blocked-delete-complete"],
   ];
@@ -7008,7 +7038,8 @@ async function runProvisioningCliCore(mode = process.argv[2] ?? "--validate-only
         "review-token-rotation-blocked-delete-recovery-blocked";
       if (result.terminal !== expectedTerminal)
         fail("blocked delete recovery terminal mode drift");
-      process.stdout.write(`${JSON.stringify({ ...result, sourceSha })}\n`);
+      process.stdout.write(`${JSON.stringify({ ...result, sourceSha,
+        authoritySourceSha: injected.authority.sourceSha })}\n`);
       return;
     }
     const accountId = await readPrivateValue(process.env.ATRINIK_CLOUDFLARE_ACCOUNT_ID_FILE,
@@ -7028,12 +7059,13 @@ async function runProvisioningCliCore(mode = process.argv[2] ?? "--validate-only
     const recoveryCoordinate = await readPrivateJson(
       process.env.ATRINIK_REVIEW_TOKEN_ROTATION_BLOCKED_DELETE_RECOVERY_COORDINATE_FILE,
       "blocked delete recovery coordinate");
-    const authorizationReceipt = await readPrivateJson(
-      process.env.ATRINIK_REVIEW_TOKEN_ROTATION_BLOCKED_DELETE_AUTHORIZATION_RECEIPT_FILE,
-      "blocked delete recovery authorization receipt");
     const records = await readPrivateJsonLines(
       process.env.ATRINIK_REVIEW_TOKEN_ROTATION_BLOCKED_DELETE_JOURNAL_FILE,
       "blocked delete recovery journal");
+    const authorizationReceipt = records.some(({ event }) =>
+      event === "blocked-delete-authority-checked") ? await readPrivateJson(
+        process.env.ATRINIK_REVIEW_TOKEN_ROTATION_BLOCKED_DELETE_AUTHORIZATION_RECEIPT_FILE,
+        "blocked delete recovery authorization receipt") : undefined;
     const completeMode = mode.endsWith("-complete");
     const completeProof = completeMode ? await readPrivateJson(
       process.env.ATRINIK_REVIEW_TOKEN_ROTATION_BLOCKED_DELETE_COMPLETE_PROOF_FILE,
@@ -7045,7 +7077,8 @@ async function runProvisioningCliCore(mode = process.argv[2] ?? "--validate-only
       process.env.ATRINIK_REVIEW_TOKEN_ROTATION_BLOCKED_DELETE_BLOCKED_SNAPSHOT_DIRECTORY_FILE,
       "blocked delete recovery blocked snapshot directory");
     const result = await validateReviewTokenRotationBlockedDeleteRecoveryJournal(records,
-      authority, { production, review, accountId, sourceSha, currentMainProof, currentPhaseProof,
+      authority, { production, review, accountId, sourceSha: authority.sourceSha,
+        currentMainProof, currentPhaseProof,
         historicalAuthorityProof: incident.authorityProof,
         blockedIncidentValidation: incident.validation, recoveryCoordinate,
         authorizationReceipt, completeProof, blockedProof, blockedSnapshotDirectory,
@@ -7053,13 +7086,15 @@ async function runProvisioningCliCore(mode = process.argv[2] ?? "--validate-only
         predecessorTokenAuthorityProofs: incident.evidence.predecessorTokenAuthorityProofs,
         replacementTokenAuthorityProof: incident.evidence.replacementTokenAuthorityProof,
         replacementTokenId: incident.evidence.replacementTokenId,
-        productionBaselineProof: incident.evidence.productionBaselineProof });
+        productionBaselineProof: incident.evidence.productionBaselineProof,
+        historicalTerminalValidation: true });
     const expectedTerminal = completeMode ?
       "review-token-rotation-blocked-delete-recovery-complete" :
       "review-token-rotation-blocked-delete-recovery-blocked";
     if (result.terminal !== expectedTerminal)
       fail("blocked delete recovery terminal mode drift");
-    process.stdout.write(`${JSON.stringify({ ...result, sourceSha })}\n`);
+    process.stdout.write(`${JSON.stringify({ ...result, sourceSha,
+      authoritySourceSha: authority.sourceSha })}\n`);
     return;
   }
   if (mode === "--verify-review-token-rotation-authority") {

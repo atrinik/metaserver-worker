@@ -4658,7 +4658,7 @@ test("authorizes and journals only the blocked replacement-wrapper delete", asyn
   let replacementReviewTokenUuid =
     evidence.reviewTokenRotationProof.replacementReviewTokenUuid;
   const currentMainProof = authenticatedCurrentMainProof(sourceSha,
-    new Date(now - 500).toISOString());
+    new Date(now - 299_000).toISOString());
   const temporary = await mkdtemp(resolve(tmpdir(), "atrinik-blocked-delete-journal-"));
   await chmod(temporary, 0o700);
   t.after(() => rm(temporary, { recursive: true, force: true }));
@@ -4866,6 +4866,20 @@ test("authorizes and journals only the blocked replacement-wrapper delete", asyn
     ambiguous, authority, arguments_, now);
   assert.equal(ambiguousClassification.nextEvent, "mutation-bound");
   assert.equal(ambiguousClassification.reconcile, true);
+  const staleMainPrefix = structuredClone(records.slice(0, 5));
+  const retime = (index, at, mutate = () => {}) => {
+    const { recordSha256: _checksum, ...payload } = staleMainPrefix[index];
+    payload.at = new Date(at).toISOString();
+    mutate(payload);
+    staleMainPrefix[index] = checksummedRecord(payload);
+  };
+  retime(0, now + 500);
+  retime(1, now + 1_000);
+  retime(2, now + 1_500);
+  retime(3, now + 2_000);
+  retime(4, now + 3_000);
+  await assert.rejects(classifyReviewTokenRotationBlockedDeleteRecoveryPrefix(
+    staleMainPrefix, authority, arguments_, now + 3_000), /intent drift/u);
   await writeSnapshot("snapshot-manifest.json", manifest(now + 80));
   const blockedProof = await validateReviewTokenRotationSnapshotDirectory({
     snapshotDirectory: blockedSnapshotDirectory, production, review, accountId, sourceSha,
@@ -4910,24 +4924,42 @@ test("authorizes and journals only the blocked replacement-wrapper delete", asyn
     blockedRecords, authority, blockedArguments, now + 90),
   await validateReviewTokenRotationBlockedDeleteRecoveryJournal(
     blockedRecords, authority, blockedArguments, now + 90));
+  const preReceiptBlockedRecords = [records[0], checksummedRecord({
+    event: "review-token-rotation-blocked-delete-recovery-blocked", attempt: 1,
+    at: new Date(now + 89).toISOString(), outcome: "blocked", mutation: false,
+    triggerPostOrPatch: false, productionActivation: false, migration0010: false,
+    manualApiOrInitialProductionBuild: false, workerResourceMutation: false,
+    residualState: { activeMutation: null, liveProductionTokenReference: predecessorUuid,
+      liveReviewTokenReference: predecessorUuid, predecessorWrapperPresent: true,
+      replacementWrapperPresent: true }, residualProofDigest: blockedProof.proof_digest,
+    residualProofFileSha256: createHash("sha256").update(JSON.stringify(blockedProof)).digest("hex"),
+    residualSnapshotManifestSha256: manifestSha256,
+  })];
+  const preReceiptArguments = { ...blockedArguments, authorizationReceipt: undefined };
+  assert.equal((await validateReviewTokenRotationBlockedDeleteRecoveryJournal(
+    preReceiptBlockedRecords, authority, preReceiptArguments, now + 89)).terminal,
+  "review-token-rotation-blocked-delete-recovery-blocked");
   const originalWrite = process.stdout.write;
   const cliOutput = [];
   try {
     process.stdout.write = (chunk) => { cliOutput.push(String(chunk)); return true; };
     await runProvisioningCliForTest(
-      "--verify-review-token-rotation-blocked-delete-complete", async () => sourceSha,
+      "--verify-review-token-rotation-blocked-delete-complete", async () => "f".repeat(40),
       async () => { throw new Error("terminal validation must not read provider state"); },
       undefined, createBlockedDeleteTerminalContextReaderForTest(async () =>
-        ({ records, authority, arguments: arguments_, now })));
+        ({ records, authority, arguments: { ...arguments_, historicalTerminalValidation: true },
+          now })));
     await runProvisioningCliForTest(
       "--verify-review-token-rotation-blocked-delete-blocked", async () => sourceSha,
       async () => { throw new Error("terminal validation must not read provider state"); },
       undefined, createBlockedDeleteTerminalContextReaderForTest(async () =>
-        ({ records: blockedRecords, authority,
-          arguments: blockedArguments, now: now + 90 })));
+        ({ records: preReceiptBlockedRecords, authority,
+          arguments: preReceiptArguments, now: now + 89 })));
   } finally { process.stdout.write = originalWrite; }
   assert.equal(cliOutput.length, 2);
   assert.match(cliOutput[0], /blocked-delete-recovery-complete/u);
+  assert.match(cliOutput[0], /"sourceSha":"f{40}"/u);
+  assert.match(cliOutput[0], new RegExp(`"authoritySourceSha":"${sourceSha}"`, "u"));
   assert.match(cliOutput[1], /blocked-delete-recovery-blocked/u);
   const staleBlockedRecords = structuredClone(blockedRecords);
   const staleManifest = manifest(now + 40);
