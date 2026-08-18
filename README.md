@@ -146,7 +146,16 @@ authority expiry. It then creates
 the provider preview role against a freshly proven absent private root with
 fixed inert commands, writes its nonsecret environment, and only then atomically
 switches to and validates the documented final preview trigger before any
-disposable branch proof. That proof uses a separate 60-minute authority minted
+disposable branch proof. A separately authorized, journaled token-rotation gate
+can then create one replacement zero-resource review wrapper, change only the
+two journaled triggers' token references, prove the old wrapper unreferenced,
+and retire it. The gate binds a fresh accepted account-member observation for
+the new token owner, checks the complete account trigger inventory, and preserves
+the full non-token production control plane through exact phase readbacks and
+restart-safe request/reconciliation tombstones. Its terminal proof/journal
+supersede the old wrapper only for
+live identity checks; the immutable setup and activation records remain provenance.
+The disposable proof uses a separate 60-minute authority minted
 from a fresh exact review-active snapshot, with only exact disposable-ref
 push/delete and journal-owned automatic-build cleanup writes. It binds the exact
 disposable journal/branch/commit and requires one-use receipts with 40 minutes
