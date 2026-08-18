@@ -1513,6 +1513,7 @@ async function classifyReviewTokenRotationBlockedDeleteRecoveryPrefixCore(record
   productionSentinelProof = undefined, predecessorTokenAuthorityProofs = undefined,
   replacementTokenAuthorityProof = undefined, replacementTokenId = undefined,
   productionBaselineProof = undefined, historicalTerminalValidation = false,
+  terminalObservationSourceSha = sourceSha,
 } = {}, now = Date.now()) {
   const operation = "rotation-delete-blocked-replacement-wrapper";
   if (historicalTerminalValidation && ![
@@ -1693,7 +1694,8 @@ async function classifyReviewTokenRotationBlockedDeleteRecoveryPrefixCore(record
       "at", "attempt", "event", "operation", "proofDigest", "proofFileSha256", "recordSha256",
     ]))) fail("blocked delete recovery complete proof binding drift");
     validateReviewTokenRotationPredecessorProof(completeProof, historicalAuthorityProof,
-      { accountId, sourceSha }, Date.parse(completeBound.at), Infinity);
+      { accountId, sourceSha: terminalObservationSourceSha },
+    Date.parse(completeBound.at), Infinity);
     if (!bound || completeBound.proofDigest !== completeProof.proof_digest ||
         completeBound.proofFileSha256 !== digestJson(completeProof) ||
         Date.parse(bound.at) > Date.parse(completeProof.capturedAt) ||
@@ -1744,7 +1746,8 @@ async function classifyReviewTokenRotationBlockedDeleteRecoveryPrefixCore(record
           "blocked delete recovery residual snapshot manifest"))
       fail("blocked delete recovery residual chronology drift");
     const result = await validateReviewTokenRotationSnapshotDirectory({
-      snapshotDirectory: blockedSnapshotDirectory, production, review, accountId, sourceSha,
+      snapshotDirectory: blockedSnapshotDirectory, production, review, accountId,
+      sourceSha: terminalObservationSourceSha,
       phase, productionSentinelProof, predecessorTokenAuthorityProofs,
       replacementTokenAuthorityProof, replacementTokenId,
       productionTriggerUuid: authorityProof.productionTriggerUuid,
@@ -7087,7 +7090,7 @@ async function runProvisioningCliCore(mode = process.argv[2] ?? "--validate-only
         replacementTokenAuthorityProof: incident.evidence.replacementTokenAuthorityProof,
         replacementTokenId: incident.evidence.replacementTokenId,
         productionBaselineProof: incident.evidence.productionBaselineProof,
-        historicalTerminalValidation: true });
+        historicalTerminalValidation: true, terminalObservationSourceSha: sourceSha });
     const expectedTerminal = completeMode ?
       "review-token-rotation-blocked-delete-recovery-complete" :
       "review-token-rotation-blocked-delete-recovery-blocked";

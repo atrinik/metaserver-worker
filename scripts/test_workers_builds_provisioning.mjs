@@ -4939,16 +4939,64 @@ test("authorizes and journals only the blocked replacement-wrapper delete", asyn
   assert.equal((await validateReviewTokenRotationBlockedDeleteRecoveryJournal(
     preReceiptBlockedRecords, authority, preReceiptArguments, now + 89)).terminal,
   "review-token-rotation-blocked-delete-recovery-blocked");
+  const laterMainSourceSha = "f".repeat(40);
+  await Promise.all([
+    writeSnapshot("snapshot-manifest.json", { ...manifest(now + 80),
+      sourceSha: laterMainSourceSha }),
+    writeSnapshot("build-tokens.json", envelope([
+      { build_token_name: "Atrinik metaserver production",
+        build_token_uuid: evidence.reviewTokenRotationProof.productionBuildTokenUuid,
+        cloudflare_token_id: "production-token-id", owner_type: "user" },
+      { build_token_name: reviewBuildTokenNames.predecessor, build_token_uuid: predecessorUuid,
+        cloudflare_token_id: "review-token-id", owner_type: "user" },
+    ])),
+  ]);
+  const laterMainCompleteProof = await validateReviewTokenRotationSnapshotDirectory({
+    snapshotDirectory: blockedSnapshotDirectory, production, review, accountId,
+    sourceSha: laterMainSourceSha, phase: "predecessor",
+    productionSentinelProof: evidence.productionSentinelProof,
+    predecessorTokenAuthorityProofs: evidence.predecessorTokenAuthorityProofs,
+    replacementTokenAuthorityProof: evidence.replacementTokenAuthorityProof,
+    replacementTokenId: evidence.replacementTokenId, productionTriggerUuid,
+    reviewTriggerUuid: currentReviewTriggerUuid, predecessorReviewTokenUuid: predecessorUuid,
+    replacementReviewTokenUuid: undefined, productionPreservationDigest,
+    authorityProof: historicalAuthorityProof,
+    productionBaselineProof: evidence.productionBaselineProof,
+    authoritySourceSha: historicalAuthorityProof.sourceSha,
+    authorityPlanDigest: historicalAuthorityProof.planDigest, now: now + 85,
+  });
+  const laterMainRecords = structuredClone(records);
+  for (const index of [laterMainRecords.length - 2, laterMainRecords.length - 1]) {
+    const { recordSha256: _checksum, ...payload } = laterMainRecords[index];
+    payload.proofDigest = laterMainCompleteProof.proof_digest;
+    payload.proofFileSha256 = createHash("sha256")
+      .update(JSON.stringify(laterMainCompleteProof)).digest("hex");
+    laterMainRecords[index] = checksummedRecord(payload);
+  }
+  const laterMainArguments = { ...arguments_, completeProof: laterMainCompleteProof,
+    historicalTerminalValidation: true, terminalObservationSourceSha: laterMainSourceSha };
+  await Promise.all([
+    writeSnapshot("snapshot-manifest.json", manifest(now + 80)),
+    writeSnapshot("build-tokens.json", envelope([
+      { build_token_name: "Atrinik metaserver production",
+        build_token_uuid: evidence.reviewTokenRotationProof.productionBuildTokenUuid,
+        cloudflare_token_id: "production-token-id", owner_type: "user" },
+      { build_token_name: reviewBuildTokenNames.predecessor, build_token_uuid: predecessorUuid,
+        cloudflare_token_id: "review-token-id", owner_type: "user" },
+      { build_token_name: reviewBuildTokenNames.current,
+        build_token_uuid: replacementReviewTokenUuid,
+        cloudflare_token_id: "replacement-review-token-id", owner_type: "user" },
+    ])),
+  ]);
   const originalWrite = process.stdout.write;
   const cliOutput = [];
   try {
     process.stdout.write = (chunk) => { cliOutput.push(String(chunk)); return true; };
     await runProvisioningCliForTest(
-      "--verify-review-token-rotation-blocked-delete-complete", async () => "f".repeat(40),
+      "--verify-review-token-rotation-blocked-delete-complete", async () => laterMainSourceSha,
       async () => { throw new Error("terminal validation must not read provider state"); },
       undefined, createBlockedDeleteTerminalContextReaderForTest(async () =>
-        ({ records, authority, arguments: { ...arguments_, historicalTerminalValidation: true },
-          now })));
+        ({ records: laterMainRecords, authority, arguments: laterMainArguments, now })));
     await runProvisioningCliForTest(
       "--verify-review-token-rotation-blocked-delete-blocked", async () => sourceSha,
       async () => { throw new Error("terminal validation must not read provider state"); },
@@ -4958,7 +5006,7 @@ test("authorizes and journals only the blocked replacement-wrapper delete", asyn
   } finally { process.stdout.write = originalWrite; }
   assert.equal(cliOutput.length, 2);
   assert.match(cliOutput[0], /blocked-delete-recovery-complete/u);
-  assert.match(cliOutput[0], /"sourceSha":"f{40}"/u);
+  assert.match(cliOutput[0], new RegExp(`"sourceSha":"${laterMainSourceSha}"`, "u"));
   assert.match(cliOutput[0], new RegExp(`"authoritySourceSha":"${sourceSha}"`, "u"));
   assert.match(cliOutput[1], /blocked-delete-recovery-blocked/u);
   const staleBlockedRecords = structuredClone(blockedRecords);
