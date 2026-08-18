@@ -124,8 +124,10 @@
   12-record prefix and exhaustive peer-augmented snapshot, restore production first, then prove
   whether Cloudflare normalized the peer review trigger. Patch review only when the one sentinel
   exclusion remains, prove predecessor restoration and global replacement-wrapper absence, and
-  delete only the journal-created replacement. Never alias this state to an ordinary rotation
-  phase or continue the forward rotation.
+  delete only the journal-created replacement. Every incident write uses the incident-only
+  historical-authority verifier, which authenticates current `main` while retaining the exact
+  pinned historical source, plan, and authority file. Never alias this state to an ordinary
+  rotation phase or continue the forward rotation.
   The disposable automatic-build proof uses a separate renewable 60-minute
   authority issued only from the exact review-active state; it permits only the
   journaled disposable push/delete and exact owned-build cleanup, never production activation.

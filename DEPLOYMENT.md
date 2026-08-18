@@ -594,7 +594,12 @@ resource drift blocks recovery. Forward rotation must never resume from this
 phase.
 
 Incident rollback restores the inert production trigger first. Immediately
-after its stable exhaustive two-trigger readback, run
+before each incident write, use the incident-only
+`provision:workers-builds:verify-review-token-rotation-provider-normalized-authority-proof-historical`
+precondition: it authenticates current `main` independently while validating the retained
+authority against the immutable incident source, plan, and authority-file digest.
+The generic historical-authority command is not an incident write precondition. After the
+production restoration's stable exhaustive two-trigger readback, run
 `provision:workers-builds:verify-review-token-rotation-provider-peer-normalization`.
 That proof accepts exactly one of two results: Cloudflare automatically removed
 the peer sentinel exclusion and both triggers are predecessor-exact, or the

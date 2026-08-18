@@ -47,6 +47,7 @@
     "provision:workers-builds:verify-review-token-rotation-authority": "node scripts/workers-builds-provisioning.mjs --verify-review-token-rotation-authority",
     "provision:workers-builds:verify-review-token-rotation-authority-proof": "node scripts/workers-builds-provisioning.mjs --verify-review-token-rotation-authority-proof",
     "provision:workers-builds:verify-review-token-rotation-authority-proof-historical": "node scripts/workers-builds-provisioning.mjs --verify-review-token-rotation-authority-proof-historical",
+    "provision:workers-builds:verify-review-token-rotation-provider-normalized-authority-proof-historical": "node scripts/workers-builds-provisioning.mjs --verify-review-token-rotation-provider-normalized-authority-proof-historical",
     "provision:workers-builds:verify-review-token-rotation-intermediate": "node scripts/workers-builds-provisioning.mjs --verify-review-token-rotation-intermediate",
     "provision:workers-builds:verify-review-token-rotation-provider-normalized-incident": "node scripts/workers-builds-provisioning.mjs --verify-review-token-rotation-provider-normalized-incident",
     "provision:workers-builds:verify-review-token-rotation-provider-peer-normalization": "node scripts/workers-builds-provisioning.mjs --verify-review-token-rotation-provider-peer-normalization",

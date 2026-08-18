@@ -26,7 +26,7 @@ const maximumProviderPages = 100;
 const stagingBranchPattern = /^review-build-only-sentinel-[0-9a-f]{32}$/u;
 const reviewStagingRootPattern = /^\/review-build-only-staging-[0-9a-f]{32}$/u;
 const gitShaPattern = /^[0-9a-f]{40}$/u;
-const expectedSetupPlanSha256 = "8268cfa33332ac3d2de573b2dfb1d9731efa3a2da6de36734d01adbe47979ce2";
+const expectedSetupPlanSha256 = "0edc38f1eab7758f3f5820c84fede882f813d63c6c02040ec80449ee6ecd663d";
 const currentMainProofSource = "authenticated-gh-api-current-main-readback";
 const currentMainProofEndpoint = "repos/atrinik/metaserver-worker/git/ref/heads/main";
 const currentMainRef = "refs/heads/main";
@@ -44,7 +44,22 @@ export const reviewTokenRotationProviderNormalizedIncident = Object.freeze({
   incidentSnapshotManifestSha256:
     "24d677a0d07c0a76a94f22f5eaa2991f97137bd2be74c23195ef46d2f93971fe",
   authorityFileSha256: "15e003bd1b94fd7733c9019e991620b7b39899d74e5e8a4ae5dce247cd2a051d",
+  incidentProofDigest: "11309f34f508702eab49166169f02366f69fce22f45abdd3b2b36444a78ca731",
+  incidentProofDocumentSha256:
+    "07a7fe6106d1317b4566b703c3ff5be74315e33dc3068ef8fef82effb06ffd06",
 });
+const providerNormalizedIncidentTestCapabilities = new WeakSet();
+export function createProviderNormalizedIncidentTestCapability(coordinate) {
+  if (process.env.NODE_TEST_CONTEXT !== "child-v8")
+    fail("provider-normalized incident test capability is unavailable");
+  const capability = Object.freeze({ coordinate: Object.freeze(structuredClone(coordinate)) });
+  providerNormalizedIncidentTestCapabilities.add(capability);
+  return capability;
+}
+function providerNormalizedIncidentCoordinate(testCapability) {
+  return providerNormalizedIncidentTestCapabilities.has(testCapability) ?
+    testCapability.coordinate : reviewTokenRotationProviderNormalizedIncident;
+}
 export const reviewBuildTokenNames = Object.freeze({
   predecessor: "Atrinik metaserver review check",
   current: "Atrinik metaserver review check rotation 96",
@@ -1108,10 +1123,10 @@ export function reviewTokenRotationRollbackRequestDigest({ production, review, a
   return { method, path, requestDigestSha256: digestJson({ method, path, body }) };
 }
 
-export function validateReviewTokenRotationProviderNormalizedIncident(forwardRecords,
+function validateReviewTokenRotationProviderNormalizedIncidentCore(forwardRecords,
 incidentProof, authorityProof, { production, review, accountId, forwardJournalSha256,
-  incidentSnapshotManifestSha256, authorityFileSha256,
-  coordinate = reviewTokenRotationProviderNormalizedIncident }) {
+  incidentSnapshotManifestSha256, authorityFileSha256 }, testCapability = undefined) {
+  const coordinate = providerNormalizedIncidentCoordinate(testCapability);
   validateHistoricalReviewTokenRotationAuthority(authorityProof, { production, review,
     accountId, sourceSha: coordinate.sourceSha, planDigest: coordinate.planDigest });
   validateReviewTokenRotationPhaseProof(incidentProof,
@@ -1136,7 +1151,9 @@ incidentProof, authorityProof, { production, review, accountId, forwardJournalSh
   if (!same(pairs, expected) || digestJson(forwardRecords) !== coordinate.forwardJournalDigest ||
       forwardJournalSha256 !== coordinate.forwardJournalSha256 ||
       incidentSnapshotManifestSha256 !== coordinate.incidentSnapshotManifestSha256 ||
-      authorityFileSha256 !== coordinate.authorityFileSha256)
+      authorityFileSha256 !== coordinate.authorityFileSha256 ||
+      incidentProof.proof_digest !== coordinate.incidentProofDigest ||
+      digestJson(incidentProof) !== coordinate.incidentProofDocumentSha256)
     fail("review token rotation provider-normalized incident coordinate drift");
   let previousAt = -Infinity;
   for (const record of forwardRecords) {
@@ -1194,6 +1211,18 @@ incidentProof, authorityProof, { production, review, accountId, forwardJournalSh
     incidentProofDigest: incidentProof.proof_digest,
     incidentCoordinateDigest: digestJson({ coordinate, authorityProofDigest:
       authorityProof.proof_digest, incidentProofDigest: incidentProof.proof_digest }) };
+}
+
+export function validateReviewTokenRotationProviderNormalizedIncident(forwardRecords,
+incidentProof, authorityProof, arguments_) {
+  return validateReviewTokenRotationProviderNormalizedIncidentCore(forwardRecords,
+    incidentProof, authorityProof, arguments_);
+}
+
+export function validateReviewTokenRotationProviderNormalizedIncidentForTest(forwardRecords,
+incidentProof, authorityProof, arguments_, testCapability) {
+  return validateReviewTokenRotationProviderNormalizedIncidentCore(forwardRecords,
+    incidentProof, authorityProof, arguments_, testCapability);
 }
 
 export function validateReviewTokenRotationJournal(records, terminalProof, authorityProof, {
@@ -1773,22 +1802,23 @@ authorityProof, { accountId, sourceSha }) {
   return peerNormalizationBound;
 }
 
-export async function classifyReviewTokenRotationProviderNormalizedRollbackPrefix(records, {
+async function classifyReviewTokenRotationProviderNormalizedRollbackPrefixCore(records, {
   production, review, accountId, sourceSha, authorityProof, replacementReviewTokenUuid,
   incidentProof, incidentForwardRecords, incidentForwardJournalSha256,
   incidentSnapshotManifestSha256, incidentAuthorityFileSha256,
-  incidentCoordinate = reviewTokenRotationProviderNormalizedIncident,
+  testCapability = undefined,
   peerNormalizationProof = undefined, restoredProof = undefined, completeProof = undefined,
   blockedSnapshotDirectory = undefined, blockedProof = undefined,
   productionSentinelProof = undefined, predecessorTokenAuthorityProofs = undefined,
   replacementTokenAuthorityProof = undefined, replacementTokenId = undefined,
   productionBaselineProof = undefined,
 } = {}) {
-  const incident = validateReviewTokenRotationProviderNormalizedIncident(incidentForwardRecords,
+  const incidentCoordinate = providerNormalizedIncidentCoordinate(testCapability);
+  const incident = validateReviewTokenRotationProviderNormalizedIncidentCore(incidentForwardRecords,
     incidentProof, authorityProof, { production, review, accountId,
       forwardJournalSha256: incidentForwardJournalSha256,
-      incidentSnapshotManifestSha256, authorityFileSha256: incidentAuthorityFileSha256,
-      coordinate: incidentCoordinate });
+      incidentSnapshotManifestSha256, authorityFileSha256: incidentAuthorityFileSha256 },
+    testCapability);
   const peerProofPresent = records.some((record) => record.event === "provider-proof-bound" &&
     record.operation === "rotation-prove-provider-peer-normalization");
   const peerNormalizationPhase = peerProofPresent ? peerNormalizationProof?.phase ?? null : null;
@@ -1827,7 +1857,13 @@ export async function classifyReviewTokenRotationProviderNormalizedRollbackPrefi
         record.attempt !== 1) fail("review token rotation provider-normalized prefix checksum drift");
     previousAt = at;
   }
-  if (records.length > 0 && (records[0].authorityProofDigest !== authorityProof.proof_digest ||
+  const startKeys = ["at", "attempt", "authorityProofDigest", "event",
+    "forwardJournalDigest", "incidentCoordinateDigest", "incidentProofDigest",
+    "recordSha256", "replacementReviewTokenUuid", "startingPhase"];
+  if (records.length > 0 && (!same(sorted(Object.keys(records[0])), sorted(startKeys)) ||
+      records[0].startingPhase !== "production-repointed-review-augmented" ||
+      Date.parse(incidentProof.capturedAt) > Date.parse(records[0].at) ||
+      records[0].authorityProofDigest !== authorityProof.proof_digest ||
       records[0].replacementReviewTokenUuid !== replacementReviewTokenUuid ||
       records[0].incidentCoordinateDigest !== incident.incidentCoordinateDigest ||
       records[0].incidentProofDigest !== incidentProof.proof_digest ||
@@ -1878,14 +1914,15 @@ export async function classifyReviewTokenRotationProviderNormalizedRollbackPrefi
   const validatorArguments = { production, review, accountId, sourceSha, authorityProof,
     replacementReviewTokenUuid, incidentProof, incidentForwardRecords,
     incidentForwardJournalSha256, incidentSnapshotManifestSha256,
-    incidentAuthorityFileSha256, incidentCoordinate, peerNormalizationProof, restoredProof,
+    incidentAuthorityFileSha256, testCapability, peerNormalizationProof, restoredProof,
     completeProof, blockedSnapshotDirectory, blockedProof, productionSentinelProof,
     predecessorTokenAuthorityProofs, replacementTokenAuthorityProof, replacementTokenId,
     productionBaselineProof, authoritySourceSha: incidentCoordinate.sourceSha,
     authorityPlanDigest: incidentCoordinate.planDigest };
   if (["review-token-rotation-rollback-complete",
     "review-token-rotation-rollback-blocked"].includes(records.at(-1)?.event)) {
-    await validateReviewTokenRotationRollbackJournal(records, authorityProof, validatorArguments);
+    await validateReviewTokenRotationRollbackJournalCore(records, authorityProof,
+      validatorArguments);
     return { outcome: "workers-builds-review-token-rotation-provider-normalized-prefix-valid",
       mutation: false, nextEvent: null, nextOperation: null, reconcile: false, terminal: true };
   }
@@ -1905,6 +1942,19 @@ export async function classifyReviewTokenRotationProviderNormalizedRollbackPrefi
   return { outcome: "workers-builds-review-token-rotation-provider-normalized-prefix-valid",
     mutation: false, nextEvent: next?.[0] ?? null, nextOperation: next?.[1] ?? null,
     reconcile: records.at(-1)?.event === "mutation-intent", terminal: !next };
+}
+
+export async function classifyReviewTokenRotationProviderNormalizedRollbackPrefix(records,
+arguments_ = {}) {
+  const { testCapability: _ignored, ...runtimeArguments } = arguments_;
+  return classifyReviewTokenRotationProviderNormalizedRollbackPrefixCore(records,
+    runtimeArguments);
+}
+
+export async function classifyReviewTokenRotationProviderNormalizedRollbackPrefixForTest(records,
+arguments_, testCapability) {
+  return classifyReviewTokenRotationProviderNormalizedRollbackPrefixCore(records,
+    { ...arguments_, testCapability });
 }
 
 export async function validateReviewTokenRotationNoOwnedPreIntentTerminal(forwardRecords,
@@ -1981,12 +2031,12 @@ now = Date.now()) {
     forwardJournalDigest: digestJson(forwardRecords), rollbackJournalDigest: digestJson(rollbackRecords) };
 }
 
-export async function validateReviewTokenRotationRollbackJournal(records, authorityProof, {
+async function validateReviewTokenRotationRollbackJournalCore(records, authorityProof, {
   production, review, accountId, sourceSha, restoredProof, completeProof,
   peerNormalizationProof,
   incidentProof, incidentForwardRecords, incidentForwardJournalSha256,
   incidentSnapshotManifestSha256, incidentAuthorityFileSha256,
-  incidentCoordinate = reviewTokenRotationProviderNormalizedIncident,
+  testCapability = undefined,
   replacementReviewTokenUuid, blockedSnapshotDirectory, productionSentinelProof,
   predecessorTokenAuthorityProofs, replacementTokenAuthorityProof, replacementTokenId,
   productionBaselineProof, blockedProof,
@@ -2012,11 +2062,11 @@ export async function validateReviewTokenRotationRollbackJournal(records, author
   const providerNormalizedIncident =
     startingPhase === "production-repointed-review-augmented";
   const incidentValidation = providerNormalizedIncident ?
-    validateReviewTokenRotationProviderNormalizedIncident(incidentForwardRecords,
+    validateReviewTokenRotationProviderNormalizedIncidentCore(incidentForwardRecords,
       incidentProof, authorityProof, { production, review, accountId,
         forwardJournalSha256: incidentForwardJournalSha256,
-        incidentSnapshotManifestSha256, authorityFileSha256: incidentAuthorityFileSha256,
-        coordinate: incidentCoordinate }) : null;
+        incidentSnapshotManifestSha256, authorityFileSha256: incidentAuthorityFileSha256 },
+      testCapability) : null;
   const peerAutomaticallyNormalized = providerNormalizedIncident &&
     peerNormalizationProof?.phase === "predecessor-restored";
   const phaseOperations = {
@@ -2030,11 +2080,16 @@ export async function validateReviewTokenRotationRollbackJournal(records, author
       ...(peerAutomaticallyNormalized ? [] : ["rotation-restore-review-trigger-old-token"]),
     ],
   };
+  const incidentStartKeys = ["at", "attempt", "authorityProofDigest", "event",
+    "forwardJournalDigest", "incidentCoordinateDigest", "incidentProofDigest",
+    "recordSha256", "replacementReviewTokenUuid", "startingPhase"];
   if (!Object.hasOwn(phaseOperations, startingPhase) ||
       records[0].authorityProofDigest !== authorityProof.proof_digest ||
       records[0].replacementReviewTokenUuid !== replacementReviewTokenUuid ||
       providerNormalizedIncident &&
-        (records[0].incidentCoordinateDigest !== incidentValidation.incidentCoordinateDigest ||
+        (!same(sorted(Object.keys(records[0])), sorted(incidentStartKeys)) ||
+         Date.parse(incidentProof.capturedAt) > Date.parse(records[0].at) ||
+         records[0].incidentCoordinateDigest !== incidentValidation.incidentCoordinateDigest ||
          records[0].incidentProofDigest !== incidentProof.proof_digest ||
          records[0].forwardJournalDigest !== incidentValidation.forwardJournalDigest))
     fail("review token rotation rollback starting state drift");
@@ -2220,6 +2275,19 @@ export async function validateReviewTokenRotationRollbackJournal(records, author
     fail("review token rotation rollback terminal provenance drift");
   return { outcome: "workers-builds-review-token-rotation-rollback-complete-valid",
     mutation: false, digest: digestJson(records), startingPhase };
+}
+
+export async function validateReviewTokenRotationRollbackJournal(records, authorityProof,
+arguments_) {
+  const { testCapability: _ignored, ...runtimeArguments } = arguments_ ?? {};
+  return validateReviewTokenRotationRollbackJournalCore(records, authorityProof,
+    runtimeArguments);
+}
+
+export async function validateReviewTokenRotationRollbackJournalForTest(records, authorityProof,
+arguments_, testCapability) {
+  return validateReviewTokenRotationRollbackJournalCore(records, authorityProof,
+    { ...arguments_, testCapability });
 }
 
 export function issueDisposableReviewAuthority({ production, review, accountId, sourceSha,
@@ -2758,6 +2826,13 @@ function historicalReviewTokenRotationAuthorityPrecondition() {
     purpose: "rollback-only-no-expiry-reuse" };
 }
 
+function providerNormalizedIncidentHistoricalAuthorityPrecondition() {
+  return { proof: resultReference("review-token-rotation-authority", "proof_digest"),
+    command: "npm run provision:workers-builds:verify-review-token-rotation-provider-normalized-authority-proof-historical",
+    exactIncidentCoordinate: structuredClone(reviewTokenRotationProviderNormalizedIncident),
+    purpose: "provider-normalized-incident-rollback-only-no-expiry-reuse" };
+}
+
 function triggerPlanSpec(spec, scriptOperation, tokenOperation) {
   return {
     ...spec,
@@ -3258,7 +3333,7 @@ export function provisioningSetupPlan(production, review) {
             precondition: { incidentProof: resultReference(
               "rotation-validate-provider-normalized-incident", "proof_digest"),
             historicalReviewTokenRotationAuthority:
-              historicalReviewTokenRotationAuthorityPrecondition(),
+              providerNormalizedIncidentHistoricalAuthorityPrecondition(),
             currentMainProof: currentMainMutationPrecondition() },
             request: { method: "PATCH", path: apiPathReference(
               "/builds/triggers/{trigger_uuid}", "review-token-rotation-authority",
@@ -3277,7 +3352,7 @@ export function provisioningSetupPlan(production, review) {
             precondition: { peerNormalizationProof: resultReference(
               "rotation-prove-provider-peer-normalization", "proof_digest"),
             historicalReviewTokenRotationAuthority:
-              historicalReviewTokenRotationAuthorityPrecondition(),
+              providerNormalizedIncidentHistoricalAuthorityPrecondition(),
             currentMainProof: currentMainMutationPrecondition() },
             request: { method: "PATCH", path: apiPathReference(
               "/builds/triggers/{trigger_uuid}", "review-token-rotation-authority",
@@ -3295,7 +3370,7 @@ export function provisioningSetupPlan(production, review) {
             precondition: { restoredProof: resultReference(
               "rotation-incident-prove-predecessor-restored", "proof_digest"),
             historicalReviewTokenRotationAuthority:
-              historicalReviewTokenRotationAuthorityPrecondition(),
+              providerNormalizedIncidentHistoricalAuthorityPrecondition(),
             currentMainProof: currentMainMutationPrecondition() },
             request: { method: "DELETE", path: apiPathReference(
               "/builds/tokens/{build_token_uuid}", "replacement-review-build-token",
@@ -3646,6 +3721,14 @@ export function validateSetupPlan(plan) {
   if (!same(incidentOperations.map(({ id, actor, mutation, journalOperation }) =>
     [id, actor, mutation, journalOperation]), expectedIncidentOperations))
     fail("review token rotation provider-normalized incident operation drift");
+  for (const operation of incidentOperations.filter(({ mutation }) => mutation)) {
+    const precondition = operation.precondition?.historicalReviewTokenRotationAuthority;
+    if (precondition?.command !==
+        "npm run provision:workers-builds:verify-review-token-rotation-provider-normalized-authority-proof-historical" ||
+        !same(precondition.exactIncidentCoordinate,
+          reviewTokenRotationProviderNormalizedIncident))
+      fail("review token rotation provider-normalized historical authority drift");
+  }
   for (const operation of incidentOperations) {
     inspect(operation);
     available.set(operation.id, new Set(Object.keys(operation.produces ?? {})));
@@ -4054,7 +4137,7 @@ export function validateReviewTokenRotationReadback({ production, review, phase,
   });
   if (["production-repointed-review-augmented",
     "production-restored-review-augmented"].includes(phase))
-    expectedReview.branch_excludes = [review.productionBranch, productionSentinel];
+    expectedReview.branch_excludes = [production.productionBranch, productionSentinel];
   validateTriggerSnapshot(productionTrigger, expectedProduction,
     `review token rotation ${phase} production`);
   validateTriggerSnapshot(reviewTrigger, expectedReview,
@@ -5620,7 +5703,7 @@ export async function validateReviewTokenRotationSnapshotDirectory({ snapshotDir
       productionBaselineProof.productionScriptTag !== authorityProof.productionScriptTag)
     fail("review token rotation production baseline authority drift");
   const manifest = await loadSnapshot(snapshotDirectory, "snapshot-manifest.json");
-  validateSnapshotManifest(manifest, { accountId, sourceSha, production, review });
+  validateSnapshotManifest(manifest, { accountId, sourceSha, production, review }, now);
   const currentPreservationDigest = await snapshotProductionPreservationDigest(
     snapshotDirectory, production);
   if (currentPreservationDigest !== productionPreservationDigest)
@@ -5908,6 +5991,7 @@ export const credentialedProvisioningModes = Object.freeze([
   "--verify-review-activation-authority-proof",
   "--verify-review-token-rotation-authority",
   "--verify-review-token-rotation-authority-proof-historical",
+  "--verify-review-token-rotation-provider-normalized-authority-proof-historical",
   "--verify-review-token-rotation-authority-proof",
   "--verify-review-token-rotation-complete",
   "--verify-review-token-rotation-complete-historical",
@@ -5928,10 +6012,11 @@ export async function credentialedSourceSha(mode, load = reviewedCurrentMainSha)
   return credentialedProvisioningModes.includes(mode) ? await load() : undefined;
 }
 
-export async function runProvisioningCli(mode = process.argv[2] ?? "--validate-only",
+async function runProvisioningCliCore(mode = process.argv[2] ?? "--validate-only",
   sourceShaLoader = reviewedCurrentMainSha, providerSnapshotReader = readProviderSnapshot,
-  providerNormalizedIncidentCoordinate = reviewTokenRotationProviderNormalizedIncident) {
+  testCapability = undefined) {
   const { production, review } = await validateCheckedInProvisioning();
+  const incidentCoordinate = providerNormalizedIncidentCoordinate(testCapability);
   if (mode === "--validate-only") {
     process.stdout.write(`${JSON.stringify({ outcome: "workers-builds-provisioning-valid" })}\n`);
     return;
@@ -6132,6 +6217,25 @@ export async function runProvisioningCli(mode = process.argv[2] ?? "--validate-o
       mutation: false, sourceSha, proof_digest: proof.proof_digest })}\n`);
     return;
   }
+  if (mode ===
+      "--verify-review-token-rotation-provider-normalized-authority-proof-historical") {
+    const accountId = await readPrivateValue(process.env.ATRINIK_CLOUDFLARE_ACCOUNT_ID_FILE,
+      "Cloudflare account ID", accountIdPattern);
+    const authorityPath = process.env.ATRINIK_REVIEW_TOKEN_ROTATION_AUTHORITY_PROOF_FILE;
+    const proof = await readPrivateJson(authorityPath,
+      "provider-normalized incident review token rotation authority proof");
+    validateHistoricalReviewTokenRotationAuthority(proof, { production, review, accountId,
+      sourceSha: incidentCoordinate.sourceSha, planDigest: incidentCoordinate.planDigest });
+    if (await readPrivateFileSha256(authorityPath,
+      "provider-normalized incident review token rotation authority proof") !==
+        incidentCoordinate.authorityFileSha256)
+      fail("provider-normalized incident authority file drift");
+    process.stdout.write(`${JSON.stringify({
+      outcome: "workers-builds-review-token-rotation-provider-normalized-historical-authority-valid",
+      mutation: false, sourceSha, authoritySourceSha: incidentCoordinate.sourceSha,
+      proof_digest: proof.proof_digest })}\n`);
+    return;
+  }
   if (mode === "--verify-review-token-rotation-provider-normalized-incident") {
     const accountId = await readPrivateValue(process.env.ATRINIK_CLOUDFLARE_ACCOUNT_ID_FILE,
       "Cloudflare account ID", accountIdPattern);
@@ -6140,8 +6244,8 @@ export async function runProvisioningCli(mode = process.argv[2] ?? "--validate-o
       "review token rotation authority proof");
     const evidence = await readReviewTokenRotationAuthorityEvidence(process.env);
     validateHistoricalReviewTokenRotationAuthority(authorityProof, { production, review,
-      accountId, sourceSha: providerNormalizedIncidentCoordinate.sourceSha,
-      planDigest: providerNormalizedIncidentCoordinate.planDigest });
+      accountId, sourceSha: incidentCoordinate.sourceSha,
+      planDigest: incidentCoordinate.planDigest });
     const replacementReviewTokenUuid = await readPrivateValue(
       process.env.ATRINIK_REPLACEMENT_REVIEW_BUILD_TOKEN_UUID_FILE,
       "replacement review build token UUID", uuidPattern);
@@ -6154,7 +6258,7 @@ export async function runProvisioningCli(mode = process.argv[2] ?? "--validate-o
       "provider-normalized forward journal");
     const incidentProof = await validateReviewTokenRotationSnapshotDirectory({
       snapshotDirectory, production, review, accountId,
-      sourceSha: providerNormalizedIncidentCoordinate.sourceSha,
+      sourceSha: incidentCoordinate.sourceSha,
       phase: "production-repointed-review-augmented",
       productionSentinelProof: evidence.productionSentinelProof,
       predecessorTokenAuthorityProofs: evidence.predecessorTokenAuthorityProofs,
@@ -6167,12 +6271,12 @@ export async function runProvisioningCli(mode = process.argv[2] ?? "--validate-o
       replacementReviewTokenUuid, productionPreservationDigest:
         authorityProof.productionPreservationDigest, authorityProof,
       productionBaselineProof: evidence.productionBaselineProof,
-      authoritySourceSha: providerNormalizedIncidentCoordinate.sourceSha,
-      authorityPlanDigest: providerNormalizedIncidentCoordinate.planDigest,
+      authoritySourceSha: incidentCoordinate.sourceSha,
+      authorityPlanDigest: incidentCoordinate.planDigest,
       now: Date.parse((await loadSnapshot(snapshotDirectory,
         "snapshot-manifest.json")).completedAt),
     });
-    const validation = validateReviewTokenRotationProviderNormalizedIncident(forwardRecords,
+    const validation = validateReviewTokenRotationProviderNormalizedIncidentCore(forwardRecords,
       incidentProof, authorityProof, { production, review, accountId,
         forwardJournalSha256: await readPrivateFileSha256(forwardJournalPath,
           "provider-normalized forward journal"),
@@ -6180,8 +6284,7 @@ export async function runProvisioningCli(mode = process.argv[2] ?? "--validate-o
           resolve(snapshotDirectory, "snapshot-manifest.json"),
           "provider-normalized incident snapshot manifest"),
         authorityFileSha256: await readPrivateFileSha256(authorityPath,
-          "review token rotation authority proof"),
-        coordinate: providerNormalizedIncidentCoordinate });
+          "review token rotation authority proof") }, testCapability);
     await writePrivateProof(
       process.env.ATRINIK_REVIEW_TOKEN_ROTATION_PROVIDER_NORMALIZED_INCIDENT_PROOF_OUTPUT_FILE,
       incidentProof);
@@ -6431,6 +6534,16 @@ export async function runProvisioningCli(mode = process.argv[2] ?? "--validate-o
     return;
   }
   fail("unknown Workers Builds provisioning mode");
+}
+
+export async function runProvisioningCli(mode = process.argv[2] ?? "--validate-only",
+sourceShaLoader = reviewedCurrentMainSha, providerSnapshotReader = readProviderSnapshot) {
+  return runProvisioningCliCore(mode, sourceShaLoader, providerSnapshotReader);
+}
+
+export async function runProvisioningCliForTest(mode, sourceShaLoader,
+providerSnapshotReader, testCapability) {
+  return runProvisioningCliCore(mode, sourceShaLoader, providerSnapshotReader, testCapability);
 }
 
 if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url))
