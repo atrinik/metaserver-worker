@@ -50,6 +50,7 @@
     "provision:workers-builds:verify-review-token-rotation-intermediate": "node scripts/workers-builds-provisioning.mjs --verify-review-token-rotation-intermediate",
     "provision:workers-builds:verify-review-token-rotation-unreferenced": "node scripts/workers-builds-provisioning.mjs --verify-review-token-rotation-unreferenced",
     "provision:workers-builds:verify-review-token-rotation-complete": "node scripts/workers-builds-provisioning.mjs --verify-review-token-rotation-complete",
+    "provision:workers-builds:verify-review-token-rotation-complete-historical": "node scripts/workers-builds-provisioning.mjs --verify-review-token-rotation-complete-historical",
     "provision:workers-builds:verify-review-token-rotation-rollback-restored": "node scripts/workers-builds-provisioning.mjs --verify-review-token-rotation-rollback-restored",
     "provision:workers-builds:verify-review-token-rotation-rollback-complete": "node scripts/workers-builds-provisioning.mjs --verify-review-token-rotation-rollback-complete",
     "provision:workers-builds:verify-disposable-review-authority": "node scripts/workers-builds-provisioning.mjs --verify-disposable-review-authority",
