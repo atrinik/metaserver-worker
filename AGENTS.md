@@ -128,6 +128,13 @@
   historical-authority verifier, which authenticates current `main` while retaining the exact
   pinned historical source, plan, and authority file. Never alias this state to an ordinary
   rotation phase or continue the forward rotation.
+  The #102 rollback-blocked terminal is immutable. Its final delete intent stopped before any
+  provider DELETE because the account-wide `/builds/triggers` guard is unsupported. Retire that
+  still-present wrapper only through the separate #104 one-write successor: pin the exact blocked
+  journal, proof, snapshot, executor, and failed guard; recapture the account trigger inventory by
+  stable Worker-script enumeration plus per-script trigger reads; issue a fresh current-main-bound
+  authority; and delete only the freshly proven globally unreferenced replacement UUID. Never
+  resume the old intent, repeat either trigger PATCH, or use the unsupported account-wide route.
   The disposable automatic-build proof uses a separate renewable 60-minute
   authority issued only from the exact review-active state; it permits only the
   journaled disposable push/delete and exact owned-build cleanup, never production activation.

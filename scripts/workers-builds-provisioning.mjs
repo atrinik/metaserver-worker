@@ -26,7 +26,7 @@ const maximumProviderPages = 100;
 const stagingBranchPattern = /^review-build-only-sentinel-[0-9a-f]{32}$/u;
 const reviewStagingRootPattern = /^\/review-build-only-staging-[0-9a-f]{32}$/u;
 const gitShaPattern = /^[0-9a-f]{40}$/u;
-const expectedSetupPlanSha256 = "0edc38f1eab7758f3f5820c84fede882f813d63c6c02040ec80449ee6ecd663d";
+const expectedSetupPlanSha256 = "80fb7efba6d13559efb036f0078708f84f0b796af8cf2d6d31f2dbef7541f943";
 const currentMainProofSource = "authenticated-gh-api-current-main-readback";
 const currentMainProofEndpoint = "repos/atrinik/metaserver-worker/git/ref/heads/main";
 const currentMainRef = "refs/heads/main";
@@ -36,6 +36,8 @@ const disposableReviewAuthorityLifetimeMs = 60 * 60_000;
 const disposableReviewPushReserveMs = 40 * 60_000;
 const reviewTokenRotationAuthorityLifetimeMs = 30 * 60_000;
 const reviewTokenRotationTransitionBudgetMs = 5 * 60_000;
+const blockedReviewTokenDeleteAuthorityLifetimeMs = 15 * 60_000;
+const blockedReviewTokenDeleteTransitionBudgetMs = 5 * 60_000;
 export const reviewTokenRotationProviderNormalizedIncident = Object.freeze({
   sourceSha: "48f791e60bc0c1d19a7eff28e9cd99ed1bfd317a",
   planDigest: "ab71b8d99980ccdbfe9384bd29e8d690b7d8e91b6b17199e0e1baad182f7b6c1",
@@ -48,6 +50,22 @@ export const reviewTokenRotationProviderNormalizedIncident = Object.freeze({
   incidentProofDocumentSha256:
     "07a7fe6106d1317b4566b703c3ff5be74315e33dc3068ef8fef82effb06ffd06",
 });
+export const reviewTokenRotationBlockedDeleteIncident = Object.freeze({
+  sourceSha: "c9114b6f5c5625d08c365d3c8409d690209e489d",
+  planDigest: "0edc38f1eab7758f3f5820c84fede882f813d63c6c02040ec80449ee6ecd663d",
+  executorSha256: "83e01c6a4c2a5051287581c7f21691db01b9838d2944d6f7529d42d663a36ac6",
+  rollbackJournalSha256: "d95a4770d916908212106eb5359f057f77055b9cb71c8e12b4b0f563aa2c812d",
+  rollbackJournalDigest: "ee8e9e85ae52c544363b9fbe833271e9e9631f94fd94cf72bb1b43927c8dba90",
+  rollbackTerminalRecordSha256:
+    "279412e25004a493b61b3f98692f01ae1b4a2575688c2c1dcb32b3c112af50df",
+  residualSnapshotManifestSha256:
+    "8d3ccc92ff003b1c1154644dbbaecb481043667ab0be43cb70c0f64f29f3e8bb",
+  residualProofDigest: "a51761d38118a3deda029f7e6d3b25fb18a2d0330a6596be3289bb225e1a3af6",
+  residualProofDocumentSha256:
+    "432a688aa1db9c1f92f53eed2a84caf7671c3f0da97a3c86717e9699fc0c1040",
+  failedGuardResponseSha256:
+    "fdb4b1956f095fc97634600784c5f25cc243ccaef5c599c6ee44ce0f58eef24d",
+});
 const providerNormalizedIncidentTestCapabilities = new WeakSet();
 export function createProviderNormalizedIncidentTestCapability(coordinate) {
   if (process.env.NODE_TEST_CONTEXT !== "child-v8")
@@ -59,6 +77,18 @@ export function createProviderNormalizedIncidentTestCapability(coordinate) {
 function providerNormalizedIncidentCoordinate(testCapability) {
   return providerNormalizedIncidentTestCapabilities.has(testCapability) ?
     testCapability.coordinate : reviewTokenRotationProviderNormalizedIncident;
+}
+const blockedDeleteIncidentTestCapabilities = new WeakSet();
+export function createBlockedDeleteIncidentTestCapability(coordinate) {
+  if (process.env.NODE_TEST_CONTEXT !== "child-v8")
+    fail("blocked delete incident test capability is unavailable");
+  const capability = Object.freeze({ coordinate: Object.freeze(structuredClone(coordinate)) });
+  blockedDeleteIncidentTestCapabilities.add(capability);
+  return capability;
+}
+function blockedDeleteIncidentCoordinate(testCapability) {
+  return blockedDeleteIncidentTestCapabilities.has(testCapability) ?
+    testCapability.coordinate : reviewTokenRotationBlockedDeleteIncident;
 }
 export const reviewBuildTokenNames = Object.freeze({
   predecessor: "Atrinik metaserver review check",
@@ -713,6 +743,62 @@ export async function validateDisposableCoordinatePreparation(coordinate) {
   return coordinate;
 }
 
+export function validateBlockedDeleteRecoveryCoordinate(coordinate, sourceSha,
+now = Date.now()) {
+  const keys = ["authorizationReceiptPath", "capturedAt", "executorPath", "executorSha256",
+    "journalId", "journalInitialRecordCount", "journalPath", "source", "sourceSha"];
+  const captured = Date.parse(coordinate?.capturedAt ?? "");
+  if (!coordinate || !same(sorted(Object.keys(coordinate)), sorted(keys)) ||
+      coordinate.source !== "journaled-blocked-review-token-delete-recovery-coordinate" ||
+      coordinate.sourceSha !== sourceSha ||
+      !/^[0-9a-f]{64}$/u.test(coordinate.executorSha256 ?? "") ||
+      !/^[0-9a-f]{64}$/u.test(coordinate.journalId ?? "") ||
+      coordinate.journalInitialRecordCount !== 0 ||
+      ![coordinate.executorPath, coordinate.journalPath, coordinate.authorizationReceiptPath]
+        .every((path) => isAbsolute(path ?? "") && resolve(path) === path) ||
+      dirname(coordinate.executorPath) !== dirname(coordinate.journalPath) ||
+      coordinate.authorizationReceiptPath !== resolve(dirname(coordinate.journalPath),
+        "delete-authorization-receipt.json") ||
+      coordinate.journalId !== digestText(
+        `blocked-delete-journal:${coordinate.journalPath}:${coordinate.executorSha256}`) ||
+      !isUtcTimestamp(coordinate.capturedAt) || !Number.isFinite(captured) ||
+      captured > now + 30_000 || now - captured > 5 * 60_000)
+    fail("blocked delete recovery coordinate is stale or malformed");
+  return coordinate;
+}
+
+export async function validateBlockedDeleteRecoveryCoordinatePreparation(coordinate,
+sourceSha, now = Date.now()) {
+  validateBlockedDeleteRecoveryCoordinate(coordinate, sourceSha, now);
+  const directory = dirname(coordinate.journalPath);
+  const directoryMetadata = await lstat(directory).catch(() => null);
+  if (await realpath(directory).catch(() => null) !== directory ||
+      !directoryMetadata?.isDirectory() || !isCurrentUserOwned(directoryMetadata) ||
+      (directoryMetadata.mode & 0o077) !== 0)
+    fail("blocked delete recovery directory must be owner-only and canonical");
+  const readPrivateBytes = async (path, label) => {
+    if (await realpath(path).catch(() => null) !== path)
+      fail(`${label} must be canonical without linked ancestors`);
+    const handle = await open(path, constants.O_RDONLY | constants.O_NOFOLLOW).catch(() => null);
+    if (!handle) fail(`${label} cannot be opened without following links`);
+    try {
+      const metadata = await handle.stat();
+      if (!metadata.isFile() || !isCurrentUserOwned(metadata) ||
+          (metadata.mode & 0o077) !== 0 || metadata.size > maximumPrivateDocumentBytes)
+        fail(`${label} must be a bounded owner-only regular file`);
+      return await handle.readFile();
+    } finally { await handle.close(); }
+  };
+  const executor = await readPrivateBytes(coordinate.executorPath,
+    "blocked delete recovery executor");
+  const journal = await readPrivateBytes(coordinate.journalPath,
+    "blocked delete recovery initial journal");
+  if (digestText(executor) !== coordinate.executorSha256 || journal.length !== 0 ||
+      await lstat(coordinate.authorizationReceiptPath).catch(() => null))
+    fail("blocked delete recovery executor, journal, or receipt state drift");
+  return coordinate;
+}
+
 function disposableReviewEvidenceDigests({ reviewActivationProof, reviewActivationJournal,
   inertSetupJournal, inertSetupResults, disposableCoordinate,
   reviewTokenRotationProof, reviewTokenRotationJournal, reviewTokenRotationAuthorityProof,
@@ -1223,6 +1309,414 @@ export function validateReviewTokenRotationProviderNormalizedIncidentForTest(for
 incidentProof, authorityProof, arguments_, testCapability) {
   return validateReviewTokenRotationProviderNormalizedIncidentCore(forwardRecords,
     incidentProof, authorityProof, arguments_, testCapability);
+}
+
+async function validateReviewTokenRotationBlockedDeleteIncidentCore(rollbackRecords,
+blockedProof, authorityProof, {
+  production, review, accountId, sourceSha, executorSha256, rollbackJournalSha256,
+  residualSnapshotManifestSha256, failedGuardResponseSha256, blockedSnapshotDirectory,
+  incidentProof, incidentForwardRecords, incidentForwardJournalSha256,
+  incidentSnapshotManifestSha256, incidentAuthorityFileSha256,
+  peerNormalizationProof, restoredProof,
+  productionSentinelProof, predecessorTokenAuthorityProofs,
+  replacementTokenAuthorityProof, replacementTokenId, productionBaselineProof,
+  providerNormalizedTestCapability = undefined,
+} = {}, testCapability = undefined) {
+  const coordinate = blockedDeleteIncidentCoordinate(testCapability);
+  if (sourceSha !== coordinate.sourceSha || executorSha256 !== coordinate.executorSha256 ||
+      rollbackJournalSha256 !== coordinate.rollbackJournalSha256 ||
+      residualSnapshotManifestSha256 !== coordinate.residualSnapshotManifestSha256 ||
+      failedGuardResponseSha256 !== coordinate.failedGuardResponseSha256 ||
+      digestJson(rollbackRecords) !== coordinate.rollbackJournalDigest ||
+      rollbackRecords?.at(-1)?.recordSha256 !== coordinate.rollbackTerminalRecordSha256 ||
+      blockedProof?.proof_digest !== coordinate.residualProofDigest ||
+      digestJson(blockedProof) !== coordinate.residualProofDocumentSha256)
+    fail("review token rotation blocked delete incident coordinate drift");
+  const terminal = rollbackRecords?.at(-1);
+  const replacementReviewTokenUuid = terminal?.residualState?.replacementWrapperPresent === true ?
+    rollbackRecords?.[0]?.replacementReviewTokenUuid : null;
+  if (!uuidPattern.test(replacementReviewTokenUuid ?? "") ||
+      terminal.event !== "review-token-rotation-rollback-blocked" ||
+      terminal.residualProofDigest !== blockedProof.proof_digest ||
+      terminal.residualProofFileSha256 !== digestJson(blockedProof) ||
+      terminal.residualState?.activeMutation !== "rotation-delete-replacement-wrapper" ||
+      terminal.residualState.reviewPeerAugmented !== false ||
+      terminal.residualState.predecessorWrapperPresent !== true)
+    fail("review token rotation blocked delete terminal drift");
+  const validation = await classifyReviewTokenRotationProviderNormalizedRollbackPrefixCore(
+    rollbackRecords, { production, review, accountId, sourceSha, authorityProof,
+      replacementReviewTokenUuid, incidentProof, incidentForwardRecords,
+      incidentForwardJournalSha256, incidentSnapshotManifestSha256,
+      incidentAuthorityFileSha256, testCapability: providerNormalizedTestCapability,
+      peerNormalizationProof, restoredProof,
+      blockedSnapshotDirectory, blockedProof, productionSentinelProof,
+      predecessorTokenAuthorityProofs, replacementTokenAuthorityProof, replacementTokenId,
+      productionBaselineProof });
+  if (!validation.terminal || validation.mutation !== false)
+    fail("review token rotation blocked delete terminal is not inert");
+  return { outcome: "workers-builds-review-token-rotation-blocked-delete-incident-valid",
+    mutation: false, sourceSha, replacementReviewTokenUuid,
+    authoritySourceSha: authorityProof.sourceSha,
+    authorityPlanDigest: authorityProof.planDigest,
+    incidentCoordinateDigest: digestJson({ coordinate,
+      authorityProofDigest: authorityProof.proof_digest,
+      rollbackJournalDigest: digestJson(rollbackRecords),
+      residualProofDigest: blockedProof.proof_digest }) };
+}
+
+export async function validateReviewTokenRotationBlockedDeleteIncident(rollbackRecords,
+blockedProof, authorityProof, arguments_ = {}) {
+  const { testCapability: _ignored, providerNormalizedTestCapability: _ignoredProvider,
+    ...runtimeArguments } = arguments_;
+  return validateReviewTokenRotationBlockedDeleteIncidentCore(rollbackRecords, blockedProof,
+    authorityProof, runtimeArguments);
+}
+
+export async function validateReviewTokenRotationBlockedDeleteIncidentForTest(rollbackRecords,
+blockedProof, authorityProof, arguments_, testCapability) {
+  return validateReviewTokenRotationBlockedDeleteIncidentCore(rollbackRecords, blockedProof,
+    authorityProof, arguments_, testCapability);
+}
+
+export function issueReviewTokenRotationBlockedDeleteAuthority({ production, review, accountId,
+  sourceSha, currentMainProof, currentPhaseProof, historicalAuthorityProof,
+  blockedIncidentValidation, recoveryCoordinate, capturedAt = new Date().toISOString() }) {
+  const now = Date.parse(capturedAt);
+  validateBlockedDeleteRecoveryCoordinate(recoveryCoordinate, sourceSha, now);
+  validateCurrentMainProof(currentMainProof, sourceSha, now);
+  validateHistoricalReviewTokenRotationAuthority(historicalAuthorityProof, { production, review,
+    accountId, sourceSha: blockedIncidentValidation?.authoritySourceSha,
+    planDigest: blockedIncidentValidation?.authorityPlanDigest });
+  validateReviewTokenRotationPhaseProof(currentPhaseProof, "predecessor-restored",
+    historicalAuthorityProof, { accountId, sourceSha }, now, 5 * 60_000);
+  if (!blockedIncidentValidation || blockedIncidentValidation.mutation !== false ||
+      blockedIncidentValidation.replacementReviewTokenUuid !==
+        currentPhaseProof.replacementReviewTokenUuid ||
+      !/^[0-9a-f]{64}$/u.test(blockedIncidentValidation.incidentCoordinateDigest ?? "") ||
+      Date.parse(currentPhaseProof.capturedAt) <
+        Date.parse(currentMainProof.capturedAt) - 30_000)
+    fail("review token rotation blocked delete authority evidence drift");
+  const planDigest = digestJson(provisioningSetupPlan(production, review));
+  const unsigned = {
+    outcome: "workers-builds-review-token-rotation-blocked-delete-authority-valid",
+    mutation: false, phase: "blocked-review-token-delete-recovery", accountId, sourceSha,
+    planDigest, productionContractDigest: digestJson(production),
+    reviewContractDigest: digestJson(review), capturedAt,
+    expiresAt: new Date(now + blockedReviewTokenDeleteAuthorityLifetimeMs).toISOString(),
+    replacementReviewTokenUuid: currentPhaseProof.replacementReviewTokenUuid,
+    predecessorReviewTokenUuid: currentPhaseProof.predecessorReviewTokenUuid,
+    productionBuildTokenUuid: currentPhaseProof.productionBuildTokenUuid,
+    productionTriggerUuid: currentPhaseProof.productionTriggerUuid,
+    reviewTriggerUuid: currentPhaseProof.reviewTriggerUuid,
+    productionPreservationDigest: currentPhaseProof.productionPreservationDigest,
+    blockedIncidentCoordinateDigest: blockedIncidentValidation.incidentCoordinateDigest,
+    currentPhaseProofDigest: currentPhaseProof.proof_digest,
+    currentMainProofDigest: digestJson(currentMainProof),
+    recoveryCoordinateDigest: digestJson(recoveryCoordinate),
+    authorizationReceiptPath: recoveryCoordinate.authorizationReceiptPath,
+    allowedWrites: ["delete-only-exact-journal-created-globally-unreferenced-replacement-wrapper"],
+    exclusions: ["trigger-post-or-patch", "production-trigger-activation", "migration-0010",
+      "manual-api-or-initial-production-build",
+      "worker-version-deployment-binding-route-domain-schedule-url-state-secret-or-repository-connection-mutation"],
+  };
+  return { ...unsigned, proof_digest: digestJson(unsigned) };
+}
+
+export function validateReviewTokenRotationBlockedDeleteAuthority(proof, {
+  production, review, accountId, sourceSha, currentMainProof, currentPhaseProof,
+  historicalAuthorityProof, blockedIncidentValidation, recoveryCoordinate,
+}, now = Date.now(), minimumRemainingMs = blockedReviewTokenDeleteTransitionBudgetMs) {
+  const keys = ["accountId", "allowedWrites", "authorizationReceiptPath",
+    "blockedIncidentCoordinateDigest", "capturedAt",
+    "currentMainProofDigest", "currentPhaseProofDigest", "exclusions", "expiresAt", "mutation",
+    "outcome", "phase", "planDigest", "predecessorReviewTokenUuid",
+    "productionBuildTokenUuid", "productionContractDigest", "productionPreservationDigest",
+    "productionTriggerUuid", "proof_digest", "recoveryCoordinateDigest",
+    "replacementReviewTokenUuid",
+    "reviewContractDigest", "reviewTriggerUuid", "sourceSha"];
+  const captured = Date.parse(proof?.capturedAt ?? "");
+  const expires = Date.parse(proof?.expiresAt ?? "");
+  const unsigned = { ...proof };
+  delete unsigned.proof_digest;
+  if (!proof || !same(sorted(Object.keys(proof)), sorted(keys)) ||
+      proof.outcome !== "workers-builds-review-token-rotation-blocked-delete-authority-valid" ||
+      proof.mutation !== false || proof.phase !== "blocked-review-token-delete-recovery" ||
+      proof.accountId !== accountId || proof.sourceSha !== sourceSha ||
+      proof.planDigest !== digestJson(provisioningSetupPlan(production, review)) ||
+      proof.productionContractDigest !== digestJson(production) ||
+      proof.reviewContractDigest !== digestJson(review) ||
+      !Number.isFinite(captured) || !Number.isFinite(expires) ||
+      expires - captured !== blockedReviewTokenDeleteAuthorityLifetimeMs ||
+      captured > now + 30_000 || now >= expires || expires - now < minimumRemainingMs ||
+      proof.proof_digest !== digestJson(unsigned) ||
+      !same(proof.allowedWrites,
+        ["delete-only-exact-journal-created-globally-unreferenced-replacement-wrapper"]) ||
+      !same(proof.exclusions, ["trigger-post-or-patch", "production-trigger-activation",
+        "migration-0010", "manual-api-or-initial-production-build",
+        "worker-version-deployment-binding-route-domain-schedule-url-state-secret-or-repository-connection-mutation"]))
+    fail("review token rotation blocked delete authority drift");
+  validateCurrentMainProof(currentMainProof, sourceSha, captured);
+  validateBlockedDeleteRecoveryCoordinate(recoveryCoordinate, sourceSha, captured);
+  validateHistoricalReviewTokenRotationAuthority(historicalAuthorityProof, { production, review,
+    accountId, sourceSha: blockedIncidentValidation?.authoritySourceSha,
+    planDigest: blockedIncidentValidation?.authorityPlanDigest });
+  validateReviewTokenRotationPhaseProof(currentPhaseProof, "predecessor-restored",
+    historicalAuthorityProof, { accountId, sourceSha }, captured, 5 * 60_000);
+  if (!blockedIncidentValidation || blockedIncidentValidation.mutation !== false ||
+      proof.blockedIncidentCoordinateDigest !==
+        blockedIncidentValidation.incidentCoordinateDigest ||
+      proof.currentPhaseProofDigest !== currentPhaseProof.proof_digest ||
+      proof.currentMainProofDigest !== digestJson(currentMainProof) ||
+      proof.recoveryCoordinateDigest !== digestJson(recoveryCoordinate) ||
+      proof.authorizationReceiptPath !== recoveryCoordinate.authorizationReceiptPath ||
+      proof.replacementReviewTokenUuid !== currentPhaseProof.replacementReviewTokenUuid ||
+      proof.predecessorReviewTokenUuid !== currentPhaseProof.predecessorReviewTokenUuid ||
+      proof.productionBuildTokenUuid !== currentPhaseProof.productionBuildTokenUuid ||
+      proof.productionTriggerUuid !== currentPhaseProof.productionTriggerUuid ||
+      proof.reviewTriggerUuid !== currentPhaseProof.reviewTriggerUuid ||
+      proof.productionPreservationDigest !== currentPhaseProof.productionPreservationDigest)
+    fail("review token rotation blocked delete authority evidence drift");
+  return { outcome: proof.outcome, mutation: false, expiresAt: proof.expiresAt,
+    replacementReviewTokenUuid: proof.replacementReviewTokenUuid,
+    request: { method: "DELETE", path: `/builds/tokens/${proof.replacementReviewTokenUuid}`,
+      requestDigestSha256: digestJson({ method: "DELETE",
+        path: `/builds/tokens/${proof.replacementReviewTokenUuid}`, body: null }) } };
+}
+
+async function classifyReviewTokenRotationBlockedDeleteRecoveryPrefixCore(records, authorityProof,
+{
+  production, review, accountId, sourceSha, currentMainProof, currentPhaseProof,
+  historicalAuthorityProof, blockedIncidentValidation, recoveryCoordinate,
+  authorizationReceipt = undefined, completeProof = undefined,
+  blockedProof = undefined, blockedSnapshotDirectory = undefined,
+  productionSentinelProof = undefined, predecessorTokenAuthorityProofs = undefined,
+  replacementTokenAuthorityProof = undefined, replacementTokenId = undefined,
+  productionBaselineProof = undefined,
+} = {}, now = Date.now()) {
+  const operation = "rotation-delete-blocked-replacement-wrapper";
+  validateReviewTokenRotationBlockedDeleteAuthority(authorityProof, { production, review,
+    accountId, sourceSha, currentMainProof, currentPhaseProof, historicalAuthorityProof,
+    blockedIncidentValidation, recoveryCoordinate },
+  Date.parse(authorityProof?.capturedAt ?? ""), 0);
+  const expected = [
+    ["review-token-rotation-blocked-delete-recovery-started", undefined],
+    ["current-main-proof-bound", operation],
+    ["blocked-delete-authority-checked", operation],
+    ["provider-proof-bound", "rotation-prove-blocked-replacement-unreferenced"],
+    ["mutation-intent", operation],
+    ["provider-response-classified", operation],
+    ["mutation-bound", operation],
+    ["provider-proof-bound", "rotation-prove-blocked-delete-complete"],
+    ["review-token-rotation-blocked-delete-recovery-complete", undefined],
+  ];
+  if (!Array.isArray(records)) fail("blocked delete recovery journal drift");
+  const terminalBlocked = records.at(-1)?.event ===
+    "review-token-rotation-blocked-delete-recovery-blocked";
+  const pairs = records.map(({ event, operation: recordOperation }) =>
+    [event, recordOperation]);
+  const compared = terminalBlocked ? pairs.slice(0, -1) : pairs;
+  if (!same(compared, expected.slice(0, compared.length)) ||
+      compared.length > expected.length)
+    fail("blocked delete recovery journal sequence drift");
+  let previousAt = -Infinity;
+  for (const record of records) {
+    const { recordSha256, ...payload } = record ?? {};
+    const at = Date.parse(record?.at ?? "");
+    if (!/^[0-9a-f]{64}$/u.test(recordSha256 ?? "") ||
+        digestJson(payload) !== recordSha256 || !isUtcTimestamp(record.at) ||
+        !Number.isFinite(at) || at <= previousAt || record.attempt !== 1)
+      fail("blocked delete recovery journal checksum or chronology drift");
+    previousAt = at;
+  }
+  if (records.length > 0) {
+    const start = records[0];
+    const startKeys = ["at", "attempt", "authorityProofDigest",
+      "blockedIncidentCoordinateDigest", "event", "recordSha256", "recoveryCoordinateDigest",
+      "replacementReviewTokenUuid", "startingPhase"];
+    if (!same(sorted(Object.keys(start)), sorted(startKeys)) ||
+        start.startingPhase !== "predecessor-restored" ||
+        start.authorityProofDigest !== authorityProof.proof_digest ||
+        start.blockedIncidentCoordinateDigest !==
+          blockedIncidentValidation.incidentCoordinateDigest ||
+        start.recoveryCoordinateDigest !== authorityProof.recoveryCoordinateDigest ||
+        start.replacementReviewTokenUuid !== authorityProof.replacementReviewTokenUuid ||
+        Date.parse(currentPhaseProof.capturedAt) > Date.parse(start.at))
+      fail("blocked delete recovery starting coordinate drift");
+  }
+  const mainRecord = records.find(({ event }) => event === "current-main-proof-bound");
+  if (mainRecord) {
+    const captured = Date.parse(mainRecord.capturedAt ?? "");
+    if (mainRecord.operation !== operation || mainRecord.sourceSha !== sourceSha ||
+        mainRecord.ref !== currentMainRef ||
+        mainRecord.proofFileSha256 !== digestJson(currentMainProof) ||
+        !/^[0-9a-f]{64}$/u.test(mainRecord.rawFileSha256 ?? "") ||
+        mainRecord.capturedAt !== currentMainProof.capturedAt ||
+        captured > Date.parse(mainRecord.at) || Date.parse(mainRecord.at) - captured > 5 * 60_000)
+      fail("blocked delete recovery current-main binding drift");
+  }
+  const checked = records.find(({ event }) => event === "blocked-delete-authority-checked");
+  if (checked) {
+    const receiptKeys = ["authorityProofDigest", "capturedAt", "mutation", "operation",
+      "outcome", "proof_digest", "recoveryCoordinateDigest", "replacementReviewTokenUuid",
+      "requestDigestSha256", "sourceSha"];
+    const receiptUnsigned = { ...authorizationReceipt };
+    delete receiptUnsigned.proof_digest;
+    if (!authorizationReceipt ||
+        !same(sorted(Object.keys(authorizationReceipt)), sorted(receiptKeys)) ||
+        authorizationReceipt.outcome !==
+          "workers-builds-review-token-rotation-blocked-delete-write-authorized" ||
+        authorizationReceipt.mutation !== false || authorizationReceipt.operation !== "delete" ||
+        authorizationReceipt.sourceSha !== sourceSha ||
+        authorizationReceipt.authorityProofDigest !== authorityProof.proof_digest ||
+        authorizationReceipt.recoveryCoordinateDigest !== authorityProof.recoveryCoordinateDigest ||
+        authorizationReceipt.replacementReviewTokenUuid !==
+          authorityProof.replacementReviewTokenUuid ||
+        authorizationReceipt.requestDigestSha256 !== digestJson({ method: "DELETE",
+          path: `/builds/tokens/${authorityProof.replacementReviewTokenUuid}`, body: null }) ||
+        authorizationReceipt.proof_digest !== digestJson(receiptUnsigned) ||
+        !isUtcTimestamp(authorizationReceipt.capturedAt))
+      fail("blocked delete recovery authorization receipt drift");
+  }
+  if (checked && (checked.operation !== operation ||
+      checked.proofDigest !== authorityProof.proof_digest ||
+      checked.expiresAt !== authorityProof.expiresAt ||
+      checked.authorizationReceiptDigest !== authorizationReceipt.proof_digest ||
+      checked.authorizationReceiptFileSha256 !== digestJson(authorizationReceipt) ||
+      Date.parse(checked.at) < Date.parse(authorityProof.capturedAt) ||
+      Date.parse(authorityProof.expiresAt) - Date.parse(checked.at) <
+        blockedReviewTokenDeleteTransitionBudgetMs))
+    fail("blocked delete recovery authority binding drift");
+  const unreferencedBound = records.find(({ event, operation: recordOperation }) =>
+    event === "provider-proof-bound" &&
+    recordOperation === "rotation-prove-blocked-replacement-unreferenced");
+  if (unreferencedBound && (unreferencedBound.proofDigest !== currentPhaseProof.proof_digest ||
+      unreferencedBound.proofFileSha256 !== digestJson(currentPhaseProof) ||
+      Date.parse(currentPhaseProof.capturedAt) > Date.parse(unreferencedBound.at) ||
+      Date.parse(unreferencedBound.at) - Date.parse(currentPhaseProof.capturedAt) > 30_000))
+    fail("blocked delete recovery unreferenced proof binding drift");
+  const intent = records.find(({ event }) => event === "mutation-intent");
+  const classified = records.find(({ event }) => event === "provider-response-classified");
+  const bound = records.find(({ event }) => event === "mutation-bound");
+  const request = { method: "DELETE",
+    path: `/builds/tokens/${authorityProof.replacementReviewTokenUuid}` };
+  request.requestDigestSha256 = digestJson({ ...request, body: null });
+  if (intent && (intent.operation !== operation || intent.method !== request.method ||
+      intent.path !== request.path || intent.requestDigestSha256 !== request.requestDigestSha256 ||
+      Date.parse(checked?.at ?? "") > Date.parse(intent.at) ||
+      Date.parse(intent.at) - Date.parse(checked?.at ?? "") > 30_000 ||
+      Date.parse(unreferencedBound?.at ?? "") > Date.parse(intent.at) ||
+      Date.parse(intent.at) - Date.parse(unreferencedBound?.at ?? "") > 30_000 ||
+      Date.parse(intent.at) >= Date.parse(authorityProof.expiresAt)))
+    fail("blocked delete recovery intent drift");
+  if (classified) {
+    const explicitFailure = classified.outcome === "explicit-failure";
+    if (classified.operation !== operation ||
+        !["explicit-success", "explicit-failure", "ambiguous"].includes(classified.outcome) ||
+        Date.parse(intent?.at ?? "") > Date.parse(classified.at) ||
+        (explicitFailure && (!Number.isSafeInteger(classified.status) ||
+          classified.status < 400 || classified.status > 599 ||
+          !/^[0-9a-f]{64}$/u.test(classified.responseDigestSha256 ?? ""))))
+      fail("blocked delete recovery provider classification drift");
+  }
+  if (bound) {
+    const explicit = classified?.outcome === "explicit-success";
+    if (!classified || classified.outcome === "explicit-failure" ||
+        bound.operation !== operation ||
+        bound.resourceUuid !== authorityProof.replacementReviewTokenUuid ||
+        bound.requestDigestSha256 !== request.requestDigestSha256 ||
+        bound.providerResponseExplicitSuccess !== explicit ||
+        bound.reconciliation !== (explicit ? "explicit-success-exact-absence" :
+          "ambiguous-exact-absence") || bound.deletionTombstone !== true ||
+        !/^[0-9a-f]{64}$/u.test(bound.readbackDigestSha256 ?? "") ||
+        Date.parse(classified.at) > Date.parse(bound.at))
+      fail("blocked delete recovery deletion tombstone drift");
+  }
+  const completeBound = records.find(({ event, operation: recordOperation }) =>
+    event === "provider-proof-bound" &&
+    recordOperation === "rotation-prove-blocked-delete-complete");
+  if (completeBound) {
+    validateReviewTokenRotationPredecessorProof(completeProof, historicalAuthorityProof,
+      { accountId, sourceSha }, Date.parse(completeBound.at), Infinity);
+    if (!bound || completeBound.proofDigest !== completeProof.proof_digest ||
+        completeBound.proofFileSha256 !== digestJson(completeProof) ||
+        Date.parse(bound.at) > Date.parse(completeProof.capturedAt) ||
+        Date.parse(completeProof.capturedAt) > Date.parse(completeBound.at))
+      fail("blocked delete recovery complete proof binding drift");
+  }
+  if (terminalBlocked) {
+    const terminal = records.at(-1);
+    const phase = terminal.residualState?.replacementWrapperPresent === true ?
+      "predecessor-restored" : "predecessor";
+    if (!["predecessor-restored", "predecessor"].includes(phase) ||
+        terminal.residualState?.liveProductionTokenReference !==
+          authorityProof.predecessorReviewTokenUuid ||
+        terminal.residualState?.liveReviewTokenReference !==
+          authorityProof.predecessorReviewTokenUuid ||
+        terminal.residualState?.predecessorWrapperPresent !== true ||
+        terminal.residualState?.activeMutation !== (intent && !bound &&
+          classified?.outcome !== "explicit-failure" ? operation : null) ||
+        terminal.residualProofDigest !== blockedProof?.proof_digest ||
+        terminal.residualProofFileSha256 !== digestJson(blockedProof))
+      fail("blocked delete recovery residual terminal drift");
+    const result = await validateReviewTokenRotationSnapshotDirectory({
+      snapshotDirectory: blockedSnapshotDirectory, production, review, accountId, sourceSha,
+      phase, productionSentinelProof, predecessorTokenAuthorityProofs,
+      replacementTokenAuthorityProof, replacementTokenId,
+      productionTriggerUuid: authorityProof.productionTriggerUuid,
+      reviewTriggerUuid: authorityProof.reviewTriggerUuid,
+      predecessorReviewTokenUuid: authorityProof.predecessorReviewTokenUuid,
+      replacementReviewTokenUuid: phase === "predecessor-restored" ?
+        authorityProof.replacementReviewTokenUuid : undefined,
+      productionPreservationDigest: authorityProof.productionPreservationDigest,
+      authorityProof: historicalAuthorityProof, productionBaselineProof,
+      authoritySourceSha: historicalAuthorityProof.sourceSha,
+      authorityPlanDigest: historicalAuthorityProof.planDigest,
+      now: Date.parse(terminal.at),
+    });
+    if (result.proof_digest !== blockedProof.proof_digest ||
+        digestJson(result) !== digestJson(blockedProof))
+      fail("blocked delete recovery residual snapshot drift");
+    return { outcome: "workers-builds-review-token-rotation-blocked-delete-prefix-valid",
+      mutation: false, terminal: true, nextEvent: null, reconcile: false };
+  }
+  if (records.at(-1)?.event ===
+      "review-token-rotation-blocked-delete-recovery-complete") {
+    const terminal = records.at(-1);
+    if (!completeBound || terminal.proofDigest !== completeProof.proof_digest ||
+        terminal.proofFileSha256 !== digestJson(completeProof))
+      fail("blocked delete recovery terminal proof drift");
+    return { outcome: "workers-builds-review-token-rotation-blocked-delete-prefix-valid",
+      mutation: false, terminal: true, nextEvent: null, reconcile: false };
+  }
+  if (classified?.outcome === "explicit-failure") return {
+    outcome: "workers-builds-review-token-rotation-blocked-delete-prefix-valid",
+    mutation: false, terminal: false,
+    nextEvent: "review-token-rotation-blocked-delete-recovery-blocked", reconcile: false };
+  if (classified && !bound) return {
+    outcome: "workers-builds-review-token-rotation-blocked-delete-prefix-valid",
+    mutation: false, terminal: false, nextEvent: "mutation-bound", reconcile: true };
+  const next = expected[records.length];
+  return { outcome: "workers-builds-review-token-rotation-blocked-delete-prefix-valid",
+    mutation: false, terminal: !next, nextEvent: next?.[0] ?? null,
+    nextOperation: next?.[1] ?? null,
+    reconcile: records.at(-1)?.event === "mutation-intent" };
+}
+
+export async function classifyReviewTokenRotationBlockedDeleteRecoveryPrefix(records,
+authorityProof, arguments_ = {}, now = Date.now()) {
+  return classifyReviewTokenRotationBlockedDeleteRecoveryPrefixCore(records, authorityProof,
+    arguments_, now);
+}
+
+export async function validateReviewTokenRotationBlockedDeleteRecoveryJournal(records,
+authorityProof, arguments_ = {}, now = Date.now()) {
+  const result = await classifyReviewTokenRotationBlockedDeleteRecoveryPrefixCore(records,
+    authorityProof, arguments_, now);
+  if (!result.terminal || !["review-token-rotation-blocked-delete-recovery-complete",
+    "review-token-rotation-blocked-delete-recovery-blocked"].includes(records.at(-1)?.event))
+    fail("blocked delete recovery journal is not terminal");
+  return { outcome: "workers-builds-review-token-rotation-blocked-delete-journal-valid",
+    mutation: false, terminal: records.at(-1).event };
 }
 
 export function validateReviewTokenRotationJournal(records, terminalProof, authorityProof, {
@@ -2992,7 +3486,20 @@ export function provisioningSetupPlan(production, review) {
       "ATRINIK_REVIEW_TOKEN_ROTATION_PROVIDER_NORMALIZED_INCIDENT_SNAPSHOT_DIRECTORY_FILE",
       "ATRINIK_REVIEW_TOKEN_ROTATION_PROVIDER_NORMALIZED_INCIDENT_PROOF_FILE",
       "ATRINIK_REVIEW_TOKEN_ROTATION_PROVIDER_NORMALIZED_INCIDENT_PROOF_OUTPUT_FILE",
+      "ATRINIK_REVIEW_TOKEN_ROTATION_PROVIDER_NORMALIZED_ROLLBACK_JOURNAL_FILE",
+      "ATRINIK_REVIEW_TOKEN_ROTATION_PROVIDER_NORMALIZED_BLOCKED_PROOF_FILE",
+      "ATRINIK_REVIEW_TOKEN_ROTATION_PROVIDER_NORMALIZED_BLOCKED_SNAPSHOT_DIRECTORY_FILE",
+      "ATRINIK_REVIEW_TOKEN_ROTATION_PROVIDER_NORMALIZED_EXECUTOR_FILE",
+      "ATRINIK_REVIEW_TOKEN_ROTATION_FAILED_DELETE_GUARD_RESPONSE_FILE",
+      "ATRINIK_REVIEW_TOKEN_ROTATION_PEER_NORMALIZATION_PROOF_FILE",
       "ATRINIK_REVIEW_TOKEN_ROTATION_PEER_NORMALIZATION_PROOF_OUTPUT_FILE",
+      "ATRINIK_REVIEW_TOKEN_ROTATION_ROLLBACK_RESTORED_PROOF_FILE",
+      "ATRINIK_REVIEW_TOKEN_ROTATION_BLOCKED_DELETE_CURRENT_PROOF_OUTPUT_FILE",
+      "ATRINIK_REVIEW_TOKEN_ROTATION_BLOCKED_DELETE_CURRENT_PROOF_FILE",
+      "ATRINIK_REVIEW_TOKEN_ROTATION_BLOCKED_DELETE_RECOVERY_COORDINATE_FILE",
+      "ATRINIK_REVIEW_TOKEN_ROTATION_BLOCKED_DELETE_AUTHORITY_PROOF_OUTPUT_FILE",
+      "ATRINIK_REVIEW_TOKEN_ROTATION_BLOCKED_DELETE_AUTHORITY_PROOF_FILE",
+      "ATRINIK_REVIEW_TOKEN_ROTATION_BLOCKED_DELETE_AUTHORIZATION_RECEIPT_OUTPUT_FILE",
       "ATRINIK_REVIEW_TOKEN_ROTATION_UNREFERENCED_PROOF_OUTPUT_FILE",
       "ATRINIK_REVIEW_TOKEN_ROTATION_UNREFERENCED_PROOF_FILE",
       "ATRINIK_REVIEW_TOKEN_ROTATION_COMPLETE_PROOF_OUTPUT_FILE",
@@ -3411,6 +3918,43 @@ export function provisioningSetupPlan(production, review) {
           "manual-build", "initial-production-build",
           "worker-version-deployment-binding-route-domain-schedule-url-state-secret-or-repository-connection-mutation"],
       },
+      blockedDeleteRecovery: {
+        mode: "one-write-successor-to-immutable-provider-normalized-blocked-terminal",
+        coordinates: structuredClone(reviewTokenRotationBlockedDeleteIncident),
+        authorityLifetimeMinutes: blockedReviewTokenDeleteAuthorityLifetimeMs / 60_000,
+        minimumRemainingMinutes: blockedReviewTokenDeleteTransitionBudgetMs / 60_000,
+        operations: [
+          { id: "rotation-blocked-delete-authority",
+            actor: "workers-builds-control-plane-operator", mutation: false,
+            action: "bind-exact-blocked-terminal-and-fresh-exhaustive-predecessor-restored-global-unreference-proof",
+            command: "npm run provision:workers-builds:verify-review-token-rotation-blocked-delete-authority",
+            precondition: { recoveryCoordinate: privateFileReference(
+              "ATRINIK_REVIEW_TOKEN_ROTATION_BLOCKED_DELETE_RECOVERY_COORDINATE_FILE") },
+            produces: { proof_digest: "bounded-one-write-blocked-delete-authority-digest",
+              replacement_review_build_token_uuid:
+                "exact-journal-created-globally-unreferenced-replacement-wrapper" } },
+          { id: "rotation-blocked-delete-replacement-wrapper",
+            journalOperation: "rotation-delete-blocked-replacement-wrapper",
+            actor: "workers-builds-control-plane-operator", mutation: true,
+            action: "delete-only-the-exact-journal-created-replacement-wrapper-after-fresh-exhaustive-global-unreference",
+            precondition: { blockedDeleteAuthority: resultReference(
+              "rotation-blocked-delete-authority", "proof_digest"),
+            currentMainProof: currentMainMutationPrecondition() },
+            request: { method: "DELETE", path: apiPathReference(
+              "/builds/tokens/{build_token_uuid}", "rotation-blocked-delete-authority",
+              "replacement_review_build_token_uuid") },
+            produces: { deletion_tombstone: "exact-replacement-wrapper-uuid-absent" } },
+          { id: "rotation-blocked-delete-prove-complete",
+            actor: "workers-builds-control-plane-operator", mutation: false,
+            action: "prove-exact-predecessor-state-and-checksum-valid-successor-journal",
+            command: "npm run provision:workers-builds:verify-review-token-rotation-rollback-complete",
+            produces: { proof_digest: "fresh-exact-predecessor-state-digest" } },
+        ],
+        blockedTerminal: "fresh-exhaustive-predecessor-or-predecessor-restored-residual-snapshot",
+        forbidden: ["trigger-post-or-patch", "production-trigger-activation", "migration-0010",
+          "manual-build", "initial-production-build",
+          "worker-version-deployment-binding-route-domain-schedule-url-state-secret-or-repository-connection-mutation"],
+      },
       forbidden: ["production-trigger-activation", "migration-0010", "manual-build",
         "initial-production-build", "worker-version-deployment-binding-route-domain-schedule-url-state-secret-or-repository-connection-mutation"],
     },
@@ -3712,7 +4256,7 @@ export function validateSetupPlan(plan) {
   expectedRotationOperations))
     fail("review token rotation operation set, order, or authority drift");
   inspect({ ...plan.reviewTokenRotation, operations: undefined, rollbackOperations: undefined,
-    providerNormalizedIncidentRecovery: undefined });
+    providerNormalizedIncidentRecovery: undefined, blockedDeleteRecovery: undefined });
   for (const operation of rotationOperations) {
     inspect(operation);
     available.set(operation.id, new Set(Object.keys(operation.produces ?? {})));
@@ -3754,6 +4298,27 @@ export function validateSetupPlan(plan) {
       fail("review token rotation provider-normalized historical authority drift");
   }
   for (const operation of incidentOperations) {
+    inspect(operation);
+    available.set(operation.id, new Set(Object.keys(operation.produces ?? {})));
+  }
+  const blockedDelete = plan.reviewTokenRotation.blockedDeleteRecovery;
+  const blockedDeleteOperations = blockedDelete?.operations;
+  const expectedBlockedDeleteOperations = [
+    ["rotation-blocked-delete-authority", "workers-builds-control-plane-operator", false,
+      undefined],
+    ["rotation-blocked-delete-replacement-wrapper", "workers-builds-control-plane-operator",
+      true, "rotation-delete-blocked-replacement-wrapper"],
+    ["rotation-blocked-delete-prove-complete", "workers-builds-control-plane-operator", false,
+      undefined],
+  ];
+  if (!blockedDelete || !same(blockedDelete.coordinates,
+    reviewTokenRotationBlockedDeleteIncident) ||
+      !same(blockedDeleteOperations?.map(({ id, actor, mutation, journalOperation }) =>
+        [id, actor, mutation, journalOperation]), expectedBlockedDeleteOperations) ||
+      blockedDeleteOperations[1].request?.method !== "DELETE")
+    fail("review token rotation blocked delete recovery operation drift");
+  inspect({ ...blockedDelete, operations: undefined });
+  for (const operation of blockedDeleteOperations) {
     inspect(operation);
     available.set(operation.id, new Set(Object.keys(operation.produces ?? {})));
   }
@@ -4960,6 +5525,77 @@ async function readReviewTokenRotationAuthorityEvidence(environment = process.en
   };
 }
 
+async function readBlockedReviewTokenDeleteIncident({ production, review, accountId,
+  environment = process.env, testCapability = undefined,
+  providerNormalizedTestCapability = undefined }) {
+  const authorityPath = environment.ATRINIK_REVIEW_TOKEN_ROTATION_AUTHORITY_PROOF_FILE;
+  const authorityProof = await readPrivateJson(authorityPath,
+    "blocked delete historical review token rotation authority proof");
+  const evidence = await readReviewTokenRotationAuthorityEvidence(environment);
+  const replacementReviewTokenUuid = await readPrivateValue(
+    environment.ATRINIK_REPLACEMENT_REVIEW_BUILD_TOKEN_UUID_FILE,
+    "blocked delete replacement review build token UUID", uuidPattern);
+  const incidentForwardPath =
+    environment.ATRINIK_REVIEW_TOKEN_ROTATION_PROVIDER_NORMALIZED_FORWARD_JOURNAL_FILE;
+  const incidentForwardRecords = await readPrivateJsonLines(incidentForwardPath,
+    "blocked delete provider-normalized forward journal");
+  const incidentProof = await readPrivateJson(
+    environment.ATRINIK_REVIEW_TOKEN_ROTATION_PROVIDER_NORMALIZED_INCIDENT_PROOF_FILE,
+    "blocked delete provider-normalized incident proof");
+  const peerNormalizationProof = await readPrivateJson(
+    environment.ATRINIK_REVIEW_TOKEN_ROTATION_PEER_NORMALIZATION_PROOF_FILE,
+    "blocked delete peer normalization proof");
+  const restoredProof = await readPrivateJson(
+    environment.ATRINIK_REVIEW_TOKEN_ROTATION_ROLLBACK_RESTORED_PROOF_FILE,
+    "blocked delete predecessor-restored proof");
+  const rollbackPath =
+    environment.ATRINIK_REVIEW_TOKEN_ROTATION_PROVIDER_NORMALIZED_ROLLBACK_JOURNAL_FILE;
+  const rollbackRecords = await readPrivateJsonLines(rollbackPath,
+    "blocked delete provider-normalized rollback journal");
+  const blockedProof = await readPrivateJson(
+    environment.ATRINIK_REVIEW_TOKEN_ROTATION_PROVIDER_NORMALIZED_BLOCKED_PROOF_FILE,
+    "blocked delete residual proof");
+  const blockedSnapshotDirectory = await readPrivateValue(
+    environment.ATRINIK_REVIEW_TOKEN_ROTATION_PROVIDER_NORMALIZED_BLOCKED_SNAPSHOT_DIRECTORY_FILE,
+    "blocked delete residual snapshot directory");
+  const incidentSnapshotDirectory = await readPrivateValue(
+    environment.ATRINIK_REVIEW_TOKEN_ROTATION_PROVIDER_NORMALIZED_INCIDENT_SNAPSHOT_DIRECTORY_FILE,
+    "blocked delete provider-normalized incident snapshot directory");
+  const validation = await validateReviewTokenRotationBlockedDeleteIncidentCore(
+    rollbackRecords, blockedProof, authorityProof, { production, review, accountId,
+      sourceSha: blockedDeleteIncidentCoordinate(testCapability).sourceSha,
+      executorSha256: await readPrivateFileSha256(
+        environment.ATRINIK_REVIEW_TOKEN_ROTATION_PROVIDER_NORMALIZED_EXECUTOR_FILE,
+        "blocked delete incident executor"),
+      rollbackJournalSha256: await readPrivateFileSha256(rollbackPath,
+        "blocked delete provider-normalized rollback journal"),
+      residualSnapshotManifestSha256: await readPrivateFileSha256(
+        resolve(blockedSnapshotDirectory, "snapshot-manifest.json"),
+        "blocked delete residual snapshot manifest"),
+      failedGuardResponseSha256: await readPrivateFileSha256(
+        environment.ATRINIK_REVIEW_TOKEN_ROTATION_FAILED_DELETE_GUARD_RESPONSE_FILE,
+        "blocked delete failed guard response"), blockedSnapshotDirectory,
+      incidentProof, incidentForwardRecords,
+      incidentForwardJournalSha256: await readPrivateFileSha256(incidentForwardPath,
+        "blocked delete provider-normalized forward journal"),
+      incidentSnapshotManifestSha256: await readPrivateFileSha256(resolve(
+        incidentSnapshotDirectory, "snapshot-manifest.json"),
+      "blocked delete provider-normalized incident manifest"),
+      incidentAuthorityFileSha256: await readPrivateFileSha256(authorityPath,
+        "blocked delete historical authority"), peerNormalizationProof, restoredProof,
+      productionSentinelProof: evidence.productionSentinelProof,
+      predecessorTokenAuthorityProofs: evidence.predecessorTokenAuthorityProofs,
+      replacementTokenAuthorityProof: evidence.replacementTokenAuthorityProof,
+      replacementTokenId: evidence.replacementTokenId,
+      productionBaselineProof: evidence.productionBaselineProof,
+      providerNormalizedTestCapability }, testCapability);
+  if (validation.replacementReviewTokenUuid !== replacementReviewTokenUuid)
+    fail("blocked delete replacement UUID file drift");
+  return { authorityProof, evidence, incidentProof, peerNormalizationProof, restoredProof,
+    rollbackRecords, blockedProof, blockedSnapshotDirectory, validation,
+    replacementReviewTokenUuid };
+}
+
 async function readAndValidateReviewTokenRotationAuthority({ production, review, accountId,
   sourceSha, environment = process.env,
   minimumRemainingMs = reviewTokenRotationTransitionBudgetMs }) {
@@ -6017,6 +6653,8 @@ export const credentialedProvisioningModes = Object.freeze([
   "--verify-review-token-rotation-authority-proof-historical",
   "--verify-review-token-rotation-provider-normalized-authority-proof-historical",
   "--verify-review-token-rotation-authority-proof",
+  "--verify-review-token-rotation-blocked-delete-authority",
+  "--verify-review-token-rotation-blocked-delete-authority-proof",
   "--verify-review-token-rotation-complete",
   "--verify-review-token-rotation-complete-historical",
   "--verify-review-token-rotation-intermediate",
@@ -6162,6 +6800,95 @@ async function runProvisioningCliCore(mode = process.argv[2] ?? "--validate-only
       proof);
     process.stdout.write(`${JSON.stringify({ outcome: proof.outcome, mutation: false,
       sourceSha, expiresAt: proof.expiresAt, proof_digest: proof.proof_digest })}\n`);
+    return;
+  }
+  if (mode === "--verify-review-token-rotation-blocked-delete-authority") {
+    const accountId = await readPrivateValue(process.env.ATRINIK_CLOUDFLARE_ACCOUNT_ID_FILE,
+      "Cloudflare account ID", accountIdPattern);
+    const token = await readPrivateValue(process.env.ATRINIK_WORKERS_BUILDS_API_TOKEN_FILE,
+      "Workers Builds API token");
+    const productionReadToken = await readPrivateValue(
+      process.env.ATRINIK_PRODUCTION_BUILD_TOKEN_SECRET_FILE,
+      "production D1 read API token");
+    const incident = await readBlockedReviewTokenDeleteIncident({ production, review, accountId,
+      testCapability, providerNormalizedTestCapability: testCapability });
+    const recoveryCoordinate = await readPrivateJson(
+      process.env.ATRINIK_REVIEW_TOKEN_ROTATION_BLOCKED_DELETE_RECOVERY_COORDINATE_FILE,
+      "blocked delete recovery coordinate");
+    await validateBlockedDeleteRecoveryCoordinatePreparation(recoveryCoordinate, sourceSha);
+    const outputDirectory = process.env.ATRINIK_PROVIDER_SNAPSHOT_OUTPUT;
+    await providerSnapshotReader({ accountId, token, productionReadToken,
+      outputDirectory, production, review, sourceSha });
+    const identity = incident.authorityProof.journalIdentities;
+    const currentPhaseProof = await validateReviewTokenRotationSnapshotDirectory({
+      snapshotDirectory: outputDirectory, production, review, accountId, sourceSha,
+      phase: "predecessor-restored",
+      productionSentinelProof: incident.evidence.productionSentinelProof,
+      predecessorTokenAuthorityProofs: incident.evidence.predecessorTokenAuthorityProofs,
+      replacementTokenAuthorityProof: incident.evidence.replacementTokenAuthorityProof,
+      replacementTokenId: incident.evidence.replacementTokenId,
+      productionTriggerUuid: identity.productionTriggerUuid,
+      reviewTriggerUuid: identity.reviewTriggerUuid,
+      predecessorReviewTokenUuid: identity.predecessorReviewBuildTokenUuid,
+      replacementReviewTokenUuid: incident.replacementReviewTokenUuid,
+      productionPreservationDigest: incident.authorityProof.productionPreservationDigest,
+      authorityProof: incident.authorityProof,
+      productionBaselineProof: incident.evidence.productionBaselineProof,
+      authoritySourceSha: incident.authorityProof.sourceSha,
+      authorityPlanDigest: incident.authorityProof.planDigest,
+    });
+    const currentMainProof = await readCurrentMainProof(process.env, sourceSha);
+    const authority = issueReviewTokenRotationBlockedDeleteAuthority({ production, review,
+      accountId, sourceSha, currentMainProof, currentPhaseProof,
+      historicalAuthorityProof: incident.authorityProof,
+      blockedIncidentValidation: incident.validation, recoveryCoordinate });
+    await writePrivateProof(
+      process.env.ATRINIK_REVIEW_TOKEN_ROTATION_BLOCKED_DELETE_CURRENT_PROOF_OUTPUT_FILE,
+      currentPhaseProof);
+    await writePrivateProof(
+      process.env.ATRINIK_REVIEW_TOKEN_ROTATION_BLOCKED_DELETE_AUTHORITY_PROOF_OUTPUT_FILE,
+      authority);
+    process.stdout.write(`${JSON.stringify({ outcome: authority.outcome, mutation: false,
+      sourceSha, expiresAt: authority.expiresAt, proof_digest: authority.proof_digest,
+      replacement_review_build_token_uuid: authority.replacementReviewTokenUuid })}\n`);
+    return;
+  }
+  if (mode === "--verify-review-token-rotation-blocked-delete-authority-proof") {
+    const accountId = await readPrivateValue(process.env.ATRINIK_CLOUDFLARE_ACCOUNT_ID_FILE,
+      "Cloudflare account ID", accountIdPattern);
+    const incident = await readBlockedReviewTokenDeleteIncident({ production, review, accountId,
+      testCapability, providerNormalizedTestCapability: testCapability });
+    const authority = await readPrivateJson(
+      process.env.ATRINIK_REVIEW_TOKEN_ROTATION_BLOCKED_DELETE_AUTHORITY_PROOF_FILE,
+      "blocked delete recovery authority proof");
+    const currentPhaseProof = await readPrivateJson(
+      process.env.ATRINIK_REVIEW_TOKEN_ROTATION_BLOCKED_DELETE_CURRENT_PROOF_FILE,
+      "blocked delete current predecessor-restored proof");
+    const currentMainProof = await readCurrentMainProof(process.env, sourceSha);
+    const recoveryCoordinate = await readPrivateJson(
+      process.env.ATRINIK_REVIEW_TOKEN_ROTATION_BLOCKED_DELETE_RECOVERY_COORDINATE_FILE,
+      "blocked delete recovery coordinate");
+    const validation = validateReviewTokenRotationBlockedDeleteAuthority(authority,
+      { production, review, accountId, sourceSha, currentMainProof, currentPhaseProof,
+        historicalAuthorityProof: incident.authorityProof,
+        blockedIncidentValidation: incident.validation, recoveryCoordinate });
+    const requestedReceiptPath =
+      process.env.ATRINIK_REVIEW_TOKEN_ROTATION_BLOCKED_DELETE_AUTHORIZATION_RECEIPT_OUTPUT_FILE;
+    if (requestedReceiptPath !== recoveryCoordinate.authorizationReceiptPath)
+      fail("blocked delete recovery authorization receipt path drift");
+    const receiptUnsigned = {
+      outcome: "workers-builds-review-token-rotation-blocked-delete-write-authorized",
+      mutation: false, operation: "delete", sourceSha,
+      authorityProofDigest: authority.proof_digest,
+      recoveryCoordinateDigest: authority.recoveryCoordinateDigest,
+      replacementReviewTokenUuid: authority.replacementReviewTokenUuid,
+      requestDigestSha256: validation.request.requestDigestSha256,
+      capturedAt: new Date().toISOString(),
+    };
+    const receipt = { ...receiptUnsigned, proof_digest: digestJson(receiptUnsigned) };
+    await writePrivateProof(requestedReceiptPath, receipt);
+    process.stdout.write(`${JSON.stringify({ ...validation, sourceSha,
+      proof_digest: authority.proof_digest, receipt_digest: receipt.proof_digest })}\n`);
     return;
   }
   if (mode === "--verify-review-token-rotation-authority") {
