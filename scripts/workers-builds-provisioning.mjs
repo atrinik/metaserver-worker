@@ -26,7 +26,7 @@ const maximumProviderPages = 100;
 const stagingBranchPattern = /^review-build-only-sentinel-[0-9a-f]{32}$/u;
 const reviewStagingRootPattern = /^\/review-build-only-staging-[0-9a-f]{32}$/u;
 const gitShaPattern = /^[0-9a-f]{40}$/u;
-const expectedSetupPlanSha256 = "3b54710389aab8ad61daf3bca1c89117de169ff2324347ad503f64bb992ba491";
+const expectedSetupPlanSha256 = "8268cfa33332ac3d2de573b2dfb1d9731efa3a2da6de36734d01adbe47979ce2";
 const currentMainProofSource = "authenticated-gh-api-current-main-readback";
 const currentMainProofEndpoint = "repos/atrinik/metaserver-worker/git/ref/heads/main";
 const currentMainRef = "refs/heads/main";
@@ -1110,8 +1110,8 @@ export function reviewTokenRotationRollbackRequestDigest({ production, review, a
 
 export function validateReviewTokenRotationProviderNormalizedIncident(forwardRecords,
 incidentProof, authorityProof, { production, review, accountId, forwardJournalSha256,
-  incidentSnapshotManifestSha256, authorityFileSha256 }) {
-  const coordinate = reviewTokenRotationProviderNormalizedIncident;
+  incidentSnapshotManifestSha256, authorityFileSha256,
+  coordinate = reviewTokenRotationProviderNormalizedIncident }) {
   validateHistoricalReviewTokenRotationAuthority(authorityProof, { production, review,
     accountId, sourceSha: coordinate.sourceSha, planDigest: coordinate.planDigest });
   validateReviewTokenRotationPhaseProof(incidentProof,
@@ -1692,8 +1692,106 @@ export function reviewTokenRotationUnresolvedReplacementCoordinate(authorityProo
     `8${value.slice(17, 20)}-${value.slice(20, 32)}`;
 }
 
-export function classifyReviewTokenRotationProviderNormalizedRollbackPrefix(records,
-peerNormalizationPhase = null) {
+function validateReviewTokenRotationRollbackMutationPrefix(records, authorityProof, {
+  production, review, sourceSha, replacementReviewTokenUuid, operation,
+  terminalBlocked = false, providerNormalizedIncident = false,
+}) {
+  const find = (event) => records.find((record) =>
+    record.event === event && record.operation === operation);
+  const currentMain = find("current-main-proof-bound");
+  const authority = find("rollback-authority-checked");
+  const intent = find("mutation-intent");
+  const classified = find("provider-response-classified");
+  const bound = find("mutation-bound");
+  const present = [currentMain, authority, intent, classified, bound];
+  if (!present.some(Boolean)) return { currentMain, authority, intent, classified, bound };
+  const expectedRequest = reviewTokenRotationRollbackRequestDigest({ production, review,
+    authorityProof, operation, replacementReviewTokenUuid });
+  const explicit = classified?.outcome === "explicit-success";
+  const explicitFailure = classified?.outcome === "explicit-failure";
+  const resourceUuid = operation === "rotation-restore-review-trigger-old-token" ?
+    authorityProof.journalIdentities.reviewTriggerUuid :
+    operation === "rotation-restore-production-trigger-old-token" ?
+      authorityProof.journalIdentities.productionTriggerUuid : replacementReviewTokenUuid;
+  const mainCaptured = Date.parse(currentMain?.capturedAt ?? "");
+  const mainAt = Date.parse(currentMain?.at ?? "");
+  if (currentMain && (currentMain.sourceSha !== sourceSha || currentMain.ref !== currentMainRef ||
+      !/^[0-9a-f]{64}$/u.test(currentMain.proofFileSha256 ?? "") ||
+      !/^[0-9a-f]{64}$/u.test(currentMain.rawFileSha256 ?? "") ||
+      !isUtcTimestamp(currentMain.capturedAt) || !Number.isFinite(mainCaptured) ||
+      mainCaptured > mainAt || mainAt - mainCaptured > 5 * 60_000) ||
+      authority && (authority.proofDigest !== authorityProof.proof_digest ||
+        authority.historicalRollbackAuthority !== true) ||
+      intent && (intent.method !== expectedRequest.method || intent.path !== expectedRequest.path ||
+        intent.requestDigestSha256 !== expectedRequest.requestDigestSha256) ||
+      classified && !["explicit-success", "ambiguous",
+        ...(terminalBlocked ? ["explicit-failure"] : [])].includes(classified.outcome) ||
+      explicitFailure && (!Number.isInteger(classified.status) || classified.status < 400 ||
+        classified.status > 599 ||
+        !/^[0-9a-f]{64}$/u.test(classified.responseDigestSha256 ?? "")) ||
+      explicitFailure && bound ||
+      bound && (bound.requestDigestSha256 !== intent?.requestDigestSha256 ||
+        bound.providerResponseExplicitSuccess !== explicit || bound.resourceUuid !== resourceUuid ||
+        !/^[0-9a-f]{64}$/u.test(bound.readbackDigestSha256 ?? "") ||
+        bound.reconciliation !== (operation === "rotation-delete-replacement-wrapper" ?
+          (explicit ? "explicit-success-exact-absence" : "ambiguous-exact-absence") :
+          (explicit ? "explicit-success-exact-readback" : "ambiguous-exact-readback")) ||
+        (operation === "rotation-delete-replacement-wrapper" && bound.deletionTombstone !== true) ||
+        providerNormalizedIncident &&
+          operation === "rotation-restore-production-trigger-old-token" &&
+          typeof bound.reviewPeerAugmented !== "boolean"))
+    fail("review token rotation rollback mutation provenance drift");
+  const ordered = present.filter(Boolean).map(({ at }) => Date.parse(at));
+  if (ordered.some((at, index) => index > 0 && at < ordered[index - 1]) ||
+      intent && authority && Date.parse(intent.at) - Date.parse(authority.at) > 30_000)
+    fail("review token rotation rollback mutation chronology drift");
+  return { currentMain, authority, intent, classified, bound };
+}
+
+function validateReviewTokenRotationPeerNormalizationBinding(records, peerNormalizationProof,
+authorityProof, { accountId, sourceSha }) {
+  const find = (event, operation) => records.find((record) =>
+    record.event === event && record.operation === operation);
+  const peerNormalizationBound = find("provider-proof-bound",
+    "rotation-prove-provider-peer-normalization");
+  if (!peerNormalizationBound) return null;
+  if (!["predecessor-restored", "production-restored-review-augmented"]
+    .includes(peerNormalizationProof?.phase))
+    fail("review token rotation provider peer normalization phase drift");
+  validateReviewTokenRotationPhaseProof(peerNormalizationProof,
+    peerNormalizationProof.phase, authorityProof, { accountId, sourceSha },
+    Date.parse(peerNormalizationBound.at), Infinity);
+  const productionBound = find("mutation-bound",
+    "rotation-restore-production-trigger-old-token");
+  if (Date.parse(productionBound?.at ?? "") > Date.parse(peerNormalizationProof.capturedAt) ||
+      Date.parse(peerNormalizationProof.capturedAt) > Date.parse(peerNormalizationBound.at) ||
+      peerNormalizationBound.proofDigest !== peerNormalizationProof.proof_digest ||
+      peerNormalizationBound.proofFileSha256 !== digestJson(peerNormalizationProof) ||
+      productionBound.reviewPeerAugmented !==
+        (peerNormalizationProof.phase === "production-restored-review-augmented"))
+    fail("review token rotation provider peer normalization proof drift");
+  return peerNormalizationBound;
+}
+
+export async function classifyReviewTokenRotationProviderNormalizedRollbackPrefix(records, {
+  production, review, accountId, sourceSha, authorityProof, replacementReviewTokenUuid,
+  incidentProof, incidentForwardRecords, incidentForwardJournalSha256,
+  incidentSnapshotManifestSha256, incidentAuthorityFileSha256,
+  incidentCoordinate = reviewTokenRotationProviderNormalizedIncident,
+  peerNormalizationProof = undefined, restoredProof = undefined, completeProof = undefined,
+  blockedSnapshotDirectory = undefined, blockedProof = undefined,
+  productionSentinelProof = undefined, predecessorTokenAuthorityProofs = undefined,
+  replacementTokenAuthorityProof = undefined, replacementTokenId = undefined,
+  productionBaselineProof = undefined,
+} = {}) {
+  const incident = validateReviewTokenRotationProviderNormalizedIncident(incidentForwardRecords,
+    incidentProof, authorityProof, { production, review, accountId,
+      forwardJournalSha256: incidentForwardJournalSha256,
+      incidentSnapshotManifestSha256, authorityFileSha256: incidentAuthorityFileSha256,
+      coordinate: incidentCoordinate });
+  const peerProofPresent = records.some((record) => record.event === "provider-proof-bound" &&
+    record.operation === "rotation-prove-provider-peer-normalization");
+  const peerNormalizationPhase = peerProofPresent ? peerNormalizationProof?.phase ?? null : null;
   if (![null, "predecessor-restored", "production-restored-review-augmented"]
     .includes(peerNormalizationPhase))
     fail("review token rotation provider-normalized rollback phase drift");
@@ -1714,12 +1812,11 @@ peerNormalizationPhase = null) {
   ];
   if (!Array.isArray(records)) fail("review token rotation provider-normalized prefix drift");
   const pairs = records.map(({ event, operation }) => [event, operation]);
-  const proofIndex = expected.findIndex(([event, operation]) =>
-    event === "provider-proof-bound" &&
-      operation === "rotation-prove-provider-peer-normalization");
-  if (records.length > proofIndex && peerNormalizationPhase === null)
+  const terminalBlocked = records.at(-1)?.event === "review-token-rotation-rollback-blocked";
+  if (peerProofPresent && peerNormalizationPhase === null)
     fail("review token rotation provider-normalized peer disposition is missing");
-  if (!same(pairs, expected.slice(0, pairs.length)))
+  const comparedPairs = terminalBlocked ? pairs.slice(0, -1) : pairs;
+  if (!same(comparedPairs, expected.slice(0, comparedPairs.length)))
     fail("review token rotation provider-normalized rollback prefix drift");
   let previousAt = -Infinity;
   for (const record of records) {
@@ -1730,6 +1827,68 @@ peerNormalizationPhase = null) {
         record.attempt !== 1) fail("review token rotation provider-normalized prefix checksum drift");
     previousAt = at;
   }
+  if (records.length > 0 && (records[0].authorityProofDigest !== authorityProof.proof_digest ||
+      records[0].replacementReviewTokenUuid !== replacementReviewTokenUuid ||
+      records[0].incidentCoordinateDigest !== incident.incidentCoordinateDigest ||
+      records[0].incidentProofDigest !== incidentProof.proof_digest ||
+      records[0].forwardJournalDigest !== incident.forwardJournalDigest))
+    fail("review token rotation provider-normalized prefix starting state drift");
+  const operations = ["rotation-restore-production-trigger-old-token",
+    ...(peerNormalizationPhase === "production-restored-review-augmented" ?
+      ["rotation-restore-review-trigger-old-token"] : []),
+    "rotation-delete-replacement-wrapper"];
+  for (const operation of operations) validateReviewTokenRotationRollbackMutationPrefix(records,
+    authorityProof, { production, review, sourceSha, replacementReviewTokenUuid, operation,
+      terminalBlocked: terminalBlocked || records.at(-1)?.event ===
+        "provider-response-classified",
+      providerNormalizedIncident: true });
+  const peerBound = validateReviewTokenRotationPeerNormalizationBinding(records,
+    peerNormalizationProof, authorityProof, { accountId, sourceSha });
+  if (peerProofPresent && !peerBound)
+    fail("review token rotation provider-normalized peer proof is missing");
+  const restoredBound = records.find((record) => record.event === "provider-proof-bound" &&
+    record.operation === "rotation-prove-predecessor-restored");
+  if (restoredBound) {
+    validateReviewTokenRotationPhaseProof(restoredProof, "predecessor-restored", authorityProof,
+      { accountId, sourceSha }, Date.parse(restoredBound.at), Infinity);
+    const finalRestore = peerNormalizationPhase === "production-restored-review-augmented" ?
+      "rotation-restore-review-trigger-old-token" :
+      "rotation-restore-production-trigger-old-token";
+    const finalRestoreBound = records.find((record) => record.event === "mutation-bound" &&
+      record.operation === finalRestore);
+    if (restoredBound.proofDigest !== restoredProof.proof_digest ||
+        restoredBound.proofFileSha256 !== digestJson(restoredProof) ||
+        Date.parse(finalRestoreBound?.at ?? "") > Date.parse(restoredProof.capturedAt) ||
+        Date.parse(restoredProof.capturedAt) > Date.parse(restoredBound.at))
+      fail("review token rotation provider-normalized restored proof drift");
+  }
+  const completeBound = records.find((record) => record.event === "provider-proof-bound" &&
+    record.operation === "rotation-prove-rollback-complete");
+  if (completeBound) {
+    validateReviewTokenRotationPredecessorProof(completeProof, authorityProof,
+      { accountId, sourceSha }, Date.parse(completeBound.at), Infinity);
+    const deletionBound = records.find((record) => record.event === "mutation-bound" &&
+      record.operation === "rotation-delete-replacement-wrapper");
+    if (completeBound.proofDigest !== completeProof.proof_digest ||
+        completeBound.proofFileSha256 !== digestJson(completeProof) ||
+        Date.parse(deletionBound?.at ?? "") > Date.parse(completeProof.capturedAt) ||
+        Date.parse(completeProof.capturedAt) > Date.parse(completeBound.at))
+      fail("review token rotation provider-normalized complete proof drift");
+  }
+  const validatorArguments = { production, review, accountId, sourceSha, authorityProof,
+    replacementReviewTokenUuid, incidentProof, incidentForwardRecords,
+    incidentForwardJournalSha256, incidentSnapshotManifestSha256,
+    incidentAuthorityFileSha256, incidentCoordinate, peerNormalizationProof, restoredProof,
+    completeProof, blockedSnapshotDirectory, blockedProof, productionSentinelProof,
+    predecessorTokenAuthorityProofs, replacementTokenAuthorityProof, replacementTokenId,
+    productionBaselineProof, authoritySourceSha: incidentCoordinate.sourceSha,
+    authorityPlanDigest: incidentCoordinate.planDigest };
+  if (["review-token-rotation-rollback-complete",
+    "review-token-rotation-rollback-blocked"].includes(records.at(-1)?.event)) {
+    await validateReviewTokenRotationRollbackJournal(records, authorityProof, validatorArguments);
+    return { outcome: "workers-builds-review-token-rotation-provider-normalized-prefix-valid",
+      mutation: false, nextEvent: null, nextOperation: null, reconcile: false, terminal: true };
+  }
   const classified = records.at(-1)?.event === "provider-response-classified" ?
     records.at(-1) : null;
   if (classified?.outcome === "explicit-failure") return {
@@ -1737,6 +1896,9 @@ peerNormalizationPhase = null) {
     mutation: false, nextEvent: "review-token-rotation-rollback-blocked",
     reconcile: false, terminal: false };
   if (classified?.outcome === "ambiguous") return {
+    outcome: "workers-builds-review-token-rotation-provider-normalized-prefix-valid",
+    mutation: false, nextEvent: "mutation-bound", reconcile: true, terminal: false };
+  if (classified?.outcome === "explicit-success") return {
     outcome: "workers-builds-review-token-rotation-provider-normalized-prefix-valid",
     mutation: false, nextEvent: "mutation-bound", reconcile: true, terminal: false };
   const next = expected[records.length];
@@ -1824,6 +1986,7 @@ export async function validateReviewTokenRotationRollbackJournal(records, author
   peerNormalizationProof,
   incidentProof, incidentForwardRecords, incidentForwardJournalSha256,
   incidentSnapshotManifestSha256, incidentAuthorityFileSha256,
+  incidentCoordinate = reviewTokenRotationProviderNormalizedIncident,
   replacementReviewTokenUuid, blockedSnapshotDirectory, productionSentinelProof,
   predecessorTokenAuthorityProofs, replacementTokenAuthorityProof, replacementTokenId,
   productionBaselineProof, blockedProof,
@@ -1852,7 +2015,8 @@ export async function validateReviewTokenRotationRollbackJournal(records, author
     validateReviewTokenRotationProviderNormalizedIncident(incidentForwardRecords,
       incidentProof, authorityProof, { production, review, accountId,
         forwardJournalSha256: incidentForwardJournalSha256,
-        incidentSnapshotManifestSha256, authorityFileSha256: incidentAuthorityFileSha256 }) : null;
+        incidentSnapshotManifestSha256, authorityFileSha256: incidentAuthorityFileSha256,
+        coordinate: incidentCoordinate }) : null;
   const peerAutomaticallyNormalized = providerNormalizedIncident &&
     peerNormalizationProof?.phase === "predecessor-restored";
   const phaseOperations = {
@@ -1901,78 +2065,14 @@ export async function validateReviewTokenRotationRollbackJournal(records, author
     fail("review token rotation rollback journal sequence drift");
   const find = (event, operation) => records.find((record) =>
     record.event === event && record.operation === operation);
-  const validateMutation = (operation) => {
-    const currentMain = find("current-main-proof-bound", operation);
-    const authority = find("rollback-authority-checked", operation);
-    const intent = find("mutation-intent", operation);
-    const classified = find("provider-response-classified", operation);
-    const bound = find("mutation-bound", operation);
-    const present = [currentMain, authority, intent, classified, bound];
-    if (!present.some(Boolean)) return;
-    const expectedRequest = reviewTokenRotationRollbackRequestDigest({ production, review,
-      authorityProof, operation, replacementReviewTokenUuid });
-    const explicit = classified?.outcome === "explicit-success";
-    const explicitFailure = classified?.outcome === "explicit-failure";
-    const resourceUuid = operation === "rotation-restore-review-trigger-old-token" ?
-      authorityProof.journalIdentities.reviewTriggerUuid :
-      operation === "rotation-restore-production-trigger-old-token" ?
-        authorityProof.journalIdentities.productionTriggerUuid : replacementReviewTokenUuid;
-    const mainCaptured = Date.parse(currentMain?.capturedAt ?? "");
-    const mainAt = Date.parse(currentMain?.at ?? "");
-    if (currentMain && (currentMain.sourceSha !== sourceSha || currentMain.ref !== currentMainRef ||
-        !/^[0-9a-f]{64}$/u.test(currentMain.proofFileSha256 ?? "") ||
-        !/^[0-9a-f]{64}$/u.test(currentMain.rawFileSha256 ?? "") ||
-        !isUtcTimestamp(currentMain.capturedAt) || !Number.isFinite(mainCaptured) ||
-        mainCaptured > mainAt || mainAt - mainCaptured > 5 * 60_000) ||
-        authority && (authority.proofDigest !== authorityProof.proof_digest ||
-          authority.historicalRollbackAuthority !== true) ||
-        intent && (intent.method !== expectedRequest.method || intent.path !== expectedRequest.path ||
-          intent.requestDigestSha256 !== expectedRequest.requestDigestSha256) ||
-        classified && !["explicit-success", "ambiguous",
-          ...(terminalBlocked ? ["explicit-failure"] : [])].includes(classified.outcome) ||
-        explicitFailure && (!Number.isInteger(classified.status) || classified.status < 400 ||
-          classified.status > 599 ||
-          !/^[0-9a-f]{64}$/u.test(classified.responseDigestSha256 ?? "")) ||
-        explicitFailure && bound ||
-        bound && (bound.requestDigestSha256 !== intent?.requestDigestSha256 ||
-          bound.providerResponseExplicitSuccess !== explicit || bound.resourceUuid !== resourceUuid ||
-          !/^[0-9a-f]{64}$/u.test(bound.readbackDigestSha256 ?? "") ||
-          bound.reconciliation !== (operation === "rotation-delete-replacement-wrapper" ?
-            (explicit ? "explicit-success-exact-absence" : "ambiguous-exact-absence") :
-            (explicit ? "explicit-success-exact-readback" : "ambiguous-exact-readback")) ||
-          (operation === "rotation-delete-replacement-wrapper" &&
-            bound.deletionTombstone !== true) ||
-          providerNormalizedIncident &&
-            operation === "rotation-restore-production-trigger-old-token" &&
-            typeof bound.reviewPeerAugmented !== "boolean"))
-      fail("review token rotation rollback mutation provenance drift");
-    const ordered = present.filter(Boolean).map(({ at }) => Date.parse(at));
-    if (ordered.some((at, index) => index > 0 && at < ordered[index - 1]) ||
-        intent && authority && Date.parse(intent.at) - Date.parse(authority.at) > 30_000)
-      fail("review token rotation rollback mutation chronology drift");
-  };
-  for (const operation of mutationOperations) validateMutation(operation);
-  const peerNormalizationBound = find("provider-proof-bound",
-    "rotation-prove-provider-peer-normalization");
-  if (providerNormalizedIncident && peerNormalizationBound) {
-    if (!["predecessor-restored", "production-restored-review-augmented"]
-      .includes(peerNormalizationProof?.phase))
-      fail("review token rotation provider peer normalization phase drift");
-    validateReviewTokenRotationPhaseProof(peerNormalizationProof,
-      peerNormalizationProof.phase, authorityProof, { accountId, sourceSha },
-      Date.parse(peerNormalizationBound.at), Infinity);
-    const productionBound = find("mutation-bound",
-      "rotation-restore-production-trigger-old-token");
-    if (Date.parse(productionBound?.at ?? "") >
-        Date.parse(peerNormalizationProof.capturedAt) ||
-        Date.parse(peerNormalizationProof.capturedAt) >
-          Date.parse(peerNormalizationBound.at) ||
-        peerNormalizationBound.proofDigest !== peerNormalizationProof.proof_digest ||
-        peerNormalizationBound.proofFileSha256 !== digestJson(peerNormalizationProof) ||
-        productionBound.reviewPeerAugmented !==
-          (peerNormalizationProof.phase === "production-restored-review-augmented"))
-      fail("review token rotation provider peer normalization proof drift");
-  } else if (providerNormalizedIncident && !terminalBlocked)
+  for (const operation of mutationOperations)
+    validateReviewTokenRotationRollbackMutationPrefix(records, authorityProof,
+      { production, review, sourceSha, replacementReviewTokenUuid, operation,
+        terminalBlocked, providerNormalizedIncident });
+  const peerNormalizationBound = providerNormalizedIncident ?
+    validateReviewTokenRotationPeerNormalizationBinding(records, peerNormalizationProof,
+      authorityProof, { accountId, sourceSha }) : null;
+  if (providerNormalizedIncident && !peerNormalizationBound && !terminalBlocked)
     fail("review token rotation provider peer normalization proof is missing");
 
   if (terminalBlocked) {
@@ -3146,11 +3246,14 @@ export function provisioningSetupPlan(production, review) {
         incidentPhase: "production-repointed-review-augmented",
         coordinates: structuredClone(reviewTokenRotationProviderNormalizedIncident),
         operations: [
-          { id: "rotation-validate-provider-normalized-incident", mutation: false,
+          { id: "rotation-validate-provider-normalized-incident",
+            actor: "workers-builds-control-plane-operator", mutation: false,
             action: "bind-exact-twelve-record-forward-prefix-historical-authority-and-exhaustive-peer-augmented-snapshot",
             command: "npm run provision:workers-builds:verify-review-token-rotation-provider-normalized-incident",
             produces: { proof_digest: "exact-provider-normalized-incident-coordinate-digest" } },
-          { id: "rotation-incident-restore-production-trigger-old-token", mutation: true,
+          { id: "rotation-incident-restore-production-trigger-old-token",
+            journalOperation: "rotation-restore-production-trigger-old-token",
+            actor: "workers-builds-control-plane-operator", mutation: true,
             action: "restore-production-predecessor-body-first-and-read-back-both-triggers",
             precondition: { incidentProof: resultReference(
               "rotation-validate-provider-normalized-incident", "proof_digest"),
@@ -3161,11 +3264,14 @@ export function provisioningSetupPlan(production, review) {
               "/builds/triggers/{trigger_uuid}", "review-token-rotation-authority",
               "production_trigger_uuid"),
             body: triggerPlanSpec(productionStaged, "production-script", "review-build-token") } },
-          { id: "rotation-prove-provider-peer-normalization", mutation: false,
+          { id: "rotation-prove-provider-peer-normalization",
+            actor: "workers-builds-control-plane-operator", mutation: false,
             action: "prove-exact-auto-normalized-predecessor-review-or-only-retained-sentinel-exclusion",
             command: "npm run provision:workers-builds:verify-review-token-rotation-provider-peer-normalization",
             produces: { proof_digest: "fresh-exact-provider-peer-normalization-digest" } },
-          { id: "rotation-incident-restore-review-trigger-old-token", mutation: true,
+          { id: "rotation-incident-restore-review-trigger-old-token",
+            journalOperation: "rotation-restore-review-trigger-old-token",
+            actor: "workers-builds-control-plane-operator", mutation: true,
             condition: "only-when-peer-normalization-proof-retains-the-sentinel-exclusion",
             action: "restore-only-the-exact-journaled-review-trigger-predecessor-body",
             precondition: { peerNormalizationProof: resultReference(
@@ -3177,10 +3283,14 @@ export function provisioningSetupPlan(production, review) {
               "/builds/triggers/{trigger_uuid}", "review-token-rotation-authority",
               "review_trigger_uuid"),
             body: triggerPlanSpec(reviewFinal, "production-script", "review-build-token") } },
-          { id: "rotation-incident-prove-predecessor-restored", mutation: false,
+          { id: "rotation-incident-prove-predecessor-restored",
+            actor: "workers-builds-control-plane-operator", mutation: false,
             action: "prove-exact-predecessor-state-production-preservation-no-active-builds-and-no-hooks",
+            command: "npm run provision:workers-builds:verify-review-token-rotation-rollback-restored",
             produces: { proof_digest: "fresh-predecessor-restored-and-replacement-unreferenced-digest" } },
-          { id: "rotation-incident-delete-replacement-wrapper", mutation: true,
+          { id: "rotation-incident-delete-replacement-wrapper",
+            journalOperation: "rotation-delete-replacement-wrapper",
+            actor: "workers-builds-control-plane-operator", mutation: true,
             action: "delete-only-the-journal-created-globally-unreferenced-replacement-wrapper",
             precondition: { restoredProof: resultReference(
               "rotation-incident-prove-predecessor-restored", "proof_digest"),
@@ -3191,8 +3301,10 @@ export function provisioningSetupPlan(production, review) {
               "/builds/tokens/{build_token_uuid}", "replacement-review-build-token",
               "build_token_uuid") },
             produces: { deletion_tombstone: "exact-replacement-wrapper-uuid-absent" } },
-          { id: "rotation-incident-prove-rollback-complete", mutation: false,
+          { id: "rotation-incident-prove-rollback-complete",
+            actor: "workers-builds-control-plane-operator", mutation: false,
             action: "bind-exact-terminal-predecessor-state-and-checksum-valid-rollback-journal",
+            command: "npm run provision:workers-builds:verify-review-token-rotation-rollback-complete",
             produces: { proof_digest: "fresh-exact-predecessor-state-digest" } },
         ],
         blockedTerminal: "fresh-exhaustive-phase-exact-residual-snapshot",
@@ -3512,7 +3624,29 @@ export function validateSetupPlan(plan) {
   }
   inspect({ ...plan.reviewTokenRotation.providerNormalizedIncidentRecovery,
     operations: undefined });
-  for (const operation of plan.reviewTokenRotation.providerNormalizedIncidentRecovery.operations) {
+  const incidentOperations = plan.reviewTokenRotation.providerNormalizedIncidentRecovery.operations;
+  const expectedIncidentOperations = [
+    ["rotation-validate-provider-normalized-incident", "workers-builds-control-plane-operator",
+      false, undefined],
+    ["rotation-incident-restore-production-trigger-old-token",
+      "workers-builds-control-plane-operator", true,
+      "rotation-restore-production-trigger-old-token"],
+    ["rotation-prove-provider-peer-normalization", "workers-builds-control-plane-operator",
+      false, undefined],
+    ["rotation-incident-restore-review-trigger-old-token",
+      "workers-builds-control-plane-operator", true,
+      "rotation-restore-review-trigger-old-token"],
+    ["rotation-incident-prove-predecessor-restored", "workers-builds-control-plane-operator",
+      false, undefined],
+    ["rotation-incident-delete-replacement-wrapper", "workers-builds-control-plane-operator",
+      true, "rotation-delete-replacement-wrapper"],
+    ["rotation-incident-prove-rollback-complete", "workers-builds-control-plane-operator",
+      false, undefined],
+  ];
+  if (!same(incidentOperations.map(({ id, actor, mutation, journalOperation }) =>
+    [id, actor, mutation, journalOperation]), expectedIncidentOperations))
+    fail("review token rotation provider-normalized incident operation drift");
+  for (const operation of incidentOperations) {
     inspect(operation);
     available.set(operation.id, new Set(Object.keys(operation.produces ?? {})));
   }
@@ -5795,7 +5929,8 @@ export async function credentialedSourceSha(mode, load = reviewedCurrentMainSha)
 }
 
 export async function runProvisioningCli(mode = process.argv[2] ?? "--validate-only",
-  sourceShaLoader = reviewedCurrentMainSha, providerSnapshotReader = readProviderSnapshot) {
+  sourceShaLoader = reviewedCurrentMainSha, providerSnapshotReader = readProviderSnapshot,
+  providerNormalizedIncidentCoordinate = reviewTokenRotationProviderNormalizedIncident) {
   const { production, review } = await validateCheckedInProvisioning();
   if (mode === "--validate-only") {
     process.stdout.write(`${JSON.stringify({ outcome: "workers-builds-provisioning-valid" })}\n`);
@@ -6005,8 +6140,8 @@ export async function runProvisioningCli(mode = process.argv[2] ?? "--validate-o
       "review token rotation authority proof");
     const evidence = await readReviewTokenRotationAuthorityEvidence(process.env);
     validateHistoricalReviewTokenRotationAuthority(authorityProof, { production, review,
-      accountId, sourceSha: reviewTokenRotationProviderNormalizedIncident.sourceSha,
-      planDigest: reviewTokenRotationProviderNormalizedIncident.planDigest });
+      accountId, sourceSha: providerNormalizedIncidentCoordinate.sourceSha,
+      planDigest: providerNormalizedIncidentCoordinate.planDigest });
     const replacementReviewTokenUuid = await readPrivateValue(
       process.env.ATRINIK_REPLACEMENT_REVIEW_BUILD_TOKEN_UUID_FILE,
       "replacement review build token UUID", uuidPattern);
@@ -6019,7 +6154,7 @@ export async function runProvisioningCli(mode = process.argv[2] ?? "--validate-o
       "provider-normalized forward journal");
     const incidentProof = await validateReviewTokenRotationSnapshotDirectory({
       snapshotDirectory, production, review, accountId,
-      sourceSha: reviewTokenRotationProviderNormalizedIncident.sourceSha,
+      sourceSha: providerNormalizedIncidentCoordinate.sourceSha,
       phase: "production-repointed-review-augmented",
       productionSentinelProof: evidence.productionSentinelProof,
       predecessorTokenAuthorityProofs: evidence.predecessorTokenAuthorityProofs,
@@ -6032,8 +6167,8 @@ export async function runProvisioningCli(mode = process.argv[2] ?? "--validate-o
       replacementReviewTokenUuid, productionPreservationDigest:
         authorityProof.productionPreservationDigest, authorityProof,
       productionBaselineProof: evidence.productionBaselineProof,
-      authoritySourceSha: reviewTokenRotationProviderNormalizedIncident.sourceSha,
-      authorityPlanDigest: reviewTokenRotationProviderNormalizedIncident.planDigest,
+      authoritySourceSha: providerNormalizedIncidentCoordinate.sourceSha,
+      authorityPlanDigest: providerNormalizedIncidentCoordinate.planDigest,
       now: Date.parse((await loadSnapshot(snapshotDirectory,
         "snapshot-manifest.json")).completedAt),
     });
@@ -6045,7 +6180,8 @@ export async function runProvisioningCli(mode = process.argv[2] ?? "--validate-o
           resolve(snapshotDirectory, "snapshot-manifest.json"),
           "provider-normalized incident snapshot manifest"),
         authorityFileSha256: await readPrivateFileSha256(authorityPath,
-          "review token rotation authority proof") });
+          "review token rotation authority proof"),
+        coordinate: providerNormalizedIncidentCoordinate });
     await writePrivateProof(
       process.env.ATRINIK_REVIEW_TOKEN_ROTATION_PROVIDER_NORMALIZED_INCIDENT_PROOF_OUTPUT_FILE,
       incidentProof);
