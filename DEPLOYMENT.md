@@ -614,6 +614,41 @@ must bind the exact augmented or normalized residual phase and an exhaustive
 post-prefix snapshot. Production activation, builds, migration `0010`, and all
 Worker resource writes remain forbidden.
 
+The retained incident rollback later completed both trigger restorations but
+stopped before its wrapper DELETE because the pre-request guard called the
+unsupported account-wide `GET /builds/triggers` route. Its exact 17-record
+`rollback-blocked` journal is immutable: the DELETE has a current-main record,
+historical-authority check, and intent, but no provider response,
+classification, mutation bound, tombstone, or DELETE receipt. The bound
+residual snapshot proves exact `predecessor-restored` state with both wrappers
+present and the replacement globally unreferenced.
+
+Retire that wrapper only through the separate #104
+`blocked-review-token-delete-recovery` authority. Issuance pins the exact
+executor, rollback journal and terminal, residual proof and exhaustive
+snapshot, and failed guard response. It then captures a new full provider
+snapshot using the supported stable scripts inventory plus every script's
+paginated `/builds/workers/{script_tag}/triggers` inventory and a final scripts
+stability check. The fresh proof must reproduce exact predecessor triggers,
+both wrappers, global replacement unreference, unchanged production resources,
+and no active build or Deploy Hook. The bounded authority binds both the state
+digest and complete fresh proof document, plus one canonical owner-only empty
+journal and exclusive authorization-receipt path; rewriting timestamps or
+choosing another receipt cannot renew it. It permits only DELETE of the exact
+journal-created replacement UUID. A separate journal binds fresh current-main,
+the exclusive receipt, authority, and unreference proof before one DELETE attempt;
+after intent, ambiguity is reconciled by exact absence and never retried.
+Explicit failure or drift terminal-blocks with a fresh exhaustive residual whose
+manifest starts after the last nonterminal journal event. Complete and blocked
+terminals bind the provider proof's source to a retained authenticated
+current-`main` proof captured for that observation. That observation source is
+independent of both the historical write authority and a later verifier's current
+`main`. Terminal schemas explicitly attest that no forbidden write occurred and
+must be checked with the dedicated blocked-delete terminal verifier before handoff
+or inert rerun.
+No trigger POST/PATCH, production activation, migration, build, or Worker
+resource mutation is part of this successor.
+
 Once predecessor absence is durably reconciled, rollback
 must roll forward: never recreate it; prove the terminal replacement state.
 If the DELETE took effect but its ordinary tombstone or terminal proof was not
