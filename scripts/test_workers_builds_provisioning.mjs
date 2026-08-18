@@ -59,6 +59,7 @@ import {
   validateReplacementTokenOwnerMembershipProof,
   validateReviewTokenRotationReadback,
   validateReviewTokenRotationAuthority,
+  validateReviewTokenRotationDeleteProofChronology,
   validateReviewTokenRotationRollbackJournal,
   validateReviewTokenRotationSnapshotDirectory,
   validateReviewStagedEnvironmentSnapshotDirectory,
@@ -571,9 +572,9 @@ function disposableReviewAuthorityFixture(now = Date.now(),
     ["mutation-intent", "repoint-final-review-trigger"],
     ["provider-response-classified", "repoint-final-review-trigger"],
     ["mutation-bound", "repoint-final-review-trigger"],
-    ["provider-proof-bound", "prove-superseded-wrapper-unreferenced"],
     ["current-main-proof-bound", "retire-superseded-review-build-token"],
     ["review-token-rotation-authority-checked", "retire-superseded-review-build-token"],
+    ["provider-proof-bound", "prove-superseded-wrapper-unreferenced"],
     ["mutation-intent", "retire-superseded-review-build-token"],
     ["provider-response-classified", "retire-superseded-review-build-token"],
     ["mutation-bound", "retire-superseded-review-build-token"],
@@ -1808,6 +1809,36 @@ test("renews only a bounded disposable proof authority from exact review-active 
       production: { cloudflare_token_id: "production-token-id" },
       review: { cloudflare_token_id: "replacement-review-token-id" } } }, now),
   /terminal provenance drift/u);
+  const oldDeleteProofOrder = structuredClone(arguments_);
+  const deleteMainIndex = oldDeleteProofOrder.reviewTokenRotationJournal.findIndex(({ event,
+    operation }) => event === "current-main-proof-bound" &&
+      operation === "retire-superseded-review-build-token");
+  const deleteAuthorityIndex = oldDeleteProofOrder.reviewTokenRotationJournal.findIndex(({ event,
+    operation }) => event === "review-token-rotation-authority-checked" &&
+      operation === "retire-superseded-review-build-token");
+  const deleteProofIndex = oldDeleteProofOrder.reviewTokenRotationJournal.findIndex(({ event,
+    operation }) => event === "provider-proof-bound" &&
+      operation === "prove-superseded-wrapper-unreferenced");
+  const reorder = [deleteProofIndex, deleteMainIndex, deleteAuthorityIndex].map((index) => {
+    const { recordSha256: _checksum, at: _at, ...payload } =
+      oldDeleteProofOrder.reviewTokenRotationJournal[index];
+    return payload;
+  });
+  for (const [offset, payload] of reorder.entries()) {
+    const index = deleteMainIndex + offset;
+    oldDeleteProofOrder.reviewTokenRotationJournal[index] = checksummedRecord({ ...payload,
+      at: oldDeleteProofOrder.reviewTokenRotationJournal[index].at });
+  }
+  assert.throws(() => issueDisposableReviewAuthority({ production, review, accountId,
+    sourceSha: "a".repeat(40), ...oldDeleteProofOrder, tokenRows: {
+      production: { cloudflare_token_id: "production-token-id" },
+      review: { cloudflare_token_id: "replacement-review-token-id" } } }, now),
+  /journal operation sequence drift/u);
+  assert.throws(() => validateReviewTokenRotationDeleteProofChronology(
+    { capturedAt: new Date(now - 31_001).toISOString() },
+    { at: new Date(now - 31_000).toISOString() },
+    { at: new Date(now + 1).toISOString() }),
+  /delete proof chronology drift/u);
   const ambiguousCreate = structuredClone(evidence);
   for (const [index, record] of ambiguousCreate.reviewTokenRotationJournal.entries()) {
     if (record.operation !== "replacement-review-build-token" ||
