@@ -120,6 +120,12 @@
   If predecessor deletion succeeds before terminal evidence is durable, recover only through the
   historical-authority exact-state readback terminal; never backdate the deletion tombstone,
   retry the deletion, or recreate the predecessor wrapper.
+  The #96 provider-normalized incident is a separate rollback-only phase: bind its exact
+  12-record prefix and exhaustive peer-augmented snapshot, restore production first, then prove
+  whether Cloudflare normalized the peer review trigger. Patch review only when the one sentinel
+  exclusion remains, prove predecessor restoration and global replacement-wrapper absence, and
+  delete only the journal-created replacement. Never alias this state to an ordinary rotation
+  phase or continue the forward rotation.
   The disposable automatic-build proof uses a separate renewable 60-minute
   authority issued only from the exact review-active state; it permits only the
   journaled disposable push/delete and exact owned-build cleanup, never production activation.

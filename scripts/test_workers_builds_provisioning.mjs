@@ -11,6 +11,7 @@ import {
   automaticReviewTriggerSpec,
   boundedResponseText,
   classifyReviewTokenRotationCompleteRecoveryPrefix,
+  classifyReviewTokenRotationProviderNormalizedRollbackPrefix,
   combineProviderPages,
   combineWorkerVersionPages,
   credentialedSourceSha,
@@ -60,11 +61,13 @@ import {
   validateReplacementReviewTokenAuthorityProof,
   validateReplacementTokenOwnerMembershipProof,
   validateReviewTokenRotationReadback,
+  reviewTokenRotationProviderNormalizedIncident,
   validateReviewTokenRotationAuthority,
   validateReviewTokenRotationDeleteProofChronology,
   validateReviewTokenRotationJournal,
   validateReviewTokenRotationNoOwnedPreIntentTerminal,
   validateReviewTokenRotationRollbackJournal,
+  validateReviewTokenRotationProviderPeerNormalizationSnapshotDirectory,
   validateReviewTokenRotationSnapshotDirectory,
   validateReviewStagedEnvironmentSnapshotDirectory,
   validateReviewStagedEnvironmentReadback,
@@ -1582,6 +1585,8 @@ test("gates every credentialed mode on the private current-main proof", async ()
     "--verify-review-token-rotation-complete",
     "--verify-review-token-rotation-complete-historical",
     "--verify-review-token-rotation-intermediate",
+    "--verify-review-token-rotation-provider-normalized-incident",
+    "--verify-review-token-rotation-provider-peer-normalization",
     "--verify-review-token-rotation-rollback-restored",
     "--verify-review-token-rotation-rollback-complete",
     "--verify-review-token-rotation-unreferenced",
@@ -2313,6 +2318,34 @@ test("validates exact review-token rotation rollback and residual journals", asy
   const predecessorReview = providerTrigger(automaticReviewTriggerSpec(review, {
     externalScriptId: scriptTag, repositoryConnectionUuid, buildTokenUuid: reviewTokenUuid,
   }), reviewTriggerUuid);
+  const retainedAugmentation = structuredClone(predecessorReview);
+  retainedAugmentation.branch_excludes = [review.productionBranch,
+    evidence.productionSentinelProof.branch];
+  await Promise.all([
+    writeSnapshot("snapshot-manifest.json", manifest(base + 141)),
+    writeSnapshot(`${production.workers[0].name}.triggers.json`,
+      envelope([predecessorProduction, retainedAugmentation])),
+    writeSnapshot("account-triggers.json",
+      envelope([predecessorProduction, retainedAugmentation])),
+  ]);
+  const peerArguments = { snapshotDirectory: blockedSnapshotDirectory,
+    production, review, accountId, sourceSha, productionSentinelProof:
+      evidence.productionSentinelProof, predecessorTokenAuthorityProofs:
+      evidence.predecessorTokenAuthorityProofs, replacementTokenAuthorityProof:
+      evidence.replacementTokenAuthorityProof, replacementTokenId: evidence.replacementTokenId,
+    productionTriggerUuid, reviewTriggerUuid, predecessorReviewTokenUuid: reviewTokenUuid,
+    replacementReviewTokenUuid, productionPreservationDigest, authorityProof,
+    productionBaselineProof: evidence.productionBaselineProof, now: base + 145 };
+  assert.equal((await validateReviewTokenRotationProviderPeerNormalizationSnapshotDirectory(
+    peerArguments)).phase, "production-restored-review-augmented");
+  await Promise.all([
+    writeSnapshot("snapshot-manifest.json", manifest(base + 151)),
+    writeSnapshot(`${production.workers[0].name}.triggers.json`,
+      envelope([predecessorProduction, predecessorReview])),
+    writeSnapshot("account-triggers.json", envelope([predecessorProduction, predecessorReview])),
+  ]);
+  assert.equal((await validateReviewTokenRotationProviderPeerNormalizationSnapshotDirectory({
+    ...peerArguments, now: base + 155 })).phase, "predecessor-restored");
   await Promise.all([
     writeSnapshot("snapshot-manifest.json", manifest(base + 161)),
     writeSnapshot(`${production.workers[0].name}.triggers.json`,
@@ -2544,6 +2577,8 @@ test("validates exact review-token rotation rollback and residual journals", asy
     ATRINIK_PROVIDER_SNAPSHOT_OUTPUT: blockedSnapshotDirectory,
     ATRINIK_REVIEW_TOKEN_ROTATION_COMPLETE_PROOF_OUTPUT_FILE:
       resolve(cliInputs, "historical-complete.json"),
+    ATRINIK_REVIEW_TOKEN_ROTATION_PEER_NORMALIZATION_PROOF_OUTPUT_FILE:
+      resolve(cliInputs, "peer-normalization.json"),
   };
   const previousEnvironment = { ...process.env };
   const originalWrite = process.stdout.write;
@@ -2557,17 +2592,43 @@ test("validates exact review-token rotation rollback and residual journals", asy
         assert.equal(outputDirectory, blockedSnapshotDirectory);
         return { outcome: "injected-stable-readback", mutation: false };
       });
+    await Promise.all([
+      writeSnapshot("snapshot-manifest.json", manifest(Date.now() - 10)),
+      writeSnapshot(`${production.workers[0].name}.triggers.json`,
+        envelope([predecessorProduction, predecessorReview])),
+      writeSnapshot("account-triggers.json", envelope([predecessorProduction,
+        predecessorReview])),
+      writeSnapshot("build-tokens.json", envelope([
+        { build_token_name: "Atrinik metaserver production",
+          build_token_uuid: "44444444-4444-4444-8444-444444444444",
+          cloudflare_token_id: "production-token-id", owner_type: "user" },
+        { build_token_name: reviewBuildTokenNames.predecessor,
+          build_token_uuid: reviewTokenUuid, cloudflare_token_id: "review-token-id",
+          owner_type: "user" },
+        { build_token_name: reviewBuildTokenNames.current,
+          build_token_uuid: replacementReviewTokenUuid,
+          cloudflare_token_id: "replacement-review-token-id", owner_type: "user" },
+      ])),
+    ]);
+    await runProvisioningCli("--verify-review-token-rotation-provider-peer-normalization",
+      async () => sourceSha, async () => {
+        snapshotReads += 1;
+        return { outcome: "injected-stable-readback", mutation: false };
+      });
   } finally {
     process.stdout.write = originalWrite;
     for (const key of Object.keys(process.env)) if (!(key in previousEnvironment))
       delete process.env[key];
     Object.assign(process.env, previousEnvironment);
   }
-  assert.equal(snapshotReads, 1);
+  assert.equal(snapshotReads, 2);
   const historicalOutput = JSON.parse(await readFile(
     cliEnvironment.ATRINIK_REVIEW_TOKEN_ROTATION_COMPLETE_PROOF_OUTPUT_FILE, "utf8"));
   assert.equal(historicalOutput.phase, "complete");
   assert.equal(historicalOutput.replacementReviewTokenUuid, replacementReviewTokenUuid);
+  const peerOutput = JSON.parse(await readFile(
+    cliEnvironment.ATRINIK_REVIEW_TOKEN_ROTATION_PEER_NORMALIZATION_PROOF_OUTPUT_FILE, "utf8"));
+  assert.equal(peerOutput.phase, "predecessor-restored");
   await rm(temporary, { recursive: true, force: true });
 });
 
@@ -3364,6 +3425,19 @@ test("plans inert setup, separately gated activation, and ordered rollback", () 
     "production-trigger-activation", "migration-0010",
     "initial-automatic-production-proof"]);
   assert.ok(plan.reviewTokenRotation.forbidden.includes("production-trigger-activation"));
+  const incidentRecovery = plan.reviewTokenRotation.providerNormalizedIncidentRecovery;
+  assert.equal(incidentRecovery.mode, "rollback-only");
+  assert.equal(incidentRecovery.incidentPhase,
+    "production-repointed-review-augmented");
+  assert.deepEqual(incidentRecovery.coordinates, reviewTokenRotationProviderNormalizedIncident);
+  assert.ok(incidentRecovery.operations.findIndex(({ id }) => id ===
+    "rotation-incident-restore-production-trigger-old-token") <
+    incidentRecovery.operations.findIndex(({ id }) => id ===
+      "rotation-incident-restore-review-trigger-old-token"));
+  assert.equal(incidentRecovery.operations.find(({ id }) => id ===
+    "rotation-incident-restore-review-trigger-old-token").condition,
+  "only-when-peer-normalization-proof-retains-the-sentinel-exclusion");
+  assert.ok(incidentRecovery.forbidden.includes("forward-rotation-retry"));
   assert.ok(plan.reviewTokenRotation.rollbackOperations.findIndex(({ id }) =>
     id === "rotation-prove-predecessor-restored") <
     plan.reviewTokenRotation.rollbackOperations.findIndex(({ id }) =>
@@ -3729,6 +3803,33 @@ test("pins every journaled review-token rotation phase and rejects field drift",
   assert.equal(validate("production-repointed", replacementReviewTokenUuid,
     predecessorReviewTokenUuid, [productionToken, predecessorToken, replacementToken]).phase,
   "production-repointed");
+  const augmentedReview = trigger(true, predecessorReviewTokenUuid);
+  augmentedReview.branch_excludes = [review.productionBranch, sentinel];
+  const augmentedArguments = { production, review,
+    productionTrigger: trigger(false, replacementReviewTokenUuid),
+    reviewTrigger: augmentedReview, productionEnvironment: envelope(productionEnvironment),
+    reviewEnvironment: envelope(reviewEnvironment),
+    buildTokens: envelope([productionToken, predecessorToken, replacementToken]),
+    accountTriggers: envelope([trigger(false, replacementReviewTokenUuid), augmentedReview]),
+    productionScriptTag: scriptTag, productionSentinel: sentinel, productionTriggerUuid,
+    reviewTriggerUuid: reviewTriggerIdentity, predecessorReviewTokenUuid,
+    replacementReviewTokenUuid, repositoryConnectionUuid };
+  assert.equal(validateReviewTokenRotationReadback({ ...augmentedArguments,
+    phase: "production-repointed-review-augmented" }).phase,
+  "production-repointed-review-augmented");
+  assert.equal(validateReviewTokenRotationReadback({ ...augmentedArguments,
+    phase: "production-restored-review-augmented",
+    productionTrigger: trigger(false, predecessorReviewTokenUuid),
+    accountTriggers: envelope([trigger(false, predecessorReviewTokenUuid), augmentedReview])
+  }).phase, "production-restored-review-augmented");
+  const broaderAugmentation = structuredClone(augmentedReview);
+  broaderAugmentation.branch_excludes.push("foreign");
+  assert.throws(() => validateReviewTokenRotationReadback({ ...augmentedArguments,
+    phase: "production-repointed-review-augmented", reviewTrigger: broaderAugmentation,
+    accountTriggers: envelope([trigger(false, replacementReviewTokenUuid),
+      broaderAugmentation]) }), /branch_excludes drift/u);
+  assert.equal(reviewTokenRotationProviderNormalizedIncident.sourceSha,
+    "48f791e60bc0c1d19a7eff28e9cd99ed1bfd317a");
   assert.equal(validate("old-wrapper-unreferenced", replacementReviewTokenUuid,
     replacementReviewTokenUuid, [productionToken, predecessorToken, replacementToken]).phase,
   "old-wrapper-unreferenced");
@@ -3810,6 +3911,53 @@ test("pins every journaled review-token rotation phase and rejects field drift",
       proof: changed, tokenId: replacementProof.tokenId,
       sourceSha: replacementProof.sourceSha }, now));
   }
+});
+
+test("classifies every provider-normalized rollback boundary without authorizing a write", () => {
+  const group = (operation) => [
+    ["current-main-proof-bound", operation], ["rollback-authority-checked", operation],
+    ["mutation-intent", operation], ["provider-response-classified", operation],
+    ["mutation-bound", operation],
+  ];
+  const make = (pairs) => pairs.map(([event, operation], index) => checksummedRecord({
+    event, ...(operation ? { operation } : {}), attempt: 1,
+    at: new Date(Date.UTC(2026, 7, 18, 12, 0, 0, index)).toISOString(),
+    ...(event === "provider-response-classified" ? { outcome: "explicit-success" } : {}),
+  }));
+  for (const phase of ["predecessor-restored",
+    "production-restored-review-augmented"]) {
+    const pairs = [["review-token-rotation-rollback-started"],
+      ...group("rotation-restore-production-trigger-old-token"),
+      ["provider-proof-bound", "rotation-prove-provider-peer-normalization"],
+      ...(phase === "production-restored-review-augmented" ?
+        group("rotation-restore-review-trigger-old-token") : []),
+      ["provider-proof-bound", "rotation-prove-predecessor-restored"],
+      ...group("rotation-delete-replacement-wrapper"),
+      ["provider-proof-bound", "rotation-prove-rollback-complete"],
+      ["review-token-rotation-rollback-complete"]];
+    const records = make(pairs);
+    const peerProofIndex = pairs.findIndex(([event, operation]) =>
+      event === "provider-proof-bound" &&
+        operation === "rotation-prove-provider-peer-normalization");
+    for (let length = 0; length <= records.length; length++) {
+      const disposition = length <= peerProofIndex ? null : phase;
+      const result = classifyReviewTokenRotationProviderNormalizedRollbackPrefix(
+        records.slice(0, length), disposition);
+      assert.equal(result.mutation, false);
+      assert.equal(result.terminal, length === records.length);
+    }
+  }
+  const ambiguous = make([["review-token-rotation-rollback-started"],
+    ...group("rotation-restore-production-trigger-old-token")]).slice(0, 5);
+  const { recordSha256: _ambiguousDigest, ...ambiguousPayload } = ambiguous.at(-1);
+  ambiguousPayload.outcome = "ambiguous";
+  ambiguous[ambiguous.length - 1] = checksummedRecord(ambiguousPayload);
+  assert.equal(classifyReviewTokenRotationProviderNormalizedRollbackPrefix(ambiguous)
+    .reconcile, true);
+  const reordered = make([["review-token-rotation-rollback-started"],
+    ["rollback-authority-checked", "rotation-restore-production-trigger-old-token"]]);
+  assert.throws(() => classifyReviewTokenRotationProviderNormalizedRollbackPrefix(reordered),
+    /rollback prefix drift/u);
 });
 
 test("proves only the production trigger is inert before review activation", async () => {
