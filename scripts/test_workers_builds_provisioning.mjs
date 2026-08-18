@@ -41,6 +41,7 @@ import {
   readProductionSentinelProof,
   readCurrentMainProof,
   readProviderSnapshot,
+  readPinnedIncidentExecutorSha256,
   readPrivateValue,
   reviewTokenRotationRequestDigest,
   reviewTokenRotationRollbackRequestDigest,
@@ -103,6 +104,44 @@ import {
   validateStagedProof,
   validateTriggerSnapshot,
 } from "./workers-builds-provisioning.mjs";
+
+test("pinned blocked-delete incident executor has a narrow private size exception", async () => {
+  const temporary = await mkdtemp(resolve(tmpdir(), "workers-builds-pinned-executor-"));
+  try {
+    const retained = resolve(temporary, "retained-executor.mjs");
+    const retainedBytes = "x".repeat(96_731);
+    await writeFile(retained, retainedBytes, { mode: 0o600 });
+    const retainedDigest = createHash("sha256").update(retainedBytes).digest("hex");
+    assert.equal(await readPinnedIncidentExecutorSha256(retained, retainedDigest),
+      retainedDigest);
+    await assert.rejects(readPinnedIncidentExecutorSha256(retained), /digest drift/u);
+
+    const boundary = resolve(temporary, "boundary-executor.mjs");
+    const boundaryBytes = "x".repeat(128 * 1024);
+    await writeFile(boundary, boundaryBytes, { mode: 0o600 });
+    const boundaryDigest = createHash("sha256").update(boundaryBytes).digest("hex");
+    assert.equal(await readPinnedIncidentExecutorSha256(boundary, boundaryDigest),
+      boundaryDigest);
+
+    const oversized = resolve(temporary, "oversized-executor.mjs");
+    await writeFile(oversized, "x".repeat(128 * 1024 + 1), { mode: 0o600 });
+    await assert.rejects(readPinnedIncidentExecutorSha256(oversized, "a".repeat(64)),
+      /bounded private regular file/u);
+
+    await chmod(retained, 0o644);
+    await assert.rejects(readPinnedIncidentExecutorSha256(retained, retainedDigest),
+      /bounded private regular file/u);
+    await chmod(retained, 0o600);
+    const linked = resolve(temporary, "linked-executor.mjs");
+    await symlink(retained, linked);
+    await assert.rejects(readPinnedIncidentExecutorSha256(linked, retainedDigest),
+      /canonical without linked ancestors/u);
+    await assert.rejects(readPinnedIncidentExecutorSha256(temporary, retainedDigest),
+      /cannot be opened without following links|bounded private regular file/u);
+  } finally {
+    await rm(temporary, { recursive: true, force: true });
+  }
+});
 import { validateBuildEnvironment } from "./production-delivery.mjs";
 
 const root = resolve(import.meta.dirname, "..");
@@ -3159,7 +3198,7 @@ test("validates exact review-token rotation rollback and residual journals", asy
     const integrationBlockedProofPath = await privateFile("blocked-residual-proof.json",
       integrationBlockedProof);
     const integrationExecutorPath = await privateFile("blocked-executor.mjs",
-      "export const mutation = false;");
+      "x".repeat(96_730));
     const integrationGuardPath = await privateFile("blocked-guard.json", { success: false });
     const integrationBlockedCoordinate = {
       sourceSha, planDigest: authorityProof.planDigest,
@@ -3291,6 +3330,20 @@ test("validates exact review-token rotation rollback and residual journals", asy
       blockedDelete: integrationBlockedCapability };
     const authoritySnapshotReader = async ({ outputDirectory }) => cp(
       blockedSnapshotDirectory, outputDirectory, { recursive: true });
+    const oversizedGuardPath = await privateFile("blocked-guard-oversized.json",
+      "x".repeat(64 * 1024));
+    const oversizedGuardCoordinate = { ...integrationBlockedCoordinate,
+      failedGuardResponseSha256: await integrationFileSha(oversizedGuardPath) };
+    const oversizedGuardCapabilities = { providerNormalized: integrationProviderCapability,
+      blockedDelete: createBlockedDeleteIncidentTestCapability(oversizedGuardCoordinate) };
+    const exactGuardPath = process.env
+      .ATRINIK_REVIEW_TOKEN_ROTATION_FAILED_DELETE_GUARD_RESPONSE_FILE;
+    process.env.ATRINIK_REVIEW_TOKEN_ROTATION_FAILED_DELETE_GUARD_RESPONSE_FILE =
+      oversizedGuardPath;
+    await assert.rejects(runProvisioningCliForTest(
+      "--verify-review-token-rotation-blocked-delete-authority", async () => sourceSha,
+      authoritySnapshotReader, oversizedGuardCapabilities), /bounded private regular file/u);
+    process.env.ATRINIK_REVIEW_TOKEN_ROTATION_FAILED_DELETE_GUARD_RESPONSE_FILE = exactGuardPath;
     await runProvisioningCliForTest(
       "--verify-review-token-rotation-blocked-delete-authority", async () => sourceSha,
       authoritySnapshotReader, integrationCapabilities);
