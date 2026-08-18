@@ -26,7 +26,7 @@ const maximumProviderPages = 100;
 const stagingBranchPattern = /^review-build-only-sentinel-[0-9a-f]{32}$/u;
 const reviewStagingRootPattern = /^\/review-build-only-staging-[0-9a-f]{32}$/u;
 const gitShaPattern = /^[0-9a-f]{40}$/u;
-const expectedSetupPlanSha256 = "91cda3c359f7d08aa72bdff9cdb0c863c176de6feb5713473d81e84bce88db05";
+const expectedSetupPlanSha256 = "a54765853506eb4f9644f3b77fc8a6cfada913db760f8f716eeb557b8b83942c";
 const currentMainProofSource = "authenticated-gh-api-current-main-readback";
 const currentMainProofEndpoint = "repos/atrinik/metaserver-worker/git/ref/heads/main";
 const currentMainRef = "refs/heads/main";
@@ -1513,6 +1513,7 @@ async function classifyReviewTokenRotationBlockedDeleteRecoveryPrefixCore(record
   productionSentinelProof = undefined, predecessorTokenAuthorityProofs = undefined,
   replacementTokenAuthorityProof = undefined, replacementTokenId = undefined,
   productionBaselineProof = undefined, historicalTerminalValidation = false,
+  terminalObservationCurrentMainProof = undefined,
 } = {}, now = Date.now()) {
   const operation = "rotation-delete-blocked-replacement-wrapper";
   if (historicalTerminalValidation && ![
@@ -1524,6 +1525,9 @@ async function classifyReviewTokenRotationBlockedDeleteRecoveryPrefixCore(record
     (completeProof?.sourceSha ?? blockedProof?.sourceSha) : sourceSha;
   if (!gitShaPattern.test(terminalObservationSourceSha ?? ""))
     fail("blocked delete terminal observation source drift");
+  if (historicalTerminalValidation) validateCurrentMainProof(
+    terminalObservationCurrentMainProof, terminalObservationSourceSha,
+    Date.parse((completeProof ?? blockedProof)?.capturedAt ?? ""));
   validateReviewTokenRotationBlockedDeleteAuthority(authorityProof, { production, review,
     accountId, sourceSha, currentMainProof, currentPhaseProof, historicalAuthorityProof,
     blockedIncidentValidation, recoveryCoordinate,
@@ -1694,13 +1698,19 @@ async function classifyReviewTokenRotationBlockedDeleteRecoveryPrefixCore(record
     recordOperation === "rotation-prove-blocked-delete-complete");
   if (completeBound) {
     if (!same(sorted(Object.keys(completeBound)), sorted([
-      "at", "attempt", "event", "operation", "proofDigest", "proofFileSha256", "recordSha256",
+      "at", "attempt", "currentMainProofDigest", "currentMainRawDigestSha256", "event",
+      "observationSourceSha", "operation", "proofDigest", "proofFileSha256", "recordSha256",
     ]))) fail("blocked delete recovery complete proof binding drift");
     validateReviewTokenRotationPredecessorProof(completeProof, historicalAuthorityProof,
       { accountId, sourceSha: terminalObservationSourceSha },
     Date.parse(completeBound.at), Infinity);
     if (!bound || completeBound.proofDigest !== completeProof.proof_digest ||
         completeBound.proofFileSha256 !== digestJson(completeProof) ||
+        completeBound.observationSourceSha !== terminalObservationSourceSha ||
+        completeBound.currentMainProofDigest !== digestJson(
+          terminalObservationCurrentMainProof) ||
+        completeBound.currentMainRawDigestSha256 !== digestJson(
+          terminalObservationCurrentMainProof?.raw) ||
         Date.parse(bound.at) > Date.parse(completeProof.capturedAt) ||
         Date.parse(completeProof.capturedAt) > Date.parse(completeBound.at))
       fail("blocked delete recovery complete proof binding drift");
@@ -1710,7 +1720,9 @@ async function classifyReviewTokenRotationBlockedDeleteRecoveryPrefixCore(record
     const terminalKeys = ["at", "attempt", "event", "manualApiOrInitialProductionBuild",
       "migration0010", "mutation", "outcome", "productionActivation", "recordSha256",
       "residualProofDigest", "residualProofFileSha256", "residualSnapshotManifestSha256",
-      "residualState", "triggerPostOrPatch", "workerResourceMutation"];
+      "residualState", "terminalObservationCurrentMainProofDigest",
+      "terminalObservationCurrentMainRawDigestSha256", "terminalObservationSourceSha",
+      "triggerPostOrPatch", "workerResourceMutation"];
     const residualKeys = ["activeMutation", "liveProductionTokenReference",
       "liveReviewTokenReference", "predecessorWrapperPresent", "replacementWrapperPresent"];
     const phase = terminal.residualState?.replacementWrapperPresent === true ?
@@ -1722,6 +1734,11 @@ async function classifyReviewTokenRotationBlockedDeleteRecoveryPrefixCore(record
         terminal.migration0010 !== false ||
         terminal.manualApiOrInitialProductionBuild !== false ||
         terminal.workerResourceMutation !== false ||
+        terminal.terminalObservationSourceSha !== terminalObservationSourceSha ||
+        terminal.terminalObservationCurrentMainProofDigest !== digestJson(
+          terminalObservationCurrentMainProof) ||
+        terminal.terminalObservationCurrentMainRawDigestSha256 !== digestJson(
+          terminalObservationCurrentMainProof?.raw) ||
         typeof terminal.residualState.replacementWrapperPresent !== "boolean" ||
         typeof terminal.residualState.predecessorWrapperPresent !== "boolean" ||
         (bound && terminal.residualState.replacementWrapperPresent !== false) ||
@@ -3607,6 +3624,7 @@ export function provisioningSetupPlan(production, review) {
       "ATRINIK_REVIEW_TOKEN_ROTATION_BLOCKED_DELETE_COMPLETE_PROOF_FILE",
       "ATRINIK_REVIEW_TOKEN_ROTATION_BLOCKED_DELETE_BLOCKED_PROOF_FILE",
       "ATRINIK_REVIEW_TOKEN_ROTATION_BLOCKED_DELETE_BLOCKED_SNAPSHOT_DIRECTORY_FILE",
+      "ATRINIK_REVIEW_TOKEN_ROTATION_BLOCKED_DELETE_TERMINAL_CURRENT_MAIN_PROOF_FILE",
       "ATRINIK_REVIEW_TOKEN_ROTATION_UNREFERENCED_PROOF_OUTPUT_FILE",
       "ATRINIK_REVIEW_TOKEN_ROTATION_UNREFERENCED_PROOF_FILE",
       "ATRINIK_REVIEW_TOKEN_ROTATION_COMPLETE_PROOF_OUTPUT_FILE",
@@ -4055,12 +4073,17 @@ export function provisioningSetupPlan(production, review) {
             actor: "workers-builds-control-plane-operator", mutation: false,
             action: "capture-fresh-exact-predecessor-state-after-replacement-absence",
             command: "npm run provision:workers-builds:verify-review-token-rotation-rollback-complete",
-            produces: { proof_digest: "fresh-exact-predecessor-state-digest" } },
+            produces: { proof_digest: "fresh-exact-predecessor-state-digest",
+              current_main_proof_digest:
+                "authenticated-terminal-observation-main-proof-digest" } },
           { id: "rotation-blocked-delete-finalize-journal",
             actor: "journaled-blocked-delete-executor", mutation: false,
             action: "bind-complete-proof-and-append-exact-successor-terminal",
             precondition: { completeProof: resultReference(
-              "rotation-blocked-delete-prove-provider-complete", "proof_digest") },
+              "rotation-blocked-delete-prove-provider-complete", "proof_digest"),
+            terminalObservationCurrentMainProof: resultReference(
+              "rotation-blocked-delete-prove-provider-complete",
+              "current_main_proof_digest") },
             produces: { terminal: "checksum-valid-blocked-delete-recovery-complete" } },
           { id: "rotation-blocked-delete-validate-terminal",
             actor: "workers-builds-control-plane-operator", mutation: false,
@@ -7084,6 +7107,9 @@ async function runProvisioningCliCore(mode = process.argv[2] ?? "--validate-only
     const blockedSnapshotDirectory = completeMode ? undefined : await readPrivateValue(
       process.env.ATRINIK_REVIEW_TOKEN_ROTATION_BLOCKED_DELETE_BLOCKED_SNAPSHOT_DIRECTORY_FILE,
       "blocked delete recovery blocked snapshot directory");
+    const terminalObservationCurrentMainProof = await readPrivateJson(
+      process.env.ATRINIK_REVIEW_TOKEN_ROTATION_BLOCKED_DELETE_TERMINAL_CURRENT_MAIN_PROOF_FILE,
+      "blocked delete terminal observation current-main proof");
     const result = await validateReviewTokenRotationBlockedDeleteRecoveryJournal(records,
       authority, { production, review, accountId, sourceSha: authority.sourceSha,
         currentMainProof, currentPhaseProof,
@@ -7095,7 +7121,7 @@ async function runProvisioningCliCore(mode = process.argv[2] ?? "--validate-only
         replacementTokenAuthorityProof: incident.evidence.replacementTokenAuthorityProof,
         replacementTokenId: incident.evidence.replacementTokenId,
         productionBaselineProof: incident.evidence.productionBaselineProof,
-        historicalTerminalValidation: true });
+        historicalTerminalValidation: true, terminalObservationCurrentMainProof });
     const expectedTerminal = completeMode ?
       "review-token-rotation-blocked-delete-recovery-complete" :
       "review-token-rotation-blocked-delete-recovery-blocked";
@@ -7326,6 +7352,7 @@ async function runProvisioningCliCore(mode = process.argv[2] ?? "--validate-only
       await validateReviewTokenRotationProviderPeerNormalizationSnapshotDirectory(
         snapshotArguments) :
       await validateReviewTokenRotationSnapshotDirectory(snapshotArguments);
+    const observationCurrentMainProof = await readCurrentMainProof(process.env, sourceSha);
     const output = peerNormalizationMode ?
       process.env.ATRINIK_REVIEW_TOKEN_ROTATION_PEER_NORMALIZATION_PROOF_OUTPUT_FILE :
       phase === "production-repointed" ?
@@ -7339,7 +7366,8 @@ async function runProvisioningCliCore(mode = process.argv[2] ?? "--validate-only
             process.env.ATRINIK_REVIEW_TOKEN_ROTATION_COMPLETE_PROOF_OUTPUT_FILE;
     await writePrivateProof(output, result);
     process.stdout.write(`${JSON.stringify({ outcome: result.outcome, mutation: false,
-      sourceSha, proof_digest: result.proof_digest })}\n`);
+      sourceSha, proof_digest: result.proof_digest,
+      current_main_proof_digest: digestJson(observationCurrentMainProof) })}\n`);
     return;
   }
   if (mode === "--verify-disposable-review-authority-proof" ||

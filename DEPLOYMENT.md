@@ -640,9 +640,12 @@ the exclusive receipt, authority, and unreference proof before one DELETE attemp
 after intent, ambiguity is reconciled by exact absence and never retried.
 Explicit failure or drift terminal-blocks with a fresh exhaustive residual whose
 manifest starts after the last nonterminal journal event. Complete and blocked
-terminals use exact schemas, explicitly attest that no forbidden write occurred,
-and must be checked with the dedicated blocked-delete terminal verifier before
-handoff or inert rerun.
+terminals bind the provider proof's source to a retained authenticated
+current-`main` proof captured for that observation. That observation source is
+independent of both the historical write authority and a later verifier's current
+`main`. Terminal schemas explicitly attest that no forbidden write occurred and
+must be checked with the dedicated blocked-delete terminal verifier before handoff
+or inert rerun.
 No trigger POST/PATCH, production activation, migration, build, or Worker
 resource mutation is part of this successor.
 
