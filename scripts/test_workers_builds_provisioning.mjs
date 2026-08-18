@@ -2585,6 +2585,7 @@ test("validates exact review-token rotation rollback and residual journals", asy
     assert.deepEqual(second, first);
     assert.equal(first.outcome,
       "workers-builds-review-token-rotation-rollback-blocked-valid");
+    return { blockedRecords, boundaryProof, validationArguments };
   };
 
   const retainedPeerPrefix = [incidentRollbackStart];
@@ -2633,11 +2634,25 @@ test("validates exact review-token rotation rollback and residual journals", asy
     proofDigest: incidentRestoredProof.proof_digest,
     proofFileSha256: createHash("sha256")
       .update(JSON.stringify(incidentRestoredProof)).digest("hex") });
-  await assertIncidentBlocked(restoredPrefix, { offset: 300,
+  const restoredBoundary = await assertIncidentBlocked(restoredPrefix, { offset: 300,
     productionTrigger: predecessorProduction, reviewTrigger: predecessorReview,
     phase: "predecessor-restored", activeMutation: null,
     reviewPeerAugmented: false, peerNormalizationProof: retainedPeerProof,
     restoredProof: incidentRestoredProof });
+  const wrongRestoredBinding = structuredClone(restoredBoundary.blockedRecords);
+  const wrongRestoredIndex = wrongRestoredBinding.findIndex(({ event, operation }) =>
+    event === "provider-proof-bound" && operation === "rotation-prove-predecessor-restored");
+  const { recordSha256: _restoredChecksum, ...wrongRestoredRecord } =
+    wrongRestoredBinding[wrongRestoredIndex];
+  wrongRestoredRecord.proofDigest = "d".repeat(64);
+  wrongRestoredBinding[wrongRestoredIndex] = checksummedRecord(wrongRestoredRecord);
+  await assert.rejects(validateReviewTokenRotationRollbackJournalForTest(wrongRestoredBinding,
+    authorityProof, restoredBoundary.validationArguments, testCapability),
+  /restored proof chronology drift/u);
+  await assert.rejects(validateReviewTokenRotationRollbackJournalForTest(
+    restoredBoundary.blockedRecords, authorityProof,
+    { ...restoredBoundary.validationArguments, restoredProof: undefined }, testCapability),
+  /phase proof drift/u);
 
   const ambiguousDeletePresent = [...restoredPrefix];
   appendIncidentMutation(ambiguousDeletePresent,
@@ -2668,12 +2683,26 @@ test("validates exact review-token rotation rollback and residual journals", asy
     proofDigest: incidentCompleteProof.proof_digest,
     proofFileSha256: createHash("sha256")
       .update(JSON.stringify(incidentCompleteProof)).digest("hex") });
-  await assertIncidentBlocked(ambiguousDeleteAbsent, { offset: 330,
+  const completeBoundary = await assertIncidentBlocked(ambiguousDeleteAbsent, { offset: 330,
     productionTrigger: predecessorProduction, reviewTrigger: predecessorReview,
     replacementPresent: false, phase: "predecessor", activeMutation: null,
     reviewPeerAugmented: false,
     peerNormalizationProof: retainedPeerProof, restoredProof: incidentRestoredProof,
     completeProof: incidentCompleteProof });
+  const wrongCompleteBinding = structuredClone(completeBoundary.blockedRecords);
+  const wrongCompleteIndex = wrongCompleteBinding.findIndex(({ event, operation }) =>
+    event === "provider-proof-bound" && operation === "rotation-prove-rollback-complete");
+  const { recordSha256: _completeChecksum, ...wrongCompleteRecord } =
+    wrongCompleteBinding[wrongCompleteIndex];
+  wrongCompleteRecord.proofFileSha256 = "e".repeat(64);
+  wrongCompleteBinding[wrongCompleteIndex] = checksummedRecord(wrongCompleteRecord);
+  await assert.rejects(validateReviewTokenRotationRollbackJournalForTest(wrongCompleteBinding,
+    authorityProof, completeBoundary.validationArguments, testCapability),
+  /terminal provenance drift/u);
+  await assert.rejects(validateReviewTokenRotationRollbackJournalForTest(
+    completeBoundary.blockedRecords, authorityProof,
+    { ...completeBoundary.validationArguments, completeProof: undefined }, testCapability),
+  /predecessor proof drift/u);
   await Promise.all([
     writeSnapshot("snapshot-manifest.json", manifest(base + 161)),
     writeSnapshot(`${production.workers[0].name}.triggers.json`,

@@ -2245,6 +2245,30 @@ async function validateReviewTokenRotationRollbackJournalCore(records, authority
         Date.parse(blockedProof.capturedAt) < prefixAt ||
         Date.parse(blockedProof.capturedAt) > Date.parse(terminal.at))
       fail("review token rotation rollback residual state drift");
+    const restoredBound = find("provider-proof-bound", "rotation-prove-predecessor-restored");
+    if (restoredBound) {
+      validateReviewTokenRotationPhaseProof(restoredProof, "predecessor-restored", authorityProof,
+        { accountId, sourceSha }, Date.parse(restoredBound.at), Infinity);
+      const finalRestore = phaseOperations[startingPhase].at(-1);
+      if (restoredBound.proofDigest !== restoredProof.proof_digest ||
+          restoredBound.proofFileSha256 !== digestJson(restoredProof) ||
+          (finalRestore && Date.parse(find("mutation-bound", finalRestore)?.at ?? "") >
+            Date.parse(restoredProof.capturedAt)) ||
+          Date.parse(restoredProof.capturedAt) > Date.parse(restoredBound.at))
+        fail("review token rotation rollback restored proof chronology drift");
+    }
+    const completeBound = find("provider-proof-bound", "rotation-prove-rollback-complete");
+    if (completeBound) {
+      validateReviewTokenRotationPredecessorProof(completeProof, authorityProof,
+        { accountId, sourceSha }, Date.parse(completeBound.at), Infinity);
+      const finalMutation = mutationOperations.at(-1);
+      const lowerBound = finalMutation ? find("mutation-bound", finalMutation) : records[0];
+      if (Date.parse(lowerBound?.at ?? "") > Date.parse(completeProof.capturedAt) ||
+          completeBound.proofDigest !== completeProof.proof_digest ||
+          completeBound.proofFileSha256 !== digestJson(completeProof) ||
+          Date.parse(completeProof.capturedAt) > Date.parse(completeBound.at))
+        fail("review token rotation rollback terminal provenance drift");
+    }
     return { outcome: "workers-builds-review-token-rotation-rollback-blocked-valid",
       mutation: false, residualState: residual, proofDigest: blockedProof.proof_digest };
   }
