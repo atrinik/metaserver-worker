@@ -27,7 +27,7 @@ const maximumProviderPages = 100;
 const stagingBranchPattern = /^review-build-only-sentinel-[0-9a-f]{32}$/u;
 const reviewStagingRootPattern = /^\/review-build-only-staging-[0-9a-f]{32}$/u;
 const gitShaPattern = /^[0-9a-f]{40}$/u;
-const expectedSetupPlanSha256 = "6088031ae9e138bbbaea7e79d8962dd9dcaff5952307dc78941821d6ab6a3937";
+const expectedSetupPlanSha256 = "c679174154a2604c936a10c710a0c3b6b176565ebf8badc402fa7ade2cd4f300";
 const currentMainProofSource = "authenticated-gh-api-current-main-readback";
 const currentMainProofEndpoint = "repos/atrinik/metaserver-worker/git/ref/heads/main";
 const currentMainRef = "refs/heads/main";
@@ -67,6 +67,27 @@ export const reviewTokenRotationBlockedDeleteIncident = Object.freeze({
   failedGuardResponseSha256:
     "fdb4b1956f095fc97634600784c5f25cc243ccaef5c599c6ee44ce0f58eef24d",
 });
+export const reviewTokenRotationNoOwnedIncident = Object.freeze({
+  sourceSha: "0f9454ba3b66bcafbdebfff188c16f6a578fa03b",
+  planDigest: "6088031ae9e138bbbaea7e79d8962dd9dcaff5952307dc78941821d6ab6a3937",
+  executorSha256: "b189ca4dd298819a9aec7571838d3e5a36babb679637450f1775fee0f70718dc",
+  forwardJournalSha256: "c69a525f8aa47239b1c693ef1355e21d88960050fe980c576b0e06a9628dd6e5",
+  forwardJournalDigest: "4e7e23e37ed3c93f4485e0bbf7d520b22d9b45990734611cdfe0c61523671bb2",
+  rollbackJournalSha256: "8bca5a998486a403c61463cc543cf4f5803e18d7a1a2c7f2dcc65a04bc546a90",
+  rollbackJournalDigest: "0d927073f9f2c31a8350cbbba4f57b70813fa6892f51ff429f2ae429555292c7",
+  rollbackTerminalRecordSha256:
+    "ecd61537ccb0d1a4211b4ad4c6aba6fcb86354dac71f9e30dc207aa5ade9b210",
+  authorityFileSha256: "d5c1c1a02732fe9d01d6527906668922dfdb310a45398da0dcabe7b4c2f68fa5",
+  preCreateProofFileSha256:
+    "9c68ea979fe0ca6830e5129b5a0f981968f6e60b095f780610d109f657270ac3",
+  residualSnapshotManifestSha256:
+    "30bda17eb114c4aae1d58126195b06b1229d7900cfecc6dc0fbce1d2c6dd25b5",
+  residualProofDigest: "e754373cedc801a8ac915c6e5e13a409aef84789e6dfa014893d8d707a272b31",
+  residualProofDocumentSha256:
+    "4320d8662cba3aeec206db17fbaebb57af04f5438ecd73cf0224c70973585e7c",
+  residualProofFileSha256:
+    "2015810a4c78fe0fcdf4d88c96b9c66f1570d59534f278f0d4bb7a033f1b14fe",
+});
 const reviewTokenRotationRetryProgram = Object.freeze({
   masterIssueNumber: 109,
   masterIssueNodeId: "I_kwDOTu8rSM8AAAABNTBfIw",
@@ -85,6 +106,8 @@ const reviewTokenRotationRetryProgram = Object.freeze({
     "d3091640160721383ef4e7a8e5ae6ad0789b3013088e5250b2b3dbdec01aed69",
 });
 const providerNormalizedIncidentTestCapabilities = new WeakSet();
+const noOwnedIncidentTestCapabilities = new WeakSet();
+const noOwnedTerminalContextReaders = new WeakSet();
 export function createProviderNormalizedIncidentTestCapability(coordinate) {
   if (process.env.NODE_TEST_CONTEXT !== "child-v8")
     fail("provider-normalized incident test capability is unavailable");
@@ -95,6 +118,23 @@ export function createProviderNormalizedIncidentTestCapability(coordinate) {
 function providerNormalizedIncidentCoordinate(testCapability) {
   return providerNormalizedIncidentTestCapabilities.has(testCapability) ?
     testCapability.coordinate : reviewTokenRotationProviderNormalizedIncident;
+}
+export function createNoOwnedIncidentTestCapability(coordinate) {
+  if (process.env.NODE_TEST_CONTEXT !== "child-v8")
+    fail("no-owned incident test capability is unavailable");
+  const capability = Object.freeze({ coordinate: Object.freeze(structuredClone(coordinate)) });
+  noOwnedIncidentTestCapabilities.add(capability);
+  return capability;
+}
+function noOwnedIncidentCoordinate(testCapability) {
+  return testCapability && noOwnedIncidentTestCapabilities.has(testCapability) ?
+    testCapability.coordinate : reviewTokenRotationNoOwnedIncident;
+}
+export function createNoOwnedTerminalContextReaderForTest(reader) {
+  if (process.env.NODE_TEST_CONTEXT !== "child-v8" || typeof reader !== "function")
+    fail("no-owned terminal test reader is unavailable");
+  noOwnedTerminalContextReaders.add(reader);
+  return reader;
 }
 const blockedDeleteIncidentTestCapabilities = new WeakSet();
 export function createBlockedDeleteIncidentTestCapability(coordinate) {
@@ -1575,7 +1615,6 @@ intermediateProof, authorityProof, { production, review, accountId, sourceSha,
           reviewTokenRotationTransitionBudgetMs ||
         Date.parse(main.at) > Date.parse(checked.at) ||
         Date.parse(checked.at) > Date.parse(intent?.at ?? "") ||
-        Date.parse(intent?.at ?? "") - Date.parse(checked.at) > 30_000 ||
         intent?.method !== request.method || intent.path !== request.path ||
         intent.requestDigestSha256 !== request.requestDigestSha256 ||
         (!explicit && !ambiguous) ||
@@ -1617,8 +1656,7 @@ intermediateProof, authorityProof, { production, review, accountId, sourceSha,
         Date.parse(checked.at) > Date.parse(preProductionProof.capturedAt) ||
         Date.parse(preProductionProof.capturedAt) > Date.parse(proofBound.at) ||
         Date.parse(proofBound.at) > Date.parse(intent?.at ?? "") ||
-        Date.parse(intent?.at ?? "") - Date.parse(proofBound.at) > 30_000 ||
-        Date.parse(intent?.at ?? "") - Date.parse(checked.at) > 30_000 ||
+        Date.parse(intent?.at ?? "") - Date.parse(preProductionProof.capturedAt) > 30_000 ||
         Date.parse(intent?.at ?? "") >= Date.parse(authorityProof.expiresAt) ||
         intent?.method !== request.method || intent.path !== request.path ||
         intent.requestDigestSha256 !== request.requestDigestSha256 ||
@@ -1674,15 +1712,16 @@ intermediateProof, authorityProof, { production, review, accountId, sourceSha,
       "prove-production-repointed-review-still-predecessor", productionBound]] : [],
   ]) {
     const checked = find("review-token-rotation-authority-checked", operation);
+    const main = find("current-main-proof-bound", operation);
     const bound = find("provider-proof-bound", proofOperation);
     const intent = find("mutation-intent", operation);
     if (bound?.proofDigest !== proof.proof_digest ||
         bound?.proofFileSha256 !== digestJson(proof) ||
         Date.parse(lower?.at ?? "") > Date.parse(proof.capturedAt) ||
-        Date.parse(checked?.at ?? "") > Date.parse(proof.capturedAt) ||
-        Date.parse(proof.capturedAt) > Date.parse(bound?.at ?? "") ||
-        Date.parse(bound?.at ?? "") > Date.parse(intent?.at ?? "") ||
-        Date.parse(intent?.at ?? "") - Date.parse(bound?.at ?? "") > 30_000)
+        !reviewTokenRotationRollbackProofChronologyValid({
+          currentMainAt: main?.at, authorityAt: checked?.at,
+          proofCapturedAt: proof.capturedAt, proofBoundAt: bound?.at,
+          intentAt: intent?.at }))
       fail("review token rotation fresh augmented pre-mutation proof drift");
   }
   if (prefixKind.startsWith("review-")) {
@@ -1694,8 +1733,7 @@ intermediateProof, authorityProof, { production, review, accountId, sourceSha,
     if (intent?.method !== request.method || intent.path !== request.path ||
         intent.requestDigestSha256 !== request.requestDigestSha256 ||
         Date.parse(proofBound.at) > Date.parse(intent.at) ||
-        Date.parse(intent.at) - Date.parse(proofBound.at) > 30_000 ||
-        Date.parse(intent.at) - Date.parse(reviewChecked.at) > 30_000 ||
+        Date.parse(intent.at) - Date.parse(intermediateProof.capturedAt) > 30_000 ||
         Date.parse(intent.at) >= Date.parse(authorityProof.expiresAt) ||
         classified && !["explicit-failure", "ambiguous"].includes(classified.outcome) ||
         classified?.outcome === "explicit-failure" &&
@@ -2389,7 +2427,6 @@ now = Date.now()) {
     const recoveryDelete = recovered && operationIndex === semantics.length - 1;
     return Date.parse(main?.at ?? "") <= Date.parse(checked?.at ?? "") &&
       Date.parse(checked?.at ?? "") <= Date.parse(intent?.at ?? "") &&
-      Date.parse(intent?.at ?? "") - Date.parse(checked?.at ?? "") <= 30_000 &&
       (recoveryDelete ? (!classified || Date.parse(intent.at) <= Date.parse(classified.at)) &&
         (!bound || classified && Date.parse(classified.at) <= Date.parse(bound.at) &&
           Date.parse(bound.at) < Date.parse(authorityProof.expiresAt)) :
@@ -2419,12 +2456,14 @@ now = Date.now()) {
     ["repoint-inert-production-trigger", preProductionProof, preProductionBound],
     ["repoint-final-review-trigger", intermediateProof, intermediateBound],
   ].every(([operation, proof, bound]) => {
+    const main = mutation("current-main-proof-bound", operation);
     const checked = mutation("review-token-rotation-authority-checked", operation);
     const intent = mutation("mutation-intent", operation);
-    return Date.parse(checked?.at ?? "") <= Date.parse(proof?.capturedAt ?? "") &&
-      Date.parse(proof?.capturedAt ?? "") <= Date.parse(bound?.at ?? "") &&
-      Date.parse(bound?.at ?? "") <= Date.parse(intent?.at ?? "") &&
-      Date.parse(intent?.at ?? "") - Date.parse(bound?.at ?? "") <= 30_000;
+    return reviewTokenRotationRollbackProofChronologyValid({
+      currentMainAt: main?.at, authorityAt: checked?.at,
+      proofCapturedAt: proof?.capturedAt, proofBoundAt: bound?.at,
+      intentAt: intent?.at,
+    });
   });
   let unreferencedDeleteChronologyValid = true;
   try {
@@ -2654,8 +2693,7 @@ now = Date.now()) {
         Date.parse(operationAuthority?.at ?? "") > Date.parse(operationIntent?.at ?? "") ||
         Date.parse(operationIntent?.at ?? "") > Date.parse(operationClassified?.at ?? "") ||
         Date.parse(operationClassified?.at ?? "") > Date.parse(operationBound?.at ?? "") ||
-        Date.parse(operationIntent?.at ?? "") - Date.parse(operationAuthority?.at ?? "") >
-          30_000 || Date.parse(operationBound?.at ?? "") >=
+        Date.parse(operationBound?.at ?? "") >=
           Date.parse(authorityProof.expiresAt))
       fail("review token rotation recovery prefix mutation drift");
   }
@@ -2717,12 +2755,14 @@ now = Date.now()) {
     const checked = records.find((record) =>
       record.event === "review-token-rotation-authority-checked" &&
       record.operation === operation);
+    const main = records.find((record) => record.event === "current-main-proof-bound" &&
+      record.operation === operation);
     const operationIntent = records.find((record) =>
       record.event === "mutation-intent" && record.operation === operation);
-    if (Date.parse(checked?.at ?? "") > Date.parse(proof.capturedAt) ||
-        Date.parse(proof.capturedAt) > Date.parse(proofBound?.at ?? "") ||
-        Date.parse(proofBound?.at ?? "") > Date.parse(operationIntent?.at ?? "") ||
-        Date.parse(operationIntent?.at ?? "") - Date.parse(proofBound?.at ?? "") > 30_000)
+    if (!reviewTokenRotationRollbackProofChronologyValid({
+      currentMainAt: main?.at, authorityAt: checked?.at,
+      proofCapturedAt: proof.capturedAt, proofBoundAt: proofBound?.at,
+      intentAt: operationIntent?.at }))
       fail("review token rotation recovery prefix pre-mutation proof drift");
   }
   const intent = records[deleteIntentIndex];
@@ -2740,7 +2780,6 @@ now = Date.now()) {
       Date.parse(deleteMain?.at ?? "") > Date.parse(deleteAuthority?.at ?? "") ||
       Date.parse(deleteAuthority?.at ?? "") > Date.parse(unreferencedBound?.at ?? "") ||
       Date.parse(unreferencedBound?.at ?? "") > Date.parse(intent?.at ?? "") ||
-      Date.parse(intent?.at ?? "") - Date.parse(deleteAuthority?.at ?? "") > 30_000 ||
       Date.parse(intent?.at ?? "") >= Date.parse(authorityProof.expiresAt))
     fail("review token rotation recovery prefix delete intent drift");
   try {
@@ -2823,7 +2862,7 @@ export function validateReviewTokenRotationDeleteProofChronology(proof, bound, i
   const boundAt = Date.parse(bound?.at ?? "");
   const intentAt = Date.parse(intent?.at ?? "");
   if (!Number.isFinite(capturedAt) || !Number.isFinite(boundAt) || !Number.isFinite(intentAt) ||
-      capturedAt > boundAt || boundAt > intentAt || intentAt - boundAt > 30_000)
+      capturedAt > boundAt || boundAt > intentAt || intentAt - capturedAt > 30_000)
     fail("review token rotation delete proof chronology drift");
   return true;
 }
@@ -2840,6 +2879,7 @@ export function reviewTokenRotationUnresolvedReplacementCoordinate(authorityProo
 function validateReviewTokenRotationRollbackMutationPrefix(records, authorityProof, {
   production, review, sourceSha, replacementReviewTokenUuid, operation,
   terminalBlocked = false, providerNormalizedIncident = false,
+  historicalProviderNormalizedIncident = false,
 }) {
   const find = (event) => records.find((record) =>
     record.event === event && record.operation === operation);
@@ -2888,7 +2928,8 @@ function validateReviewTokenRotationRollbackMutationPrefix(records, authorityPro
     fail("review token rotation rollback mutation provenance drift");
   const ordered = present.filter(Boolean).map(({ at }) => Date.parse(at));
   if (ordered.some((at, index) => index > 0 && at < ordered[index - 1]) ||
-      intent && authority && Date.parse(intent.at) - Date.parse(authority.at) > 30_000)
+      historicalProviderNormalizedIncident && intent && authority &&
+        Date.parse(intent.at) - Date.parse(authority.at) > 30_000)
     fail("review token rotation rollback mutation chronology drift");
   return { currentMain, authority, intent, classified, bound };
 }
@@ -3132,10 +3173,11 @@ arguments_, testCapability) {
 
 export async function validateReviewTokenRotationNoOwnedPreIntentTerminal(forwardRecords,
 authorityProof, { production, review, accountId, sourceSha, preCreateProof,
-  rollbackRecords, rollbackArguments },
+  rollbackRecords, rollbackArguments,
+  authorityPlanDigest = digestJson(provisioningSetupPlan(production, review)) },
 now = Date.now()) {
   validateHistoricalReviewTokenRotationAuthority(authorityProof,
-    { production, review, accountId, sourceSha });
+    { production, review, accountId, sourceSha, planDigest: authorityPlanDigest });
   const expected = [
     ["attempt-started", "review-token-rotation"],
     ["rotation-authorized", undefined],
@@ -3229,6 +3271,134 @@ now = Date.now()) {
   return { outcome: "workers-builds-review-token-rotation-no-owned-predecessor-blocked-valid",
     mutation: false, replacementReviewTokenUuid,
     forwardJournalDigest: digestJson(forwardRecords), rollbackJournalDigest: digestJson(rollbackRecords) };
+}
+
+async function validateReviewTokenRotationNoOwnedIncidentSuccessorCore(records, {
+  production, review, accountId, terminalSourceSha,
+  terminalCurrentMainProofStart, terminalCurrentMainProofFinish,
+  freshSnapshotDirectory, freshPredecessorProof,
+  forwardRecords, rollbackRecords, authorityProof, preCreateProof,
+  rollbackArguments, incidentFileDigests,
+}, now = Date.now(), testCapability = undefined) {
+  const coordinate = noOwnedIncidentCoordinate(testCapability);
+  const digestKeys = ["authorityFileSha256", "executorSha256", "forwardJournalSha256",
+    "preCreateProofFileSha256", "residualProofFileSha256",
+    "residualSnapshotManifestSha256", "rollbackJournalSha256"];
+  if (!same(sorted(Object.keys(incidentFileDigests ?? {})), digestKeys) ||
+      digestKeys.some((key) => incidentFileDigests[key] !== coordinate[key]) ||
+      authorityProof?.sourceSha !== coordinate.sourceSha ||
+      authorityProof?.planDigest !== coordinate.planDigest ||
+      digestJson(forwardRecords) !== coordinate.forwardJournalDigest ||
+      digestJson(rollbackRecords) !== coordinate.rollbackJournalDigest ||
+      rollbackRecords?.at(-1)?.recordSha256 !== coordinate.rollbackTerminalRecordSha256 ||
+      rollbackArguments?.blockedProof?.proof_digest !== coordinate.residualProofDigest ||
+      digestJson(rollbackArguments?.blockedProof) !== coordinate.residualProofDocumentSha256)
+    fail("review token rotation no-owned incident coordinate drift");
+  const historical = await validateReviewTokenRotationNoOwnedPreIntentTerminal(forwardRecords,
+    authorityProof, { production, review, accountId, sourceSha: coordinate.sourceSha,
+      preCreateProof, rollbackRecords,
+      rollbackArguments: { ...rollbackArguments, authoritySourceSha: coordinate.sourceSha,
+        authorityPlanDigest: coordinate.planDigest },
+      authorityPlanDigest: coordinate.planDigest }, now);
+  if (historical.forwardJournalDigest !== coordinate.forwardJournalDigest ||
+      historical.rollbackJournalDigest !== coordinate.rollbackJournalDigest)
+    fail("review token rotation no-owned historical terminal drift");
+  const identities = authorityProof.journalIdentities;
+  const manifest = await loadSnapshot(freshSnapshotDirectory, "snapshot-manifest.json");
+  const snapshotManifestSha256 = await readPrivateFileSha256(
+    resolve(freshSnapshotDirectory, "snapshot-manifest.json"),
+    "no-owned successor snapshot manifest");
+  const validatedProof = await validateReviewTokenRotationSnapshotDirectory({
+    snapshotDirectory: freshSnapshotDirectory, production, review, accountId,
+    sourceSha: terminalSourceSha, phase: "predecessor",
+    productionSentinelProof: rollbackArguments.productionSentinelProof,
+    predecessorTokenAuthorityProofs: rollbackArguments.predecessorTokenAuthorityProofs,
+    replacementTokenAuthorityProof: rollbackArguments.replacementTokenAuthorityProof,
+    replacementTokenId: rollbackArguments.replacementTokenId,
+    productionTriggerUuid: identities.productionTriggerUuid,
+    reviewTriggerUuid: identities.reviewTriggerUuid,
+    predecessorReviewTokenUuid: identities.predecessorReviewBuildTokenUuid,
+    replacementReviewTokenUuid: undefined,
+    productionPreservationDigest: authorityProof.productionPreservationDigest,
+    authorityProof, productionBaselineProof: rollbackArguments.productionBaselineProof,
+    authoritySourceSha: coordinate.sourceSha, authorityPlanDigest: authorityProof.planDigest,
+    now: Date.parse(freshPredecessorProof?.capturedAt ?? ""),
+  });
+  const historicalTerminalAt = Date.parse(rollbackRecords.at(-1)?.at ?? "");
+  const mainStartCapturedAt = Date.parse(terminalCurrentMainProofStart?.capturedAt ?? "");
+  const mainFinishCapturedAt = Date.parse(terminalCurrentMainProofFinish?.capturedAt ?? "");
+  const snapshotStartedAt = Date.parse(manifest?.startedAt ?? "");
+  const snapshotCompletedAt = Date.parse(manifest?.completedAt ?? "");
+  const proofCapturedAt = Date.parse(freshPredecessorProof?.capturedAt ?? "");
+  validateCurrentMainProof(terminalCurrentMainProofStart, terminalSourceSha,
+    snapshotStartedAt);
+  validateCurrentMainProof(terminalCurrentMainProofFinish, terminalSourceSha,
+    mainFinishCapturedAt);
+  if (digestJson(validatedProof) !== digestJson(freshPredecessorProof) ||
+      ![historicalTerminalAt, mainStartCapturedAt, snapshotStartedAt, snapshotCompletedAt,
+        proofCapturedAt, mainFinishCapturedAt].every(Number.isFinite) ||
+      historicalTerminalAt > snapshotStartedAt || mainStartCapturedAt > snapshotStartedAt ||
+      snapshotStartedAt > snapshotCompletedAt || snapshotCompletedAt > proofCapturedAt ||
+      proofCapturedAt > mainFinishCapturedAt)
+    fail("review token rotation no-owned successor proof drift");
+  const expected = ["review-token-rotation-no-owned-successor-started",
+    "review-token-rotation-no-owned-successor-complete"];
+  const exactKeys = [
+    ["at", "attempt", "currentMainProofFinishDigest", "currentMainProofStartDigest",
+      "event", "freshProofDigest", "freshProofFileSha256", "incidentCoordinateDigest", "providerMutation",
+      "recordSha256", "snapshotManifestSha256", "terminalSourceSha"],
+    ["at", "attempt", "event", "freshProofDigest", "freshProofFileSha256",
+      "initialProductionBuild", "migration0010", "outcome", "productionActivation",
+      "providerMutation", "recordSha256", "triggerPostOrPatch", "workerResourceMutation"],
+  ];
+  if (!Array.isArray(records) || records.length !== expected.length)
+    fail("review token rotation no-owned successor sequence drift");
+  let previousAt = proofCapturedAt;
+  for (const [index, record] of records.entries()) {
+    const { recordSha256, ...payload } = record ?? {};
+    const at = Date.parse(record?.at ?? "");
+    if (record?.event !== expected[index] || record.attempt !== 1 ||
+        !same(sorted(Object.keys(record)), sorted(exactKeys[index])) ||
+        !/^[0-9a-f]{64}$/u.test(recordSha256 ?? "") ||
+        digestJson(payload) !== recordSha256 || !isUtcTimestamp(record.at) ||
+        !Number.isFinite(at) || at <= previousAt)
+      fail("review token rotation no-owned successor sequence drift");
+    previousAt = at;
+  }
+  const start = records[0];
+  const terminal = records[1];
+  if (start.incidentCoordinateDigest !== digestJson(coordinate) ||
+      start.terminalSourceSha !== terminalSourceSha || start.providerMutation !== false ||
+      start.currentMainProofStartDigest !== digestJson(terminalCurrentMainProofStart) ||
+      start.currentMainProofFinishDigest !== digestJson(terminalCurrentMainProofFinish) ||
+      start.freshProofDigest !== freshPredecessorProof.proof_digest ||
+      start.freshProofFileSha256 !== digestJson(freshPredecessorProof) ||
+      start.snapshotManifestSha256 !== snapshotManifestSha256 ||
+      mainFinishCapturedAt > Date.parse(start.at) ||
+      Date.parse(start.at) - proofCapturedAt > 30_000 ||
+      terminal.outcome !== "predecessor-no-owned" || terminal.providerMutation !== false ||
+      terminal.freshProofDigest !== start.freshProofDigest ||
+      terminal.freshProofFileSha256 !== start.freshProofFileSha256 ||
+      terminal.triggerPostOrPatch !== false || terminal.productionActivation !== false ||
+      terminal.migration0010 !== false || terminal.initialProductionBuild !== false ||
+      terminal.workerResourceMutation !== false || Date.parse(terminal.at) > now + 30_000)
+    fail("review token rotation no-owned successor terminal drift");
+  return { outcome: "workers-builds-review-token-rotation-no-owned-successor-valid",
+    mutation: false, terminal: true, proof_digest: freshPredecessorProof.proof_digest,
+    terminalSourceSha };
+}
+
+export async function validateReviewTokenRotationNoOwnedIncidentSuccessor(records,
+arguments_, now = Date.now()) {
+  const { testCapability: _ignored, ...runtimeArguments } = arguments_ ?? {};
+  return validateReviewTokenRotationNoOwnedIncidentSuccessorCore(records,
+    runtimeArguments, now);
+}
+
+export async function validateReviewTokenRotationNoOwnedIncidentSuccessorForTest(records,
+arguments_, now, testCapability) {
+  return validateReviewTokenRotationNoOwnedIncidentSuccessorCore(records,
+    arguments_, now, testCapability);
 }
 
 async function validateReviewTokenRotationRollbackJournalCore(records, authorityProof, {
@@ -3380,7 +3550,8 @@ async function validateReviewTokenRotationRollbackJournalCore(records, authority
   for (const operation of mutationOperations)
     validateReviewTokenRotationRollbackMutationPrefix(records, authorityProof,
       { production, review, sourceSha, replacementReviewTokenUuid, operation,
-        terminalBlocked, providerNormalizedIncident: providerNormalizedPhase });
+        terminalBlocked, providerNormalizedIncident: providerNormalizedPhase,
+        historicalProviderNormalizedIncident });
   if (!historicalProviderNormalizedIncident) {
     for (const [index, operation] of phaseOperations[startingPhase].entries()) {
       if (providerNormalizedPhase && index > 0) continue;
@@ -4657,6 +4828,11 @@ export function provisioningSetupPlan(production, review) {
           actor: "workers-builds-control-plane-operator", mutation: false,
           action: "after-expired-first-create-authorization-prefix-prove-exact-predecessor-state-and-journal-no-owned-replacement-residual",
           condition: "no-replacement-create-intent-or-provider-mutation-exists",
+          precondition: {
+            preCreateProof: privateFileReference(
+              "ATRINIK_REVIEW_TOKEN_ROTATION_PRE_CREATE_PROOF_FILE"),
+            providerStateProof: resultReference(
+              "prove-replacement-create-precondition", "proof_digest") },
           produces: { residual_proof_digest:
             "fresh-exhaustive-predecessor-no-owned-replacement-residual-digest" } },
         { id: "rotation-reconcile-superseded-wrapper",
@@ -4737,6 +4913,36 @@ export function provisioningSetupPlan(production, review) {
           command: "npm run provision:workers-builds:verify-review-token-rotation-rollback-complete",
           produces: { proof_digest: "fresh-exact-predecessor-state-digest" } },
       ],
+      noOwnedIncidentRecovery: {
+        mode: "read-only-distinct-successor-terminal",
+        coordinates: structuredClone(reviewTokenRotationNoOwnedIncident),
+        operations: [
+          { id: "rotation-no-owned-successor-capture",
+            actor: "workers-builds-control-plane-operator", mutation: false,
+            action: "capture-fresh-exhaustive-predecessor-no-owned-state-under-authenticated-current-main-without-touching-historical-journals",
+            command: "npm run provision:workers-builds:verify-review-token-rotation-rollback-complete",
+            produces: { proof_digest: "fresh-no-owned-successor-predecessor-proof-digest",
+              current_main_start_proof_digest:
+                "authenticated-terminal-observation-start-current-main-proof-digest",
+              current_main_finish_proof_digest:
+                "authenticated-terminal-observation-finish-current-main-proof-digest" } },
+          { id: "rotation-no-owned-successor-finalize",
+            actor: "journaled-no-owned-successor-executor", mutation: false,
+            action: "write-new-two-record-checksummed-terminal-journal-bound-to-exact-historical-inputs-and-fresh-proof",
+            precondition: { freshProof: resultReference(
+              "rotation-no-owned-successor-capture", "proof_digest") },
+            produces: { terminal: "predecessor-no-owned",
+              proof_digest: "fresh-no-owned-successor-predecessor-proof-digest" } },
+          { id: "rotation-no-owned-successor-validate",
+            actor: "workers-builds-control-plane-operator", mutation: false,
+            action: "validate-distinct-idempotent-no-owned-successor-terminal-with-no-provider-read-or-write",
+            command:
+              "npm run provision:workers-builds:verify-review-token-rotation-no-owned-successor",
+            precondition: { terminal: resultReference(
+              "rotation-no-owned-successor-finalize", "terminal") },
+            produces: { proof_digest: "fresh-no-owned-successor-predecessor-proof-digest" } },
+        ],
+      },
       freshProviderNormalizedRecovery: {
         mode: "rollback-only-current-attempt-provider-augmented",
         startingPhase: "production-repointed-review-augmented",
@@ -5300,6 +5506,7 @@ export function validateSetupPlan(plan) {
   expectedRotationOperations))
     fail("review token rotation operation set, order, or authority drift");
   inspect({ ...plan.reviewTokenRotation, operations: undefined, rollbackOperations: undefined,
+    noOwnedIncidentRecovery: undefined,
     freshProviderNormalizedRecovery: undefined,
     providerNormalizedIncidentRecovery: undefined, blockedDeleteRecovery: undefined });
   for (const operation of rotationOperations) {
@@ -5307,6 +5514,22 @@ export function validateSetupPlan(plan) {
     available.set(operation.id, new Set(Object.keys(operation.produces ?? {})));
   }
   for (const operation of plan.reviewTokenRotation.rollbackOperations) {
+    inspect(operation);
+    available.set(operation.id, new Set(Object.keys(operation.produces ?? {})));
+  }
+  const noOwnedRecovery = plan.reviewTokenRotation.noOwnedIncidentRecovery;
+  const expectedNoOwnedRecoveryOperations = [
+    ["rotation-no-owned-successor-capture", "workers-builds-control-plane-operator", false],
+    ["rotation-no-owned-successor-finalize", "journaled-no-owned-successor-executor", false],
+    ["rotation-no-owned-successor-validate", "workers-builds-control-plane-operator", false],
+  ];
+  if (!noOwnedRecovery || noOwnedRecovery.mode !== "read-only-distinct-successor-terminal" ||
+      !same(noOwnedRecovery.coordinates, reviewTokenRotationNoOwnedIncident) ||
+      !same(noOwnedRecovery.operations?.map(({ id, actor, mutation }) =>
+        [id, actor, mutation]), expectedNoOwnedRecoveryOperations))
+    fail("review token rotation no-owned successor operation drift");
+  inspect({ ...noOwnedRecovery, operations: undefined });
+  for (const operation of noOwnedRecovery.operations) {
     inspect(operation);
     available.set(operation.id, new Set(Object.keys(operation.produces ?? {})));
   }
@@ -7810,6 +8033,7 @@ export const credentialedProvisioningModes = Object.freeze([
   "--verify-review-token-rotation-pre-create",
   "--verify-review-token-rotation-pre-production",
   "--verify-review-token-rotation-intermediate",
+  "--verify-review-token-rotation-no-owned-successor",
   "--verify-review-token-rotation-provider-normalized-incident",
   "--verify-review-token-rotation-provider-peer-normalization",
   "--verify-review-token-rotation-rollback-precondition",
@@ -7829,7 +8053,8 @@ export async function credentialedSourceSha(mode, load = reviewedCurrentMainSha)
 
 async function runProvisioningCliCore(mode = process.argv[2] ?? "--validate-only",
   sourceShaLoader = reviewedCurrentMainSha, providerSnapshotReader = readProviderSnapshot,
-  testCapabilities = undefined, blockedDeleteTerminalContextReader = undefined) {
+  testCapabilities = undefined, blockedDeleteTerminalContextReader = undefined,
+  noOwnedTerminalContextReader = undefined) {
   const { production, review } = await validateCheckedInProvisioning();
   const providerNormalizedTestCapability = testCapabilities?.providerNormalized ??
     testCapabilities;
@@ -8048,6 +8273,93 @@ async function runProvisioningCliCore(mode = process.argv[2] ?? "--validate-only
     await writePrivateProof(requestedReceiptPath, receipt);
     process.stdout.write(`${JSON.stringify({ ...validation, sourceSha,
       proof_digest: authority.proof_digest, receipt_digest: receipt.proof_digest })}\n`);
+    return;
+  }
+  if (mode === "--verify-review-token-rotation-no-owned-successor") {
+    if (noOwnedTerminalContextReader &&
+        !noOwnedTerminalContextReaders.has(noOwnedTerminalContextReader))
+      fail("no-owned terminal test reader is unavailable");
+    const injected = noOwnedTerminalContextReader ?
+      await noOwnedTerminalContextReader(mode) : null;
+    if (injected) {
+      const result = await validateReviewTokenRotationNoOwnedIncidentSuccessorForTest(
+        injected.records, injected.arguments, injected.now, injected.testCapability);
+      process.stdout.write(`${JSON.stringify({ ...result, sourceSha })}\n`);
+      return;
+    }
+    const accountId = await readPrivateValue(process.env.ATRINIK_CLOUDFLARE_ACCOUNT_ID_FILE,
+      "Cloudflare account ID", accountIdPattern);
+    const forwardPath =
+      process.env.ATRINIK_REVIEW_TOKEN_ROTATION_NO_OWNED_FORWARD_JOURNAL_FILE;
+    const rollbackPath =
+      process.env.ATRINIK_REVIEW_TOKEN_ROTATION_NO_OWNED_ROLLBACK_JOURNAL_FILE;
+    const authorityPath = process.env.ATRINIK_REVIEW_TOKEN_ROTATION_AUTHORITY_PROOF_FILE;
+    const preCreatePath = process.env.ATRINIK_REVIEW_TOKEN_ROTATION_PRE_CREATE_PROOF_FILE;
+    const blockedProofPath =
+      process.env.ATRINIK_REVIEW_TOKEN_ROTATION_NO_OWNED_RESIDUAL_PROOF_FILE;
+    const blockedSnapshotDirectory = await readPrivateValue(
+      process.env.ATRINIK_REVIEW_TOKEN_ROTATION_NO_OWNED_RESIDUAL_SNAPSHOT_DIRECTORY_FILE,
+      "no-owned historical residual snapshot directory");
+    const freshSnapshotDirectory = await readPrivateValue(
+      process.env.ATRINIK_REVIEW_TOKEN_ROTATION_NO_OWNED_SUCCESSOR_SNAPSHOT_DIRECTORY_FILE,
+      "no-owned successor snapshot directory");
+    const evidence = await readReviewTokenRotationAuthorityEvidence(process.env);
+    const authorityProof = await readPrivateJson(authorityPath,
+      "no-owned historical rotation authority");
+    const preCreateProof = await readPrivateJson(preCreatePath,
+      "no-owned historical pre-create proof");
+    const blockedProof = await readPrivateJson(blockedProofPath,
+      "no-owned historical residual proof");
+    const freshPredecessorProof = await readPrivateJson(
+      process.env.ATRINIK_REVIEW_TOKEN_ROTATION_NO_OWNED_SUCCESSOR_PROOF_FILE,
+      "no-owned successor predecessor proof");
+    const terminalCurrentMainProofStart = await readPrivateJson(
+      process.env.ATRINIK_REVIEW_TOKEN_ROTATION_NO_OWNED_SUCCESSOR_CURRENT_MAIN_START_PROOF_FILE,
+      "no-owned successor observation start current-main proof");
+    const terminalCurrentMainProofFinish = await readPrivateJson(
+      process.env.ATRINIK_REVIEW_TOKEN_ROTATION_NO_OWNED_SUCCESSOR_CURRENT_MAIN_FINISH_PROOF_FILE,
+      "no-owned successor observation finish current-main proof");
+    const records = await readPrivateJsonLines(
+      process.env.ATRINIK_REVIEW_TOKEN_ROTATION_NO_OWNED_SUCCESSOR_JOURNAL_FILE,
+      "no-owned successor journal");
+    const forwardRecords = await readPrivateJsonLines(forwardPath,
+      "no-owned historical forward journal");
+    const rollbackRecords = await readPrivateJsonLines(rollbackPath,
+      "no-owned historical rollback journal");
+    const result = await validateReviewTokenRotationNoOwnedIncidentSuccessor(records, {
+      production, review, accountId, terminalSourceSha: freshPredecessorProof.sourceSha,
+      terminalCurrentMainProofStart, terminalCurrentMainProofFinish,
+      freshSnapshotDirectory, freshPredecessorProof,
+      forwardRecords, rollbackRecords, authorityProof, preCreateProof,
+      rollbackArguments: {
+        blockedSnapshotDirectory, blockedProof,
+        productionSentinelProof: evidence.productionSentinelProof,
+        predecessorTokenAuthorityProofs: evidence.predecessorTokenAuthorityProofs,
+        replacementTokenAuthorityProof: evidence.replacementTokenAuthorityProof,
+        replacementTokenId: evidence.replacementTokenId,
+        productionBaselineProof: evidence.productionBaselineProof,
+      },
+      incidentFileDigests: {
+        authorityFileSha256: await readPrivateFileSha256(authorityPath,
+          "no-owned historical rotation authority"),
+        executorSha256: await readPrivateFileSha256(
+          process.env.ATRINIK_REVIEW_TOKEN_ROTATION_NO_OWNED_EXECUTOR_FILE,
+          "no-owned failed executor"),
+        forwardJournalSha256: await readPrivateFileSha256(forwardPath,
+          "no-owned historical forward journal"),
+        preCreateProofFileSha256: await readPrivateFileSha256(preCreatePath,
+          "no-owned historical pre-create proof"),
+        residualProofFileSha256: await readPrivateFileSha256(blockedProofPath,
+          "no-owned historical residual proof"),
+        residualSnapshotManifestSha256: await readPrivateFileSha256(
+          resolve(blockedSnapshotDirectory, "snapshot-manifest.json"),
+          "no-owned historical residual snapshot manifest"),
+        rollbackJournalSha256: await readPrivateFileSha256(rollbackPath,
+          "no-owned historical rollback journal"),
+      },
+    });
+    process.stdout.write(`${JSON.stringify({ ...result, sourceSha,
+      terminalObservationSourceSha: freshPredecessorProof.sourceSha })}\n`);
     return;
   }
   if (["--verify-review-token-rotation-blocked-delete-complete",
@@ -8554,9 +8866,10 @@ sourceShaLoader = reviewedCurrentMainSha, providerSnapshotReader = readProviderS
 }
 
 export async function runProvisioningCliForTest(mode, sourceShaLoader,
-providerSnapshotReader, testCapabilities, blockedDeleteTerminalContextReader = undefined) {
+providerSnapshotReader, testCapabilities, blockedDeleteTerminalContextReader = undefined,
+noOwnedTerminalContextReader = undefined) {
   return runProvisioningCliCore(mode, sourceShaLoader, providerSnapshotReader, testCapabilities,
-    blockedDeleteTerminalContextReader);
+    blockedDeleteTerminalContextReader, noOwnedTerminalContextReader);
 }
 
 if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url))
