@@ -123,7 +123,11 @@
   The fresh intermediate readback must also bind Cloudflare's peer disposition: accept either
   the unchanged predecessor-token review trigger or only the provider-added production sentinel
   exclusion. If rollback begins from that augmented phase, bind the current attempt's exact
-  17-record forward prefix, attempt namespace, and all three pre-mutation proofs, restore
+  completed 17-record forward prefix or only the contract-enumerated partial-production and
+  final-review-no-effect suffixes, the attempt namespace, and all applicable pre-mutation
+  proofs. Exceptional prefixes require a fresh exhaustive augmented-state handoff captured
+  after the last forward record; never backdate or synthesize a missing mutation bound. An
+  expired no-owned prefix may end at the fifth pre-create proof binding. Then restore
   a fresh exhaustive augmented-state rollback precondition after current-main and authority
   and no more than 30 seconds before the production intent, restore production first, prove
   the resulting peer state, and patch

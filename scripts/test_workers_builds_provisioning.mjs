@@ -2783,6 +2783,229 @@ test("validates exact review-token rotation rollback and residual journals", asy
     replacementTokenAuthorityProof: evidence.replacementTokenAuthorityProof,
     replacementTokenId: evidence.replacementTokenId,
     productionBaselineProof: evidence.productionBaselineProof };
+  const recoveryProof = { ...freshIntermediateProof,
+    capturedAt: new Date(base + 156).toISOString(), proof_digest: "d".repeat(64) };
+  const productionRecoveryProof = { ...freshIntermediateProof,
+    capturedAt: new Date(Date.parse(authorityProof.expiresAt) + 1).toISOString(),
+    proof_digest: "e".repeat(64) };
+  const productionExceptionalSnapshotDirectory = resolve(temporary,
+    "production-exceptional-snapshot");
+  await cp(blockedSnapshotDirectory, productionExceptionalSnapshotDirectory,
+    { recursive: true });
+  const productionSnapshotAt = Date.parse(authorityProof.expiresAt) + 3;
+  await writeFile(resolve(productionExceptionalSnapshotDirectory, "snapshot-manifest.json"),
+    `${JSON.stringify(manifest(productionSnapshotAt))}\n`, { mode: 0o600 });
+  const productionBlockedProof = await validateReviewTokenRotationSnapshotDirectory({
+    snapshotDirectory: productionExceptionalSnapshotDirectory, production, review, accountId,
+    sourceSha, phase: "production-repointed-review-augmented",
+    productionSentinelProof: evidence.productionSentinelProof,
+    predecessorTokenAuthorityProofs: evidence.predecessorTokenAuthorityProofs,
+    replacementTokenAuthorityProof: evidence.replacementTokenAuthorityProof,
+    replacementTokenId: evidence.replacementTokenId, productionTriggerUuid,
+    reviewTriggerUuid, predecessorReviewTokenUuid: reviewTokenUuid,
+    replacementReviewTokenUuid, productionPreservationDigest, authorityProof,
+    productionBaselineProof: evidence.productionBaselineProof, now: productionSnapshotAt + 1 });
+  const productionBlockedTerminal = checksummedRecord({ event:
+    "review-token-rotation-rollback-blocked", attempt: 1,
+  at: new Date(productionSnapshotAt + 2).toISOString(), residualState: {
+    activeMutation: null, liveProductionTokenReference: replacementReviewTokenUuid,
+    liveReviewTokenReference: reviewTokenUuid, predecessorWrapperPresent: true,
+    replacementWrapperPresent: true, reviewPeerAugmented: true },
+  residualProofDigest: productionBlockedProof.proof_digest,
+  residualProofFileSha256: createHash("sha256")
+    .update(JSON.stringify(productionBlockedProof)).digest("hex") });
+  const exceptionalRollback = (forwardRecords, prefixKind, proof = recoveryProof,
+    startAt = base + 157, terminal = incidentBlocked[1]) => {
+    const start = checksummedRecord({ event: "review-token-rotation-rollback-started",
+      attempt: 1, at: new Date(startAt).toISOString(),
+      startingPhase: "production-repointed-review-augmented",
+      authorityProofDigest: authorityProof.proof_digest, replacementReviewTokenUuid,
+      forwardJournalDigest: createHash("sha256").update(JSON.stringify(forwardRecords))
+        .digest("hex"),
+      forwardAttemptCoordinateDigest: evidence.rotationAttemptCoordinate.proof_digest,
+      forwardPrefixKind: prefixKind, forwardRecoveryProof: {
+        proofDigest: proof.proof_digest,
+        proofFileSha256: createHash("sha256").update(JSON.stringify(proof))
+          .digest("hex"),
+      } });
+    return [start, terminal];
+  };
+  const validateExceptional = (forwardRecords, prefixKind,
+    proof = prefixKind.startsWith("production-") ? productionRecoveryProof : recoveryProof) =>
+    validateReviewTokenRotationRollbackJournal(exceptionalRollback(forwardRecords, prefixKind,
+      proof, prefixKind.startsWith("production-") ?
+        Date.parse(authorityProof.expiresAt) + 2 : base + 157,
+      prefixKind.startsWith("production-") ? productionBlockedTerminal : incidentBlocked[1]),
+      authorityProof, { ...freshArguments, forwardRecords,
+        ...(prefixKind.startsWith("production-") ?
+          { forwardIntermediateProof: undefined,
+            blockedSnapshotDirectory: productionExceptionalSnapshotDirectory,
+            blockedProof: productionBlockedProof } : {}),
+        forwardRecoveryProof: proof });
+  for (const [forwardRecords, prefixKind] of [
+    [freshForwardRecords.slice(0, 12), "production-intent-applied"],
+    [freshForwardRecords.slice(0, 13), "production-classified-applied"],
+  ]) {
+    const first = await validateExceptional(forwardRecords, prefixKind);
+    assert.equal(first.outcome,
+      "workers-builds-review-token-rotation-rollback-blocked-valid");
+    assert.deepEqual(await validateExceptional(forwardRecords, prefixKind), first);
+  }
+  await assert.rejects(validateExceptional(freshForwardRecords.slice(0, 12),
+    "production-intent-applied", recoveryProof), /recovery proof drift/u);
+  const ambiguousProduction = structuredClone(freshForwardRecords.slice(0, 13));
+  const { recordSha256: _ambiguousProductionChecksum, ...ambiguousProductionPayload } =
+    ambiguousProduction[12];
+  ambiguousProductionPayload.outcome = "ambiguous";
+  ambiguousProductionPayload.resourceUuid = null;
+  ambiguousProduction[12] = checksummedRecord(ambiguousProductionPayload);
+  assert.equal((await validateExceptional(ambiguousProduction,
+    "production-classified-applied")).outcome,
+  "workers-builds-review-token-rotation-rollback-blocked-valid");
+  const reviewIntentPrefix = [...freshForwardRecords,
+    structuredClone(evidence.reviewTokenRotationJournal[17])];
+  assert.equal((await validateExceptional(reviewIntentPrefix,
+    "review-intent-no-effect")).outcome,
+  "workers-builds-review-token-rotation-rollback-blocked-valid");
+  for (const outcome of ["ambiguous", "explicit-failure"]) {
+    const prefix = structuredClone(reviewIntentPrefix);
+    const classification = { event: "provider-response-classified", attempt: 1,
+      at: evidence.reviewTokenRotationJournal[18].at,
+      operation: "repoint-final-review-trigger", outcome, resourceUuid: null,
+      ...(outcome === "explicit-failure" ?
+        { status: 409, responseDigestSha256: "e".repeat(64) } : {}) };
+    prefix.push(checksummedRecord(classification));
+    assert.equal((await validateExceptional(prefix,
+      `review-classified-no-effect`)).outcome,
+    "workers-builds-review-token-rotation-rollback-blocked-valid");
+  }
+  const exceptionalCompleteForward = reviewIntentPrefix;
+  const exceptionalCompleteRecords = [exceptionalRollback(exceptionalCompleteForward,
+    "review-intent-no-effect")[0]];
+  let exceptionalAt = base + 157;
+  const appendExceptional = (payload) => exceptionalCompleteRecords.push(checksummedRecord({
+    ...payload, attempt: 1, at: new Date(exceptionalAt += 2).toISOString() }));
+  const exceptionalMain = (operation) => appendExceptional({
+    event: "current-main-proof-bound", operation, sourceSha, ref: "refs/heads/main",
+    capturedAt: new Date(exceptionalAt + 1).toISOString(),
+    proofFileSha256: "1".repeat(64), rawFileSha256: "2".repeat(64) });
+  const exceptionalAuthority = (operation) => appendExceptional({
+    event: "rollback-authority-checked", operation,
+    proofDigest: authorityProof.proof_digest, historicalRollbackAuthority: true });
+  const exceptionalMutation = (operation, extraBound = {}) => {
+    const request = reviewTokenRotationRollbackRequestDigest({ production, review,
+      authorityProof, operation, replacementReviewTokenUuid });
+    appendExceptional({ event: "mutation-intent", operation, ...request });
+    appendExceptional({ event: "provider-response-classified", operation,
+      outcome: "explicit-success" });
+    appendExceptional({ event: "mutation-bound", operation,
+      requestDigestSha256: request.requestDigestSha256,
+      resourceUuid: operation === "rotation-restore-production-trigger-old-token" ?
+        authorityProof.journalIdentities.productionTriggerUuid : replacementReviewTokenUuid,
+      providerResponseExplicitSuccess: true, readbackDigestSha256: "3".repeat(64),
+      reconciliation: operation === "rotation-delete-replacement-wrapper" ?
+        "explicit-success-exact-absence" : "explicit-success-exact-readback",
+      ...(operation === "rotation-delete-replacement-wrapper" ?
+        { deletionTombstone: true } : {}), ...extraBound });
+  };
+  const productionPreconditionProof = { ...recoveryProof,
+    capturedAt: new Date(exceptionalAt + 5).toISOString(), proof_digest: "1".repeat(64) };
+  exceptionalMain("rotation-restore-production-trigger-old-token");
+  exceptionalAuthority("rotation-restore-production-trigger-old-token");
+  appendExceptional({ event: "provider-proof-bound",
+    operation: "rotation-prove-production-restore-precondition",
+    proofDigest: productionPreconditionProof.proof_digest,
+    proofFileSha256: createHash("sha256")
+      .update(JSON.stringify(productionPreconditionProof)).digest("hex") });
+  exceptionalMutation("rotation-restore-production-trigger-old-token",
+    { reviewPeerAugmented: false });
+  const peerNormalizationProof = { ...evidence.reviewTokenRotationProof,
+    outcome: "workers-builds-review-token-rotation-predecessor-restored-valid",
+    phase: "predecessor-restored", capturedAt: new Date(exceptionalAt + 1).toISOString(),
+    proof_digest: "2".repeat(64) };
+  appendExceptional({ event: "provider-proof-bound",
+    operation: "rotation-prove-provider-peer-normalization",
+    proofDigest: peerNormalizationProof.proof_digest,
+    proofFileSha256: createHash("sha256")
+      .update(JSON.stringify(peerNormalizationProof)).digest("hex") });
+  exceptionalMain("rotation-delete-replacement-wrapper");
+  exceptionalAuthority("rotation-delete-replacement-wrapper");
+  const exceptionalRestoredProof = { ...peerNormalizationProof,
+    capturedAt: new Date(exceptionalAt + 1).toISOString(), proof_digest: "3".repeat(64) };
+  appendExceptional({ event: "provider-proof-bound",
+    operation: "rotation-prove-predecessor-restored",
+    proofDigest: exceptionalRestoredProof.proof_digest,
+    proofFileSha256: createHash("sha256")
+      .update(JSON.stringify(exceptionalRestoredProof)).digest("hex") });
+  exceptionalMutation("rotation-delete-replacement-wrapper");
+  const { replacementReviewTokenUuid: _exceptionalReplacement, ...completeProofBase } =
+    evidence.reviewTokenRotationProof;
+  const exceptionalCompleteProof = { ...completeProofBase,
+    outcome: "workers-builds-review-token-rotation-predecessor-valid", phase: "predecessor",
+    capturedAt: new Date(exceptionalAt + 1).toISOString(), proof_digest: "4".repeat(64) };
+  appendExceptional({ event: "provider-proof-bound",
+    operation: "rotation-prove-rollback-complete",
+    proofDigest: exceptionalCompleteProof.proof_digest,
+    proofFileSha256: createHash("sha256")
+      .update(JSON.stringify(exceptionalCompleteProof)).digest("hex") });
+  appendExceptional({ event: "review-token-rotation-rollback-complete",
+    proofDigest: exceptionalCompleteProof.proof_digest, productionActivation: false,
+    migration0010: false, initialProductionBuild: false });
+  const exceptionalCompleteArguments = { ...freshArguments,
+    forwardRecords: exceptionalCompleteForward,
+    forwardRecoveryProof: recoveryProof, peerNormalizationProof,
+    restoredProof: exceptionalRestoredProof, completeProof: exceptionalCompleteProof,
+    rollbackPreconditionProofs: {
+      "rotation-restore-production-trigger-old-token": productionPreconditionProof } };
+  const exceptionalCompleteFirst = await validateReviewTokenRotationRollbackJournal(
+    exceptionalCompleteRecords, authorityProof, exceptionalCompleteArguments);
+  assert.equal(exceptionalCompleteFirst.outcome,
+    "workers-builds-review-token-rotation-rollback-complete-valid");
+  assert.deepEqual(await validateReviewTokenRotationRollbackJournal(
+    exceptionalCompleteRecords, authorityProof, exceptionalCompleteArguments),
+  exceptionalCompleteFirst);
+  const falseSuccess = structuredClone(reviewIntentPrefix);
+  falseSuccess.push(structuredClone(evidence.reviewTokenRotationJournal[18]));
+  await assert.rejects(validateExceptional(falseSuccess, "review-classified-no-effect"),
+    /review no-effect provenance drift/u);
+  const staleRecoveryProof = { ...recoveryProof,
+    capturedAt: new Date(Date.parse(reviewIntentPrefix.at(-1).at) - 1).toISOString() };
+  await assert.rejects(validateReviewTokenRotationRollbackJournal(
+    exceptionalRollback(reviewIntentPrefix, "review-intent-no-effect"), authorityProof,
+    { ...freshArguments, forwardRecords: reviewIntentPrefix,
+      forwardRecoveryProof: staleRecoveryProof }), /recovery proof drift/u);
+  const simultaneousRecoveryProof = { ...recoveryProof,
+    capturedAt: reviewIntentPrefix.at(-1).at };
+  await assert.rejects(validateReviewTokenRotationRollbackJournal(
+    exceptionalRollback(reviewIntentPrefix, "review-intent-no-effect"), authorityProof,
+    { ...freshArguments, forwardRecords: reviewIntentPrefix,
+      forwardRecoveryProof: simultaneousRecoveryProof }), /recovery proof drift/u);
+  const postExpiryProduction = structuredClone(freshForwardRecords.slice(0, 12));
+  const expiresAt = Date.parse(authorityProof.expiresAt);
+  const postExpiryProof = { ...evidence.reviewTokenRotationPreProductionProof,
+    capturedAt: new Date(expiresAt + 1).toISOString() };
+  for (const [index, offset] of [[10, 2], [11, 3]]) {
+    const { recordSha256: _postExpiryChecksum, ...payload } = postExpiryProduction[index];
+    payload.at = new Date(expiresAt + offset).toISOString();
+    if (index === 10) payload.proofFileSha256 = createHash("sha256")
+      .update(JSON.stringify(postExpiryProof)).digest("hex");
+    postExpiryProduction[index] = checksummedRecord(payload);
+  }
+  await assert.rejects(validateReviewTokenRotationRollbackJournal(
+    exceptionalRollback(postExpiryProduction, "production-intent-applied"), authorityProof,
+    { ...freshArguments, forwardRecords: postExpiryProduction,
+      forwardIntermediateProof: undefined, forwardPreProductionProof: postExpiryProof,
+      forwardRecoveryProof: recoveryProof }), /partial production provenance drift/u);
+  const embellishedRecoveryStart = exceptionalRollback(reviewIntentPrefix,
+    "review-intent-no-effect");
+  const { recordSha256: _embellishedStartChecksum, ...embellishedStart } =
+    embellishedRecoveryStart[0];
+  embellishedStart.forwardRecoveryProof = {
+    ...embellishedStart.forwardRecoveryProof, unboundArtifact: true };
+  embellishedRecoveryStart[0] = checksummedRecord(embellishedStart);
+  await assert.rejects(validateReviewTokenRotationRollbackJournal(embellishedRecoveryStart,
+    authorityProof, { ...freshArguments, forwardRecords: reviewIntentPrefix,
+      forwardRecoveryProof: recoveryProof }), /starting state drift/u);
   const extraKeyForward = structuredClone(freshForwardRecords);
   const { recordSha256: _extraKeyChecksum, ...extraKeyPayload } = extraKeyForward[0];
   extraKeyPayload.unexpected = true;
@@ -3266,18 +3489,39 @@ test("validates exact review-token rotation rollback and residual journals", asy
     replacementTokenId: expiredEvidence.replacementTokenId,
     productionBaselineProof: expiredEvidence.productionBaselineProof,
     blockedSnapshotDirectory, blockedProof: expiredPredecessorProof };
-  const preIntentForward = expiredEvidence.reviewTokenRotationJournal.slice(0, 4);
-  for (const prefixLength of [1, 2, 3, 4]) {
+  const preIntentForward = expiredEvidence.reviewTokenRotationJournal.slice(0, 5);
+  for (const prefixLength of [1, 2, 3, 4, 5]) {
     assert.equal((await validateReviewTokenRotationNoOwnedPreIntentTerminal(
       preIntentForward.slice(0, prefixLength), expiredAuthority,
-      { production, review, accountId, sourceSha, rollbackRecords: noOwnedRollback,
+      { production, review, accountId, sourceSha,
+        preCreateProof: expiredEvidence.reviewTokenRotationPreCreateProof,
+        rollbackRecords: noOwnedRollback,
         rollbackArguments: noOwnedArguments }, now)).outcome,
     "workers-builds-review-token-rotation-no-owned-predecessor-blocked-valid");
   }
   await assert.rejects(validateReviewTokenRotationNoOwnedPreIntentTerminal(
-    expiredEvidence.reviewTokenRotationJournal.slice(0, 5), expiredAuthority,
-    { production, review, accountId, sourceSha, rollbackRecords: noOwnedRollback,
+    expiredEvidence.reviewTokenRotationJournal.slice(0, 6), expiredAuthority,
+    { production, review, accountId, sourceSha,
+      preCreateProof: expiredEvidence.reviewTokenRotationPreCreateProof,
+      rollbackRecords: noOwnedRollback,
       rollbackArguments: noOwnedArguments }, now), /no-owned prefix drift/u);
+  const wrongPreCreateProof = { ...expiredEvidence.reviewTokenRotationPreCreateProof,
+    proof_digest: "f".repeat(64) };
+  await assert.rejects(validateReviewTokenRotationNoOwnedPreIntentTerminal(preIntentForward,
+    expiredAuthority, { production, review, accountId, sourceSha,
+      preCreateProof: wrongPreCreateProof, rollbackRecords: noOwnedRollback,
+      rollbackArguments: noOwnedArguments }, now), /prefix provenance drift/u);
+  const stalePreCreateBound = structuredClone(preIntentForward);
+  const { recordSha256: _stalePreCreateChecksum, ...stalePreCreatePayload } =
+    stalePreCreateBound[4];
+  stalePreCreatePayload.at = new Date(
+    Date.parse(expiredEvidence.reviewTokenRotationPreCreateProof.capturedAt) - 1).toISOString();
+  stalePreCreateBound[4] = checksummedRecord(stalePreCreatePayload);
+  await assert.rejects(validateReviewTokenRotationNoOwnedPreIntentTerminal(stalePreCreateBound,
+    expiredAuthority, { production, review, accountId, sourceSha,
+      preCreateProof: expiredEvidence.reviewTokenRotationPreCreateProof,
+      rollbackRecords: noOwnedRollback, rollbackArguments: noOwnedArguments }, now),
+  /prefix provenance drift/u);
   const wrongCoordinateRollback = structuredClone(noOwnedRollback);
   const { recordSha256: _startRecordChecksum, ...wrongCoordinateStart } =
     wrongCoordinateRollback[0];
@@ -3285,6 +3529,7 @@ test("validates exact review-token rotation rollback and residual journals", asy
   wrongCoordinateRollback[0] = checksummedRecord(wrongCoordinateStart);
   await assert.rejects(validateReviewTokenRotationNoOwnedPreIntentTerminal(preIntentForward,
     expiredAuthority, { production, review, accountId, sourceSha,
+      preCreateProof: expiredEvidence.reviewTokenRotationPreCreateProof,
       rollbackRecords: wrongCoordinateRollback, rollbackArguments: noOwnedArguments }, now),
   /residual coordinate drift/u);
   const lateAuthorizedForward = structuredClone(preIntentForward.slice(0, 2));
@@ -3295,6 +3540,7 @@ test("validates exact review-token rotation rollback and residual journals", asy
   await assert.rejects(validateReviewTokenRotationNoOwnedPreIntentTerminal(
     lateAuthorizedForward, expiredAuthority,
     { production, review, accountId, sourceSha, rollbackRecords: noOwnedRollback,
+      preCreateProof: expiredEvidence.reviewTokenRotationPreCreateProof,
       rollbackArguments: noOwnedArguments }, now), /prefix provenance drift/u);
   const preExpiryRollback = structuredClone(noOwnedRollback);
   const { recordSha256: _preExpiryChecksum, ...preExpiryStart } = preExpiryRollback[0];
@@ -3302,6 +3548,7 @@ test("validates exact review-token rotation rollback and residual journals", asy
   preExpiryRollback[0] = checksummedRecord(preExpiryStart);
   await assert.rejects(validateReviewTokenRotationNoOwnedPreIntentTerminal(preIntentForward,
     expiredAuthority, { production, review, accountId, sourceSha,
+      preCreateProof: expiredEvidence.reviewTokenRotationPreCreateProof,
       rollbackRecords: preExpiryRollback, rollbackArguments: noOwnedArguments }, now),
   /residual coordinate drift/u);
   await Promise.all([
@@ -4797,8 +5044,25 @@ test("plans inert setup, separately gated activation, and ordered rollback", () 
   const freshRecovery = plan.reviewTokenRotation.freshProviderNormalizedRecovery;
   assert.equal(freshRecovery.startingPhase,
     "production-repointed-review-augmented");
-  assert.equal(freshRecovery.precondition.forwardJournal,
-    "exact-checksummed-seventeen-record-current-attempt-prefix");
+  assert.deepEqual(freshRecovery.precondition.forwardJournal, { oneOf: [
+    "exact-checksummed-seventeen-record-current-attempt-prefix",
+    "exact-production-intent-or-classification-prefix-with-applied-augmented-readback",
+    "exact-seventeen-record-prefix-plus-review-intent-or-no-effect-classification",
+  ] });
+  assert.deepEqual(freshRecovery.precondition.prefixEvidence, { oneOf: [
+    { forwardPrefixKind: "completed-augmented",
+      intermediateProof: {
+        privateFileEnvironment: "ATRINIK_REVIEW_TOKEN_ROTATION_INTERMEDIATE_PROOF_FILE" } },
+    { forwardPrefixKind: { oneOf: ["production-intent-applied",
+      "production-classified-applied"] }, exceptionalHandoffProof: {
+      privateFileEnvironment:
+        "ATRINIK_REVIEW_TOKEN_ROTATION_ROLLBACK_PRECONDITION_PROOF_FILE" } },
+    { forwardPrefixKind: { oneOf: ["review-intent-no-effect",
+      "review-classified-no-effect"] }, intermediateProof: {
+      privateFileEnvironment: "ATRINIK_REVIEW_TOKEN_ROTATION_INTERMEDIATE_PROOF_FILE" },
+    exceptionalHandoffProof: { privateFileEnvironment:
+      "ATRINIK_REVIEW_TOKEN_ROTATION_ROLLBACK_PRECONDITION_PROOF_FILE" } },
+  ] });
   assert.ok(freshRecovery.operations.findIndex(({ id }) => id ===
     "rotation-fresh-augmented-restore-production-trigger-old-token") <
     freshRecovery.operations.findIndex(({ id }) => id ===
