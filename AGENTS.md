@@ -133,8 +133,10 @@
   after the last forward record; never backdate or synthesize a missing mutation bound. An
   expired no-owned prefix may end at the fifth pre-create proof binding. Immediate and rerun
   no-owned terminal validation must load that exact pre-create proof document; never substitute
-  the residual rollback proof. The failed #110 five-record forward and two-record rollback
-  journals are immutable inputs to a separately checksum-framed, read-only successor terminal:
+  the residual rollback proof. Fresh rotation authority binds the exact #114 program/#118 leaf
+  ledger and the completed #115 successor terminal. The failed #110 five-record forward and
+  two-record rollback journals are immutable inputs to that separately checksum-framed,
+  read-only successor terminal:
   bind their exact raw/document coordinates and failed executor, capture a fresh exhaustive
   predecessor snapshot under its own authenticated current-main proof, and use only the dedicated
   no-owned successor verifier. Preserve its deterministic readable/compact equivalence test and
