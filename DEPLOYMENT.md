@@ -583,6 +583,13 @@ readback, and binding before continuing. Perform exactly this sequence:
    snapshot and run
    `npm run provision:workers-builds:verify-review-token-rotation-complete`.
 
+Each forward mutation binds current-main and authority before its exhaustive
+provider sweep, then requires that sweep's proof capture and journal binding to
+precede intent by no more than 30 seconds. The exhaustive sweep itself may take
+longer than 30 seconds after the authority check; there is no separate
+authority-check-to-intent limit. The authority check must still retain the full
+transition reserve, and intent and mutation-bound must remain before expiry.
+
 The five phase readback commands require `ATRINIK_PROVIDER_SNAPSHOT_OUTPUT`, the
 rotation authority, its independently written
 `ATRINIK_REVIEW_TOKEN_ROTATION_PRODUCTION_BASELINE_PROOF_FILE`, all evidence
@@ -629,7 +636,30 @@ a fresh exhaustive augmented-state handoff proof captured after its final
 forward record. Never truncate, relabel, or append a backdated mutation bound.
 An expired no-owned create prefix may include the journal-bound pre-create
 proof as its fifth record; validate that exact proof document and chronology
-before terminalizing it without an owned replacement.
+before terminalizing it without an owned replacement. Both immediate
+terminalization and every terminal rerun must load and pass that exact
+`ATRINIK_REVIEW_TOKEN_ROTATION_PRE_CREATE_PROOF_FILE` to the specialized
+no-owned validator; a rollback residual proof is not a substitute.
+
+The failed #110 no-owned attempt is immutable and has its own read-only
+successor contract. It pins source `0f9454ba3b66bcafbdebfff188c16f6a578fa03b`,
+compact executor `b189ca4dd298819a9aec7571838d3e5a36babb679637450f1775fee0f70718dc`,
+the exact five-record forward and two-record rollback raw/document digests,
+the old authority and pre-create proof files, and the blocked residual proof
+and snapshot manifest. Never append either old journal. Capture a new stable
+exhaustive predecessor snapshot under an authenticated current-main proof,
+write a distinct two-record checksum-framed successor journal, and validate it
+with
+`npm run provision:workers-builds:verify-review-token-rotation-no-owned-successor`.
+The terminal observation source may differ from the historical authority
+source, but its own authenticated start and finish current-main proofs must
+bracket the fresh snapshot and agree on that source. The verifier is
+terminal-only, idempotent, and performs no provider
+read or write; all trigger, activation, migration, build, and Worker-resource
+mutation flags remain false. The provisioning test deterministically bundles
+and minifies the readable verifier twice, requires byte-identical output, and
+runs the compact validator against the same successor evidence so helper or
+minification drift fails before an execution bundle can be authorized.
 
 Take a new exhaustive exact
 augmented-state rollback-precondition proof after current-main and authority,

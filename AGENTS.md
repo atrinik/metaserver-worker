@@ -115,6 +115,10 @@
   other field, bind the replacement owner to a fresh accepted account-membership observation,
   preserve the complete non-token production control plane, prove the predecessor wrapper
   unreferenced across the exhaustive account inventory, then delete only that wrapper. Bind
+  current-main and authority before each exhaustive forward sweep, but measure the 30-second
+  mutation handoff from the fresh provider proof capture to intent, not from the earlier
+  authority check; the sweep may exceed 30 seconds while the authority retains its full reserve.
+  Bind
   the terminal rotation proof and checksum-valid journal into every later disposable authority;
   the original setup wrapper remains predecessor provenance and is never treated as live.
   If predecessor deletion succeeds before terminal evidence is durable, recover only through the
@@ -127,7 +131,15 @@
   final-review-no-effect suffixes, the attempt namespace, and all applicable pre-mutation
   proofs. Exceptional prefixes require a fresh exhaustive augmented-state handoff captured
   after the last forward record; never backdate or synthesize a missing mutation bound. An
-  expired no-owned prefix may end at the fifth pre-create proof binding. Then restore
+  expired no-owned prefix may end at the fifth pre-create proof binding. Immediate and rerun
+  no-owned terminal validation must load that exact pre-create proof document; never substitute
+  the residual rollback proof. The failed #110 five-record forward and two-record rollback
+  journals are immutable inputs to a separately checksum-framed, read-only successor terminal:
+  bind their exact raw/document coordinates and failed executor, capture a fresh exhaustive
+  predecessor snapshot under its own authenticated current-main proof, and use only the dedicated
+  no-owned successor verifier. Preserve its deterministic readable/compact equivalence test and
+  execute both forms against the same terminal evidence. Never append or relabel either historical
+  journal. Then restore
   a fresh exhaustive augmented-state rollback precondition after current-main and authority
   and no more than 30 seconds before the production intent, restore production first, prove
   the resulting peer state, and patch

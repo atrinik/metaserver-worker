@@ -4,8 +4,10 @@ import { execFile } from "node:child_process";
 import { chmod, cp, lstat, mkdir, mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { resolve } from "node:path";
+import { pathToFileURL } from "node:url";
 import test from "node:test";
 import { promisify } from "node:util";
+import { build } from "esbuild";
 import {
   automaticReviewEnvironmentSpec,
   automaticReviewTriggerSpec,
@@ -18,6 +20,8 @@ import {
   combineWorkerVersionPages,
   createBlockedDeleteIncidentTestCapability,
   createBlockedDeleteTerminalContextReaderForTest,
+  createNoOwnedIncidentTestCapability,
+  createNoOwnedTerminalContextReaderForTest,
   createProviderNormalizedIncidentTestCapability,
   issueReviewTokenRotationBlockedDeleteAuthority,
   credentialedSourceSha,
@@ -74,6 +78,7 @@ import {
   validateReviewTokenRotationReadback,
   reviewTokenRotationProviderNormalizedIncident,
   reviewTokenRotationBlockedDeleteIncident,
+  reviewTokenRotationNoOwnedIncident,
   validateReviewTokenRotationAuthority,
   validateReviewTokenRotationBlockedDeleteAuthority,
   validateReviewTokenRotationBlockedDeleteIncidentForTest,
@@ -82,6 +87,7 @@ import {
   validateReviewTokenRotationDeleteProofChronology,
   validateReviewTokenRotationJournal,
   validateReviewTokenRotationNoOwnedPreIntentTerminal,
+  validateReviewTokenRotationNoOwnedIncidentSuccessorForTest,
   validateReviewTokenRotationProviderNormalizedIncident,
   validateReviewTokenRotationProviderNormalizedIncidentForTest,
   validateReviewTokenRotationRollbackJournal,
@@ -836,6 +842,10 @@ test("orders every rollback provider proof after main and authority and near int
     proofCapturedAt: at(31_000), proofBoundAt: at(31_001) }), false);
   assert.equal(reviewTokenRotationRollbackProofChronologyValid({ ...valid,
     intentAt: at(30_003) }), false);
+  assert.equal(reviewTokenRotationRollbackProofChronologyValid({
+    currentMainAt: at(0), authorityAt: at(1), proofCapturedAt: at(35_000),
+    proofBoundAt: at(35_001), intentAt: at(60_000),
+  }), true);
 });
 
 test("enforces owner-only no-follow private inputs and snapshots", async () => {
@@ -1744,6 +1754,7 @@ test("gates every credentialed mode on the private current-main proof", async ()
     "--verify-review-token-rotation-pre-create",
     "--verify-review-token-rotation-pre-production",
     "--verify-review-token-rotation-intermediate",
+    "--verify-review-token-rotation-no-owned-successor",
     "--verify-review-token-rotation-provider-normalized-incident",
     "--verify-review-token-rotation-provider-peer-normalization",
     "--verify-review-token-rotation-rollback-precondition",
@@ -3509,6 +3520,10 @@ test("validates exact review-token rotation rollback and residual journals", asy
     proof_digest: "f".repeat(64) };
   await assert.rejects(validateReviewTokenRotationNoOwnedPreIntentTerminal(preIntentForward,
     expiredAuthority, { production, review, accountId, sourceSha,
+      preCreateProof: undefined, rollbackRecords: noOwnedRollback,
+      rollbackArguments: noOwnedArguments }, now), /predecessor proof drift/u);
+  await assert.rejects(validateReviewTokenRotationNoOwnedPreIntentTerminal(preIntentForward,
+    expiredAuthority, { production, review, accountId, sourceSha,
       preCreateProof: wrongPreCreateProof, rollbackRecords: noOwnedRollback,
       rollbackArguments: noOwnedArguments }, now), /prefix provenance drift/u);
   const stalePreCreateBound = structuredClone(preIntentForward);
@@ -3551,6 +3566,127 @@ test("validates exact review-token rotation rollback and residual journals", asy
       preCreateProof: expiredEvidence.reviewTokenRotationPreCreateProof,
       rollbackRecords: preExpiryRollback, rollbackArguments: noOwnedArguments }, now),
   /residual coordinate drift/u);
+  const freshSuccessorSnapshot = resolve(temporary, "no-owned-successor-snapshot");
+  await cp(blockedSnapshotDirectory, freshSuccessorSnapshot, { recursive: true });
+  await writeFile(resolve(freshSuccessorSnapshot, "snapshot-manifest.json"),
+    `${JSON.stringify(manifest(now - 200))}\n`, { mode: 0o600 });
+  const freshSuccessorProof = await validateReviewTokenRotationSnapshotDirectory({
+    snapshotDirectory: freshSuccessorSnapshot, production, review, accountId, sourceSha,
+    phase: "predecessor", productionSentinelProof: expiredEvidence.productionSentinelProof,
+    predecessorTokenAuthorityProofs: expiredEvidence.predecessorTokenAuthorityProofs,
+    replacementTokenAuthorityProof: expiredEvidence.replacementTokenAuthorityProof,
+    replacementTokenId: expiredEvidence.replacementTokenId, productionTriggerUuid,
+    reviewTriggerUuid, predecessorReviewTokenUuid: reviewTokenUuid,
+    replacementReviewTokenUuid: undefined, productionPreservationDigest,
+    authorityProof: expiredAuthority,
+    productionBaselineProof: expiredEvidence.productionBaselineProof, now: now - 100 });
+  const terminalCurrentMainProofStart = authenticatedCurrentMainProof(sourceSha,
+    new Date(now - 250).toISOString());
+  const terminalCurrentMainProofFinish = authenticatedCurrentMainProof(sourceSha,
+    new Date(now - 75).toISOString());
+  const syntheticNoOwnedCoordinate = {
+    ...reviewTokenRotationNoOwnedIncident, sourceSha, planDigest: expiredAuthority.planDigest,
+    executorSha256: "1".repeat(64), forwardJournalSha256: "2".repeat(64),
+    forwardJournalDigest: createHash("sha256").update(JSON.stringify(preIntentForward))
+      .digest("hex"), rollbackJournalSha256: "3".repeat(64),
+    rollbackJournalDigest: createHash("sha256").update(JSON.stringify(noOwnedRollback))
+      .digest("hex"), rollbackTerminalRecordSha256: noOwnedRollback.at(-1).recordSha256,
+    authorityFileSha256: "4".repeat(64), preCreateProofFileSha256: "5".repeat(64),
+    residualSnapshotManifestSha256: "6".repeat(64),
+    residualProofDigest: expiredPredecessorProof.proof_digest,
+    residualProofDocumentSha256: createHash("sha256")
+      .update(JSON.stringify(expiredPredecessorProof)).digest("hex"),
+    residualProofFileSha256: "7".repeat(64),
+  };
+  const noOwnedTestCapability = createNoOwnedIncidentTestCapability(
+    syntheticNoOwnedCoordinate);
+  const freshManifestSha256 = createHash("sha256").update(await readFile(
+    resolve(freshSuccessorSnapshot, "snapshot-manifest.json"))).digest("hex");
+  const successorStart = checksummedRecord({
+    event: "review-token-rotation-no-owned-successor-started", attempt: 1,
+    at: new Date(now - 50).toISOString(),
+    incidentCoordinateDigest: createHash("sha256")
+      .update(JSON.stringify(syntheticNoOwnedCoordinate)).digest("hex"),
+    terminalSourceSha: sourceSha,
+    currentMainProofStartDigest: createHash("sha256")
+      .update(JSON.stringify(terminalCurrentMainProofStart)).digest("hex"),
+    currentMainProofFinishDigest: createHash("sha256")
+      .update(JSON.stringify(terminalCurrentMainProofFinish)).digest("hex"),
+    freshProofDigest: freshSuccessorProof.proof_digest,
+    freshProofFileSha256: createHash("sha256")
+      .update(JSON.stringify(freshSuccessorProof)).digest("hex"),
+    snapshotManifestSha256: freshManifestSha256, providerMutation: false,
+  });
+  const successorRecords = [successorStart, checksummedRecord({
+    event: "review-token-rotation-no-owned-successor-complete", attempt: 1,
+    at: new Date(now - 25).toISOString(), outcome: "predecessor-no-owned",
+    freshProofDigest: freshSuccessorProof.proof_digest,
+    freshProofFileSha256: createHash("sha256")
+      .update(JSON.stringify(freshSuccessorProof)).digest("hex"),
+    providerMutation: false, triggerPostOrPatch: false, productionActivation: false,
+    migration0010: false, initialProductionBuild: false, workerResourceMutation: false,
+  })];
+  const successorArguments = { production, review, accountId, terminalSourceSha: sourceSha,
+    terminalCurrentMainProofStart, terminalCurrentMainProofFinish,
+    freshSnapshotDirectory: freshSuccessorSnapshot,
+    freshPredecessorProof: freshSuccessorProof, forwardRecords: preIntentForward,
+    rollbackRecords: noOwnedRollback, authorityProof: expiredAuthority,
+    preCreateProof: expiredEvidence.reviewTokenRotationPreCreateProof,
+    rollbackArguments: noOwnedArguments,
+    incidentFileDigests: Object.fromEntries([
+      "authorityFileSha256", "executorSha256", "forwardJournalSha256",
+      "preCreateProofFileSha256", "residualProofFileSha256",
+      "residualSnapshotManifestSha256", "rollbackJournalSha256",
+    ].map((key) => [key, syntheticNoOwnedCoordinate[key]])) };
+  const successorValidation = await validateReviewTokenRotationNoOwnedIncidentSuccessorForTest(
+    successorRecords, successorArguments, now, noOwnedTestCapability);
+  assert.equal(successorValidation.terminal, true);
+  assert.deepEqual(await validateReviewTokenRotationNoOwnedIncidentSuccessorForTest(
+    successorRecords, successorArguments, now, noOwnedTestCapability), successorValidation);
+  const compactOptions = {
+    absWorkingDir: root, bundle: true,
+    entryPoints: [resolve(root, "scripts/workers-builds-provisioning.mjs")],
+    format: "esm", minify: true, platform: "node", target: "node24", write: false,
+  };
+  const [firstCompactBuild, secondCompactBuild] = await Promise.all([
+    build(compactOptions), build(compactOptions),
+  ]);
+  const compactBytes = firstCompactBuild.outputFiles[0].contents;
+  assert.deepEqual(compactBytes, secondCompactBuild.outputFiles[0].contents);
+  const compactPath = resolve(temporary, "workers-builds-provisioning.compact.mjs");
+  await writeFile(compactPath, compactBytes, { mode: 0o600 });
+  const compactModule = await import(`${pathToFileURL(compactPath).href}?sha256=${
+    createHash("sha256").update(compactBytes).digest("hex")}`);
+  const compactCapability = compactModule.createNoOwnedIncidentTestCapability(
+    syntheticNoOwnedCoordinate);
+  assert.deepEqual(await compactModule.validateReviewTokenRotationNoOwnedIncidentSuccessorForTest(
+    successorRecords, successorArguments, now, compactCapability), successorValidation);
+  const successorTerminalReader = createNoOwnedTerminalContextReaderForTest(async () => ({
+    records: successorRecords, arguments: successorArguments, now,
+    testCapability: noOwnedTestCapability,
+  }));
+  const successorCliOutput = [];
+  const successorStdout = process.stdout.write;
+  try {
+    process.stdout.write = (chunk) => { successorCliOutput.push(String(chunk)); return true; };
+    await runProvisioningCliForTest(
+      "--verify-review-token-rotation-no-owned-successor", async () => sourceSha,
+      async () => { throw new Error("no-owned terminal verifier must not read provider state"); },
+      undefined, undefined, successorTerminalReader);
+  } finally { process.stdout.write = successorStdout; }
+  assert.equal(JSON.parse(successorCliOutput.join("")).terminal, true);
+  const changedHistoricalInput = structuredClone(successorArguments);
+  changedHistoricalInput.incidentFileDigests.forwardJournalSha256 = "8".repeat(64);
+  await assert.rejects(validateReviewTokenRotationNoOwnedIncidentSuccessorForTest(
+    successorRecords, changedHistoricalInput, now, noOwnedTestCapability),
+  /incident coordinate drift/u);
+  const changedSuccessor = structuredClone(successorRecords);
+  const { recordSha256: _successorChecksum, ...changedSuccessorTerminal } = changedSuccessor[1];
+  changedSuccessorTerminal.providerMutation = true;
+  changedSuccessor[1] = checksummedRecord(changedSuccessorTerminal);
+  await assert.rejects(validateReviewTokenRotationNoOwnedIncidentSuccessorForTest(
+    changedSuccessor, successorArguments, now, noOwnedTestCapability),
+  /successor terminal drift/u);
   await Promise.all([
     writeSnapshot(`${production.workers[0].name}.triggers.json`,
       envelope([productionActual, reviewActual])),
@@ -4255,8 +4391,20 @@ test("recovers an exact complete rotation after the original write authority exp
   lateDeleteIntent.at = new Date(Date.parse(lateDeleteIntentPrefix[21].at) + 30_001)
     .toISOString();
   lateDeleteIntentPrefix[23] = checksummedRecord(lateDeleteIntent);
+  const delayedAuthorityHandoff = classifyReviewTokenRotationCompleteRecoveryPrefix(
+    lateDeleteIntentPrefix, null, authority, arguments_, now);
+  assert.equal(delayedAuthorityHandoff.outcome,
+    "workers-builds-review-token-rotation-recovery-prefix-valid");
+  assert.equal(delayedAuthorityHandoff.nextEvent,
+    "review-token-rotation-complete-recovery-started");
+  const staleDeleteProofPrefix = recoveryRecords(24).slice(0, 24);
+  const { recordSha256: _staleDeleteProofChecksum, ...staleDeleteProofIntent } =
+    staleDeleteProofPrefix[23];
+  staleDeleteProofIntent.at = new Date(
+    Date.parse(arguments_.unreferencedProof.capturedAt) + 30_001).toISOString();
+  staleDeleteProofPrefix[23] = checksummedRecord(staleDeleteProofIntent);
   assert.throws(() => classifyReviewTokenRotationCompleteRecoveryPrefix(
-    lateDeleteIntentPrefix, null, authority, arguments_, now), /delete intent drift/u);
+    staleDeleteProofPrefix, null, authority, arguments_, now), /delete proof chronology drift/u);
   const lateDeleteBoundPrefix = recoveryRecords(26).slice(0, 26);
   const { recordSha256: _lateDeleteBoundChecksum, ...lateDeleteBound } =
     lateDeleteBoundPrefix[25];
@@ -5089,6 +5237,41 @@ test("plans inert setup, separately gated activation, and ordered rollback", () 
     id === "rotation-prove-predecessor-restored") <
     plan.reviewTokenRotation.rollbackOperations.findIndex(({ id }) =>
       id === "rotation-delete-replacement-wrapper"));
+  const noOwnedTerminal = plan.reviewTokenRotation.rollbackOperations.find(({ id }) =>
+    id === "rotation-terminalize-no-owned-pre-intent-prefix");
+  assert.equal(noOwnedTerminal.precondition.preCreateProof.privateFileEnvironment,
+    "ATRINIK_REVIEW_TOKEN_ROTATION_PRE_CREATE_PROOF_FILE");
+  assert.equal(noOwnedTerminal.precondition.providerStateProof.resultReference,
+    "prove-replacement-create-precondition.proof_digest");
+  assert.deepEqual(reviewTokenRotationNoOwnedIncident, {
+    sourceSha: "0f9454ba3b66bcafbdebfff188c16f6a578fa03b",
+    planDigest: "6088031ae9e138bbbaea7e79d8962dd9dcaff5952307dc78941821d6ab6a3937",
+    executorSha256: "b189ca4dd298819a9aec7571838d3e5a36babb679637450f1775fee0f70718dc",
+    forwardJournalSha256: "c69a525f8aa47239b1c693ef1355e21d88960050fe980c576b0e06a9628dd6e5",
+    forwardJournalDigest: "4e7e23e37ed3c93f4485e0bbf7d520b22d9b45990734611cdfe0c61523671bb2",
+    rollbackJournalSha256: "8bca5a998486a403c61463cc543cf4f5803e18d7a1a2c7f2dcc65a04bc546a90",
+    rollbackJournalDigest: "0d927073f9f2c31a8350cbbba4f57b70813fa6892f51ff429f2ae429555292c7",
+    rollbackTerminalRecordSha256:
+      "ecd61537ccb0d1a4211b4ad4c6aba6fcb86354dac71f9e30dc207aa5ade9b210",
+    authorityFileSha256: "d5c1c1a02732fe9d01d6527906668922dfdb310a45398da0dcabe7b4c2f68fa5",
+    preCreateProofFileSha256:
+      "9c68ea979fe0ca6830e5129b5a0f981968f6e60b095f780610d109f657270ac3",
+    residualSnapshotManifestSha256:
+      "30bda17eb114c4aae1d58126195b06b1229d7900cfecc6dc0fbce1d2c6dd25b5",
+    residualProofDigest: "e754373cedc801a8ac915c6e5e13a409aef84789e6dfa014893d8d707a272b31",
+    residualProofDocumentSha256:
+      "4320d8662cba3aeec206db17fbaebb57af04f5438ecd73cf0224c70973585e7c",
+    residualProofFileSha256:
+      "2015810a4c78fe0fcdf4d88c96b9c66f1570d59534f278f0d4bb7a033f1b14fe",
+  });
+  assert.deepEqual(plan.reviewTokenRotation.noOwnedIncidentRecovery.coordinates,
+    reviewTokenRotationNoOwnedIncident);
+  assert.deepEqual(plan.reviewTokenRotation.noOwnedIncidentRecovery.operations.map(
+    ({ id, mutation }) => [id, mutation]), [
+    ["rotation-no-owned-successor-capture", false],
+    ["rotation-no-owned-successor-finalize", false],
+    ["rotation-no-owned-successor-validate", false],
+  ]);
   for (const [proofId, mutationId] of [
     ["rotation-prove-review-restore-precondition",
       "rotation-restore-review-trigger-old-token"],
