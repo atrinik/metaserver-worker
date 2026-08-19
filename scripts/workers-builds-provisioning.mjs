@@ -27,7 +27,7 @@ const maximumProviderPages = 100;
 const stagingBranchPattern = /^review-build-only-sentinel-[0-9a-f]{32}$/u;
 const reviewStagingRootPattern = /^\/review-build-only-staging-[0-9a-f]{32}$/u;
 const gitShaPattern = /^[0-9a-f]{40}$/u;
-const expectedSetupPlanSha256 = "da1a62c9eb6f04095f6414c996080d89cb0c61e883a8c459b9ecc7fea99efe33";
+const expectedSetupPlanSha256 = "6088031ae9e138bbbaea7e79d8962dd9dcaff5952307dc78941821d6ab6a3937";
 const currentMainProofSource = "authenticated-gh-api-current-main-readback";
 const currentMainProofEndpoint = "repos/atrinik/metaserver-worker/git/ref/heads/main";
 const currentMainRef = "refs/heads/main";
@@ -1453,17 +1453,15 @@ incidentProof, authorityProof, arguments_, testCapability) {
 function validateReviewTokenRotationFreshAugmentedForwardPrefix(forwardRecords,
 intermediateProof, authorityProof, { production, review, accountId, sourceSha,
   rotationAttemptCoordinate, attemptFilesystemEvidence, programDeliveryProof,
-  programLedgerDocument, programLedgerFileSha256, preCreateProof, preProductionProof }) {
+  programLedgerDocument, programLedgerFileSha256, preCreateProof, preProductionProof,
+  recoveryProof }) {
   validateHistoricalReviewTokenRotationAuthority(authorityProof,
     { production, review, accountId, sourceSha });
-  validateReviewTokenRotationPhaseProof(intermediateProof,
-    "production-repointed-review-augmented", authorityProof,
-    { accountId, sourceSha }, Date.parse(intermediateProof?.capturedAt ?? ""), Infinity);
   validateReviewTokenRotationPredecessorProof(preCreateProof, authorityProof,
     { accountId, sourceSha }, Date.parse(preCreateProof?.capturedAt ?? ""), Infinity);
   validateReviewTokenRotationPhaseProof(preProductionProof, "replacement-created", authorityProof,
     { accountId, sourceSha }, Date.parse(preProductionProof?.capturedAt ?? ""), Infinity);
-  const expected = [
+  const completedExpected = [
     ["attempt-started", "review-token-rotation"], ["rotation-authorized", undefined],
     ["current-main-proof-bound", "replacement-review-build-token"],
     ["review-token-rotation-authority-checked", "replacement-review-build-token"],
@@ -1483,8 +1481,28 @@ intermediateProof, authorityProof, { production, review, accountId, sourceSha,
   ];
   const pairs = Array.isArray(forwardRecords) ? forwardRecords.map(({ event, operation }) =>
     [event, operation]) : [];
-  if (!same(pairs, expected))
+  const productionIntentExpected = completedExpected.slice(0, 12);
+  const productionClassifiedExpected = completedExpected.slice(0, 13);
+  const reviewIntentExpected = [...completedExpected,
+    ["mutation-intent", "repoint-final-review-trigger"]];
+  const reviewClassifiedExpected = [...reviewIntentExpected,
+    ["provider-response-classified", "repoint-final-review-trigger"]];
+  const prefixKind = same(pairs, completedExpected) ? "completed-augmented" :
+    same(pairs, productionIntentExpected) ? "production-intent-applied" :
+      same(pairs, productionClassifiedExpected) ? "production-classified-applied" :
+        same(pairs, reviewIntentExpected) ? "review-intent-no-effect" :
+          same(pairs, reviewClassifiedExpected) ? "review-classified-no-effect" : null;
+  if (prefixKind === null)
     fail("review token rotation fresh augmented forward sequence drift");
+  const exceptionalPrefix = prefixKind !== "completed-augmented";
+  const augmentedProof = exceptionalPrefix ? recoveryProof : intermediateProof;
+  validateReviewTokenRotationPhaseProof(augmentedProof,
+    "production-repointed-review-augmented", authorityProof,
+    { accountId, sourceSha }, Date.parse(augmentedProof?.capturedAt ?? ""), Infinity);
+  if (prefixKind.startsWith("review-"))
+    validateReviewTokenRotationPhaseProof(intermediateProof,
+      "production-repointed-review-augmented", authorityProof,
+      { accountId, sourceSha }, Date.parse(intermediateProof?.capturedAt ?? ""), Infinity);
   validateReviewTokenRotationAttemptCoordinate(rotationAttemptCoordinate, sourceSha,
     attemptFilesystemEvidence, Date.parse(rotationAttemptCoordinate?.capturedAt ?? ""));
   validateReviewTokenRotationRetryProgramProof(programDeliveryProof, sourceSha,
@@ -1505,8 +1523,10 @@ intermediateProof, authorityProof, { production, review, accountId, sourceSha,
       "operation", "proofDigest", "expiresAt"];
     if (record.event === "mutation-intent") return [...common, "operation", "method", "path",
       "requestDigestSha256"];
-    if (record.event === "provider-response-classified") return [...common, "operation",
-      "outcome", "resourceUuid"];
+    if (record.event === "provider-response-classified")
+      return record.outcome === "explicit-failure" ? [...common, "operation", "outcome",
+        "resourceUuid", "responseDigestSha256", "status"] :
+        [...common, "operation", "outcome", "resourceUuid"];
     if (record.event === "mutation-bound") return [...common, "operation", "resourceUuid",
       "providerResponseExplicitSuccess", "requestDigestSha256", "readbackDigestSha256",
       "reconciliation"];
@@ -1526,11 +1546,13 @@ intermediateProof, authorityProof, { production, review, accountId, sourceSha,
     previousAt = at;
   }
   const identity = authorityProof.journalIdentities;
-  const replacement = intermediateProof.replacementReviewTokenUuid;
+  const replacement = augmentedProof.replacementReviewTokenUuid;
   const find = (event, operation) => forwardRecords.find((record) =>
     record.event === event && record.operation === operation);
-  for (const [operation, resourceUuid] of [["replacement-review-build-token", replacement],
-    ["repoint-inert-production-trigger", identity.productionTriggerUuid]]) {
+  const completedOperations = [["replacement-review-build-token", replacement],
+    ...prefixKind.startsWith("production-") ? [] :
+      [["repoint-inert-production-trigger", identity.productionTriggerUuid]]];
+  for (const [operation, resourceUuid] of completedOperations) {
     const main = find("current-main-proof-bound", operation);
     const checked = find("review-token-rotation-authority-checked", operation);
     const intent = find("mutation-intent", operation);
@@ -1569,11 +1591,52 @@ intermediateProof, authorityProof, { production, review, accountId, sourceSha,
         Date.parse(bound.at) >= Date.parse(authorityProof.expiresAt))
       fail("review token rotation fresh augmented mutation provenance drift");
   }
-  const reviewMain = find("current-main-proof-bound", "repoint-final-review-trigger");
+  if (prefixKind.startsWith("production-")) {
+    const operation = "repoint-inert-production-trigger";
+    const main = find("current-main-proof-bound", operation);
+    const checked = find("review-token-rotation-authority-checked", operation);
+    const proofBound = find("provider-proof-bound", "prove-production-repoint-precondition");
+    const intent = find("mutation-intent", operation);
+    const classified = find("provider-response-classified", operation);
+    const request = reviewTokenRotationRequestDigest({ production, review, authorityProof,
+      operation, replacementReviewTokenUuid: replacement });
+    const mainCaptured = Date.parse(main?.capturedAt ?? "");
+    if (main?.sourceSha !== sourceSha || main.ref !== currentMainRef ||
+        !isUtcTimestamp(main.capturedAt) || !Number.isFinite(mainCaptured) ||
+        mainCaptured > Date.parse(main.at) || Date.parse(main.at) - mainCaptured > 5 * 60_000 ||
+        !/^[0-9a-f]{64}$/u.test(main.proofFileSha256 ?? "") ||
+        !/^[0-9a-f]{64}$/u.test(main.rawFileSha256 ?? "") ||
+        checked?.proofDigest !== authorityProof.proof_digest ||
+        checked.expiresAt !== authorityProof.expiresAt ||
+        Date.parse(checked.at) < Date.parse(authorityProof.capturedAt) ||
+        Date.parse(authorityProof.expiresAt) - Date.parse(checked.at) <
+          reviewTokenRotationTransitionBudgetMs ||
+        proofBound?.proofDigest !== preProductionProof.proof_digest ||
+        proofBound.proofFileSha256 !== digestJson(preProductionProof) ||
+        Date.parse(main.at) > Date.parse(checked.at) ||
+        Date.parse(checked.at) > Date.parse(preProductionProof.capturedAt) ||
+        Date.parse(preProductionProof.capturedAt) > Date.parse(proofBound.at) ||
+        Date.parse(proofBound.at) > Date.parse(intent?.at ?? "") ||
+        Date.parse(intent?.at ?? "") - Date.parse(proofBound.at) > 30_000 ||
+        Date.parse(intent?.at ?? "") - Date.parse(checked.at) > 30_000 ||
+        Date.parse(intent?.at ?? "") >= Date.parse(authorityProof.expiresAt) ||
+        intent?.method !== request.method || intent.path !== request.path ||
+        intent.requestDigestSha256 !== request.requestDigestSha256 ||
+        classified && !["explicit-success", "ambiguous"].includes(classified.outcome) ||
+        classified?.outcome === "explicit-success" &&
+          classified.resourceUuid !== identity.productionTriggerUuid ||
+        classified?.outcome === "ambiguous" && classified.resourceUuid !== null ||
+        classified && Date.parse(intent.at) > Date.parse(classified.at))
+      fail("review token rotation fresh augmented partial production provenance drift");
+  }
+  const includesReviewGate = !prefixKind.startsWith("production-");
+  const reviewMain = includesReviewGate ?
+    find("current-main-proof-bound", "repoint-final-review-trigger") : null;
   const reviewChecked = find("review-token-rotation-authority-checked",
     "repoint-final-review-trigger");
   const reviewMainCaptured = Date.parse(reviewMain?.capturedAt ?? "");
-  if (reviewMain?.sourceSha !== sourceSha || reviewMain.ref !== currentMainRef ||
+  if (includesReviewGate && (reviewMain?.sourceSha !== sourceSha ||
+      reviewMain.ref !== currentMainRef ||
       !isUtcTimestamp(reviewMain.capturedAt) || !Number.isFinite(reviewMainCaptured) ||
       reviewMainCaptured > Date.parse(reviewMain.at) ||
       Date.parse(reviewMain.at) - reviewMainCaptured > 5 * 60_000 ||
@@ -1584,9 +1647,10 @@ intermediateProof, authorityProof, { production, review, accountId, sourceSha,
       Date.parse(reviewChecked.at) < Date.parse(authorityProof.capturedAt) ||
       Date.parse(authorityProof.expiresAt) - Date.parse(reviewChecked.at) <
         reviewTokenRotationTransitionBudgetMs ||
-      Date.parse(reviewMain.at) > Date.parse(reviewChecked.at))
+      Date.parse(reviewMain.at) > Date.parse(reviewChecked.at)))
     fail("review token rotation fresh augmented review authorization drift");
-  const proofBound = forwardRecords.at(-1);
+  const proofBound = find("provider-proof-bound",
+    "prove-production-repointed-review-still-predecessor");
   const productionBound = find("mutation-bound", "repoint-inert-production-trigger");
   const attempt = forwardRecords[0];
   if (attempt.attemptNamespace !== rotationAttemptCoordinate.attemptNamespace ||
@@ -1595,10 +1659,10 @@ intermediateProof, authorityProof, { production, review, accountId, sourceSha,
       attempt.journalPathSha256 !== rotationAttemptCoordinate.journalPathSha256 ||
       attempt.attemptCoordinateDigest !== rotationAttemptCoordinate.proof_digest ||
       forwardRecords[1].authorityProofDigest !== authorityProof.proof_digest ||
-      proofBound.proofDigest !== intermediateProof.proof_digest ||
-      proofBound.proofFileSha256 !== digestJson(intermediateProof) ||
-      Date.parse(productionBound.at) > Date.parse(intermediateProof.capturedAt) ||
-      Date.parse(intermediateProof.capturedAt) > Date.parse(proofBound.at))
+      includesReviewGate && (proofBound?.proofDigest !== intermediateProof.proof_digest ||
+        proofBound.proofFileSha256 !== digestJson(intermediateProof) ||
+        Date.parse(productionBound.at) > Date.parse(intermediateProof.capturedAt) ||
+        Date.parse(intermediateProof.capturedAt) > Date.parse(proofBound.at)))
     fail("review token rotation fresh augmented proof chronology drift");
   for (const [operation, proof, proofOperation, lower] of [
     ["replacement-review-build-token", preCreateProof,
@@ -1606,8 +1670,8 @@ intermediateProof, authorityProof, { production, review, accountId, sourceSha,
     ["repoint-inert-production-trigger", preProductionProof,
       "prove-production-repoint-precondition",
       find("mutation-bound", "replacement-review-build-token")],
-    ["repoint-final-review-trigger", intermediateProof,
-      "prove-production-repointed-review-still-predecessor", productionBound],
+    ...includesReviewGate ? [["repoint-final-review-trigger", intermediateProof,
+      "prove-production-repointed-review-still-predecessor", productionBound]] : [],
   ]) {
     const checked = find("review-token-rotation-authority-checked", operation);
     const bound = find("provider-proof-bound", proofOperation);
@@ -1621,10 +1685,37 @@ intermediateProof, authorityProof, { production, review, accountId, sourceSha,
         Date.parse(intent?.at ?? "") - Date.parse(bound?.at ?? "") > 30_000)
       fail("review token rotation fresh augmented pre-mutation proof drift");
   }
+  if (prefixKind.startsWith("review-")) {
+    const operation = "repoint-final-review-trigger";
+    const intent = find("mutation-intent", operation);
+    const classified = find("provider-response-classified", operation);
+    const request = reviewTokenRotationRequestDigest({ production, review, authorityProof,
+      operation, replacementReviewTokenUuid: replacement });
+    if (intent?.method !== request.method || intent.path !== request.path ||
+        intent.requestDigestSha256 !== request.requestDigestSha256 ||
+        Date.parse(proofBound.at) > Date.parse(intent.at) ||
+        Date.parse(intent.at) - Date.parse(proofBound.at) > 30_000 ||
+        Date.parse(intent.at) - Date.parse(reviewChecked.at) > 30_000 ||
+        Date.parse(intent.at) >= Date.parse(authorityProof.expiresAt) ||
+        classified && !["explicit-failure", "ambiguous"].includes(classified.outcome) ||
+        classified?.outcome === "explicit-failure" &&
+          (!Number.isSafeInteger(classified.status) || classified.status < 400 ||
+           classified.status > 599 ||
+           !/^[0-9a-f]{64}$/u.test(classified.responseDigestSha256 ?? "")) ||
+        classified && classified.resourceUuid !== null ||
+        classified && Date.parse(intent.at) > Date.parse(classified.at))
+      fail("review token rotation fresh augmented review no-effect provenance drift");
+  }
+  if (exceptionalPrefix && (Date.parse(forwardRecords.at(-1)?.at ?? "") >=
+        Date.parse(augmentedProof.capturedAt) ||
+      prefixKind.startsWith("production-") &&
+        Date.parse(augmentedProof.capturedAt) < Date.parse(authorityProof.expiresAt) ||
+      digestJson(augmentedProof) !== digestJson(recoveryProof)))
+    fail("review token rotation fresh augmented recovery proof drift");
   return { replacementReviewTokenUuid: replacement,
     forwardJournalDigest: digestJson(forwardRecords),
-    intermediateProofDigest: intermediateProof.proof_digest,
-    intermediateProofFileSha256: digestJson(intermediateProof) };
+    intermediateProofDigest: augmentedProof.proof_digest,
+    intermediateProofFileSha256: digestJson(augmentedProof), prefixKind };
 }
 
 async function validateReviewTokenRotationBlockedDeleteIncidentCore(rollbackRecords,
@@ -3040,7 +3131,8 @@ arguments_, testCapability) {
 }
 
 export async function validateReviewTokenRotationNoOwnedPreIntentTerminal(forwardRecords,
-authorityProof, { production, review, accountId, sourceSha, rollbackRecords, rollbackArguments },
+authorityProof, { production, review, accountId, sourceSha, preCreateProof,
+  rollbackRecords, rollbackArguments },
 now = Date.now()) {
   validateHistoricalReviewTokenRotationAuthority(authorityProof,
     { production, review, accountId, sourceSha });
@@ -3049,6 +3141,7 @@ now = Date.now()) {
     ["rotation-authorized", undefined],
     ["current-main-proof-bound", "replacement-review-build-token"],
     ["review-token-rotation-authority-checked", "replacement-review-build-token"],
+    ["provider-proof-bound", "prove-replacement-create-precondition"],
   ];
   const pairs = Array.isArray(forwardRecords) ? forwardRecords.map(({ event, operation }) =>
     [event, operation]) : [];
@@ -3057,10 +3150,24 @@ now = Date.now()) {
       now < Date.parse(authorityProof.expiresAt))
     fail("review token rotation no-owned prefix drift");
   let previousAt = -Infinity;
+  const exactKeys = (record) => {
+    const common = ["at", "attempt", "event", "recordSha256"];
+    if (record.event === "attempt-started") return [...common, "operation", "attemptNamespace",
+      "executorSha256", "journalId", "journalPathSha256", "attemptCoordinateDigest"];
+    if (record.event === "rotation-authorized") return [...common, "authorityProofDigest"];
+    if (record.event === "current-main-proof-bound") return [...common, "operation", "sourceSha",
+      "ref", "capturedAt", "proofFileSha256", "rawFileSha256"];
+    if (record.event === "review-token-rotation-authority-checked") return [...common,
+      "operation", "proofDigest", "expiresAt"];
+    if (record.event === "provider-proof-bound") return [...common, "operation", "proofDigest",
+      "proofFileSha256"];
+    return [];
+  };
   for (const record of forwardRecords) {
     const { recordSha256, ...payload } = record ?? {};
     const at = Date.parse(record?.at ?? "");
-    if (!/^[0-9a-f]{64}$/u.test(recordSha256 ?? "") || digestJson(payload) !== recordSha256 ||
+    if (!same(sorted(Object.keys(record ?? {})), sorted(exactKeys(record))) ||
+        !/^[0-9a-f]{64}$/u.test(recordSha256 ?? "") || digestJson(payload) !== recordSha256 ||
         !isUtcTimestamp(record.at) || !Number.isFinite(at) || at <= previousAt ||
         record.attempt !== 1) fail("review token rotation no-owned prefix checksum drift");
     previousAt = at;
@@ -3069,6 +3176,9 @@ now = Date.now()) {
   const currentMain = forwardRecords.find(({ event }) => event === "current-main-proof-bound");
   const checked = forwardRecords.find(({ event }) =>
     event === "review-token-rotation-authority-checked");
+  const preCreateBound = forwardRecords.find(({ event, operation }) =>
+    event === "provider-proof-bound" &&
+      operation === "prove-replacement-create-precondition");
   const captured = Date.parse(currentMain?.capturedAt ?? "");
   const firstAt = Date.parse(forwardRecords[0]?.at ?? "");
   const expiresAt = Date.parse(authorityProof.expiresAt);
@@ -3086,7 +3196,15 @@ now = Date.now()) {
         checked.expiresAt !== authorityProof.expiresAt ||
         Date.parse(checked.at) < Date.parse(currentMain.at) ||
         Date.parse(authorityProof.expiresAt) - Date.parse(checked.at) <
-          reviewTokenRotationTransitionBudgetMs))
+          reviewTokenRotationTransitionBudgetMs) ||
+      preCreateBound && (!checked ||
+        validateReviewTokenRotationPredecessorProof(preCreateProof, authorityProof,
+          { accountId, sourceSha }, Date.parse(preCreateProof?.capturedAt ?? ""), Infinity)
+          .phase !== "predecessor" ||
+        preCreateBound.proofDigest !== preCreateProof.proof_digest ||
+        preCreateBound.proofFileSha256 !== digestJson(preCreateProof) ||
+        Date.parse(checked.at) > Date.parse(preCreateProof.capturedAt) ||
+        Date.parse(preCreateProof.capturedAt) > Date.parse(preCreateBound.at)))
     fail("review token rotation no-owned prefix provenance drift");
   const replacementReviewTokenUuid =
     reviewTokenRotationUnresolvedReplacementCoordinate(authorityProof);
@@ -3118,7 +3236,7 @@ async function validateReviewTokenRotationRollbackJournalCore(records, authority
   peerNormalizationProof,
   incidentProof, incidentForwardRecords, incidentForwardJournalSha256,
   incidentSnapshotManifestSha256, incidentAuthorityFileSha256,
-  forwardRecords, forwardIntermediateProof, forwardPreCreateProof,
+  forwardRecords, forwardIntermediateProof, forwardRecoveryProof, forwardPreCreateProof,
   forwardPreProductionProof, rotationAttemptCoordinate, attemptFilesystemEvidence,
   programDeliveryProof, programLedgerDocument, programLedgerFileSha256,
   rollbackPreconditionProofs = {},
@@ -3160,7 +3278,8 @@ async function validateReviewTokenRotationRollbackJournalCore(records, authority
       validateReviewTokenRotationFreshAugmentedForwardPrefix(forwardRecords,
         forwardIntermediateProof, authorityProof, { production, review, accountId, sourceSha,
           rotationAttemptCoordinate, preCreateProof: forwardPreCreateProof,
-          preProductionProof: forwardPreProductionProof, programDeliveryProof,
+          preProductionProof: forwardPreProductionProof, recoveryProof: forwardRecoveryProof,
+          programDeliveryProof,
           attemptFilesystemEvidence, programLedgerDocument, programLedgerFileSha256 }) :
       null;
   const peerAutomaticallyNormalized = providerNormalizedPhase &&
@@ -3183,6 +3302,10 @@ async function validateReviewTokenRotationRollbackJournalCore(records, authority
     "forwardIntermediateProofDigest", "forwardIntermediateProofFileSha256",
     "forwardJournalDigest", "forwardAttemptCoordinateDigest", "recordSha256",
     "replacementReviewTokenUuid", "startingPhase"];
+  const freshAugmentedRecoveryStartKeys = [...freshAugmentedStartKeys,
+    "forwardPrefixKind", "forwardRecoveryProof"]
+    .filter((key) => !["forwardIntermediateProofDigest",
+      "forwardIntermediateProofFileSha256"].includes(key));
   if (!Object.hasOwn(phaseOperations, startingPhase) ||
       records[0].authorityProofDigest !== authorityProof.proof_digest ||
       records[0].replacementReviewTokenUuid !== replacementReviewTokenUuid ||
@@ -3193,17 +3316,29 @@ async function validateReviewTokenRotationRollbackJournalCore(records, authority
          records[0].incidentProofDigest !== incidentProof.proof_digest ||
          records[0].forwardJournalDigest !== incidentValidation.forwardJournalDigest) ||
       providerNormalizedPhase && !historicalProviderNormalizedIncident &&
-        (!same(sorted(Object.keys(records[0])), sorted(freshAugmentedStartKeys)) ||
-         Date.parse(forwardIntermediateProof.capturedAt) > Date.parse(records[0].at) ||
+        (!same(sorted(Object.keys(records[0])), sorted(
+          freshAugmentedValidation.prefixKind === "completed-augmented" ?
+            freshAugmentedStartKeys : freshAugmentedRecoveryStartKeys)) ||
+         Date.parse((freshAugmentedValidation.prefixKind === "completed-augmented" ?
+           forwardIntermediateProof : forwardRecoveryProof).capturedAt) >
+           Date.parse(records[0].at) ||
          Date.parse(forwardRecords.at(-1)?.at ?? "") >= Date.parse(records[0].at) ||
          records[0].replacementReviewTokenUuid !==
            freshAugmentedValidation.replacementReviewTokenUuid ||
          records[0].forwardJournalDigest !== freshAugmentedValidation.forwardJournalDigest ||
          records[0].forwardAttemptCoordinateDigest !== rotationAttemptCoordinate.proof_digest ||
-         records[0].forwardIntermediateProofDigest !==
-           freshAugmentedValidation.intermediateProofDigest ||
-         records[0].forwardIntermediateProofFileSha256 !==
-           freshAugmentedValidation.intermediateProofFileSha256))
+         (freshAugmentedValidation.prefixKind === "completed-augmented" ?
+           records[0].forwardIntermediateProofDigest !==
+             freshAugmentedValidation.intermediateProofDigest ||
+           records[0].forwardIntermediateProofFileSha256 !==
+             freshAugmentedValidation.intermediateProofFileSha256 :
+           records[0].forwardPrefixKind !== freshAugmentedValidation.prefixKind ||
+           !same(sorted(Object.keys(records[0].forwardRecoveryProof ?? {})),
+             ["proofDigest", "proofFileSha256"]) ||
+           records[0].forwardRecoveryProof?.proofDigest !==
+             freshAugmentedValidation.intermediateProofDigest ||
+           records[0].forwardRecoveryProof?.proofFileSha256 !==
+             freshAugmentedValidation.intermediateProofFileSha256)))
     fail("review token rotation rollback starting state drift");
   const mutationOperations = [...phaseOperations[startingPhase],
     ...(startingPhase === "predecessor" ? [] : ["rotation-delete-replacement-wrapper"])];
@@ -4606,20 +4741,56 @@ export function provisioningSetupPlan(production, review) {
         mode: "rollback-only-current-attempt-provider-augmented",
         startingPhase: "production-repointed-review-augmented",
         precondition: {
-          forwardJournal: "exact-checksummed-seventeen-record-current-attempt-prefix",
+          forwardJournal: { oneOf: [
+            "exact-checksummed-seventeen-record-current-attempt-prefix",
+            "exact-production-intent-or-classification-prefix-with-applied-augmented-readback",
+            "exact-seventeen-record-prefix-plus-review-intent-or-no-effect-classification",
+          ] },
           attemptCoordinate: privateFileReference(
             "ATRINIK_REVIEW_TOKEN_ROTATION_ATTEMPT_COORDINATE_FILE"),
           preCreateProof: privateFileReference(
             "ATRINIK_REVIEW_TOKEN_ROTATION_PRE_CREATE_PROOF_FILE"),
           preProductionProof: privateFileReference(
             "ATRINIK_REVIEW_TOKEN_ROTATION_PRE_PRODUCTION_PROOF_FILE"),
-          intermediateProof: privateFileReference(
-            "ATRINIK_REVIEW_TOKEN_ROTATION_INTERMEDIATE_PROOF_FILE"),
+          prefixEvidence: { oneOf: [
+            { forwardPrefixKind: "completed-augmented",
+              intermediateProof: privateFileReference(
+                "ATRINIK_REVIEW_TOKEN_ROTATION_INTERMEDIATE_PROOF_FILE") },
+            { forwardPrefixKind: { oneOf: ["production-intent-applied",
+              "production-classified-applied"] },
+            exceptionalHandoffProof: privateFileReference(
+              "ATRINIK_REVIEW_TOKEN_ROTATION_ROLLBACK_PRECONDITION_PROOF_FILE") },
+            { forwardPrefixKind: { oneOf: ["review-intent-no-effect",
+              "review-classified-no-effect"] },
+            intermediateProof: privateFileReference(
+              "ATRINIK_REVIEW_TOKEN_ROTATION_INTERMEDIATE_PROOF_FILE"),
+            exceptionalHandoffProof: privateFileReference(
+              "ATRINIK_REVIEW_TOKEN_ROTATION_ROLLBACK_PRECONDITION_PROOF_FILE") },
+          ] },
         },
         operations: [
+          { id: "rotation-fresh-augmented-prove-exceptional-handoff",
+            actor: "workers-builds-control-plane-operator", mutation: false,
+            condition: "forward-prefix-is-not-the-completed-seventeen-record-prefix",
+            action: "prove-fresh-exhaustive-exact-provider-augmented-state-after-the-final-forward-record-without-retrying-or-backdating-the-forward-mutation",
+            command: "npm run provision:workers-builds:verify-review-token-rotation-rollback-precondition",
+            privateInputs: { phase:
+              "ATRINIK_REVIEW_TOKEN_ROTATION_ROLLBACK_PRECONDITION_PHASE_FILE" },
+            produces: { proof_digest:
+              "fresh-exact-exceptional-augmented-handoff-proof-digest" } },
           { id: "rotation-fresh-augmented-validate-prefix",
             actor: "journaled-review-token-rotation-executor", mutation: false,
-            action: "validate-exact-authority-bound-attempt-and-seventeen-record-provider-augmented-forward-prefix",
+            action: "validate-exact-authority-bound-attempt-and-enumerated-provider-augmented-forward-prefix-plus-any-required-post-prefix-handoff-proof",
+            precondition: { prefixEvidence: { oneOf: [
+              { forwardPrefixKind: "completed-augmented",
+                intermediateProof: privateFileReference(
+                  "ATRINIK_REVIEW_TOKEN_ROTATION_INTERMEDIATE_PROOF_FILE") },
+              { forwardPrefixKind: { oneOf: ["production-intent-applied",
+                "production-classified-applied", "review-intent-no-effect",
+                "review-classified-no-effect"] },
+              exceptionalHandoffProof: resultReference(
+                "rotation-fresh-augmented-prove-exceptional-handoff", "proof_digest") },
+            ] } },
             produces: { forward_journal_digest: "authority-bound-current-attempt-prefix-digest",
               replacement_review_build_token_uuid: "exact-journal-created-wrapper-uuid" } },
           { id: "rotation-fresh-augmented-prove-production-restore-precondition",
@@ -5142,6 +5313,8 @@ export function validateSetupPlan(plan) {
   const freshRecovery = plan.reviewTokenRotation.freshProviderNormalizedRecovery;
   const freshRecoveryOperations = freshRecovery?.operations;
   const expectedFreshRecoveryOperations = [
+    ["rotation-fresh-augmented-prove-exceptional-handoff",
+      "workers-builds-control-plane-operator", false, undefined],
     ["rotation-fresh-augmented-validate-prefix", "journaled-review-token-rotation-executor",
       false, undefined],
     ["rotation-fresh-augmented-prove-production-restore-precondition",

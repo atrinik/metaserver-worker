@@ -617,10 +617,21 @@ review-active state with
 deletes only the unreferenced journal-created replacement wrapper and proves
 the terminal predecessor with
 `provision:workers-builds:verify-review-token-rotation-rollback-complete`.
-When the current attempt's intermediate proof binds the exact provider-added
-peer exclusion, the rollback start must also bind that checksum-valid
-17-record forward prefix, exact attempt coordinate, and the complete pre-create,
-pre-production, and intermediate proof documents. Take a new exhaustive exact
+When the current attempt reaches the exact provider-added peer exclusion, the
+rollback start must bind the exact attempt coordinate, pre-create and
+pre-production proof documents, and one of the narrowly enumerated forward
+prefixes: the completed checksum-valid 17-record prefix; a production PATCH
+intent or success/ambiguous classification followed by a fresh exact augmented
+readback when an ordinary pre-expiry bound can no longer be written; or that
+17-record prefix followed by final-review intent and explicit failure or
+ambiguous exact-no-effect classification. Every exceptional prefix also binds
+a fresh exhaustive augmented-state handoff proof captured after its final
+forward record. Never truncate, relabel, or append a backdated mutation bound.
+An expired no-owned create prefix may include the journal-bound pre-create
+proof as its fifth record; validate that exact proof document and chronology
+before terminalizing it without an owned replacement.
+
+Take a new exhaustive exact
 augmented-state rollback-precondition proof after current-main and authority,
 bind it no more than 30 seconds after capture and before intent, and restore
 production first. Then take the exhaustive
