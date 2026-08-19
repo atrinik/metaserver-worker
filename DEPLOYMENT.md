@@ -521,9 +521,11 @@ First take a new exhaustive review-active snapshot and issue the owner-only
 30-minute rotation authority. Supply the same account, current-main,
 repository-owner, production-sentinel, usage, inert-setup, activation-journal,
 activation-proof, and predecessor token evidence required by the adjacent
-review verifiers. Also bind the exact #109 program ledger/#110 leaf proof, all
-immutable #102/#104 successor terminal hashes, and a fresh owner-only attempt
-namespace/executor/journal coordinate, plus these rotation inputs:
+review verifiers. Also bind the exact #114 program ledger/#118 leaf proof, all
+immutable #102/#104/#115 successor terminal hashes (including the completed
+read-only successor for the failed #110 no-owned attempt), and a fresh
+owner-only attempt namespace/executor/journal coordinate, plus these rotation
+inputs:
 
 ```sh
 ATRINIK_PROVIDER_SNAPSHOT_DIRECTORY=/secure/fresh-pre-rotation-snapshot \
@@ -531,7 +533,7 @@ ATRINIK_REPLACEMENT_REVIEW_BUILD_TOKEN_ID_FILE=/secure/private/replacement-token
 ATRINIK_REPLACEMENT_REVIEW_BUILD_TOKEN_PERMISSION_PROOF_FILE=/secure/private/replacement-token-policy.json \
 ATRINIK_REPLACEMENT_REVIEW_TOKEN_OWNER_MEMBERSHIP_PROOF_FILE=/secure/private/replacement-token-membership.json \
 ATRINIK_REVIEW_TOKEN_ROTATION_PROGRAM_PROOF_FILE=/secure/private/rotation-program-proof.json \
-ATRINIK_REVIEW_TOKEN_ROTATION_PROGRAM_LEDGER_FILE=/secure/private/issue-110-program-ledger.json \
+ATRINIK_REVIEW_TOKEN_ROTATION_PROGRAM_LEDGER_FILE=/secure/private/issue-118-program-ledger.json \
 ATRINIK_REVIEW_TOKEN_ROTATION_ATTEMPT_COORDINATE_FILE=/secure/private/rotation-attempt-coordinate.json \
 ATRINIK_REVIEW_TOKEN_ROTATION_EXECUTOR_FILE=/secure/private/run-review-token-rotation.mjs \
 ATRINIK_REVIEW_TOKEN_ROTATION_JOURNAL_FILE=/secure/private/rotation-journal.jsonl \

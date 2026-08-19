@@ -588,24 +588,24 @@ function disposableReviewAuthorityFixture(now = Date.now(),
   const productionBaselineProof = { ...productionBaselineUnsigned,
     proof_digest: createHash("sha256").update(JSON.stringify(productionBaselineUnsigned))
       .digest("hex") };
-  const programLedgerDocument = { schema_version: 1, generation: 14,
-    ledger_id: "delivery-v1:issue:I_kwDOTu8rSM8AAAABNTEwLg",
-    authority: { allowed: { issues: ["I_kwDOTu8rSM8AAAABNTBfIw",
-      "I_kwDOTu8rSM8AAAABNTEwLg"] } },
+  const programLedgerDocument = { schema_version: 1, generation: 29,
+    ledger_id: "delivery-v1:issue:I_kwDOTu8rSM8AAAABNaa8UA",
+    authority: { allowed: { issues: ["I_kwDOTu8rSM8AAAABNZty_A",
+      "I_kwDOTu8rSM8AAAABNaa8UA"] } },
     program: {
-      master_issue: { number: 109, node_id: "I_kwDOTu8rSM8AAAABNTBfIw" },
-      leaf_issue: { number: 110, node_id: "I_kwDOTu8rSM8AAAABNTEwLg" },
+      master_issue: { number: 114, node_id: "I_kwDOTu8rSM8AAAABNZty_A" },
+      leaf_issue: { number: 118, node_id: "I_kwDOTu8rSM8AAAABNaa8UA" },
     } };
   const programLedgerFileSha256 = createHash("sha256")
     .update(`${JSON.stringify(programLedgerDocument)}\n`).digest("hex");
   const programDeliveryUnsigned = {
     outcome: "workers-builds-review-token-rotation-program-proof-valid", mutation: false,
     sourceSha: currentSourceSha, capturedAt: new Date(now - 2_900).toISOString(),
-    masterIssueNumber: 109, masterIssueNodeId: "I_kwDOTu8rSM8AAAABNTBfIw",
-    leafIssueNumber: 110, leafIssueNodeId: "I_kwDOTu8rSM8AAAABNTEwLg",
+    masterIssueNumber: 114, masterIssueNodeId: "I_kwDOTu8rSM8AAAABNZty_A",
+    leafIssueNumber: 118, leafIssueNodeId: "I_kwDOTu8rSM8AAAABNaa8UA",
     programLedgerCoordinate:
-      "e375a32b27807def822d4cf2074ce6571c70a975a57387926b9eb1e4a52e82fc",
-    programLedgerGeneration: 14,
+      "d7cd09686d6494fdf966faa6015217b31a335e061e5a14f3a5c9d3fcca670335",
+    programLedgerGeneration: 29,
     programLedgerSha256: createHash("sha256").update(JSON.stringify(programLedgerDocument))
       .digest("hex"), programLedgerFileSha256,
     historicalTerminals: {
@@ -619,12 +619,21 @@ function disposableReviewAuthorityFixture(now = Date.now(),
         "d5658229404f85a6bb7396640775dbfafd48e5fdd49b69b69fa133d3f599b790",
       blockedDeleteRecoveryProofDigest:
         "d3091640160721383ef4e7a8e5ae6ad0789b3013088e5250b2b3dbdec01aed69",
+      noOwnedSuccessorSourceSha: "929870b8427559b49e67c7c42d9db7cbc3b6f9c5",
+      noOwnedSuccessorJournalSha256:
+        "e02c2a129f133f396bf00a789523a1ed0940eee1a0f21e196987c6d1c3fad87d",
+      noOwnedSuccessorTerminalRecordSha256:
+        "27762a9096f5ae4b991af80c3ef4ca8fd74112db9918032e7e09870265b89ac0",
+      noOwnedSuccessorProofDigest:
+        "8d29d2020a4302fe76a8e9a7701c19e62a12f555d133673e5dffcef2bd0060ca",
+      noOwnedSuccessorSnapshotManifestSha256:
+        "ce4e283933a1d4616c739585b9e13073b006c62fcd13b603b12631d59bc5acb3",
     },
   };
   const programDeliveryProof = { ...programDeliveryUnsigned,
     proof_digest: createHash("sha256").update(JSON.stringify(programDeliveryUnsigned))
       .digest("hex") };
-  const attemptNamespace = `review-token-rotation-110-${"a".repeat(16)}`;
+  const attemptNamespace = `review-token-rotation-118-${"a".repeat(16)}`;
   const rotationExecutorSha256 = "b".repeat(64);
   const journalPathSha256 = "d".repeat(64);
   const rotationAttemptUnsigned = { repository: "atrinik/metaserver-worker",
@@ -2186,7 +2195,7 @@ test("issues one journal-bound review-token rotation authority", () => {
     /malformed or cross-phase/u);
   for (const [field, value, expected] of [
     ["programDeliveryProof", { leafIssueNumber: 111 }, /program proof drift/u],
-    ["rotationAttemptCoordinate", { attemptNamespace: `review-token-rotation-111-${"e".repeat(16)}` },
+    ["rotationAttemptCoordinate", { attemptNamespace: `review-token-rotation-117-${"e".repeat(16)}` },
       /attempt coordinate drift/u],
   ]) {
     const changed = structuredClone(arguments_);
@@ -2197,6 +2206,15 @@ test("issues one journal-bound review-token rotation authority", () => {
       .digest("hex");
     assert.throws(() => issueReviewTokenRotationAuthority(changed, now), expected);
   }
+  const foreignSuccessor = structuredClone(arguments_);
+  foreignSuccessor.programDeliveryProof.historicalTerminals.noOwnedSuccessorJournalSha256 =
+    "f".repeat(64);
+  const { proof_digest: _foreignSuccessorDigest, ...foreignSuccessorUnsigned } =
+    foreignSuccessor.programDeliveryProof;
+  foreignSuccessor.programDeliveryProof.proof_digest = createHash("sha256")
+    .update(JSON.stringify(foreignSuccessorUnsigned)).digest("hex");
+  assert.throws(() => issueReviewTokenRotationAuthority(foreignSuccessor, now),
+    /program proof drift/u);
   const foreignLedger = structuredClone(arguments_);
   foreignLedger.programLedgerDocument.program.master_issue.number = 108;
   foreignLedger.programDeliveryProof.programLedgerSha256 = createHash("sha256")
@@ -3081,7 +3099,7 @@ test("validates exact review-token rotation rollback and residual journals", asy
     recordIndex === 12 ? /mutation provenance drift/u : /review authorization drift/u);
   }
   const alternateAttemptUnsigned = { ...evidence.rotationAttemptCoordinate,
-    attemptNamespace: `review-token-rotation-110-${"e".repeat(16)}` };
+    attemptNamespace: `review-token-rotation-118-${"e".repeat(16)}` };
   delete alternateAttemptUnsigned.proof_digest;
   alternateAttemptUnsigned.journalId = createHash("sha256").update(JSON.stringify({
     attemptNamespace: alternateAttemptUnsigned.attemptNamespace,

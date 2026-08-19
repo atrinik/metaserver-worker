@@ -27,7 +27,7 @@ const maximumProviderPages = 100;
 const stagingBranchPattern = /^review-build-only-sentinel-[0-9a-f]{32}$/u;
 const reviewStagingRootPattern = /^\/review-build-only-staging-[0-9a-f]{32}$/u;
 const gitShaPattern = /^[0-9a-f]{40}$/u;
-const expectedSetupPlanSha256 = "c679174154a2604c936a10c710a0c3b6b176565ebf8badc402fa7ade2cd4f300";
+const expectedSetupPlanSha256 = "ee040abf857e30ecb4a3ad10a69464f62b74fab3db786a465f70d02afa31d955";
 const currentMainProofSource = "authenticated-gh-api-current-main-readback";
 const currentMainProofEndpoint = "repos/atrinik/metaserver-worker/git/ref/heads/main";
 const currentMainRef = "refs/heads/main";
@@ -89,11 +89,11 @@ export const reviewTokenRotationNoOwnedIncident = Object.freeze({
     "2015810a4c78fe0fcdf4d88c96b9c66f1570d59534f278f0d4bb7a033f1b14fe",
 });
 const reviewTokenRotationRetryProgram = Object.freeze({
-  masterIssueNumber: 109,
-  masterIssueNodeId: "I_kwDOTu8rSM8AAAABNTBfIw",
-  leafIssueNumber: 110,
-  leafIssueNodeId: "I_kwDOTu8rSM8AAAABNTEwLg",
-  ledgerCoordinate: "e375a32b27807def822d4cf2074ce6571c70a975a57387926b9eb1e4a52e82fc",
+  masterIssueNumber: 114,
+  masterIssueNodeId: "I_kwDOTu8rSM8AAAABNZty_A",
+  leafIssueNumber: 118,
+  leafIssueNodeId: "I_kwDOTu8rSM8AAAABNaa8UA",
+  ledgerCoordinate: "d7cd09686d6494fdf966faa6015217b31a335e061e5a14f3a5c9d3fcca670335",
   providerNormalizedForwardJournalSha256:
     reviewTokenRotationProviderNormalizedIncident.forwardJournalSha256,
   providerNormalizedRollbackJournalSha256:
@@ -104,6 +104,15 @@ const reviewTokenRotationRetryProgram = Object.freeze({
     "d5658229404f85a6bb7396640775dbfafd48e5fdd49b69b69fa133d3f599b790",
   blockedDeleteRecoveryProofDigest:
     "d3091640160721383ef4e7a8e5ae6ad0789b3013088e5250b2b3dbdec01aed69",
+  noOwnedSuccessorSourceSha: "929870b8427559b49e67c7c42d9db7cbc3b6f9c5",
+  noOwnedSuccessorJournalSha256:
+    "e02c2a129f133f396bf00a789523a1ed0940eee1a0f21e196987c6d1c3fad87d",
+  noOwnedSuccessorTerminalRecordSha256:
+    "27762a9096f5ae4b991af80c3ef4ca8fd74112db9918032e7e09870265b89ac0",
+  noOwnedSuccessorProofDigest:
+    "8d29d2020a4302fe76a8e9a7701c19e62a12f555d133673e5dffcef2bd0060ca",
+  noOwnedSuccessorSnapshotManifestSha256:
+    "ce4e283933a1d4616c739585b9e13073b006c62fcd13b603b12631d59bc5acb3",
 });
 const providerNormalizedIncidentTestCapabilities = new WeakSet();
 const noOwnedIncidentTestCapabilities = new WeakSet();
@@ -974,6 +983,9 @@ programLedgerDocument, programLedgerFileSha256, now = Date.now()) {
     "proof_digest", "sourceSha"];
   const historicalKeys = ["blockedDeleteRecoveryJournalSha256",
     "blockedDeleteRecoveryProofDigest", "blockedDeleteRecoveryTerminalRecordSha256",
+    "noOwnedSuccessorJournalSha256", "noOwnedSuccessorProofDigest",
+    "noOwnedSuccessorSnapshotManifestSha256", "noOwnedSuccessorSourceSha",
+    "noOwnedSuccessorTerminalRecordSha256",
     "providerNormalizedForwardJournalSha256", "providerNormalizedRollbackJournalSha256"];
   const captured = Date.parse(proof?.capturedAt ?? "");
   const unsigned = { ...proof };
@@ -1017,6 +1029,16 @@ programLedgerDocument, programLedgerFileSha256, now = Date.now()) {
           reviewTokenRotationRetryProgram.blockedDeleteRecoveryTerminalRecordSha256,
         blockedDeleteRecoveryProofDigest:
           reviewTokenRotationRetryProgram.blockedDeleteRecoveryProofDigest,
+        noOwnedSuccessorSourceSha:
+          reviewTokenRotationRetryProgram.noOwnedSuccessorSourceSha,
+        noOwnedSuccessorJournalSha256:
+          reviewTokenRotationRetryProgram.noOwnedSuccessorJournalSha256,
+        noOwnedSuccessorTerminalRecordSha256:
+          reviewTokenRotationRetryProgram.noOwnedSuccessorTerminalRecordSha256,
+        noOwnedSuccessorProofDigest:
+          reviewTokenRotationRetryProgram.noOwnedSuccessorProofDigest,
+        noOwnedSuccessorSnapshotManifestSha256:
+          reviewTokenRotationRetryProgram.noOwnedSuccessorSnapshotManifestSha256,
       }) || !isUtcTimestamp(proof.capturedAt) || !Number.isFinite(captured) ||
       captured > now + 30_000 || now - captured > 5 * 60_000 ||
       proof.proof_digest !== digestJson(unsigned))
@@ -1035,7 +1057,7 @@ attemptFilesystemEvidence, now = Date.now()) {
   if (!coordinate || !same(sorted(Object.keys(coordinate)), sorted(keys)) ||
       coordinate.repository !== "atrinik/metaserver-worker" || coordinate.sourceSha !== sourceSha ||
       coordinate.mutation !== false ||
-      !/^review-token-rotation-110-[0-9a-f]{16,64}$/u.test(coordinate.attemptNamespace ?? "") ||
+      !/^review-token-rotation-118-[0-9a-f]{16,64}$/u.test(coordinate.attemptNamespace ?? "") ||
       ![coordinate.executorSha256, coordinate.initialJournalSha256, coordinate.journalId,
         coordinate.journalPathSha256]
         .every((value) => /^[0-9a-f]{64}$/u.test(value ?? "")) ||
