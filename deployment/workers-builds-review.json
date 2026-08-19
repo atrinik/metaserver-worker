@@ -86,6 +86,25 @@
       "productionWrite": false,
       "provisioningGate": "prove-build-and-local-no-op-deploy-succeed-with-no-account-or-zone-resource-permissions"
     },
+    "membershipReadRepair": {
+      "issue": 122,
+      "mode": "fresh-user-token-before-wrapper-rotation",
+      "predecessorTokenId": "c6be328862f30f76fdc5cf455eae0777",
+      "predecessorBuildTokenUuid": "79a6606b-f3b4-436e-abe9-10e8650c50e8",
+      "predecessorUserPermissions": ["User Details:Read"],
+      "requiredUserPermissions": ["Memberships:Read", "User Details:Read"],
+      "userResource": "com.cloudflare.api.user.b33f81835d7dc584622ca841b124a9a5",
+      "accountPermissions": [],
+      "zonePermissions": [],
+      "accountResources": [],
+      "zoneResources": [],
+      "accountOwnedTokenSupported": false,
+      "wrapperMutation": "delegated-to-journaled-review-token-rotation",
+      "triggerMutation": "delegated-to-journaled-review-token-rotation",
+      "productionMutation": false,
+      "verification": "one-fresh-automatic-push-event-review-build-before-terminal-adoption",
+      "rollback": "delete-only-journal-created-unwrapped-user-token-on-failure"
+    },
     "controlPlaneOperator": {
       "actor": "metaserver-review-environment-operator",
       "when": "setup-budget-threshold-or-provider-recovery-only-never-review-build",

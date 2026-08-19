@@ -27,7 +27,7 @@ const maximumProviderPages = 100;
 const stagingBranchPattern = /^review-build-only-sentinel-[0-9a-f]{32}$/u;
 const reviewStagingRootPattern = /^\/review-build-only-staging-[0-9a-f]{32}$/u;
 const gitShaPattern = /^[0-9a-f]{40}$/u;
-const expectedSetupPlanSha256 = "ee040abf857e30ecb4a3ad10a69464f62b74fab3db786a465f70d02afa31d955";
+const expectedSetupPlanSha256 = "5646d8a5bcf75c9487f6d9282de86dedeef81d022f8b6bf4ed92e8b490065093";
 const currentMainProofSource = "authenticated-gh-api-current-main-readback";
 const currentMainProofEndpoint = "repos/atrinik/metaserver-worker/git/ref/heads/main";
 const currentMainRef = "refs/heads/main";
@@ -39,6 +39,34 @@ const reviewTokenRotationAuthorityLifetimeMs = 30 * 60_000;
 const reviewTokenRotationTransitionBudgetMs = 5 * 60_000;
 const blockedReviewTokenDeleteAuthorityLifetimeMs = 15 * 60_000;
 const blockedReviewTokenDeleteTransitionBudgetMs = 5 * 60_000;
+const reviewMembershipRepairAuthorityLifetimeMs = 15 * 60_000;
+export const reviewMembershipRepairIncident = Object.freeze({
+  sourceSha: "b97fcefb09fb09d7e7a99daab8ef9ba168ce3b0f",
+  rotationJournalSha256:
+    "9bf6177c410235baa66036364c1414ce6a2ade2141fe5cff3b2b1ba6e2b73bb3",
+  rotationTerminalRecordSha256:
+    "e7664db4a3a26d44a54cc457b4297808bc926d8ce052bc195fcba7a3081d0e95",
+  rotationCompleteProofFileSha256:
+    "fe90b57f5b1bf5e371b25479712a0c00db8365c5311765feaddf9d1aa07118e2",
+  rotationCompleteProofDigest:
+    "ef7b0f296648a37655c451ba6f01a7d68c4e359c452aea02438667d534b8c6f0",
+  reviewBuildTokenUuid: "79a6606b-f3b4-436e-abe9-10e8650c50e8",
+  reviewTokenId: "c6be328862f30f76fdc5cf455eae0777",
+  ownerUserId: "b33f81835d7dc584622ca841b124a9a5",
+  failedDisposableJournalSha256:
+    "0b78d6af80756b67be734e5e4b8a749cb3a2483865085fc8ad50e0784193e203",
+  failedDisposableTerminalRecordSha256:
+    "7b065e986f517bc6ebcdb0081fcbdfe83696b397932d5e1a55bb76d7c60019ce",
+  failedBuildDetailSha256:
+    "db4e9a7dc4c27c3e1d38a1ec038fd4683a2cb7bc4dc8a156b64683797ff2898a",
+  failedBuildLogsSha256:
+    "045115bb7ac609281027d4bde1e2fda7bac62e173fc336b91c56464c6a969a05",
+  failedBuildUuid: "68747ae8-f5ca-45d4-955b-61151ba9075f",
+  failedBuildCommit: "a802d53b934f89c07084784f9dcd8d9215fd5e02",
+  failedBuildBranch: "review/issue-66-disposable-120",
+  failedBuildStoppedAt: "2026-08-19T18:53:56.540Z",
+  failureClass: "accepted-member-user-token-rejected-as-departed",
+});
 export const reviewTokenRotationProviderNormalizedIncident = Object.freeze({
   sourceSha: "48f791e60bc0c1d19a7eff28e9cd99ed1bfd317a",
   planDigest: "ab71b8d99980ccdbfe9384bd29e8d690b7d8e91b6b17199e0e1baad182f7b6c1",
@@ -226,6 +254,159 @@ function isUtcTimestamp(value) {
     date.getUTCDate() === day && date.getUTCHours() === hour &&
     date.getUTCMinutes() === minute && date.getUTCSeconds() === second &&
     date.getUTCMilliseconds() === milliseconds;
+}
+
+export function validateReviewMembershipRepairIncident(proof) {
+  const keys = [...Object.keys(reviewMembershipRepairIncident), "mutation", "outcome",
+    "proof_digest"];
+  const unsigned = { ...proof };
+  delete unsigned.proof_digest;
+  if (!proof || !same(sorted(Object.keys(proof)), sorted(keys)) ||
+      proof.outcome !== "workers-builds-review-membership-repair-incident-valid" ||
+      proof.mutation !== false)
+    fail("review membership repair incident shape drift");
+  if (!same(Object.fromEntries(Object.keys(reviewMembershipRepairIncident)
+    .map((key) => [key, proof[key]])), { ...reviewMembershipRepairIncident }))
+    fail("review membership repair incident coordinate drift");
+  if (proof.proof_digest !== digestJson(unsigned))
+    fail("review membership repair incident digest drift");
+  return proof;
+}
+
+function validateReviewMembershipRepairPolicyProof(proof, { accountId, sourceSha,
+  expectedUserPermissions, expectedTokenId = reviewMembershipRepairIncident.reviewTokenId,
+  expectedKind = "review-membership-repair-predecessor",
+  maximumAgeMs = 5 * 60_000 }, now = Date.now()) {
+  const keys = ["accountId", "accountPermissions", "accountResources", "capturedAt", "kind",
+    "modifiedOn", "ownerUserId", "source", "sourceSha", "tokenId", "userPermissions",
+    "zonePermissions", "zoneResources"];
+  const captured = Date.parse(proof?.capturedAt ?? "");
+  const modified = Date.parse(proof?.modifiedOn ?? "");
+  if (!proof || !same(sorted(Object.keys(proof)), sorted(keys)) ||
+      proof.source !== "cloudflare-owner-token-policy-readback" ||
+      proof.kind !== expectedKind || proof.accountId !== accountId ||
+      proof.sourceSha !== sourceSha ||
+      proof.tokenId !== expectedTokenId ||
+      proof.ownerUserId !== reviewMembershipRepairIncident.ownerUserId ||
+      !isUtcTimestamp(proof.capturedAt) || !isUtcTimestamp(proof.modifiedOn) ||
+      !Number.isFinite(captured) || !Number.isFinite(modified) || modified > captured ||
+      captured > now + 30_000 || now - captured > maximumAgeMs ||
+      !same(sorted(proof.userPermissions ?? []), sorted(expectedUserPermissions)) ||
+      !same(proof.accountPermissions, []) || !same(proof.accountResources, []) ||
+      !same(proof.zonePermissions, []) || !same(proof.zoneResources, []))
+    fail("review membership repair token policy drift");
+  return proof;
+}
+
+export function issueReviewMembershipRepairAuthority({ production, review, accountId, sourceSha,
+  incidentProof, predecessorPolicyProof, currentReviewActiveProof,
+  permissionGroupProof, currentMainProofDigest }, now = Date.now()) {
+  validateReviewMembershipRepairIncident(incidentProof);
+  const repair = review?.automaticReview?.membershipReadRepair;
+  if (!repair || repair.predecessorTokenId !== reviewMembershipRepairIncident.reviewTokenId ||
+      repair.predecessorBuildTokenUuid !==
+        reviewMembershipRepairIncident.reviewBuildTokenUuid ||
+      repair.mode !== "fresh-user-token-before-wrapper-rotation" ||
+      repair.userResource !== `com.cloudflare.api.user.${reviewMembershipRepairIncident.ownerUserId}` ||
+      repair.accountOwnedTokenSupported !== false ||
+      repair.wrapperMutation !== "delegated-to-journaled-review-token-rotation" ||
+      repair.triggerMutation !== "delegated-to-journaled-review-token-rotation" ||
+      repair.productionMutation !== false)
+    fail("review membership repair contract drift");
+  validateReviewMembershipRepairPolicyProof(predecessorPolicyProof, { accountId, sourceSha,
+    expectedUserPermissions: repair.predecessorUserPermissions }, now);
+  const permissionGroupKeys = ["capturedAt", "groups", "mutation", "outcome", "proof_digest",
+    "source", "sourceSha"];
+  const groupKeys = ["id", "name", "scope"];
+  const permissionCaptured = Date.parse(permissionGroupProof?.capturedAt ?? "");
+  const permissionUnsigned = { ...permissionGroupProof };
+  delete permissionUnsigned.proof_digest;
+  if (!permissionGroupProof ||
+      !same(sorted(Object.keys(permissionGroupProof)), sorted(permissionGroupKeys)) ||
+      permissionGroupProof.source !== "cloudflare-user-token-permission-groups-readback" ||
+      permissionGroupProof.outcome !== "review-membership-permission-groups-valid" ||
+      permissionGroupProof.mutation !== false || permissionGroupProof.sourceSha !== sourceSha ||
+      !Number.isFinite(permissionCaptured) || permissionCaptured > now + 30_000 ||
+      now - permissionCaptured > 5 * 60_000 ||
+      !same(permissionGroupProof.groups?.map((group) => group.name).sort(),
+        ["Memberships Read", "User Details Read"]) ||
+      !permissionGroupProof.groups.every((group) =>
+        same(sorted(Object.keys(group)), groupKeys) && /^[0-9a-f]{32}$/u.test(group.id) &&
+        group.scope === "com.cloudflare.api.user") ||
+      permissionGroupProof.proof_digest !== digestJson(permissionUnsigned))
+    fail("review membership repair permission group proof drift");
+  validateCurrentDisposableReviewSnapshotProof(currentReviewActiveProof,
+    { accountId, sourceSha }, now);
+  if (currentReviewActiveProof.liveIdentities.reviewBuildTokenUuid !==
+      repair.predecessorBuildTokenUuid || !/^[0-9a-f]{64}$/u.test(currentMainProofDigest ?? ""))
+    fail("review membership repair live identity drift");
+  const capturedAt = new Date(now).toISOString();
+  const unsigned = {
+    outcome: "workers-builds-review-membership-repair-authority-valid", mutation: false,
+    phase: "review-membership-read-policy-and-proof", accountId, sourceSha, capturedAt,
+    expiresAt: new Date(now + reviewMembershipRepairAuthorityLifetimeMs).toISOString(),
+    planDigest: digestJson(provisioningSetupPlan(production, review)),
+    incidentDigest: incidentProof.proof_digest,
+    predecessorPolicyDigest: digestJson(predecessorPolicyProof),
+    currentReviewActiveProofDigest: currentReviewActiveProof.proof_digest,
+    permissionGroupProofDigest: permissionGroupProof.proof_digest,
+    currentMainProofDigest,
+    predecessorTokenId: repair.predecessorTokenId,
+    predecessorBuildTokenUuid: repair.predecessorBuildTokenUuid,
+    replacementTokenName: "Atrinik metaserver review membership-readable",
+    permissionGroupIds: Object.fromEntries(permissionGroupProof.groups.map(({ name, id }) =>
+      [name, id])),
+    predecessorUserPermissions: structuredClone(repair.predecessorUserPermissions),
+    requiredUserPermissions: structuredClone(repair.requiredUserPermissions),
+    userResource: repair.userResource,
+    accountPermissions: [], accountResources: [], zonePermissions: [], zoneResources: [],
+    allowedWrites: ["post-one-exact-membership-readable-user-token",
+      "delete-only-journal-created-unwrapped-user-token-on-failure"],
+    forbidden: ["account-owned-token", "build-token-wrapper-mutation", "trigger-mutation",
+      "production-activation", "manual-api-build", "migration-0010", "worker-resource-mutation"],
+  };
+  return { ...unsigned, proof_digest: digestJson(unsigned) };
+}
+
+export function validateReviewMembershipRepairAuthority(proof, arguments_, now = Date.now(),
+minimumRemainingMs = 5 * 60_000) {
+  const captured = Date.parse(proof?.capturedAt ?? "");
+  const expires = Date.parse(proof?.expiresAt ?? "");
+  if (!Number.isFinite(captured) || !Number.isFinite(expires))
+    fail("review membership repair authority is stale or malformed");
+  const expected = issueReviewMembershipRepairAuthority(arguments_, captured);
+  if (!same(proof, expected) || now >= expires ||
+      expires - now < minimumRemainingMs)
+    fail("review membership repair authority is stale or malformed");
+  return proof;
+}
+
+export function validateReviewMembershipRepairResultProof(proof, { accountId, sourceSha,
+  authorityProof, replacementTokenId }, now = Date.now()) {
+  const authorityUnsigned = { ...authorityProof };
+  delete authorityUnsigned.proof_digest;
+  const authorityCaptured = Date.parse(authorityProof?.capturedAt ?? "");
+  const authorityExpires = Date.parse(authorityProof?.expiresAt ?? "");
+  if (authorityProof?.outcome !== "workers-builds-review-membership-repair-authority-valid" ||
+      authorityProof.mutation !== false || authorityProof.accountId !== accountId ||
+      authorityProof.sourceSha !== sourceSha || !Number.isFinite(authorityCaptured) ||
+      !Number.isFinite(authorityExpires) || now >= authorityExpires ||
+      authorityProof.proof_digest !== digestJson(authorityUnsigned) ||
+      authorityProof.userResource !==
+        `com.cloudflare.api.user.${reviewMembershipRepairIncident.ownerUserId}` ||
+      !same(authorityProof.accountPermissions, []) ||
+      !same(authorityProof.accountResources, []) ||
+      !same(authorityProof.zonePermissions, []) || !same(authorityProof.zoneResources, []))
+    fail("review membership repair result authority drift");
+  if (!/^[0-9a-f]{32}$/u.test(replacementTokenId ?? "") ||
+      replacementTokenId === authorityProof.predecessorTokenId)
+    fail("review membership repair replacement token identity drift");
+  const repairProof = validateReviewMembershipRepairPolicyProof(proof, { accountId, sourceSha,
+    expectedUserPermissions: authorityProof.requiredUserPermissions,
+    expectedTokenId: replacementTokenId, expectedKind: "review-replacement" }, now);
+  if (Date.parse(repairProof.modifiedOn) <= authorityCaptured)
+    fail("review membership repair did not modify the exact token after authority issuance");
+  return repairProof;
 }
 
 function digestJson(value) {
@@ -3809,6 +3990,13 @@ arguments_, testCapability) {
     { ...arguments_, testCapability });
 }
 
+function membershipReadableReviewContract(review) {
+  const contract = structuredClone(review);
+  contract.automaticReview.tokenAuthority.userPermissions = structuredClone(
+    review.automaticReview.membershipReadRepair.requiredUserPermissions);
+  return contract;
+}
+
 export function issueDisposableReviewAuthority({ production, review, accountId, sourceSha,
   reviewActivationProof, reviewActivationJournal, inertSetupJournal, inertSetupResults,
   disposableCoordinate, reviewTokenRotationProof, reviewTokenRotationJournal,
@@ -3822,7 +4010,8 @@ export function issueDisposableReviewAuthority({ production, review, accountId, 
   productionSentinelProof, tokenAuthorityProofs, buildUsageProof, tokenRows }, now = Date.now()) {
   validateRepositoryConnectionOwnerProof(repositoryConnectionProof, accountId, sourceSha, now);
   const sentinel = validateSentinelRefAbsence(productionSentinelProof, now);
-  validateTokenAuthorityProofs({ production, review, accountId, proofs: tokenAuthorityProofs,
+  validateTokenAuthorityProofs({ production, review: membershipReadableReviewContract(review),
+    accountId, proofs: tokenAuthorityProofs,
     tokenRows, sourceSha }, now);
   validateBuildUsageProof(review, buildUsageProof, accountId, now);
   if (buildUsageProof.monthlyMinutesUsed + review.automaticReview.providerBuildTimeoutMinutes >=
@@ -3999,7 +4188,8 @@ minimumRemainingMs = reviewActivationTransitionBudgetMs) {
   validateRepositoryConnectionOwnerProof(repositoryConnectionProof, accountId, sourceSha, captured);
   const sentinel = validateSentinelRefAbsence(productionSentinelProof, captured);
   const proofByKind = Object.fromEntries(tokenAuthorityProofs.map((item) => [item.kind, item]));
-  validateTokenAuthorityProofs({ production, review, accountId, proofs: tokenAuthorityProofs,
+  validateTokenAuthorityProofs({ production, review: membershipReadableReviewContract(review),
+    accountId, proofs: tokenAuthorityProofs,
     tokenRows: { production: { cloudflare_token_id: proofByKind.production?.tokenId },
       review: { cloudflare_token_id: proofByKind.review?.tokenId } }, sourceSha }, captured);
   validateBuildUsageProof(review, buildUsageProof, accountId, captured);
@@ -4438,6 +4628,7 @@ export function provisioningSetupPlan(production, review) {
       "provider-setup-authorization",
       "review-trigger-activation-and-proof",
       "review-token-rotation",
+      "review-membership-read-policy-and-proof",
       "production-trigger-activation",
       "migration-0010",
       "initial-automatic-production-proof",
@@ -5226,6 +5417,61 @@ export function provisioningSetupPlan(production, review) {
       forbidden: ["production-trigger-activation", "migration-0010", "manual-build",
         "initial-production-build", "worker-version-deployment-binding-route-domain-schedule-url-state-secret-or-repository-connection-mutation"],
     },
+    reviewMembershipRepair: {
+      gate: "review-membership-read-policy-and-proof",
+      incident: structuredClone(reviewMembershipRepairIncident),
+      authorityLifetimeMinutes: reviewMembershipRepairAuthorityLifetimeMs / 60_000,
+      operations: [
+        { id: "membership-repair-bind-incident", actor: "workers-builds-control-plane-operator",
+          action: "validate-exact-terminal-rotation-and-failed-disposable-build-evidence",
+          mutation: false,
+          produces: { proof_digest: "exact-membership-repair-incident-digest" } },
+        { id: "membership-repair-current-state", actor: "workers-builds-control-plane-operator",
+          action: "prove-exact-review-active-trigger-wrapper-predecessor-token-policy-and-user-permission-groups",
+          mutation: false,
+          produces: { proof_digest: "fresh-predecessor-token-policy-and-provider-state-digest" } },
+        { id: "membership-repair-authority", actor: "cloudflare-user-token-owner",
+          action: "bind-current-main-incident-current-state-and-one-exact-fresh-user-token-request",
+          mutation: false,
+          command: "npm run provision:workers-builds:verify-review-membership-repair-authority",
+          produces: { proof_digest: "bounded-membership-repair-authority-digest" } },
+        { id: "membership-repair-create-user-token", actor: "cloudflare-user-token-owner",
+          action: "post-one-exact-user-owned-membership-readable-token-with-no-account-or-zone-scope",
+          mutation: true,
+          precondition: { authority: resultReference(
+            "membership-repair-authority", "proof_digest") },
+          request: { method: "POST", path: "/user/tokens",
+            body: { name: "Atrinik metaserver review membership-readable",
+              policies: [{ effect: "allow", resources: {
+                [`com.cloudflare.api.user.${reviewMembershipRepairIncident.ownerUserId}`]: "*",
+              }, permission_groups: [
+                { id: privateFileReference("ATRINIK_USER_DETAILS_READ_PERMISSION_GROUP_ID_FILE") },
+                { id: privateFileReference("ATRINIK_MEMBERSHIPS_READ_PERMISSION_GROUP_ID_FILE") },
+              ] }] } },
+          produces: { token_id: "exact-explicit-success-user-token-id",
+            token_secret: "owner-only-never-journaled-token-secret" } },
+        { id: "membership-repair-policy-readback", actor: "cloudflare-user-token-owner",
+          action: "prove-new-token-owner-and-exact-two-user-permissions-with-no-resource-scope",
+          mutation: false,
+          command: "npm run provision:workers-builds:verify-review-membership-repair-result",
+          produces: { proof_digest: "fresh-membership-readable-replacement-token-policy-digest",
+            token_id: "exact-explicit-success-user-token-id" } },
+        { id: "membership-repair-handoff", actor: "workers-builds-control-plane-operator",
+          action: "handoff-owner-only-token-secret-id-policy-proof-and-incident-to-journaled-review-token-rotation-then-disposable-proof",
+          mutation: false,
+          precondition: { policyProof: resultReference(
+            "membership-repair-policy-readback", "proof_digest") },
+          produces: { next: "reviewTokenRotation-then-disposableProof" } },
+      ],
+      failureRollback: {
+        actor: "cloudflare-user-token-owner", mutation: true,
+        action: "delete-only-the-journal-created-user-token-before-any-wrapper-adopts-it",
+        request: { method: "DELETE", path: "/user/tokens/{journal_created_token_id}" },
+      },
+      forbidden: ["account-owned-token", "predecessor-token-policy-update",
+        "production-trigger-activation", "migration-0010", "manual-api-build",
+        "initial-production-build", "worker-resource-or-repository-connection-mutation"],
+    },
     disposableProof: {
       gate: "review-trigger-activation-and-proof",
       authorityOperation: { id: "disposable-review-proof-authority",
@@ -5653,6 +5899,36 @@ export function validateSetupPlan(plan) {
     inspect(operation);
     available.set(operation.id, new Set(Object.keys(operation.produces ?? {})));
   }
+  const membershipRepair = plan.reviewMembershipRepair;
+  const expectedMembershipRepairOperations = [
+    ["membership-repair-bind-incident", "workers-builds-control-plane-operator", false],
+    ["membership-repair-current-state", "workers-builds-control-plane-operator", false],
+    ["membership-repair-authority", "cloudflare-user-token-owner", false],
+    ["membership-repair-create-user-token", "cloudflare-user-token-owner", true],
+    ["membership-repair-policy-readback", "cloudflare-user-token-owner", false],
+    ["membership-repair-handoff", "workers-builds-control-plane-operator", false],
+  ];
+  if (!membershipRepair || !same(membershipRepair.incident, reviewMembershipRepairIncident) ||
+      membershipRepair.authorityLifetimeMinutes !==
+        reviewMembershipRepairAuthorityLifetimeMs / 60_000 ||
+      !same(membershipRepair.operations?.map(({ id, actor, mutation }) =>
+        [id, actor, mutation]), expectedMembershipRepairOperations) ||
+      membershipRepair.operations[3].request?.method !== "POST" ||
+      membershipRepair.operations[3].request?.path !== "/user/tokens" ||
+      !same(membershipRepair.operations[3].request?.body?.policies?.[0]?.resources,
+        { [`com.cloudflare.api.user.${reviewMembershipRepairIncident.ownerUserId}`]: "*" }) ||
+      membershipRepair.failureRollback?.request?.method !== "DELETE" ||
+      membershipRepair.failureRollback?.request?.path !==
+        "/user/tokens/{journal_created_token_id}" ||
+      membershipRepair.failureRollback?.actor !== "cloudflare-user-token-owner" ||
+      membershipRepair.failureRollback?.mutation !== true)
+    fail("review membership repair plan drift");
+  inspect({ ...membershipRepair, operations: undefined, failureRollback: undefined });
+  for (const operation of membershipRepair.operations) {
+    inspect(operation);
+    available.set(operation.id, new Set(Object.keys(operation.produces ?? {})));
+  }
+  inspect(membershipRepair.failureRollback);
   const disposableAuthority = plan.disposableProof?.authorityOperation;
   if (!same(disposableAuthority && [disposableAuthority.id, disposableAuthority.actor,
     disposableAuthority.mutation, disposableAuthority.action],
@@ -5963,7 +6239,10 @@ export function validateReplacementReviewTokenAuthorityProof({ review, accountId
     "zonePermissions", "zoneResources"];
   const captured = Date.parse(proof?.capturedAt ?? "");
   const modified = Date.parse(proof?.modifiedOn ?? "");
-  const expected = review.automaticReview.tokenAuthority;
+  const expected = {
+    ...review.automaticReview.tokenAuthority,
+    userPermissions: review.automaticReview.membershipReadRepair.requiredUserPermissions,
+  };
   if (!proof || !same(sorted(Object.keys(proof)), sorted(keys)) ||
       proof.source !== "cloudflare-owner-token-policy-readback" ||
       proof.kind !== "review-replacement" || proof.accountId !== accountId ||
@@ -6902,6 +7181,25 @@ async function readReviewTokenRotationAuthorityEvidence(environment = process.en
   };
 }
 
+async function readReviewMembershipRepairAuthorityEvidence(environment, sourceSha) {
+  const currentMainProof = await readCurrentMainProof(environment, sourceSha);
+  return {
+    incidentProof: await readPrivateJson(
+      environment.ATRINIK_REVIEW_MEMBERSHIP_REPAIR_INCIDENT_PROOF_FILE,
+      "review membership repair incident proof"),
+    predecessorPolicyProof: await readPrivateJson(
+      environment.ATRINIK_REVIEW_MEMBERSHIP_REPAIR_PREDECESSOR_POLICY_PROOF_FILE,
+      "review membership repair predecessor policy proof"),
+    permissionGroupProof: await readPrivateJson(
+      environment.ATRINIK_REVIEW_MEMBERSHIP_REPAIR_PERMISSION_GROUP_PROOF_FILE,
+      "review membership repair permission group proof"),
+    currentReviewActiveProof: await readPrivateJson(
+      environment.ATRINIK_REVIEW_MEMBERSHIP_REPAIR_CURRENT_STATE_PROOF_FILE,
+      "review membership repair current state proof"),
+    currentMainProofDigest: digestJson(currentMainProof),
+  };
+}
+
 async function readBlockedReviewTokenDeleteIncident({ production, review, accountId,
   environment = process.env, testCapability = undefined,
   providerNormalizedTestCapability = undefined }) {
@@ -7817,7 +8115,8 @@ export async function validateReviewTokenRotationSnapshotDirectory({ snapshotDir
     if (!replacementToken) fail("replacement review wrapper is absent after rotation");
     const { ownerUserId: _ownerUserId, ...replacementReviewProof } =
       replacementTokenAuthorityProof;
-    validateTokenAuthorityProofs({ production, review, accountId,
+    validateTokenAuthorityProofs({ production,
+      review: membershipReadableReviewContract(review), accountId,
       proofs: [productionProof, { ...replacementReviewProof, kind: "review" }],
       tokenRows: { production: productionToken, review: replacementToken },
       sourceSha: authoritySourceSha },
@@ -8042,6 +8341,8 @@ export const credentialedProvisioningModes = Object.freeze([
   "--verify-review-activation",
   "--verify-review-activation-authority",
   "--verify-review-activation-authority-proof",
+  "--verify-review-membership-repair-authority",
+  "--verify-review-membership-repair-result",
   "--verify-review-token-rotation-authority",
   "--verify-review-token-rotation-authority-proof-historical",
   "--verify-review-token-rotation-provider-normalized-authority-proof-historical",
@@ -8462,6 +8763,40 @@ async function runProvisioningCliCore(mode = process.argv[2] ?? "--validate-only
     process.stdout.write(`${JSON.stringify({ ...result, sourceSha,
       authoritySourceSha: authority.sourceSha,
       terminalObservationSourceSha: (completeProof ?? blockedProof).sourceSha })}\n`);
+    return;
+  }
+  if (mode === "--verify-review-membership-repair-authority") {
+    const accountId = await readPrivateValue(process.env.ATRINIK_CLOUDFLARE_ACCOUNT_ID_FILE,
+      "Cloudflare account ID", accountIdPattern);
+    const evidence = await readReviewMembershipRepairAuthorityEvidence(process.env, sourceSha);
+    const proof = issueReviewMembershipRepairAuthority({ production, review, accountId,
+      sourceSha, ...evidence });
+    await writePrivateProof(
+      process.env.ATRINIK_REVIEW_MEMBERSHIP_REPAIR_AUTHORITY_PROOF_OUTPUT_FILE, proof);
+    process.stdout.write(`${JSON.stringify({ outcome: proof.outcome, mutation: false,
+      sourceSha, expiresAt: proof.expiresAt, proof_digest: proof.proof_digest })}\n`);
+    return;
+  }
+  if (mode === "--verify-review-membership-repair-result") {
+    const accountId = await readPrivateValue(process.env.ATRINIK_CLOUDFLARE_ACCOUNT_ID_FILE,
+      "Cloudflare account ID", accountIdPattern);
+    const evidence = await readReviewMembershipRepairAuthorityEvidence(process.env, sourceSha);
+    const authorityProof = await readPrivateJson(
+      process.env.ATRINIK_REVIEW_MEMBERSHIP_REPAIR_AUTHORITY_PROOF_FILE,
+      "review membership repair authority proof");
+    validateReviewMembershipRepairAuthority(authorityProof,
+      { production, review, accountId, sourceSha, ...evidence }, Date.now(), 0);
+    const replacementTokenId = await readPrivateValue(
+      process.env.ATRINIK_REPLACEMENT_REVIEW_BUILD_TOKEN_ID_FILE,
+      "membership-readable replacement token ID", /^[0-9a-f]{32}$/u);
+    const resultProof = await readPrivateJson(
+      process.env.ATRINIK_REPLACEMENT_REVIEW_BUILD_TOKEN_PERMISSION_PROOF_FILE,
+      "membership-readable replacement token policy proof");
+    validateReviewMembershipRepairResultProof(resultProof,
+      { accountId, sourceSha, authorityProof, replacementTokenId });
+    process.stdout.write(`${JSON.stringify({
+      outcome: "workers-builds-review-membership-repair-result-valid", mutation: false,
+      sourceSha, tokenId: replacementTokenId, proof_digest: digestJson(resultProof) })}\n`);
     return;
   }
   if (mode === "--verify-review-token-rotation-authority") {

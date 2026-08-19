@@ -794,6 +794,48 @@ Production activation, migration
 version, deployment, binding, route, domain, schedule, URL, state, secret, and
 repository-connection mutations remain forbidden.
 
+### Repair the review build token's membership permission
+
+Cloudflare Workers Builds currently supports user-owned build tokens only. Its
+documented generated token policy includes both User Details Read and
+Memberships Read. The failed disposable build `68747ae8-f5ca-45d4-955b-61151ba9075f`
+used the exact rotated review wrapper, but its underlying token had only User
+Details Read; Cloudflare reported that owner as having left the organization
+even though the separately authenticated account-member sweep proved the owner
+is accepted.
+
+Issue #122 permits one fresh user-owned token with exactly those two user-read
+permissions, the exact accepted owner's self-user resource, and no account or
+zone permissions or resources. Do not edit the
+failed token in place and do not use an account-owned token. Bind the immutable
+rotation terminal, failed disposable journal/build/log evidence, exact current
+review-active snapshot, predecessor token policy, authenticated current main,
+and the two exact user permission-group IDs with:
+
+```sh
+npm run provision:workers-builds:verify-review-membership-repair-authority
+```
+
+The caller credential is an owner-only bootstrap credential created from
+Cloudflare's Create Additional Tokens template and used only for the exact
+`POST /user/tokens` request (and deletion of that same journal-created token if
+it has not been wrapped). None of the retained Workers Builds credentials has
+API Tokens Write, so absence of that separately supplied credential is a hard
+pre-mutation stop, never a reason to broaden an existing token.
+
+After explicit creation success, retain the returned secret only in an
+owner-only file, read back the new token policy, and run
+`provision:workers-builds:verify-review-membership-repair-result`. The result
+must bind a new token ID, the same accepted owner, exactly Memberships Read and
+User Details Read, and empty account/zone permissions and resources. Then use
+the existing journaled review-token rotation to create the wrapper, repoint the
+inert production trigger and final review trigger, prove the old wrapper is
+globally unreferenced, and retire it. Finally run the existing disposable
+automatic push proof. Any ambiguous durable intent is reconciled and never
+blindly retried; any failure restores the exact predecessor trigger references
+or records an exhaustive blocked terminal. Production activation, migration
+`0010`, manual/API builds, and Worker-resource mutation remain forbidden.
+
 The 30-minute activation authority ends with that transition and must not be
 replayed for the potentially 20-minute disposable build. Immediately before
 the disposable push, capture a new complete review-active provider snapshot
