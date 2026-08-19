@@ -176,6 +176,15 @@
   Bind the exact branch, commit, journal identity, predecessor journals, and current
   trigger/wrapper UUIDs; require exclusive one-use receipts, 40 minutes remaining
   before push, and five before deletion.
+  A membership-readable review-token repair must create a fresh user token,
+  never edit the failed token in place or use an account-owned token. Bind the
+  exact #120 failure and current review-active state, permit only User Details
+  Read plus Memberships Read on only that owner's self-user resource with no
+  account/zone scope, then hand the new
+  owner-only secret and policy proof to the existing journaled wrapper rotation
+  and disposable automatic-build proof. API Tokens Write is a separate
+  owner-bootstrap boundary and must not be inferred from any Workers Builds
+  credential.
   It performs only readback and local protected-document materialization, and must never gain implicit
   provider mutation. Provider apply and live-canary execution remain gated by
   separate maintainer authorization; `npm run deploy:review-canary` must fail
