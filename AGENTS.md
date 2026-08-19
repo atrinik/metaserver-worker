@@ -120,6 +120,16 @@
   If predecessor deletion succeeds before terminal evidence is durable, recover only through the
   historical-authority exact-state readback terminal; never backdate the deletion tombstone,
   retry the deletion, or recreate the predecessor wrapper.
+  The fresh intermediate readback must also bind Cloudflare's peer disposition: accept either
+  the unchanged predecessor-token review trigger or only the provider-added production sentinel
+  exclusion. If rollback begins from that augmented phase, bind the current attempt's exact
+  17-record forward prefix, attempt namespace, and all three pre-mutation proofs, restore
+  a fresh exhaustive augmented-state rollback precondition after current-main and authority
+  and no more than 30 seconds before the production intent, restore production first, prove
+  the resulting peer state, and patch
+  review only when that one
+  exclusion remains. Never substitute the pinned
+  historical incident coordinate for a fresh attempt.
   The #96 provider-normalized incident is a separate rollback-only phase: bind its exact
   12-record prefix and exhaustive peer-augmented snapshot, restore production first, then prove
   whether Cloudflare normalized the peer review trigger. Patch review only when the one sentinel

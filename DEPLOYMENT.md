@@ -521,65 +521,114 @@ First take a new exhaustive review-active snapshot and issue the owner-only
 30-minute rotation authority. Supply the same account, current-main,
 repository-owner, production-sentinel, usage, inert-setup, activation-journal,
 activation-proof, and predecessor token evidence required by the adjacent
-review verifiers, plus these rotation inputs:
+review verifiers. Also bind the exact #109 program ledger/#110 leaf proof, all
+immutable #102/#104 successor terminal hashes, and a fresh owner-only attempt
+namespace/executor/journal coordinate, plus these rotation inputs:
 
 ```sh
 ATRINIK_PROVIDER_SNAPSHOT_DIRECTORY=/secure/fresh-pre-rotation-snapshot \
 ATRINIK_REPLACEMENT_REVIEW_BUILD_TOKEN_ID_FILE=/secure/private/replacement-token-id \
 ATRINIK_REPLACEMENT_REVIEW_BUILD_TOKEN_PERMISSION_PROOF_FILE=/secure/private/replacement-token-policy.json \
 ATRINIK_REPLACEMENT_REVIEW_TOKEN_OWNER_MEMBERSHIP_PROOF_FILE=/secure/private/replacement-token-membership.json \
+ATRINIK_REVIEW_TOKEN_ROTATION_PROGRAM_PROOF_FILE=/secure/private/rotation-program-proof.json \
+ATRINIK_REVIEW_TOKEN_ROTATION_PROGRAM_LEDGER_FILE=/secure/private/issue-110-program-ledger.json \
+ATRINIK_REVIEW_TOKEN_ROTATION_ATTEMPT_COORDINATE_FILE=/secure/private/rotation-attempt-coordinate.json \
+ATRINIK_REVIEW_TOKEN_ROTATION_EXECUTOR_FILE=/secure/private/run-review-token-rotation.mjs \
+ATRINIK_REVIEW_TOKEN_ROTATION_JOURNAL_FILE=/secure/private/rotation-journal.jsonl \
 ATRINIK_REVIEW_TOKEN_ROTATION_PREDECESSOR_PROOF_OUTPUT_FILE=/secure/private/rotation-predecessor-proof.json \
 ATRINIK_REVIEW_TOKEN_ROTATION_PRODUCTION_BASELINE_PROOF_OUTPUT_FILE=/secure/private/rotation-production-baseline-proof.json \
 ATRINIK_REVIEW_TOKEN_ROTATION_AUTHORITY_PROOF_OUTPUT_FILE=/secure/private/rotation-authority.json \
   npm run provision:workers-builds:verify-review-token-rotation-authority
 ```
 
+Authority issuance reads the actual owner-only program ledger, verifies its
+master/leaf issue identities, generation, allowed issue set, canonical digest,
+and raw file digest, and binds those values into the program proof. It also
+hashes the exact executor and initially empty journal, derives the journal path
+and attempt identity, and rejects an attempt coordinate that does not reproduce
+that filesystem evidence. Later rollback validation binds the same immutable
+program and attempt documents to the authority; neither may be replaced by a
+self-asserted coordinate.
+
 Every mutation must immediately follow
 `npm run provision:workers-builds:verify-review-token-rotation-authority-proof`
 with at least five minutes remaining and a fresh authenticated current-main
-proof. Journal intent, response classification, returned UUID, stable readback,
-and binding before continuing. Perform exactly this sequence:
+proof. It must also immediately follow the phase-specific stable exhaustive
+provider proof named below; journal that proof document and digest before
+intent. Journal intent, response classification, returned UUID, stable
+readback, and binding before continuing. Perform exactly this sequence:
 
-1. POST one wrapper named `Atrinik metaserver review check rotation 96` using
+1. Capture `verify-review-token-rotation-pre-create` and bind its exact
+   predecessor-state proof, then POST one wrapper named
+   `Atrinik metaserver review check rotation 96` using
    the replacement token secret and ID. Explicit failure is non-owned;
    ambiguous creation is reconciled only by the exact name, token ID, and full
    wrapper shape.
-2. PATCH only the journaled inert production trigger's `build_token_uuid` to
+2. Capture `verify-review-token-rotation-pre-production` and bind its exact
+   replacement-created proof, then PATCH only the journaled inert production trigger's
+   `build_token_uuid` to
    the replacement wrapper. Every other trigger field must remain byte-value
    equivalent. Prove this intermediate state with
    `npm run provision:workers-builds:verify-review-token-rotation-intermediate`.
-3. PATCH only the journaled final review trigger's `build_token_uuid` to the
+   The exhaustive proof binds either the unchanged predecessor-token review
+   peer or exactly Cloudflare's provider-added production sentinel in that
+   peer's `branch_excludes`; no other peer drift is accepted.
+3. Bind the fresh intermediate proof, then PATCH only the journaled final review
+   trigger's `build_token_uuid` to the
    same replacement wrapper. Prove both exact triggers reference it and the
    predecessor wrapper is unreferenced with
    `npm run provision:workers-builds:verify-review-token-rotation-unreferenced`.
-4. DELETE only the exact predecessor wrapper UUID, then take a new exhaustive
+4. Bind the fresh global-unreference proof, then DELETE only the exact predecessor
+   wrapper UUID, then take a new exhaustive
    snapshot and run
    `npm run provision:workers-builds:verify-review-token-rotation-complete`.
 
-The three readback commands require `ATRINIK_PROVIDER_SNAPSHOT_OUTPUT`, the
+The five phase readback commands require `ATRINIK_PROVIDER_SNAPSHOT_OUTPUT`, the
 rotation authority, its independently written
 `ATRINIK_REVIEW_TOKEN_ROTATION_PRODUCTION_BASELINE_PROOF_FILE`, all evidence
 used to issue it, the exact production and review trigger UUIDs bound by that
 authority, and
-`ATRINIK_REPLACEMENT_REVIEW_BUILD_TOKEN_UUID_FILE`. Write each proof to its
+`ATRINIK_REPLACEMENT_REVIEW_BUILD_TOKEN_UUID_FILE` except for the pre-create
+predecessor proof. Write each proof to its
 corresponding `ATRINIK_REVIEW_TOKEN_ROTATION_*_PROOF_OUTPUT_FILE`. Every phase
 must reproduce the authority-bound full non-token production-state digest,
 including scripts, settings, bindings, routes, domains, schedules, versions,
 deployments, active versions, Deploy Hooks, and migration state; only documented
-D1 query timing metadata is excluded. The intermediate and unreferenced proofs,
-terminal proof, and fully framed checksum-valid journal become
+D1 query timing metadata is excluded. The pre-create, pre-production,
+intermediate, unreferenced, and terminal proofs plus the fully framed
+checksum-valid journal become
+`ATRINIK_REVIEW_TOKEN_ROTATION_PRE_CREATE_PROOF_FILE`,
+`ATRINIK_REVIEW_TOKEN_ROTATION_PRE_PRODUCTION_PROOF_FILE`,
 `ATRINIK_REVIEW_TOKEN_ROTATION_INTERMEDIATE_PROOF_FILE`,
 `ATRINIK_REVIEW_TOKEN_ROTATION_UNREFERENCED_PROOF_FILE`,
 `ATRINIK_REVIEW_TOKEN_ROTATION_COMPLETE_PROOF_FILE` and
 `ATRINIK_REVIEW_TOKEN_ROTATION_JOURNAL_FILE` for the disposable authority.
 
 Before predecessor deletion, rollback restores only the two journaled token
-references to the predecessor wrapper, proves the exact predecessor
+references to the predecessor wrapper. Immediately before each restore, capture
+and journal-bind a phase-appropriate stable exhaustive proof with
+`provision:workers-builds:verify-review-token-rotation-rollback-precondition`;
+capture it after the operation's current-main and authority checks, and require
+proof capture and binding to precede its mutation intent by no more than 30
+seconds.
+After restoration, prove the exact predecessor
 review-active state with
 `provision:workers-builds:verify-review-token-rotation-rollback-restored`, then
 deletes only the unreferenced journal-created replacement wrapper and proves
 the terminal predecessor with
 `provision:workers-builds:verify-review-token-rotation-rollback-complete`.
+When the current attempt's intermediate proof binds the exact provider-added
+peer exclusion, the rollback start must also bind that checksum-valid
+17-record forward prefix, exact attempt coordinate, and the complete pre-create,
+pre-production, and intermediate proof documents. Take a new exhaustive exact
+augmented-state rollback-precondition proof after current-main and authority,
+bind it no more than 30 seconds after capture and before intent, and restore
+production first. Then take the exhaustive
+peer-normalization proof and PATCH review only if that proof shows the sentinel
+exclusion remains; that proof is also bound no more than 30 seconds before the
+conditional review intent. This fresh
+phase uses the current attempt's authority and evidence; it must not borrow or
+claim the immutable historical #96 incident coordinate.
 
 The retained #96 incident is a distinct
 `production-repointed-review-augmented` phase, not ordinary
@@ -675,7 +724,13 @@ request body. Explicit success binds its returned identity; only a journaled
 ambiguous response may reconcile by exact stable readback, and deletions require
 an exact-absence tombstone. Crashes resume from those classifications and
 tombstones and never adopt or delete a foreign wrapper. Each forward or rollback
-mutation is preceded by a journal-bound fresh authenticated current-main proof;
+mutation is preceded by a journal-bound fresh authenticated current-main proof.
+Every non-incident rollback restore also has a journal-bound exhaustive phase
+proof no more than 30 seconds before intent; the peer-normalization proof serves
+that role for the conditional augmented-review restore, and the
+predecessor-restored proof serves it for replacement deletion. The immutable
+#96 incident remains governed by its separately pinned executor and immediate
+read-only pre-request guards rather than rewriting its historical journal.
 rollback revalidates the historical authority without reusing its expired write
 budget. A checksum-valid rollback journal must end in either exact predecessor
 restoration or an exact residual-state record naming both live token references,
