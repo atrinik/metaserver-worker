@@ -3680,6 +3680,13 @@ test("validates exact review-token rotation rollback and residual journals", asy
   await assert.rejects(validateReviewTokenRotationNoOwnedIncidentSuccessorForTest(
     successorRecords, changedHistoricalInput, now, noOwnedTestCapability),
   /incident coordinate drift/u);
+  const preFinishSuccessor = structuredClone(successorRecords);
+  const { recordSha256: _preFinishChecksum, ...preFinishStart } = preFinishSuccessor[0];
+  preFinishStart.at = new Date(now - 80).toISOString();
+  preFinishSuccessor[0] = checksummedRecord(preFinishStart);
+  await assert.rejects(validateReviewTokenRotationNoOwnedIncidentSuccessorForTest(
+    preFinishSuccessor, successorArguments, now, noOwnedTestCapability),
+  /successor terminal drift/u);
   const changedSuccessor = structuredClone(successorRecords);
   const { recordSha256: _successorChecksum, ...changedSuccessorTerminal } = changedSuccessor[1];
   changedSuccessorTerminal.providerMutation = true;

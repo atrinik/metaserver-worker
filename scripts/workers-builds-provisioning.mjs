@@ -3374,6 +3374,7 @@ async function validateReviewTokenRotationNoOwnedIncidentSuccessorCore(records, 
       start.freshProofDigest !== freshPredecessorProof.proof_digest ||
       start.freshProofFileSha256 !== digestJson(freshPredecessorProof) ||
       start.snapshotManifestSha256 !== snapshotManifestSha256 ||
+      mainFinishCapturedAt > Date.parse(start.at) ||
       Date.parse(start.at) - proofCapturedAt > 30_000 ||
       terminal.outcome !== "predecessor-no-owned" || terminal.providerMutation !== false ||
       terminal.freshProofDigest !== start.freshProofDigest ||
