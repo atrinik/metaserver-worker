@@ -109,7 +109,8 @@ export function validateAutomaticReview(value) {
     "previewBranchIncludes", "previewBranchExcludes",
     "pathIncludes", "pathExcludes", "buildCommand", "deployCommand",
     "providerBuildTimeoutMinutes", "checkCommandTimeoutMinutes", "buildEnvironment", "protectedInputs", "bindings", "routes", "localValidation", "costPolicy", "result", "forkPolicy",
-    "tokenAuthority", "membershipReadRepair", "controlPlaneOperator",
+    "tokenAuthority", "membershipReadRepair", "membershipSecretRecovery",
+    "controlPlaneOperator",
   ], "automatic review");
   exactKeys(value.providerTopology, [
     "mode", "maximumTriggersPerWorker", "productionTriggerRole", "reviewTriggerRole",
@@ -256,6 +257,43 @@ export function validateAutomaticReview(value) {
   exactValue(value.membershipReadRepair.rollback,
     "delete-only-journal-created-unwrapped-user-token-on-failure",
     "review membership-read rollback");
+  exactKeys(value.membershipSecretRecovery, [
+    "issue", "mode", "lostTokenId", "requiredUserPermissions", "userResource",
+    "accountPermissions", "zonePermissions", "accountResources", "zoneResources",
+    "attempt", "successor", "rollback", "forbidden",
+  ], "review membership secret recovery");
+  exactValue(value.membershipSecretRecovery.issue, 131,
+    "review membership secret recovery issue");
+  exactValue(value.membershipSecretRecovery.mode,
+    "distinct-user-token-after-lost-one-time-secret",
+    "review membership secret recovery mode");
+  exactValue(value.membershipSecretRecovery.lostTokenId,
+    "65b2e92887b640023f74bc79eb3130b1",
+    "review membership secret recovery lost token");
+  exactArray(value.membershipSecretRecovery.requiredUserPermissions,
+    ["Memberships:Read", "User Details:Read"],
+    "review membership secret recovery permissions");
+  exactValue(value.membershipSecretRecovery.userResource,
+    "com.cloudflare.api.user.b33f81835d7dc584622ca841b124a9a5",
+    "review membership secret recovery user resource");
+  for (const key of ["accountPermissions", "zonePermissions", "accountResources",
+    "zoneResources"])
+    exactArray(value.membershipSecretRecovery[key], [],
+      `review membership secret recovery ${key}`);
+  exactValue(value.membershipSecretRecovery.attempt,
+    "fresh-owner-only-empty-journal-and-executor-coordinate",
+    "review membership secret recovery attempt");
+  exactValue(value.membershipSecretRecovery.successor,
+    "new-membership-successor-coordinate-and-fresh-wrapper-rotation",
+    "review membership secret recovery successor");
+  exactValue(value.membershipSecretRecovery.rollback,
+    "delete-only-this-journal-created-unwrapped-user-token-after-exhaustive-unreference",
+    "review membership secret recovery rollback");
+  exactArray(value.membershipSecretRecovery.forbidden, [
+    "replay-or-amend-membership-repair-122", "adopt-bootstrap-as-replacement",
+    "wrapper-or-trigger-mutation", "production-activation", "manual-or-initial-build",
+    "migration-0010", "worker-resource-mutation",
+  ], "review membership secret recovery forbidden scope");
   exactKeys(value.controlPlaneOperator, [
     "actor", "when", "tokenType", "tokenIdentity", "credentialStorage", "permission", "resourceScope", "providerCapabilityFamilies",
     "productionBuildsControlPlaneReach",

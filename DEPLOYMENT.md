@@ -841,6 +841,40 @@ blindly retried; any failure restores the exact predecessor trigger references
 or records an exhaustive blocked terminal. Production activation, migration
 `0010`, manual/API builds, and Worker-resource mutation remain forbidden.
 
+The completed #122 token creation is immutable. If its one-time secret is no
+longer available, do not replay its four-record journal, relabel the API Tokens
+Write bootstrap credential, or start the #124 wrapper rotation. Issue #131 is
+the only recovery path: it binds the exact #122 terminal/result, the #124
+successor-rotation contract, the current #114/#131 delivery ledger, and a fresh
+owner-only empty-journal/executor namespace. Its authority derives an
+attempt-unique token name and permits at most one `POST /user/tokens` with only
+Memberships Read and User Details Read on the accepted owner's self-user
+resource and no account or zone scope:
+
+```sh
+npm run provision:workers-builds:verify-review-membership-secret-recovery-authority
+```
+
+The durable intent is never blindly retried. Explicit success must bind the
+new token ID, exact policy readback, owner-only secret-file digest, and complete
+journal through
+`provision:workers-builds:verify-review-membership-secret-recovery-result`.
+Ambiguity, explicit failure, cancellation, stale authority, or secret loss must
+end in a fresh post-prefix exhaustive blocked proof. Cleanup may delete only
+the exact journal-created unwrapped token after a fresh exhaustive proof that
+no Builds wrapper references it; the lost #122 token and every unrelated token
+remain outside that cleanup authority. A successful terminal produces a new
+membership-successor coordinate for a completely fresh wrapper-rotation
+namespace, authority, journal, and executor. That next authority must reload
+and validate the #131 authority, terminal journal, attempt coordinate,
+pre-create and mutation-current-main proofs, provider response, owner-only
+secret digest, result proof, and successor proof. It binds their aggregate as
+`membershipSecretRecoverySuccessor`; neither the lost #122 token nor an
+unbound locally asserted token ID may be selected as the replacement. Trigger
+changes, production
+activation, builds, migration `0010`, and Worker-resource mutation remain
+forbidden during secret recovery.
+
 The 30-minute activation authority ends with that transition and must not be
 replayed for the potentially 20-minute disposable build. Immediately before
 the disposable push, capture a new complete review-active provider snapshot

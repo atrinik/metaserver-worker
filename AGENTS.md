@@ -192,7 +192,14 @@
   successor rotation, so names alone never distinguish their generations.
   API Tokens Write is a separate
   owner-bootstrap boundary and must not be inferred from any Workers Builds
-  credential.
+  credential. A lost one-time secret from a completed membership repair is
+  recoverable only through the distinct #131 program/attempt-bound authority:
+  never replay or amend #122, never adopt the bootstrap as the replacement,
+  and never retry a durable POST intent. Bind exact complete or post-prefix
+  blocked evidence; cleanup is limited to the exact journal-created unwrapped
+  token after exhaustive wrapper-unreference proof. A successful recovery must
+  feed a new membership-successor coordinate into a wholly fresh wrapper
+  rotation namespace.
   It performs only readback and local protected-document materialization, and must never gain implicit
   provider mutation. Provider apply and live-canary execution remain gated by
   separate maintainer authorization; `npm run deploy:review-canary` must fail
