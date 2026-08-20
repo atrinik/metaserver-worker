@@ -181,8 +181,12 @@
   exact #120 failure and current review-active state, permit only User Details
   Read plus Memberships Read on only that owner's self-user resource with no
   account/zone scope, then hand the new
-  owner-only secret and policy proof to the existing journaled wrapper rotation
-  and disposable automatic-build proof. API Tokens Write is a separate
+  owner-only secret and policy proof to a distinct successor rotation. That
+  authority derives the live predecessor wrapper and token from the immutable
+  prior rotation terminal, never from the absent original setup wrapper, and
+  binds the exact membership-repair authority, journal, result, and snapshot
+  manifest before reusing the existing proof-gated rotation state machine.
+  API Tokens Write is a separate
   owner-bootstrap boundary and must not be inferred from any Workers Builds
   credential.
   It performs only readback and local protected-document materialization, and must never gain implicit

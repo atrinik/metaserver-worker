@@ -27,7 +27,7 @@ const maximumProviderPages = 100;
 const stagingBranchPattern = /^review-build-only-sentinel-[0-9a-f]{32}$/u;
 const reviewStagingRootPattern = /^\/review-build-only-staging-[0-9a-f]{32}$/u;
 const gitShaPattern = /^[0-9a-f]{40}$/u;
-const expectedSetupPlanSha256 = "5646d8a5bcf75c9487f6d9282de86dedeef81d022f8b6bf4ed92e8b490065093";
+const expectedSetupPlanSha256 = "60d101066849be5c1de94f09a2610aa2e3345bae520257e4fbe8b2c01e43b347";
 const currentMainProofSource = "authenticated-gh-api-current-main-readback";
 const currentMainProofEndpoint = "repos/atrinik/metaserver-worker/git/ref/heads/main";
 const currentMainRef = "refs/heads/main";
@@ -67,6 +67,28 @@ export const reviewMembershipRepairIncident = Object.freeze({
   failedBuildStoppedAt: "2026-08-19T18:53:56.540Z",
   failureClass: "accepted-member-user-token-rejected-as-departed",
 });
+export const reviewMembershipSuccessorRotationIncident = Object.freeze({
+  sourceSha: "85cce723eb109a26e9bb9d375bc5382129466ee0",
+  predecessorReviewBuildTokenUuid: "79a6606b-f3b4-436e-abe9-10e8650c50e8",
+  predecessorReviewTokenId: "c6be328862f30f76fdc5cf455eae0777",
+  replacementReviewTokenId: "65b2e92887b640023f74bc79eb3130b1",
+  membershipRepairAuthorityFileSha256:
+    "ca744001d431e1804a13e0a675814313d4638f6e14e123d6ba729310b4f45de1",
+  membershipRepairAuthorityDigest:
+    "a4e1c79bf3f0fdfd06f53d60cda32459535263c8fd1b0d55028817091da0c97a",
+  membershipRepairJournalSha256:
+    "30e92d5717aa8c6f8dfc9042dcf6213d002804d154d42d00c6df3ed9f31d5f42",
+  membershipRepairTerminalRecordSha256:
+    "dd29e847092294ad7139dcc4bb83253487bcabed4a5ff4a009eb09a8708f0708",
+  membershipRepairResultProofFileSha256:
+    "1e49fe673e752a24a7980a91fce7deb1beb25541ce815983919160cd3147f025",
+  membershipRepairResultProofDigest:
+    "941573b734a760e7f1b26c15f497dff88f4628622015d8bd2893c370497846ae",
+  membershipRepairSnapshotManifestSha256:
+    "e18961b746e9f76d20c2d2b4567ebbea233f2148225530d41cc5e906ad639495",
+});
+const reviewMembershipSuccessorEvidenceDigest =
+  "876b9d46ed1c063cf9ac9d702d5953bad9eb26c366668e3a2bc7d7e7f912cf12";
 export const reviewTokenRotationProviderNormalizedIncident = Object.freeze({
   sourceSha: "48f791e60bc0c1d19a7eff28e9cd99ed1bfd317a",
   planDigest: "ab71b8d99980ccdbfe9384bd29e8d690b7d8e91b6b17199e0e1baad182f7b6c1",
@@ -407,6 +429,113 @@ export function validateReviewMembershipRepairResultProof(proof, { accountId, so
   if (Date.parse(repairProof.modifiedOn) <= authorityCaptured)
     fail("review membership repair did not modify the exact token after authority issuance");
   return repairProof;
+}
+
+export function validateReviewMembershipSuccessorRotationEvidence({
+  incidentProof,
+  membershipRepairAuthorityProof,
+  membershipRepairAuthorityFileSha256,
+  membershipRepairJournalRecords,
+  membershipRepairJournalFileSha256,
+  membershipRepairResultProof,
+  membershipRepairResultProofFileSha256,
+  membershipRepairSnapshotManifestFileSha256,
+}, { accountId }) {
+  validateReviewMembershipRepairIncident(incidentProof);
+  const coordinate = reviewMembershipSuccessorRotationIncident;
+  if (membershipRepairAuthorityFileSha256 !==
+        coordinate.membershipRepairAuthorityFileSha256 ||
+      membershipRepairJournalFileSha256 !== coordinate.membershipRepairJournalSha256 ||
+      membershipRepairResultProofFileSha256 !==
+        coordinate.membershipRepairResultProofFileSha256 ||
+      membershipRepairSnapshotManifestFileSha256 !==
+        coordinate.membershipRepairSnapshotManifestSha256 ||
+      membershipRepairAuthorityProof?.proof_digest !==
+        coordinate.membershipRepairAuthorityDigest)
+    fail("review membership successor coordinate drift");
+  if (digestText(`${JSON.stringify(membershipRepairAuthorityProof)}\n`) !==
+        membershipRepairAuthorityFileSha256 ||
+      digestText(`${membershipRepairJournalRecords.map((record) => JSON.stringify(record))
+        .join("\n")}\n`) !== membershipRepairJournalFileSha256 ||
+      digestText(`${JSON.stringify(membershipRepairResultProof)}\n`) !==
+        membershipRepairResultProofFileSha256)
+    fail("review membership successor evidence file binding drift");
+  const authorityUnsigned = { ...membershipRepairAuthorityProof };
+  delete authorityUnsigned.proof_digest;
+  if (membershipRepairAuthorityProof?.sourceSha !== coordinate.sourceSha ||
+      membershipRepairAuthorityProof.accountId !== accountId ||
+      membershipRepairAuthorityProof.predecessorTokenId !==
+        coordinate.predecessorReviewTokenId ||
+      membershipRepairAuthorityProof.predecessorBuildTokenUuid !==
+        coordinate.predecessorReviewBuildTokenUuid ||
+      membershipRepairAuthorityProof.proof_digest !== digestJson(authorityUnsigned))
+    fail("review membership successor authority drift");
+  if (!Array.isArray(membershipRepairJournalRecords) ||
+      membershipRepairJournalRecords.length !== 4 ||
+      !same(membershipRepairJournalRecords.map(({ event, operation, outcome }) =>
+        [event, operation ?? null, outcome ?? null]), [
+        ["membership-repair-started", null, null],
+        ["mutation-intent", "membership-repair-create-user-token", null],
+        ["provider-response-classified", "membership-repair-create-user-token",
+          "explicit-success"],
+        ["membership-repair-complete", null, null],
+      ]))
+    fail("review membership successor journal sequence drift");
+  let previousAt = -Infinity;
+  for (const record of membershipRepairJournalRecords) {
+    const { recordSha256, ...payload } = record ?? {};
+    const at = Date.parse(record?.at ?? "");
+    if (record.attempt !== 1 || !Number.isFinite(at) || at <= previousAt ||
+        record.at !== new Date(at).toISOString() ||
+        recordSha256 !== digestJson(payload))
+      fail("review membership successor journal framing drift");
+    previousAt = at;
+  }
+  const [started, intent, classified, terminal] = membershipRepairJournalRecords;
+  const forbiddenKeys = ["build", "deployment", "migration0010", "trigger",
+    "workerResource", "wrapper"];
+  if (started.authorityProofDigest !== membershipRepairAuthorityProof.proof_digest ||
+      intent.authorityProofDigest !== membershipRepairAuthorityProof.proof_digest ||
+      intent.method !== "POST" || intent.path !== "/user/tokens" ||
+      intent.requestDigest !== started.requestDigest ||
+      classified.requestDigest !== intent.requestDigest || classified.status !== 200 ||
+      classified.tokenId !== coordinate.replacementReviewTokenId ||
+      terminal.tokenId !== coordinate.replacementReviewTokenId ||
+      terminal.requestDigest !== intent.requestDigest ||
+      terminal.resultProofDigest !== coordinate.membershipRepairResultProofDigest ||
+      terminal.recordSha256 !== coordinate.membershipRepairTerminalRecordSha256 ||
+      !same(sorted(Object.keys(terminal.forbiddenWrites ?? {})), forbiddenKeys) ||
+      Object.values(terminal.forbiddenWrites).some((value) => value !== false))
+    fail("review membership successor journal semantics drift");
+  validateReviewMembershipRepairResultProof(membershipRepairResultProof,
+    { accountId, sourceSha: coordinate.sourceSha,
+      authorityProof: membershipRepairAuthorityProof,
+      replacementTokenId: coordinate.replacementReviewTokenId },
+    Date.parse(membershipRepairResultProof?.capturedAt ?? ""));
+  if (digestJson(membershipRepairResultProof) !==
+      coordinate.membershipRepairResultProofDigest ||
+      membershipRepairResultProof.tokenId !== coordinate.replacementReviewTokenId ||
+      membershipRepairResultProof.ownerUserId !== reviewMembershipRepairIncident.ownerUserId ||
+      Date.parse(membershipRepairResultProof.capturedAt) < Date.parse(classified.at) ||
+      Date.parse(membershipRepairResultProof.capturedAt) > Date.parse(terminal.at))
+    fail("review membership successor result drift");
+  const evidenceDigest = digestJson({
+    coordinate,
+    incidentProofDigest: incidentProof.proof_digest,
+    membershipRepairAuthorityDigest: membershipRepairAuthorityProof.proof_digest,
+    membershipRepairJournalFileSha256,
+    membershipRepairResultProofDigest: digestJson(membershipRepairResultProof),
+    membershipRepairSnapshotManifestFileSha256,
+  });
+  if (evidenceDigest !== reviewMembershipSuccessorEvidenceDigest)
+    fail("review membership successor evidence digest drift");
+  return {
+    predecessorReviewBuildTokenUuid: coordinate.predecessorReviewBuildTokenUuid,
+    predecessorReviewTokenId: coordinate.predecessorReviewTokenId,
+    replacementReviewTokenId: coordinate.replacementReviewTokenId,
+    evidenceSourceSha: coordinate.sourceSha,
+    evidenceDigest,
+  };
 }
 
 function digestJson(value) {
@@ -1262,7 +1391,8 @@ function reviewTokenRotationEvidenceDigests({ reviewActivationProof, reviewActiv
   inertSetupJournal, inertSetupResults, currentReviewActiveProof, repositoryConnectionProof,
   productionSentinelProof, predecessorTokenAuthorityProofs,
   replacementTokenAuthorityProof, replacementTokenOwnerMembershipProof, buildUsageProof,
-  productionBaselineProof, programDeliveryProof, rotationAttemptCoordinate }) {
+  productionBaselineProof, programDeliveryProof, rotationAttemptCoordinate,
+  membershipSuccessorValidation = undefined }) {
   return {
     reviewActivationProof: digestJson(reviewActivationProof),
     reviewActivationJournal: digestJson(reviewActivationJournal),
@@ -1279,6 +1409,9 @@ function reviewTokenRotationEvidenceDigests({ reviewActivationProof, reviewActiv
     productionBaseline: digestJson(productionBaselineProof),
     programDelivery: digestJson(programDeliveryProof),
     rotationAttempt: digestJson(rotationAttemptCoordinate),
+    ...(membershipSuccessorValidation ? {
+      membershipSuccessor: membershipSuccessorValidation.evidenceDigest,
+    } : {}),
   };
 }
 
@@ -1312,7 +1445,11 @@ export function issueReviewTokenRotationAuthority({ production, review, accountI
   productionBaselineProof,
   programDeliveryProof, programLedgerDocument, programLedgerFileSha256,
   rotationAttemptCoordinate, attemptFilesystemEvidence,
-  replacementTokenSecretSha256 }, now = Date.now()) {
+  replacementTokenSecretSha256,
+  membershipSuccessorEvidence = undefined }, now = Date.now()) {
+  const membershipSuccessorValidation = membershipSuccessorEvidence ?
+    validateReviewMembershipSuccessorRotationEvidence(membershipSuccessorEvidence,
+      { accountId }) : undefined;
   validateRepositoryConnectionOwnerProof(repositoryConnectionProof, accountId, sourceSha, now);
   const sentinel = validateSentinelRefAbsence(productionSentinelProof, now);
   validateTokenAuthorityProofs({ production, review, accountId,
@@ -1344,13 +1481,25 @@ export function issueReviewTokenRotationAuthority({ production, review, accountI
   if (Date.parse(currentReviewActiveProof.snapshotStartedAt) < Date.parse(journal.terminalAt))
     fail("review token rotation observations overlap");
   const identities = currentReviewActiveProof.liveIdentities;
+  const membershipSuccessorRequired =
+    identities.reviewBuildTokenUuid ===
+      reviewMembershipSuccessorRotationIncident.predecessorReviewBuildTokenUuid ||
+    replacementTokenId === reviewMembershipSuccessorRotationIncident.replacementReviewTokenId;
+  if (membershipSuccessorRequired !== Boolean(membershipSuccessorValidation))
+    fail("review token rotation membership successor evidence drift");
+  const livePredecessorReviewBuildTokenUuid = membershipSuccessorValidation?.
+    predecessorReviewBuildTokenUuid ?? setup.reviewBuildTokenUuid;
   if (identities.productionTriggerUuid !== setup.productionTriggerUuid ||
       identities.reviewTriggerUuid !== journal.reviewTriggerUuid ||
       identities.productionBuildTokenUuid !== setup.productionBuildTokenUuid ||
-      identities.reviewBuildTokenUuid !== setup.reviewBuildTokenUuid ||
+      identities.reviewBuildTokenUuid !== livePredecessorReviewBuildTokenUuid ||
       identities.repositoryConnectionUuid !== setup.repositoryConnectionUuid ||
-      tokenRows.review.build_token_uuid !== setup.reviewBuildTokenUuid ||
+      tokenRows.review.build_token_uuid !== livePredecessorReviewBuildTokenUuid ||
       tokenRows.production.build_token_uuid !== setup.productionBuildTokenUuid ||
+      membershipSuccessorValidation &&
+        (tokenRows.review.cloudflare_token_id !==
+          membershipSuccessorValidation.predecessorReviewTokenId ||
+         replacementTokenId !== membershipSuccessorValidation.replacementReviewTokenId) ||
       replacementTokenId === tokenRows.review.cloudflare_token_id ||
       replacementTokenId === tokenRows.production.cloudflare_token_id ||
       Date.parse(replacementTokenAuthorityProof.modifiedOn) <= Date.parse(journal.terminalAt) ||
@@ -1374,7 +1523,7 @@ export function issueReviewTokenRotationAuthority({ production, review, accountI
       productionTriggerUuid: setup.productionTriggerUuid,
       reviewTriggerUuid: journal.reviewTriggerUuid,
       productionBuildTokenUuid: setup.productionBuildTokenUuid,
-      predecessorReviewBuildTokenUuid: setup.reviewBuildTokenUuid,
+      predecessorReviewBuildTokenUuid: livePredecessorReviewBuildTokenUuid,
       repositoryConnectionUuid: setup.repositoryConnectionUuid,
     },
     replacementToken: {
@@ -1399,7 +1548,8 @@ export function issueReviewTokenRotationAuthority({ production, review, accountI
       reviewActivationJournal, inertSetupJournal, inertSetupResults, currentReviewActiveProof,
       repositoryConnectionProof, productionSentinelProof, predecessorTokenAuthorityProofs,
       replacementTokenAuthorityProof, replacementTokenOwnerMembershipProof, buildUsageProof,
-      productionBaselineProof, programDeliveryProof, rotationAttemptCoordinate }),
+      productionBaselineProof, programDeliveryProof, rotationAttemptCoordinate,
+      membershipSuccessorValidation }),
     allowedWrites: ["create-one-exact-replacement-review-build-token-wrapper",
       "patch-only-journaled-production-trigger-token-reference",
       "patch-only-journaled-review-trigger-token-reference",
@@ -1437,6 +1587,8 @@ function validateHistoricalReviewTokenRotationAuthority(proof, { production, rev
     "productionSentinel", "programDelivery", "repositoryOwner", "replacementTokenAuthority",
     "replacementTokenOwnerMembership", "reviewActivationJournal", "reviewActivationProof",
     "rotationAttempt"];
+  const successorAuthority = proof?.evidenceDigests?.membershipSuccessor !== undefined;
+  if (successorAuthority) evidenceKeys.push("membershipSuccessor");
   const captured = Date.parse(proof?.capturedAt ?? "");
   const expires = Date.parse(proof?.expiresAt ?? "");
   const unsigned = { ...proof };
@@ -1451,6 +1603,12 @@ function validateHistoricalReviewTokenRotationAuthority(proof, { production, rev
       proof.outcome !== "workers-builds-review-token-rotation-authority-valid" ||
       proof.mutation !== false || proof.phase !== "review-token-rotation" ||
       proof.accountId !== accountId || proof.sourceSha !== sourceSha ||
+      successorAuthority &&
+        (proof.evidenceDigests.membershipSuccessor !== reviewMembershipSuccessorEvidenceDigest ||
+         proof.journalIdentities?.predecessorReviewBuildTokenUuid !==
+           reviewMembershipSuccessorRotationIncident.predecessorReviewBuildTokenUuid ||
+         proof.replacementToken?.tokenId !==
+           reviewMembershipSuccessorRotationIncident.replacementReviewTokenId) ||
       proof.planDigest !== planDigest ||
       proof.productionContractDigest !== digestJson(production) ||
       proof.reviewContractDigest !== digestJson(review) ||
@@ -4678,6 +4836,11 @@ export function provisioningSetupPlan(production, review) {
       "ATRINIK_REPLACEMENT_REVIEW_BUILD_TOKEN_PERMISSION_PROOF_FILE",
       "ATRINIK_REPLACEMENT_REVIEW_TOKEN_OWNER_MEMBERSHIP_PROOF_FILE",
       "ATRINIK_CURRENT_REPLACEMENT_REVIEW_TOKEN_OWNER_MEMBERSHIP_PROOF_FILE",
+      "ATRINIK_REVIEW_MEMBERSHIP_SUCCESSOR_INCIDENT_PROOF_FILE",
+      "ATRINIK_REVIEW_MEMBERSHIP_SUCCESSOR_AUTHORITY_PROOF_FILE",
+      "ATRINIK_REVIEW_MEMBERSHIP_SUCCESSOR_JOURNAL_FILE",
+      "ATRINIK_REVIEW_MEMBERSHIP_SUCCESSOR_RESULT_PROOF_FILE",
+      "ATRINIK_REVIEW_MEMBERSHIP_SUCCESSOR_SNAPSHOT_MANIFEST_FILE",
       "ATRINIK_REVIEW_TOKEN_ROTATION_AUTHORITY_PROOF_OUTPUT_FILE",
       "ATRINIK_REVIEW_TOKEN_ROTATION_AUTHORITY_PROOF_FILE",
       "ATRINIK_REVIEW_TOKEN_ROTATION_PREDECESSOR_PROOF_FILE",
@@ -4922,7 +5085,7 @@ export function provisioningSetupPlan(production, review) {
       predecessor: "exact-terminal-review-active-state-with-predecessor-zero-resource-wrapper",
       operations: [
         { id: "review-token-rotation-authority", actor: "workers-builds-control-plane-operator",
-          action: "bind-fresh-main-program-ledger-historical-terminals-attempt-owner-usage-token-authority-and-exact-review-active-state",
+          action: "bind-fresh-main-program-ledger-historical-terminals-membership-successor-attempt-owner-usage-token-authority-and-exact-review-active-state",
           mutation: false,
           command: "npm run provision:workers-builds:verify-review-token-rotation-authority",
           precondition: {
@@ -4932,6 +5095,19 @@ export function provisioningSetupPlan(production, review) {
               "ATRINIK_REVIEW_TOKEN_ROTATION_ATTEMPT_COORDINATE_FILE"),
             historicalTerminals: structuredClone(
               reviewTokenRotationRetryProgram),
+            membershipSuccessor: {
+              incident: structuredClone(reviewMembershipSuccessorRotationIncident),
+              incidentProof: privateFileReference(
+                "ATRINIK_REVIEW_MEMBERSHIP_SUCCESSOR_INCIDENT_PROOF_FILE"),
+              authorityProof: privateFileReference(
+                "ATRINIK_REVIEW_MEMBERSHIP_SUCCESSOR_AUTHORITY_PROOF_FILE"),
+              journal: privateFileReference(
+                "ATRINIK_REVIEW_MEMBERSHIP_SUCCESSOR_JOURNAL_FILE"),
+              resultProof: privateFileReference(
+                "ATRINIK_REVIEW_MEMBERSHIP_SUCCESSOR_RESULT_PROOF_FILE"),
+              snapshotManifest: privateFileReference(
+                "ATRINIK_REVIEW_MEMBERSHIP_SUCCESSOR_SNAPSHOT_MANIFEST_FILE"),
+            },
           },
           produces: { proof_digest: "bounded-review-token-rotation-authority-digest",
             production_trigger_uuid: "exact-journaled-inert-production-trigger-uuid",
@@ -5420,6 +5596,23 @@ export function provisioningSetupPlan(production, review) {
     reviewMembershipRepair: {
       gate: "review-membership-read-policy-and-proof",
       incident: structuredClone(reviewMembershipRepairIncident),
+      successorRotation: {
+        mode: "current-terminal-wrapper-to-membership-readable-token",
+        incident: structuredClone(reviewMembershipSuccessorRotationIncident),
+        predecessorSource:
+          "immutable-blocked-delete-recovery-terminal-not-original-inert-setup-wrapper",
+        evidence: [
+          privateFileReference("ATRINIK_REVIEW_MEMBERSHIP_SUCCESSOR_INCIDENT_PROOF_FILE"),
+          privateFileReference("ATRINIK_REVIEW_MEMBERSHIP_SUCCESSOR_AUTHORITY_PROOF_FILE"),
+          privateFileReference("ATRINIK_REVIEW_MEMBERSHIP_SUCCESSOR_JOURNAL_FILE"),
+          privateFileReference("ATRINIK_REVIEW_MEMBERSHIP_SUCCESSOR_RESULT_PROOF_FILE"),
+          privateFileReference(
+            "ATRINIK_REVIEW_MEMBERSHIP_SUCCESSOR_SNAPSHOT_MANIFEST_FILE"),
+        ],
+        handoff: "reviewTokenRotation",
+        forbidden: ["original-inert-setup-wrapper-as-live-predecessor",
+          "recreate-membership-readable-token", "amend-prior-terminal-journal"],
+      },
       authorityLifetimeMinutes: reviewMembershipRepairAuthorityLifetimeMs / 60_000,
       operations: [
         { id: "membership-repair-bind-incident", actor: "workers-builds-control-plane-operator",
@@ -5748,7 +5941,7 @@ export function validateSetupPlan(plan) {
   const rotationOperations = plan.reviewTokenRotation?.operations;
   const expectedRotationOperations = [
     ["review-token-rotation-authority", "workers-builds-control-plane-operator", false,
-      "bind-fresh-main-program-ledger-historical-terminals-attempt-owner-usage-token-authority-and-exact-review-active-state"],
+      "bind-fresh-main-program-ledger-historical-terminals-membership-successor-attempt-owner-usage-token-authority-and-exact-review-active-state"],
     ["prove-replacement-create-precondition", "workers-builds-control-plane-operator", false,
       "prove-fresh-stable-exhaustive-exact-predecessor-state-immediately-before-wrapper-create"],
     ["replacement-review-build-token", "workers-builds-control-plane-operator", true,
@@ -5909,6 +6102,23 @@ export function validateSetupPlan(plan) {
     ["membership-repair-handoff", "workers-builds-control-plane-operator", false],
   ];
   if (!membershipRepair || !same(membershipRepair.incident, reviewMembershipRepairIncident) ||
+      !same(membershipRepair.successorRotation, {
+        mode: "current-terminal-wrapper-to-membership-readable-token",
+        incident: structuredClone(reviewMembershipSuccessorRotationIncident),
+        predecessorSource:
+          "immutable-blocked-delete-recovery-terminal-not-original-inert-setup-wrapper",
+        evidence: [
+          privateFileReference("ATRINIK_REVIEW_MEMBERSHIP_SUCCESSOR_INCIDENT_PROOF_FILE"),
+          privateFileReference("ATRINIK_REVIEW_MEMBERSHIP_SUCCESSOR_AUTHORITY_PROOF_FILE"),
+          privateFileReference("ATRINIK_REVIEW_MEMBERSHIP_SUCCESSOR_JOURNAL_FILE"),
+          privateFileReference("ATRINIK_REVIEW_MEMBERSHIP_SUCCESSOR_RESULT_PROOF_FILE"),
+          privateFileReference(
+            "ATRINIK_REVIEW_MEMBERSHIP_SUCCESSOR_SNAPSHOT_MANIFEST_FILE"),
+        ],
+        handoff: "reviewTokenRotation",
+        forbidden: ["original-inert-setup-wrapper-as-live-predecessor",
+          "recreate-membership-readable-token", "amend-prior-terminal-journal"],
+      }) ||
       membershipRepair.authorityLifetimeMinutes !==
         reviewMembershipRepairAuthorityLifetimeMs / 60_000 ||
       !same(membershipRepair.operations?.map(({ id, actor, mutation }) =>
@@ -7128,6 +7338,44 @@ async function readReviewTokenRotationAuthorityEvidence(environment = process.en
     initialJournalSha256: attemptCoordinate.initialJournalSha256,
     journalPathSha256: attemptCoordinate.journalPathSha256,
   };
+  const membershipSuccessorInputNames = [
+    "ATRINIK_REVIEW_MEMBERSHIP_SUCCESSOR_INCIDENT_PROOF_FILE",
+    "ATRINIK_REVIEW_MEMBERSHIP_SUCCESSOR_AUTHORITY_PROOF_FILE",
+    "ATRINIK_REVIEW_MEMBERSHIP_SUCCESSOR_JOURNAL_FILE",
+    "ATRINIK_REVIEW_MEMBERSHIP_SUCCESSOR_RESULT_PROOF_FILE",
+    "ATRINIK_REVIEW_MEMBERSHIP_SUCCESSOR_SNAPSHOT_MANIFEST_FILE",
+  ];
+  const membershipSuccessorInputCount = membershipSuccessorInputNames
+    .filter((name) => environment[name]).length;
+  if (membershipSuccessorInputCount !== 0 &&
+      membershipSuccessorInputCount !== membershipSuccessorInputNames.length)
+    fail("review membership successor private input set is incomplete");
+  const membershipSuccessorEvidence = membershipSuccessorInputCount ? {
+    incidentProof: await readPrivateJson(
+      environment.ATRINIK_REVIEW_MEMBERSHIP_SUCCESSOR_INCIDENT_PROOF_FILE,
+      "review membership successor incident proof"),
+    membershipRepairAuthorityProof: await readPrivateJson(
+      environment.ATRINIK_REVIEW_MEMBERSHIP_SUCCESSOR_AUTHORITY_PROOF_FILE,
+      "review membership successor authority proof"),
+    membershipRepairAuthorityFileSha256: await readPrivateFileSha256(
+      environment.ATRINIK_REVIEW_MEMBERSHIP_SUCCESSOR_AUTHORITY_PROOF_FILE,
+      "review membership successor authority proof"),
+    membershipRepairJournalRecords: await readPrivateJsonLines(
+      environment.ATRINIK_REVIEW_MEMBERSHIP_SUCCESSOR_JOURNAL_FILE,
+      "review membership successor journal"),
+    membershipRepairJournalFileSha256: await readPrivateFileSha256(
+      environment.ATRINIK_REVIEW_MEMBERSHIP_SUCCESSOR_JOURNAL_FILE,
+      "review membership successor journal"),
+    membershipRepairResultProof: await readPrivateJson(
+      environment.ATRINIK_REVIEW_MEMBERSHIP_SUCCESSOR_RESULT_PROOF_FILE,
+      "review membership successor result proof"),
+    membershipRepairResultProofFileSha256: await readPrivateFileSha256(
+      environment.ATRINIK_REVIEW_MEMBERSHIP_SUCCESSOR_RESULT_PROOF_FILE,
+      "review membership successor result proof"),
+    membershipRepairSnapshotManifestFileSha256: await readPrivateFileSha256(
+      environment.ATRINIK_REVIEW_MEMBERSHIP_SUCCESSOR_SNAPSHOT_MANIFEST_FILE,
+      "review membership successor snapshot manifest"),
+  } : undefined;
   return {
     reviewActivationProof: await readPrivateJson(
       environment.ATRINIK_REVIEW_ACTIVATION_PROOF_FILE, "review activation proof"),
@@ -7176,6 +7424,7 @@ async function readReviewTokenRotationAuthorityEvidence(environment = process.en
       "review token rotation program delivery ledger"),
     rotationAttemptCoordinate: attemptCoordinate,
     attemptFilesystemEvidence,
+    ...(membershipSuccessorEvidence ? { membershipSuccessorEvidence } : {}),
     buildUsageProof: await readPrivateJson(environment.ATRINIK_WORKERS_BUILDS_USAGE_PROOF_FILE,
       "Workers Builds usage proof"),
   };
