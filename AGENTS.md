@@ -185,7 +185,11 @@
   authority derives the live predecessor wrapper and token from the immutable
   prior rotation terminal, never from the absent original setup wrapper, and
   binds the exact membership-repair authority, journal, result, and snapshot
-  manifest before reusing the existing proof-gated rotation state machine.
+  manifest before reusing the existing proof-gated rotation state machine. Every
+  forward, rollback, blocked, and terminal phase snapshot must select that
+  authority-bound predecessor by UUID and underlying token ID; the predecessor
+  and replacement may legitimately share the current wrapper name during the
+  successor rotation, so names alone never distinguish their generations.
   API Tokens Write is a separate
   owner-bootstrap boundary and must not be inferred from any Workers Builds
   credential.
