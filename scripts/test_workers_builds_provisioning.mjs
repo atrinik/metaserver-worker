@@ -178,6 +178,87 @@ const jsonDigest = (value) => createHash("sha256")
 const checksummedRecord = (payload) => ({ ...payload,
   recordSha256: createHash("sha256").update(JSON.stringify(payload)).digest("hex") });
 
+function membershipSuccessorEvidenceFixture() {
+  const coordinate = reviewMembershipSuccessorRotationIncident;
+  const incidentUnsigned = { ...reviewMembershipRepairIncident, mutation: false,
+    outcome: "workers-builds-review-membership-repair-incident-valid" };
+  const incidentProof = { ...incidentUnsigned, proof_digest: jsonDigest(incidentUnsigned) };
+  const membershipRepairAuthorityProof = {
+    outcome: "workers-builds-review-membership-repair-authority-valid", mutation: false,
+    phase: "review-membership-read-policy-and-proof",
+    accountId: "b1348660cac63549f606c8344dbf08a5", sourceSha: coordinate.sourceSha,
+    capturedAt: "2026-08-19T23:50:07.652Z", expiresAt: "2026-08-20T00:05:07.652Z",
+    planDigest: "5646d8a5bcf75c9487f6d9282de86dedeef81d022f8b6bf4ed92e8b490065093",
+    incidentDigest: "ff960943097caaa0e881c3039d323f95e1baa323003de1dda273b726f6e65f63",
+    predecessorPolicyDigest:
+      "87569284f5a55307fe9bad49794d608ff4abb045bf6a907e3c9c6d519974730c",
+    currentReviewActiveProofDigest:
+      "7026ea0d737d3cf27bca03fd9e2218a644463dcc0f8a78110362fce35e53155e",
+    permissionGroupProofDigest:
+      "fbc3df5ff1386563fe11bc730eae8c37d55462cca0d821c5395bb418251da2eb",
+    currentMainProofDigest:
+      "0f2fa23ba24fb5e328503cb4e1000447f72b474c28991a406d24fdaed877d6d5",
+    predecessorTokenId: coordinate.predecessorReviewTokenId,
+    predecessorBuildTokenUuid: coordinate.predecessorReviewBuildTokenUuid,
+    replacementTokenName: "Atrinik metaserver review membership-readable",
+    permissionGroupIds: { "Memberships Read": "3518d0f75557482e952c6762d3e64903",
+      "User Details Read": "8acbe5bb0d54464ab867149d7f7cf8ac" },
+    predecessorUserPermissions: ["User Details:Read"],
+    requiredUserPermissions: ["Memberships:Read", "User Details:Read"],
+    userResource: "com.cloudflare.api.user.b33f81835d7dc584622ca841b124a9a5",
+    accountPermissions: [], accountResources: [], zonePermissions: [], zoneResources: [],
+    allowedWrites: ["post-one-exact-membership-readable-user-token",
+      "delete-only-journal-created-unwrapped-user-token-on-failure"],
+    forbidden: ["account-owned-token", "build-token-wrapper-mutation", "trigger-mutation",
+      "production-activation", "manual-api-build", "migration-0010",
+      "worker-resource-mutation"], proof_digest: coordinate.membershipRepairAuthorityDigest,
+  };
+  const journalPayloads = [
+    { event: "membership-repair-started", at: "2026-08-19T23:51:57.349Z", attempt: 1,
+      authorityProofDigest: membershipRepairAuthorityProof.proof_digest,
+      currentMainProofDigest:
+        "0f2fa23ba24fb5e328503cb4e1000447f72b474c28991a406d24fdaed877d6d5",
+      preCreateInventoryDigest:
+        "9c22d88a14b9aa24682bcca8ed365413425c80794299a7621212543f937ab51e",
+      requestDigest: "0c782a10dd63e8eea792d26227ac95fb556b2b383585aec4074c0c13372f38fd" },
+    { event: "mutation-intent", operation: "membership-repair-create-user-token",
+      at: "2026-08-19T23:51:57.352Z", attempt: 1, method: "POST", path: "/user/tokens",
+      requestDigest: "0c782a10dd63e8eea792d26227ac95fb556b2b383585aec4074c0c13372f38fd",
+      authorityProofDigest: membershipRepairAuthorityProof.proof_digest },
+    { event: "provider-response-classified", operation: "membership-repair-create-user-token",
+      at: "2026-08-19T23:51:57.891Z", attempt: 1, outcome: "explicit-success", status: 200,
+      responseDigest: "05548fed4b3a2dccb586212a5d5ad5bcb5bdc5913f060ec258ced6160928b749",
+      requestDigest: "0c782a10dd63e8eea792d26227ac95fb556b2b383585aec4074c0c13372f38fd",
+      tokenId: coordinate.replacementReviewTokenId },
+    { event: "membership-repair-complete", at: "2026-08-19T23:53:09.279Z", attempt: 1,
+      tokenId: coordinate.replacementReviewTokenId,
+      resultProofDigest: coordinate.membershipRepairResultProofDigest,
+      requestDigest: "0c782a10dd63e8eea792d26227ac95fb556b2b383585aec4074c0c13372f38fd",
+      forbiddenWrites: { wrapper: false, trigger: false, build: false, deployment: false,
+        migration0010: false, workerResource: false } },
+  ];
+  const membershipRepairJournalRecords = journalPayloads.map(checksummedRecord);
+  const membershipRepairResultProof = {
+    source: "cloudflare-owner-token-policy-readback", accountId:
+      membershipRepairAuthorityProof.accountId, sourceSha: coordinate.sourceSha,
+    capturedAt: "2026-08-19T23:53:09.263Z", kind: "review-replacement",
+    tokenId: coordinate.replacementReviewTokenId,
+    ownerUserId: reviewMembershipRepairIncident.ownerUserId,
+    modifiedOn: "2026-08-19T23:51:58Z",
+    userPermissions: ["Memberships:Read", "User Details:Read"], accountPermissions: [],
+    accountResources: [], zonePermissions: [], zoneResources: [],
+  };
+  return { incidentProof, membershipRepairAuthorityProof, membershipRepairJournalRecords,
+    membershipRepairResultProof, evidence: { incidentProof, membershipRepairAuthorityProof,
+      membershipRepairAuthorityFileSha256: coordinate.membershipRepairAuthorityFileSha256,
+      membershipRepairJournalRecords,
+      membershipRepairJournalFileSha256: coordinate.membershipRepairJournalSha256,
+      membershipRepairResultProof,
+      membershipRepairResultProofFileSha256: coordinate.membershipRepairResultProofFileSha256,
+      membershipRepairSnapshotManifestFileSha256:
+        coordinate.membershipRepairSnapshotManifestSha256 } };
+}
+
 function envelope(result) {
   return Array.isArray(result) ? { success: true, result, result_info: {
     page: 1, total_pages: 1, total_count: result.length, exhaustive: true,
@@ -838,6 +919,7 @@ function disposableReviewAuthorityFixture(now = Date.now(),
     programDeliveryProof, programLedgerDocument, programLedgerFileSha256,
     rotationAttemptCoordinate, attemptFilesystemEvidence: rotationArguments.attemptFilesystemEvidence,
     buildUsageProof: configured.reviewBuildState.buildUsageProof,
+    reviewTokenRotationAuthorityArguments: rotationArguments,
   };
   const proof = issueDisposableReviewAuthority({ production, review, accountId,
     sourceSha: currentSourceSha, ...evidence, tokenRows: {
@@ -845,6 +927,53 @@ function disposableReviewAuthorityFixture(now = Date.now(),
       review: { cloudflare_token_id: replacementTokenId },
     } }, now);
   return { proof, evidence, production, review, accountId, sourceSha: currentSourceSha };
+}
+
+function successorRotationAuthorityFixture(now = Date.now(),
+productionPreservationDigest = "8".repeat(64)) {
+  const { evidence } = disposableReviewAuthorityFixture(now,
+    "/secure/issue-129/successor-rotation", productionPreservationDigest);
+  const arguments_ = structuredClone(evidence.reviewTokenRotationAuthorityArguments);
+  const successor = reviewMembershipSuccessorRotationIncident;
+  const membershipFixture = membershipSuccessorEvidenceFixture();
+  arguments_.membershipSuccessorEvidence = membershipFixture.evidence;
+  arguments_.accountId = membershipFixture.membershipRepairAuthorityProof.accountId;
+  for (const item of [arguments_.reviewActivationProof, arguments_.currentReviewActiveProof,
+    arguments_.repositoryConnectionProof, arguments_.replacementTokenAuthorityProof,
+    arguments_.replacementTokenOwnerMembershipProof, arguments_.buildUsageProof,
+    arguments_.productionBaselineProof, ...arguments_.predecessorTokenAuthorityProofs])
+    item.accountId = arguments_.accountId;
+  arguments_.predecessorTokenAuthorityProofs.find(({ kind }) => kind === "production")
+    .accountResources = [arguments_.accountId];
+  arguments_.replacementTokenId = successor.replacementReviewTokenId;
+  arguments_.replacementTokenAuthorityProof.tokenId = successor.replacementReviewTokenId;
+  arguments_.currentReviewActiveProof.liveIdentities.reviewBuildTokenUuid =
+    successor.predecessorReviewBuildTokenUuid;
+  arguments_.currentReviewActiveProof.proof_digest = jsonDigest({
+    state_digest: arguments_.currentReviewActiveProof.state_digest,
+    snapshotStartedAt: arguments_.currentReviewActiveProof.snapshotStartedAt,
+    snapshotCompletedAt: arguments_.currentReviewActiveProof.snapshotCompletedAt,
+    capturedAt: arguments_.currentReviewActiveProof.capturedAt,
+    liveIdentities: arguments_.currentReviewActiveProof.liveIdentities,
+  });
+  arguments_.productionBaselineProof.currentReviewActiveProofDigest =
+    arguments_.currentReviewActiveProof.proof_digest;
+  const { proof_digest: _baselineDigest, ...baselineUnsigned } =
+    arguments_.productionBaselineProof;
+  arguments_.productionBaselineProof.proof_digest = jsonDigest(baselineUnsigned);
+  arguments_.predecessorTokenAuthorityProofs.find(({ kind }) => kind === "review").tokenId =
+    successor.predecessorReviewTokenId;
+  arguments_.tokenRows.review = { build_token_uuid: successor.predecessorReviewBuildTokenUuid,
+    cloudflare_token_id: successor.predecessorReviewTokenId };
+  arguments_.reviewActivationJournal = arguments_.reviewActivationJournal.map((record) => {
+    if (record.event !== "provider-proof-bound" || record.operation !== "review-activation")
+      return record;
+    const { recordSha256: _recordSha256, ...payload } = record;
+    payload.proofFileSha256 = jsonDigest(arguments_.reviewActivationProof);
+    return checksummedRecord(payload);
+  });
+  return { arguments_, proof: issueReviewTokenRotationAuthority(arguments_, now - 2_500),
+    membershipFixture };
 }
 
 test("binds only the exact fresh membership-readable review token repair", async () => {
@@ -2438,6 +2567,11 @@ test("issues one journal-bound review-token rotation authority", () => {
   assert.equal(Date.parse(proof.expiresAt) - Date.parse(proof.capturedAt), 30 * 60_000);
   assert.equal(validateReviewTokenRotationAuthority(proof, arguments_, now + 20 * 60_000)
     .proof_digest, proof.proof_digest);
+  const { proof: successorProof } = successorRotationAuthorityFixture(now + 2_500);
+  assert.equal(successorProof.journalIdentities.predecessorReviewBuildTokenUuid,
+    successorCoordinate.predecessorReviewBuildTokenUuid);
+  assert.equal(successorProof.evidenceDigests.membershipSuccessor,
+    successorSelection.evidenceDigest);
   assert.throws(() => validateReviewTokenRotationAuthority(proof, arguments_,
     now + 26 * 60_000), /stale/u);
   const wrongPermission = structuredClone(arguments_);
@@ -2604,6 +2738,80 @@ test("validates exact review-token rotation rollback and residual journals", asy
   const { evidence } = disposableReviewAuthorityFixture(now,
     "/secure/issue-66/disposable-proof", productionPreservationDigest);
   const authorityProof = evidence.reviewTokenRotationAuthorityProof;
+  const successorSnapshotDirectory = resolve(temporary, "successor-predecessor-snapshot");
+  await cp(blockedSnapshotDirectory, successorSnapshotDirectory, { recursive: true });
+  const writeSuccessorSnapshot = async (name, value) => {
+    const path = resolve(successorSnapshotDirectory, name);
+    await writeFile(path, `${JSON.stringify(value)}\n`, { mode: 0o600 });
+    await chmod(path, 0o600);
+  };
+  const successorFixture = successorRotationAuthorityFixture(now,
+    productionPreservationDigest);
+  const successorCoordinate = reviewMembershipSuccessorRotationIncident;
+  const successorProduction = providerTrigger(productionTriggerSpec(production, {
+    externalScriptId: scriptTag, repositoryConnectionUuid,
+    buildTokenUuid: successorCoordinate.predecessorReviewBuildTokenUuid,
+  }), productionTriggerUuid);
+  successorProduction.branch_includes = [successorFixture.arguments_.productionSentinelProof.branch];
+  const successorReview = providerTrigger(automaticReviewTriggerSpec(review, {
+    externalScriptId: scriptTag, repositoryConnectionUuid,
+    buildTokenUuid: successorCoordinate.predecessorReviewBuildTokenUuid,
+  }), reviewTriggerUuid);
+  const successorManifest = manifest(base);
+  successorManifest.accountId = successorFixture.arguments_.accountId;
+  await Promise.all([
+    writeSuccessorSnapshot("snapshot-manifest.json", successorManifest),
+    writeSuccessorSnapshot(`${production.workers[0].name}.triggers.json`,
+      envelope([successorProduction, successorReview])),
+    writeSuccessorSnapshot("account-triggers.json",
+      envelope([successorProduction, successorReview])),
+    writeSuccessorSnapshot("build-tokens.json", envelope([
+      { build_token_name: "Atrinik metaserver production",
+        build_token_uuid: "44444444-4444-4444-8444-444444444444",
+        cloudflare_token_id: "production-token-id", owner_type: "user" },
+      { build_token_name: reviewBuildTokenNames.current,
+        build_token_uuid: successorCoordinate.predecessorReviewBuildTokenUuid,
+        cloudflare_token_id: successorCoordinate.predecessorReviewTokenId,
+        owner_type: "user" },
+    ])),
+  ]);
+  const successorSnapshotArguments = {
+    snapshotDirectory: successorSnapshotDirectory, production, review,
+    accountId: successorFixture.arguments_.accountId, sourceSha,
+    phase: "predecessor",
+    productionSentinelProof: successorFixture.arguments_.productionSentinelProof,
+    predecessorTokenAuthorityProofs:
+      successorFixture.arguments_.predecessorTokenAuthorityProofs,
+    replacementTokenAuthorityProof:
+      successorFixture.arguments_.replacementTokenAuthorityProof,
+    replacementTokenId: successorFixture.arguments_.replacementTokenId,
+    productionTriggerUuid, reviewTriggerUuid,
+    predecessorReviewTokenUuid: successorCoordinate.predecessorReviewBuildTokenUuid,
+    replacementReviewTokenUuid: undefined, productionPreservationDigest,
+    authorityProof: successorFixture.proof,
+    productionBaselineProof: successorFixture.arguments_.productionBaselineProof,
+    now,
+  };
+  assert.equal((await validateReviewTokenRotationSnapshotDirectory(
+    successorSnapshotArguments)).phase, "predecessor");
+  const successorTokens = JSON.parse(await readFile(resolve(successorSnapshotDirectory,
+    "build-tokens.json"), "utf8"));
+  successorTokens.result[1].build_token_name = reviewBuildTokenNames.predecessor;
+  await writeSuccessorSnapshot("build-tokens.json", successorTokens);
+  await assert.rejects(validateReviewTokenRotationSnapshotDirectory(
+    successorSnapshotArguments), /wrapper inventory drift/u);
+  successorTokens.result[1].build_token_name = reviewBuildTokenNames.current;
+  successorTokens.result[1].cloudflare_token_id = "foreign-token-id";
+  await writeSuccessorSnapshot("build-tokens.json", successorTokens);
+  await assert.rejects(validateReviewTokenRotationSnapshotDirectory(
+    successorSnapshotArguments), /membership successor predecessor drift/u);
+  successorTokens.result[1].cloudflare_token_id = successorCoordinate.predecessorReviewTokenId;
+  successorTokens.result.push({ ...successorTokens.result[1],
+    build_token_uuid: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa" });
+  successorTokens.result_info.total_count = 3;
+  await writeSuccessorSnapshot("build-tokens.json", successorTokens);
+  await assert.rejects(validateReviewTokenRotationSnapshotDirectory(
+    successorSnapshotArguments), /wrapper inventory drift/u);
   const restoredProof = { ...evidence.reviewTokenRotationProof,
     outcome: "workers-builds-review-token-rotation-predecessor-restored-valid",
     phase: "predecessor-restored", capturedAt: new Date(base + 145).toISOString(),
@@ -6071,6 +6279,89 @@ test("pins every journaled review-token rotation phase and rejects field drift",
     replacementReviewTokenUuid, repositoryConnectionUuid }), /still referenced/u);
   assert.equal(validate("complete", replacementReviewTokenUuid, replacementReviewTokenUuid,
     [productionToken, replacementToken]).phase, "complete");
+  const successorPredecessorUuid =
+    reviewMembershipSuccessorRotationIncident.predecessorReviewBuildTokenUuid;
+  const successorReplacementUuid = "99999999-9999-4999-8999-999999999999";
+  const successorPredecessor = token(reviewBuildTokenNames.current, successorPredecessorUuid,
+    reviewMembershipSuccessorRotationIncident.predecessorReviewTokenId);
+  const successorReplacement = token(reviewBuildTokenNames.current, successorReplacementUuid,
+    reviewMembershipSuccessorRotationIncident.replacementReviewTokenId);
+  const membershipSuccessorValidation = {
+    predecessorReviewBuildTokenUuid: successorPredecessorUuid,
+    predecessorReviewTokenId:
+      reviewMembershipSuccessorRotationIncident.predecessorReviewTokenId,
+    replacementReviewTokenId:
+      reviewMembershipSuccessorRotationIncident.replacementReviewTokenId,
+    evidenceSourceSha: reviewMembershipSuccessorRotationIncident.sourceSha,
+    evidenceDigest: "876b9d46ed1c063cf9ac9d702d5953bad9eb26c366668e3a2bc7d7e7f912cf12",
+  };
+  const validateSuccessor = (phase, productionTokenUuid_, reviewTokenUuid_, tokenRows) =>
+    validateReviewTokenRotationReadback({ production, review, phase,
+      productionTrigger: trigger(false, productionTokenUuid_),
+      reviewTrigger: trigger(true, reviewTokenUuid_),
+      productionEnvironment: envelope(productionEnvironment),
+      reviewEnvironment: envelope(reviewEnvironment), buildTokens: envelope(tokenRows),
+      accountTriggers: envelope([trigger(false, productionTokenUuid_),
+        trigger(true, reviewTokenUuid_)]), productionScriptTag: scriptTag,
+      productionSentinel: sentinel, productionTriggerUuid,
+      reviewTriggerUuid: reviewTriggerIdentity,
+      predecessorReviewTokenUuid: successorPredecessorUuid,
+      replacementReviewTokenUuid: phase === "predecessor" ? undefined :
+        successorReplacementUuid, repositoryConnectionUuid,
+      membershipSuccessorValidation });
+  assert.equal(validateSuccessor("predecessor", successorPredecessorUuid,
+    successorPredecessorUuid, [productionToken, successorPredecessor]).phase, "predecessor");
+  assert.equal(validateSuccessor("replacement-created", successorPredecessorUuid,
+    successorPredecessorUuid,
+    [productionToken, successorPredecessor, successorReplacement]).phase,
+  "replacement-created");
+  assert.equal(validateSuccessor("production-repointed", successorReplacementUuid,
+    successorPredecessorUuid,
+    [productionToken, successorPredecessor, successorReplacement]).phase,
+  "production-repointed");
+  assert.equal(validateSuccessor("review-repointed", successorReplacementUuid,
+    successorReplacementUuid,
+    [productionToken, successorPredecessor, successorReplacement]).phase,
+  "review-repointed");
+  assert.equal(validateSuccessor("old-wrapper-unreferenced", successorReplacementUuid,
+    successorReplacementUuid,
+    [productionToken, successorPredecessor, successorReplacement]).phase,
+  "old-wrapper-unreferenced");
+  assert.equal(validateSuccessor("predecessor-restored", successorPredecessorUuid,
+    successorPredecessorUuid,
+    [productionToken, successorPredecessor, successorReplacement]).phase,
+  "predecessor-restored");
+  const successorAugmentedReview = trigger(true, successorPredecessorUuid);
+  successorAugmentedReview.branch_excludes = [production.productionBranch, sentinel];
+  const successorAugmentedArguments = { production, review,
+    productionTrigger: trigger(false, successorReplacementUuid),
+    reviewTrigger: successorAugmentedReview,
+    productionEnvironment: envelope(productionEnvironment),
+    reviewEnvironment: envelope(reviewEnvironment),
+    buildTokens: envelope([productionToken, successorPredecessor, successorReplacement]),
+    accountTriggers: envelope([trigger(false, successorReplacementUuid),
+      successorAugmentedReview]), productionScriptTag: scriptTag, productionSentinel: sentinel,
+    productionTriggerUuid, reviewTriggerUuid: reviewTriggerIdentity,
+    predecessorReviewTokenUuid: successorPredecessorUuid,
+    replacementReviewTokenUuid: successorReplacementUuid, repositoryConnectionUuid,
+    membershipSuccessorValidation };
+  assert.equal(validateReviewTokenRotationReadback({ ...successorAugmentedArguments,
+    phase: "production-repointed-review-augmented" }).phase,
+  "production-repointed-review-augmented");
+  assert.equal(validateReviewTokenRotationReadback({ ...successorAugmentedArguments,
+    phase: "production-restored-review-augmented",
+    productionTrigger: trigger(false, successorPredecessorUuid),
+    accountTriggers: envelope([trigger(false, successorPredecessorUuid),
+      successorAugmentedReview]) }).phase, "production-restored-review-augmented");
+  assert.equal(validateSuccessor("complete", successorReplacementUuid,
+    successorReplacementUuid, [productionToken, successorReplacement]).phase, "complete");
+  assert.throws(() => validateSuccessor("predecessor", successorPredecessorUuid,
+    successorPredecessorUuid, [productionToken, { ...successorPredecessor,
+      build_token_name: reviewBuildTokenNames.predecessor }]), /wrapper inventory drift/u);
+  assert.throws(() => validateSuccessor("replacement-created", successorPredecessorUuid,
+    successorPredecessorUuid, [productionToken, successorPredecessor,
+      { ...successorReplacement, build_token_uuid: successorPredecessorUuid }]),
+  /wrapper inventory drift/u);
   assert.throws(() => validate("complete", replacementReviewTokenUuid,
     predecessorReviewTokenUuid, [productionToken, replacementToken]), /drift/u);
   assert.throws(() => validate("old-wrapper-unreferenced", replacementReviewTokenUuid,

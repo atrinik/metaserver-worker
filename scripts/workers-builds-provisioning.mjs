@@ -551,6 +551,19 @@ export function reviewTokenRotationLivePredecessorName(membershipSuccessorValida
   return reviewBuildTokenNames.current;
 }
 
+function reviewTokenRotationMembershipSuccessorFromAuthority(authorityProof) {
+  if (authorityProof.evidenceDigests.membershipSuccessor === undefined) return undefined;
+  return {
+    predecessorReviewBuildTokenUuid:
+      authorityProof.journalIdentities.predecessorReviewBuildTokenUuid,
+    predecessorReviewTokenId:
+      reviewMembershipSuccessorRotationIncident.predecessorReviewTokenId,
+    replacementReviewTokenId: authorityProof.replacementToken.tokenId,
+    evidenceSourceSha: reviewMembershipSuccessorRotationIncident.sourceSha,
+    evidenceDigest: authorityProof.evidenceDigests.membershipSuccessor,
+  };
+}
+
 function digestJson(value) {
   return createHash("sha256").update(JSON.stringify(value)).digest("hex");
 }
@@ -6502,7 +6515,10 @@ export function validateReviewTokenRotationReadback({ production, review, phase,
   productionTrigger, reviewTrigger, productionEnvironment, reviewEnvironment,
   buildTokens, accountTriggers, productionScriptTag, productionSentinel,
   productionTriggerUuid, reviewTriggerUuid, predecessorReviewTokenUuid,
-  replacementReviewTokenUuid, repositoryConnectionUuid }) {
+  replacementReviewTokenUuid, repositoryConnectionUuid,
+  membershipSuccessorValidation = undefined }) {
+  const predecessorReviewTokenName = reviewTokenRotationLivePredecessorName(
+    membershipSuccessorValidation);
   if (!["predecessor", "replacement-created", "predecessor-restored",
     "production-repointed", "production-repointed-review-augmented",
     "production-restored-review-augmented", "review-repointed",
@@ -6524,16 +6540,18 @@ export function validateReviewTokenRotationReadback({ production, review, phase,
   const tokens = requireExhaustiveEnvelope(buildTokens, "review token rotation build tokens");
   const productionRows = tokens.filter(({ build_token_name: name }) =>
     name === "Atrinik metaserver production");
-  const predecessorRows = tokens.filter(({ build_token_name: name }) =>
-    name === reviewBuildTokenNames.predecessor);
-  const replacementRows = tokens.filter(({ build_token_name: name }) =>
-    name === reviewBuildTokenNames.current);
+  const predecessorRows = tokens.filter(({ build_token_uuid: id }) =>
+    id === predecessorReviewTokenUuid);
+  const replacementRows = replacementRequired ? tokens.filter(({ build_token_uuid: id }) =>
+    id === replacementReviewTokenUuid) : [];
   const expectedTokenCount = phase === "predecessor" || phase === "complete" ? 2 : 3;
   if (tokens.length !== expectedTokenCount || productionRows.length !== 1 ||
       predecessorRows.length !== (phase === "complete" ? 0 : 1) ||
       replacementRows.length !== (replacementRequired ? 1 : 0) ||
-      (predecessorRows[0] && predecessorRows[0].build_token_uuid !== predecessorReviewTokenUuid) ||
-      (replacementRows[0] && replacementRows[0].build_token_uuid !== replacementReviewTokenUuid))
+      (predecessorRows[0] && predecessorRows[0].build_token_name !==
+        predecessorReviewTokenName) ||
+      (replacementRows[0] && replacementRows[0].build_token_name !==
+        reviewBuildTokenNames.current))
     fail("review token rotation wrapper inventory drift");
   const productionTokenUuid = productionRows[0].build_token_uuid;
   if (!uuidPattern.test(productionTokenUuid ?? "") || productionTokenUuid ===
@@ -8280,6 +8298,9 @@ export async function validateReviewTokenRotationSnapshotDirectory({ snapshotDir
   authorityPlanDigest = authorityProof?.planDigest, now = Date.now() }) {
   validateHistoricalReviewTokenRotationAuthority(authorityProof, { production, review,
     accountId, sourceSha: authoritySourceSha, planDigest: authorityPlanDigest });
+  const membershipSuccessorValidation =
+    reviewTokenRotationMembershipSuccessorFromAuthority(authorityProof);
+  const successorAuthority = membershipSuccessorValidation !== undefined;
   const proofValidationTime = Date.parse(authorityProof?.capturedAt ?? "");
   if (!Number.isFinite(proofValidationTime) ||
       authorityProof?.evidenceDigests?.productionSentinel !==
@@ -8335,7 +8356,8 @@ export async function validateReviewTokenRotationSnapshotDirectory({ snapshotDir
     buildTokens, accountTriggers, productionScriptTag: script[0].tag,
     productionSentinel: productionSentinelProof.branch, productionTriggerUuid,
     reviewTriggerUuid, predecessorReviewTokenUuid, replacementReviewTokenUuid,
-    repositoryConnectionUuid: productionTrigger.repo_connection.repo_connection_uuid });
+    repositoryConnectionUuid: productionTrigger.repo_connection.repo_connection_uuid,
+    membershipSuccessorValidation });
   for (const { role, name } of production.workers) {
     validateNoDeployHooks(await loadSnapshot(snapshotDirectory, `${name}.deploy-hooks.json`), role);
     validateNoActiveBuilds(await loadSnapshot(snapshotDirectory, `${name}.builds.json`), role);
@@ -8357,6 +8379,14 @@ export async function validateReviewTokenRotationSnapshotDirectory({ snapshotDir
   const predecessorProof = predecessorTokenAuthorityProofs?.find(({ kind }) => kind === "review");
   if (!productionToken || !productionProof || !predecessorProof)
     fail("review token rotation predecessor authority evidence is incomplete");
+  if (successorAuthority &&
+      (predecessorProof.tokenId !==
+        reviewMembershipSuccessorRotationIncident.predecessorReviewTokenId ||
+       predecessorToken &&
+        (predecessorToken.build_token_name !== reviewBuildTokenNames.current ||
+         predecessorToken.cloudflare_token_id !==
+          reviewMembershipSuccessorRotationIncident.predecessorReviewTokenId)))
+    fail("review token rotation membership successor predecessor drift");
   validateReplacementReviewTokenAuthorityProof({ review, accountId,
     proof: replacementTokenAuthorityProof, tokenId: replacementTokenId,
     sourceSha: authoritySourceSha },
