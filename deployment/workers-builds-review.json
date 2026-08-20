@@ -105,6 +105,29 @@
       "verification": "one-fresh-automatic-push-event-review-build-before-terminal-adoption",
       "rollback": "delete-only-journal-created-unwrapped-user-token-on-failure"
     },
+    "membershipSecretRecovery": {
+      "issue": 131,
+      "mode": "distinct-user-token-after-lost-one-time-secret",
+      "lostTokenId": "65b2e92887b640023f74bc79eb3130b1",
+      "requiredUserPermissions": ["Memberships:Read", "User Details:Read"],
+      "userResource": "com.cloudflare.api.user.b33f81835d7dc584622ca841b124a9a5",
+      "accountPermissions": [],
+      "zonePermissions": [],
+      "accountResources": [],
+      "zoneResources": [],
+      "attempt": "fresh-owner-only-empty-journal-and-executor-coordinate",
+      "successor": "new-membership-successor-coordinate-and-fresh-wrapper-rotation",
+      "rollback": "delete-only-this-journal-created-unwrapped-user-token-after-exhaustive-unreference",
+      "forbidden": [
+        "replay-or-amend-membership-repair-122",
+        "adopt-bootstrap-as-replacement",
+        "wrapper-or-trigger-mutation",
+        "production-activation",
+        "manual-or-initial-build",
+        "migration-0010",
+        "worker-resource-mutation"
+      ]
+    },
     "controlPlaneOperator": {
       "actor": "metaserver-review-environment-operator",
       "when": "setup-budget-threshold-or-provider-recovery-only-never-review-build",

@@ -27,7 +27,7 @@ const maximumProviderPages = 100;
 const stagingBranchPattern = /^review-build-only-sentinel-[0-9a-f]{32}$/u;
 const reviewStagingRootPattern = /^\/review-build-only-staging-[0-9a-f]{32}$/u;
 const gitShaPattern = /^[0-9a-f]{40}$/u;
-const expectedSetupPlanSha256 = "60d101066849be5c1de94f09a2610aa2e3345bae520257e4fbe8b2c01e43b347";
+const expectedSetupPlanSha256 = "38a745d04518440c59a3620d435d16577a10af721bf5e9169f3411d48fa0184d";
 const currentMainProofSource = "authenticated-gh-api-current-main-readback";
 const currentMainProofEndpoint = "repos/atrinik/metaserver-worker/git/ref/heads/main";
 const currentMainRef = "refs/heads/main";
@@ -40,6 +40,7 @@ const reviewTokenRotationTransitionBudgetMs = 5 * 60_000;
 const blockedReviewTokenDeleteAuthorityLifetimeMs = 15 * 60_000;
 const blockedReviewTokenDeleteTransitionBudgetMs = 5 * 60_000;
 const reviewMembershipRepairAuthorityLifetimeMs = 15 * 60_000;
+const reviewMembershipSecretRecoveryAuthorityLifetimeMs = 15 * 60_000;
 export const reviewMembershipRepairIncident = Object.freeze({
   sourceSha: "b97fcefb09fb09d7e7a99daab8ef9ba168ce3b0f",
   rotationJournalSha256:
@@ -89,6 +90,20 @@ export const reviewMembershipSuccessorRotationIncident = Object.freeze({
 });
 const reviewMembershipSuccessorEvidenceDigest =
   "876b9d46ed1c063cf9ac9d702d5953bad9eb26c366668e3a2bc7d7e7f912cf12";
+export const reviewMembershipSecretRecoveryIncident = Object.freeze({
+  predecessorSourceSha: reviewMembershipSuccessorRotationIncident.sourceSha,
+  lostTokenId: reviewMembershipSuccessorRotationIncident.replacementReviewTokenId,
+  membershipSuccessorEvidenceDigest: reviewMembershipSuccessorEvidenceDigest,
+  successorRotationContractSourceSha: "8f069d6ddbff67443abf33b72ab34ab7d9177fd1",
+  successorRotationPlanDigest:
+    "60d101066849be5c1de94f09a2610aa2e3345bae520257e4fbe8b2c01e43b347",
+  masterIssueNumber: 114,
+  masterIssueNodeId: "I_kwDOTu8rSM8AAAABNZty_A",
+  leafIssueNumber: 131,
+  leafIssueNodeId: "I_kwDOTu8rSM8AAAABNjhN3Q",
+  ledgerCoordinate: "d7cd09686d6494fdf966faa6015217b31a335e061e5a14f3a5c9d3fcca670335",
+  ownerUserId: reviewMembershipRepairIncident.ownerUserId,
+});
 export const reviewTokenRotationProviderNormalizedIncident = Object.freeze({
   sourceSha: "48f791e60bc0c1d19a7eff28e9cd99ed1bfd317a",
   planDigest: "ab71b8d99980ccdbfe9384bd29e8d690b7d8e91b6b17199e0e1baad182f7b6c1",
@@ -167,6 +182,16 @@ const reviewTokenRotationRetryProgram = Object.freeze({
 const providerNormalizedIncidentTestCapabilities = new WeakSet();
 const noOwnedIncidentTestCapabilities = new WeakSet();
 const noOwnedTerminalContextReaders = new WeakSet();
+const membershipSecretRecoveryTestCapabilities = new WeakSet();
+export function createReviewMembershipSecretRecoveryTestCapability(
+membershipSuccessorEvidence) {
+  if (process.env.NODE_TEST_CONTEXT !== "child-v8")
+    fail("membership secret recovery test capability is unavailable");
+  const capability = Object.freeze({ membershipSuccessorEvidence:
+    structuredClone(membershipSuccessorEvidence) });
+  membershipSecretRecoveryTestCapabilities.add(capability);
+  return capability;
+}
 export function createProviderNormalizedIncidentTestCapability(coordinate) {
   if (process.env.NODE_TEST_CONTEXT !== "child-v8")
     fail("provider-normalized incident test capability is unavailable");
@@ -538,29 +563,731 @@ export function validateReviewMembershipSuccessorRotationEvidence({
   };
 }
 
+export function validateReviewMembershipSecretRecoveryIncident(proof) {
+  const keys = [...Object.keys(reviewMembershipSecretRecoveryIncident), "mutation", "outcome",
+    "proof_digest"];
+  const unsigned = { ...proof };
+  delete unsigned.proof_digest;
+  if (!proof || !same(sorted(Object.keys(proof)), sorted(keys)) ||
+      proof.outcome !== "workers-builds-review-membership-secret-recovery-incident-valid" ||
+      proof.mutation !== false ||
+      !same(Object.fromEntries(Object.keys(reviewMembershipSecretRecoveryIncident)
+        .map((key) => [key, proof[key]])), { ...reviewMembershipSecretRecoveryIncident }) ||
+      proof.proof_digest !== digestJson(unsigned))
+    fail("review membership secret recovery incident drift");
+  return proof;
+}
+
+export function validateReviewMembershipSecretRecoveryProgramProof(proof, sourceSha,
+programLedgerDocument, programLedgerFileSha256, now = Date.now()) {
+  const keys = ["capturedAt", "leafIssueNodeId", "leafIssueNumber", "masterIssueNodeId",
+    "masterIssueNumber", "membershipSuccessorEvidenceDigest", "mutation", "outcome",
+    "programLedgerCoordinate", "programLedgerFileSha256", "programLedgerGeneration",
+    "programLedgerSha256", "proof_digest", "sourceSha", "successorRotationContractSourceSha",
+    "successorRotationPlanDigest"];
+  const coordinate = reviewMembershipSecretRecoveryIncident;
+  const captured = Date.parse(proof?.capturedAt ?? "");
+  const unsigned = { ...proof };
+  delete unsigned.proof_digest;
+  if (!proof || !same(sorted(Object.keys(proof)), sorted(keys)) ||
+      proof.outcome !== "workers-builds-review-membership-secret-recovery-program-valid" ||
+      proof.mutation !== false || proof.sourceSha !== sourceSha ||
+      proof.masterIssueNumber !== coordinate.masterIssueNumber ||
+      proof.masterIssueNodeId !== coordinate.masterIssueNodeId ||
+      proof.leafIssueNumber !== coordinate.leafIssueNumber ||
+      proof.leafIssueNodeId !== coordinate.leafIssueNodeId ||
+      proof.programLedgerCoordinate !== coordinate.ledgerCoordinate ||
+      proof.membershipSuccessorEvidenceDigest !== coordinate.membershipSuccessorEvidenceDigest ||
+      proof.successorRotationContractSourceSha !== coordinate.successorRotationContractSourceSha ||
+      proof.successorRotationPlanDigest !== coordinate.successorRotationPlanDigest ||
+      !Number.isInteger(proof.programLedgerGeneration) || proof.programLedgerGeneration < 1 ||
+      proof.programLedgerSha256 !== digestJson(programLedgerDocument) ||
+      proof.programLedgerFileSha256 !== programLedgerFileSha256 ||
+      !/^[0-9a-f]{64}$/u.test(programLedgerFileSha256 ?? "") ||
+      programLedgerDocument?.schema_version !== 1 ||
+      programLedgerDocument?.generation !== proof.programLedgerGeneration ||
+      programLedgerDocument?.ledger_id !== `delivery-v1:issue:${coordinate.leafIssueNodeId}` ||
+      programLedgerDocument?.program?.master_issue?.number !== coordinate.masterIssueNumber ||
+      programLedgerDocument?.program?.master_issue?.node_id !== coordinate.masterIssueNodeId ||
+      programLedgerDocument?.program?.leaf_issue?.number !== coordinate.leafIssueNumber ||
+      programLedgerDocument?.program?.leaf_issue?.node_id !== coordinate.leafIssueNodeId ||
+      !same(programLedgerDocument?.authority?.allowed?.issues,
+        [coordinate.masterIssueNodeId, coordinate.leafIssueNodeId]) ||
+      !isUtcTimestamp(proof.capturedAt) || !Number.isFinite(captured) ||
+      captured > now + 30_000 || now - captured > 5 * 60_000 ||
+      proof.proof_digest !== digestJson(unsigned))
+    fail("review membership secret recovery program proof drift");
+  return proof;
+}
+
+export function validateReviewMembershipSecretRecoveryAttemptCoordinate(coordinate, sourceSha,
+attemptFilesystemEvidence, now = Date.now()) {
+  const keys = ["attemptNamespace", "capturedAt", "executorSha256", "initialJournalSha256",
+    "executorPath", "journalId", "journalPath", "journalPathSha256", "mutation",
+    "proof_digest", "repository", "responsePath", "responsePathSha256", "secretOutputPath",
+    "secretOutputPathSha256", "sourceSha"];
+  const captured = Date.parse(coordinate?.capturedAt ?? "");
+  const unsigned = { ...coordinate };
+  delete unsigned.proof_digest;
+  if (!coordinate || !same(sorted(Object.keys(coordinate)), sorted(keys)) ||
+      coordinate.repository !== "atrinik/metaserver-worker" || coordinate.sourceSha !== sourceSha ||
+      coordinate.mutation !== false ||
+      !/^review-membership-secret-recovery-131-[0-9a-f]{16,64}$/u.test(
+        coordinate.attemptNamespace ?? "") ||
+      ![coordinate.executorSha256, coordinate.initialJournalSha256, coordinate.journalId,
+        coordinate.journalPathSha256, coordinate.responsePathSha256,
+        coordinate.secretOutputPathSha256].every((value) => /^[0-9a-f]{64}$/u.test(value ?? "")) ||
+      coordinate.initialJournalSha256 !== digestText("") ||
+      ![coordinate.executorPath, coordinate.journalPath, coordinate.responsePath,
+        coordinate.secretOutputPath].every((path) => isAbsolute(path ?? "") &&
+          resolve(path) === path && dirname(path) === dirname(coordinate.journalPath)) ||
+      coordinate.journalPathSha256 !== digestText(coordinate.journalPath) ||
+      coordinate.responsePathSha256 !== digestText(coordinate.responsePath) ||
+      coordinate.secretOutputPathSha256 !== digestText(coordinate.secretOutputPath) ||
+      coordinate.executorSha256 !== attemptFilesystemEvidence?.executorSha256 ||
+      coordinate.initialJournalSha256 !== attemptFilesystemEvidence?.initialJournalSha256 ||
+      coordinate.journalPathSha256 !== attemptFilesystemEvidence?.journalPathSha256 ||
+      coordinate.responsePathSha256 !== attemptFilesystemEvidence?.responsePathSha256 ||
+      coordinate.secretOutputPathSha256 !== attemptFilesystemEvidence?.secretOutputPathSha256 ||
+      attemptFilesystemEvidence?.responseAbsent !== true ||
+      attemptFilesystemEvidence?.secretOutputAbsent !== true ||
+      coordinate.journalId !== digestJson({ attemptNamespace: coordinate.attemptNamespace,
+        executorSha256: coordinate.executorSha256,
+        journalPathSha256: coordinate.journalPathSha256,
+        secretOutputPathSha256: coordinate.secretOutputPathSha256 }) ||
+      !isUtcTimestamp(coordinate.capturedAt) || !Number.isFinite(captured) ||
+      captured > now + 30_000 || now - captured > 5 * 60_000 ||
+      coordinate.proof_digest !== digestJson(unsigned))
+    fail("review membership secret recovery attempt coordinate drift");
+  return coordinate;
+}
+
+export async function validateReviewMembershipSecretRecoveryAttemptPreparation(coordinate,
+sourceSha, now = Date.now()) {
+  const directory = dirname(coordinate?.journalPath ?? "");
+  const directoryMetadata = await lstat(directory).catch(() => null);
+  if (!directoryMetadata?.isDirectory() || !isCurrentUserOwned(directoryMetadata) ||
+      (directoryMetadata.mode & 0o077) !== 0 || await realpath(directory).catch(() => null) !==
+        directory)
+    fail("review membership secret recovery attempt directory drift");
+  const evidence = {
+    executorSha256: await readPrivateFileSha256(coordinate.executorPath,
+      "review membership secret recovery executor"),
+    initialJournalSha256: await readPrivateFileSha256(coordinate.journalPath,
+      "initial review membership secret recovery journal"),
+    journalPathSha256: digestText(coordinate.journalPath),
+    responsePathSha256: digestText(coordinate.responsePath),
+    secretOutputPathSha256: digestText(coordinate.secretOutputPath),
+    responseAbsent: !await lstat(coordinate.responsePath).catch(() => null),
+    secretOutputAbsent: !await lstat(coordinate.secretOutputPath).catch(() => null),
+  };
+  return validateReviewMembershipSecretRecoveryAttemptCoordinate(coordinate, sourceSha,
+    evidence, now);
+}
+
+export function validateReviewMembershipSecretRecoveryInventoryProof(proof, {
+  accountId, sourceSha, attemptCoordinate, expectedTokenState = "pre-create",
+}, now = Date.now(), maximumAgeMs = 30_000) {
+  const keys = ["accountId", "attemptCoordinateDigest", "capturedAt", "lostTokenIdPresent",
+    "matchingRecoveryTokenIds", "mutation", "outcome", "proof_digest",
+    "referencingBuildTokenUuids", "source", "sourceSha", "buildTokenInventoryDigest",
+    "tokenInventoryDigest", "tokenState"];
+  const captured = Date.parse(proof?.capturedAt ?? "");
+  const unsigned = { ...proof };
+  delete unsigned.proof_digest;
+  const matching = proof?.matchingRecoveryTokenIds;
+  const referencing = proof?.referencingBuildTokenUuids;
+  if (!proof || !same(sorted(Object.keys(proof)), sorted(keys)) ||
+      proof.source !== "cloudflare-user-token-exhaustive-inventory" ||
+      proof.outcome !== "workers-builds-review-membership-secret-recovery-inventory-valid" ||
+      proof.mutation !== false || proof.accountId !== accountId || proof.sourceSha !== sourceSha ||
+      proof.attemptCoordinateDigest !== attemptCoordinate?.proof_digest ||
+      proof.lostTokenIdPresent !== true || proof.tokenState !== expectedTokenState ||
+      !Array.isArray(matching) || !matching.every((value) => /^[0-9a-f]{32}$/u.test(value)) ||
+      (["pre-create", "exact-absence"].includes(expectedTokenState) ?
+        matching.length !== 0 : matching.length !== 1) ||
+      !Array.isArray(referencing) ||
+      !referencing.every((value) => uuidPattern.test(value)) ||
+      !same(referencing, sorted([...new Set(referencing)])) ||
+      referencing.length !== 0 ||
+      !/^[0-9a-f]{64}$/u.test(proof.buildTokenInventoryDigest ?? "") ||
+      !/^[0-9a-f]{64}$/u.test(proof.tokenInventoryDigest ?? "") ||
+      !isUtcTimestamp(proof.capturedAt) || !Number.isFinite(captured) ||
+      captured > now + 30_000 || now - captured > maximumAgeMs ||
+      proof.proof_digest !== digestJson(unsigned))
+    fail("review membership secret recovery inventory proof drift");
+  return proof;
+}
+
+export function issueReviewMembershipSecretRecoveryAuthority({ production, review, accountId,
+  sourceSha, incidentProof, membershipSuccessorEvidence, bootstrapPolicyProof,
+  permissionGroupProof, currentReviewActiveProof, currentMainProofDigest, programDeliveryProof,
+  programLedgerDocument, programLedgerFileSha256, attemptCoordinate, attemptFilesystemEvidence,
+  preCreateInventoryProof }, now = Date.now()) {
+  validateReviewMembershipSecretRecoveryIncident(incidentProof);
+  const successor = validateReviewMembershipSuccessorRotationEvidence(
+    membershipSuccessorEvidence, { accountId });
+  const contract = review?.automaticReview?.membershipSecretRecovery;
+  if (!contract || contract.issue !== 131 ||
+      contract.mode !== "distinct-user-token-after-lost-one-time-secret" ||
+      contract.lostTokenId !== reviewMembershipSecretRecoveryIncident.lostTokenId ||
+      contract.userResource !== `com.cloudflare.api.user.${reviewMembershipSecretRecoveryIncident.ownerUserId}` ||
+      !same(sorted(contract.requiredUserPermissions ?? []),
+        ["Memberships:Read", "User Details:Read"]) ||
+      !same(contract.accountPermissions, []) || !same(contract.accountResources, []) ||
+      !same(contract.zonePermissions, []) || !same(contract.zoneResources, []))
+    fail("review membership secret recovery contract drift");
+  validateReviewMembershipRepairPolicyProof(bootstrapPolicyProof, { accountId, sourceSha,
+    expectedUserPermissions: ["API Tokens Write:Edit"],
+    expectedTokenId: bootstrapPolicyProof?.tokenId,
+    expectedKind: "review-membership-secret-recovery-bootstrap" }, now);
+  if (bootstrapPolicyProof.tokenId === contract.lostTokenId)
+    fail("review membership secret recovery bootstrap identity drift");
+  const permissionCaptured = Date.parse(permissionGroupProof?.capturedAt ?? "");
+  const permissionUnsigned = { ...permissionGroupProof };
+  delete permissionUnsigned.proof_digest;
+  if (!permissionGroupProof ||
+      !same(sorted(Object.keys(permissionGroupProof)), sorted(["capturedAt", "groups",
+        "mutation", "outcome", "proof_digest", "source", "sourceSha"])) ||
+      !Array.isArray(permissionGroupProof.groups) ||
+      !permissionGroupProof.groups.every((group) =>
+        same(sorted(Object.keys(group)), ["id", "name", "scope"])) ||
+      permissionGroupProof.source !== "cloudflare-user-token-permission-groups-readback" ||
+      permissionGroupProof.sourceSha !== sourceSha || permissionGroupProof.mutation !== false ||
+      permissionGroupProof.outcome !== "review-membership-permission-groups-valid" ||
+      !same(permissionGroupProof.groups?.map(({ name }) => name).sort(),
+        ["Memberships Read", "User Details Read"]) ||
+      !permissionGroupProof.groups.every(({ id, scope }) =>
+        /^[0-9a-f]{32}$/u.test(id ?? "") && scope === "com.cloudflare.api.user") ||
+      !Number.isFinite(permissionCaptured) || permissionCaptured > now + 30_000 ||
+      now - permissionCaptured > 5 * 60_000 ||
+      permissionGroupProof.proof_digest !== digestJson(permissionUnsigned))
+    fail("review membership secret recovery permission group proof drift");
+  validateCurrentDisposableReviewSnapshotProof(currentReviewActiveProof,
+    { accountId, sourceSha }, now);
+  validateReviewMembershipSecretRecoveryProgramProof(programDeliveryProof, sourceSha,
+    programLedgerDocument, programLedgerFileSha256, now);
+  validateReviewMembershipSecretRecoveryAttemptCoordinate(attemptCoordinate, sourceSha,
+    attemptFilesystemEvidence, now);
+  validateReviewMembershipSecretRecoveryInventoryProof(preCreateInventoryProof,
+    { accountId, sourceSha, attemptCoordinate }, now);
+  if (successor.replacementReviewTokenId !== contract.lostTokenId ||
+      currentReviewActiveProof.liveIdentities.reviewBuildTokenUuid !==
+        successor.predecessorReviewBuildTokenUuid ||
+      !/^[0-9a-f]{64}$/u.test(currentMainProofDigest ?? ""))
+    fail("review membership secret recovery predecessor state drift");
+  const capturedAt = new Date(now).toISOString();
+  const replacementTokenName = `Atrinik metaserver review membership recovery 131 ${
+    attemptCoordinate.attemptNamespace.slice(-16)}`;
+  const request = { method: "POST", path: "/user/tokens", body: {
+    name: replacementTokenName, policies: [{ effect: "allow",
+      resources: { [contract.userResource]: "*" }, permission_groups:
+        [...permissionGroupProof.groups].sort(({ name: left }, { name: right }) =>
+          left.localeCompare(right)).map(({ id }) => ({ id })) }],
+  } };
+  const unsigned = {
+    outcome: "workers-builds-review-membership-secret-recovery-authority-valid",
+    mutation: false, phase: "review-membership-secret-recovery", accountId, sourceSha,
+    capturedAt, expiresAt: new Date(now + reviewMembershipSecretRecoveryAuthorityLifetimeMs)
+      .toISOString(), planDigest: digestJson(provisioningSetupPlan(production, review)),
+    incidentDigest: incidentProof.proof_digest,
+    membershipSuccessorEvidenceDigest: successor.evidenceDigest,
+    bootstrapPolicyDigest: digestJson(bootstrapPolicyProof),
+    permissionGroupProofDigest: permissionGroupProof.proof_digest,
+    currentReviewActiveProofDigest: currentReviewActiveProof.proof_digest,
+    currentMainProofDigest, programDeliveryProofDigest: programDeliveryProof.proof_digest,
+    attemptCoordinateDigest: attemptCoordinate.proof_digest,
+    preCreateInventoryProofDigest: preCreateInventoryProof.proof_digest,
+    lostTokenId: contract.lostTokenId, bootstrapTokenId: bootstrapPolicyProof.tokenId,
+    ownerUserId: reviewMembershipSecretRecoveryIncident.ownerUserId,
+    replacementTokenName, requiredUserPermissions: structuredClone(contract.requiredUserPermissions),
+    userResource: contract.userResource, accountPermissions: [], accountResources: [],
+    zonePermissions: [], zoneResources: [], requestDigest: digestJson(request),
+    allowedWrites: ["post-one-exact-membership-secret-recovery-user-token",
+      "delete-only-this-journal-created-unwrapped-user-token-after-exhaustive-unreference"],
+    forbidden: structuredClone(contract.forbidden),
+  };
+  return { ...unsigned, proof_digest: digestJson(unsigned) };
+}
+
+export function validateReviewMembershipSecretRecoveryAuthority(proof, arguments_,
+now = Date.now(), minimumRemainingMs = 5 * 60_000) {
+  const captured = Date.parse(proof?.capturedAt ?? "");
+  const expires = Date.parse(proof?.expiresAt ?? "");
+  const expected = Number.isFinite(captured) ?
+    issueReviewMembershipSecretRecoveryAuthority(arguments_, captured) : undefined;
+  const mismatchKey = expected && proof ? Object.keys(expected)
+    .find((key) => !same(proof[key], expected[key])) : undefined;
+  if (!expected || !same(proof, expected) || !Number.isFinite(expires) || now >= expires ||
+      expires - now < minimumRemainingMs)
+    fail(`review membership secret recovery authority is stale or malformed${
+      mismatchKey ? ` (${mismatchKey})` : ""}`);
+  return proof;
+}
+
+export function validateReviewMembershipSecretRecoveryResultProof(proof, {
+  accountId, sourceSha, authorityProof, replacementTokenId,
+}, now = Date.now()) {
+  const authorityUnsigned = { ...authorityProof };
+  delete authorityUnsigned.proof_digest;
+  if (authorityProof?.outcome !==
+        "workers-builds-review-membership-secret-recovery-authority-valid" ||
+      authorityProof.mutation !== false || authorityProof.accountId !== accountId ||
+      authorityProof.sourceSha !== sourceSha ||
+      authorityProof.proof_digest !== digestJson(authorityUnsigned) ||
+      !/^[0-9a-f]{32}$/u.test(replacementTokenId ?? "") ||
+      replacementTokenId === authorityProof.lostTokenId ||
+      replacementTokenId === authorityProof.bootstrapTokenId)
+    fail("review membership secret recovery result authority drift");
+  const result = validateReviewMembershipRepairPolicyProof(proof, { accountId, sourceSha,
+    expectedUserPermissions: authorityProof.requiredUserPermissions,
+    expectedTokenId: replacementTokenId,
+    expectedKind: "review-membership-secret-recovery-result" }, now);
+  if (result.ownerUserId !== authorityProof.ownerUserId ||
+      Date.parse(result.modifiedOn) <= Date.parse(authorityProof.capturedAt))
+    fail("review membership secret recovery result drift");
+  return result;
+}
+
+export function validateReviewMembershipSecretRecoveryJournal(records, authorityProof, {
+  accountId, sourceSha, attemptCoordinate, preCreateInventoryProof,
+  currentMainProof = undefined, responseDocument = undefined, responseFileSha256 = undefined,
+  secretFileSha256 = undefined, resultProof = undefined, residualInventoryProof = undefined,
+  cleanupCurrentMainProof = undefined, cleanupPreDeleteInventoryProof = undefined,
+  cleanupResponseDocument = undefined, cleanupResponseFileSha256 = undefined,
+  cleanupAbsenceInventoryProof = undefined,
+}) {
+  const authorityKeys = ["accountId", "accountPermissions", "accountResources",
+    "allowedWrites", "attemptCoordinateDigest", "bootstrapPolicyDigest", "bootstrapTokenId",
+    "capturedAt", "currentMainProofDigest", "currentReviewActiveProofDigest", "expiresAt",
+    "forbidden", "incidentDigest", "lostTokenId", "membershipSuccessorEvidenceDigest",
+    "mutation", "outcome", "ownerUserId", "permissionGroupProofDigest", "phase",
+    "planDigest", "preCreateInventoryProofDigest", "programDeliveryProofDigest",
+    "proof_digest", "replacementTokenName", "requestDigest", "requiredUserPermissions",
+    "sourceSha", "userResource", "zonePermissions", "zoneResources"];
+  const authorityUnsigned = { ...authorityProof };
+  delete authorityUnsigned.proof_digest;
+  if (authorityProof?.outcome !==
+        "workers-builds-review-membership-secret-recovery-authority-valid" ||
+      !same(sorted(Object.keys(authorityProof)), sorted(authorityKeys)) ||
+      authorityProof.accountId !== accountId || authorityProof.sourceSha !== sourceSha ||
+      authorityProof.attemptCoordinateDigest !== attemptCoordinate?.proof_digest ||
+      authorityProof.preCreateInventoryProofDigest !== preCreateInventoryProof?.proof_digest ||
+      authorityProof.proof_digest !== digestJson(authorityUnsigned))
+    fail("review membership secret recovery journal authority drift");
+  if (!Array.isArray(records) || records.length < 2)
+    fail("review membership secret recovery journal sequence drift");
+  let previousAt = -Infinity;
+  for (const record of records) {
+    const { recordSha256, ...payload } = record ?? {};
+    const at = Date.parse(record?.at ?? "");
+    if (!Number.isFinite(at) || record.at !== new Date(at).toISOString() || at <= previousAt ||
+        record.attempt !== 1 || recordSha256 !== digestJson(payload))
+      fail("review membership secret recovery journal framing drift");
+    previousAt = at;
+  }
+  const creationPrefix = [
+    ["membership-secret-recovery-started", undefined],
+    ["current-main-proof-bound", "membership-secret-recovery-create-user-token"],
+    ["membership-secret-recovery-authority-checked",
+      "membership-secret-recovery-create-user-token"],
+    ["provider-proof-bound", "membership-secret-recovery-pre-create"],
+    ["mutation-intent", "membership-secret-recovery-create-user-token"],
+    ["provider-response-classified", "membership-secret-recovery-create-user-token"],
+    ["provider-proof-bound", "membership-secret-recovery-result"],
+  ];
+  const terminal = records.at(-1);
+  const blocked = terminal.event === "membership-secret-recovery-blocked";
+  const complete = terminal.event === "membership-secret-recovery-complete";
+  if (!blocked && !complete)
+    fail("review membership secret recovery journal is not terminal");
+  const prefix = records.slice(0, -1);
+  const cleanupPrefix = [
+    ...creationPrefix.slice(0, 6),
+    ["current-main-proof-bound", "membership-secret-recovery-cleanup-user-token"],
+    ["membership-secret-recovery-authority-checked",
+      "membership-secret-recovery-cleanup-user-token"],
+    ["provider-proof-bound", "membership-secret-recovery-cleanup-pre-delete"],
+    ["mutation-intent", "membership-secret-recovery-cleanup-user-token"],
+    ["provider-response-classified", "membership-secret-recovery-cleanup-user-token"],
+    ["mutation-bound", "membership-secret-recovery-cleanup-user-token"],
+  ];
+  const matchesSequence = (sequence) => prefix.length <= sequence.length &&
+    prefix.every((record, index) => record.event === sequence[index][0] &&
+      record.operation === sequence[index][1]);
+  const creationSequence = matchesSequence(creationPrefix);
+  const cleanupSequence = prefix.length >= 7 && matchesSequence(cleanupPrefix);
+  if (prefix.length < 1 || (!creationSequence && !cleanupSequence))
+    fail("review membership secret recovery journal sequence drift");
+  const exact = (record, keys, label) => {
+    if (!record || !same(sorted(Object.keys(record)), sorted([...keys, "recordSha256"])))
+      fail(`review membership secret recovery ${label} shape drift`);
+  };
+  exact(prefix[0], ["at", "attempt", "attemptCoordinateDigest", "authorityProofDigest",
+    "event", "preCreateInventoryProofDigest", "requestDigest"], "start");
+  if (prefix[0].attemptCoordinateDigest !== attemptCoordinate.proof_digest ||
+      prefix[0].authorityProofDigest !== authorityProof.proof_digest ||
+      prefix[0].preCreateInventoryProofDigest !== preCreateInventoryProof.proof_digest ||
+      prefix[0].requestDigest !== authorityProof.requestDigest)
+    fail("review membership secret recovery start drift");
+  if (prefix[1]) {
+    exact(prefix[1], ["at", "attempt", "event", "operation", "proofDigest",
+      "proofFileSha256", "rawFileSha256", "sourceSha"], "current-main");
+    validateCurrentMainProof(currentMainProof, sourceSha, Date.parse(prefix[1].at));
+    if (prefix[1].sourceSha !== sourceSha ||
+        prefix[1].proofDigest !== digestJson(currentMainProof) ||
+        prefix[1].proofFileSha256 !== digestText(`${JSON.stringify(currentMainProof)}\n`) ||
+        prefix[1].rawFileSha256 !== digestText(`${JSON.stringify(currentMainProof.raw)}\n`))
+      fail("review membership secret recovery current-main drift");
+  }
+  if (prefix[2]) {
+    exact(prefix[2], ["at", "attempt", "event", "expiresAt", "operation", "proofDigest"],
+      "authority check");
+    if (prefix[2].proofDigest !== authorityProof.proof_digest ||
+        prefix[2].expiresAt !== authorityProof.expiresAt ||
+        Date.parse(prefix[2].at) < Date.parse(authorityProof.capturedAt) ||
+        Date.parse(authorityProof.expiresAt) - Date.parse(prefix[2].at) < 5 * 60_000)
+      fail("review membership secret recovery authority check drift");
+  }
+  if (prefix[3]) {
+    exact(prefix[3], ["at", "attempt", "event", "operation", "proofDigest",
+      "proofFileSha256"], "pre-create proof");
+    if (prefix[3].proofDigest !== preCreateInventoryProof.proof_digest ||
+        prefix[3].proofFileSha256 !== digestText(
+          `${JSON.stringify(preCreateInventoryProof)}\n`) ||
+        Date.parse(preCreateInventoryProof.capturedAt) > Date.parse(prefix[3].at))
+      fail("review membership secret recovery pre-create proof drift");
+  }
+  if (prefix[4]) {
+    exact(prefix[4], ["at", "attempt", "authorityProofDigest", "event", "method",
+      "operation", "path", "requestDigest"], "intent");
+    if (prefix[4].method !== "POST" || prefix[4].path !== "/user/tokens" ||
+        prefix[4].requestDigest !== authorityProof.requestDigest ||
+        prefix[4].authorityProofDigest !== authorityProof.proof_digest ||
+        Date.parse(prefix[4].at) - Date.parse(preCreateInventoryProof.capturedAt) > 30_000 ||
+        Date.parse(prefix[4].at) >= Date.parse(authorityProof.expiresAt))
+      fail("review membership secret recovery intent drift");
+  }
+  if (prefix[5]) {
+    const outcome = prefix[5].outcome;
+    exact(prefix[5], ["at", "attempt", "event", "operation", "outcome", "requestDigest",
+      "responseDigest", "responseFileSha256", "status", "tokenId"], "classification");
+    if (!["ambiguous", "explicit-failure", "explicit-success"].includes(outcome) ||
+        prefix[5].requestDigest !== authorityProof.requestDigest ||
+        !Number.isInteger(prefix[5].status) ||
+        prefix[5].responseDigest !== digestJson(responseDocument) ||
+        prefix[5].responseFileSha256 !== responseFileSha256 ||
+        responseFileSha256 !== digestText(`${JSON.stringify(responseDocument)}\n`) ||
+        (outcome === "explicit-success" ?
+          (!/^[0-9a-f]{32}$/u.test(prefix[5].tokenId ?? "") ||
+            prefix[5].status < 200 || prefix[5].status >= 300 ||
+            responseDocument?.success !== true ||
+            responseDocument?.result?.id !== prefix[5].tokenId ||
+            responseDocument?.result?.name !== authorityProof.replacementTokenName ||
+            typeof responseDocument?.result?.value !== "string" ||
+            responseDocument.result.value.length === 0) :
+          prefix[5].tokenId !== null ||
+            (outcome === "explicit-failure" &&
+              (prefix[5].status < 400 || responseDocument?.success !== false))))
+      fail("review membership secret recovery classification drift");
+  }
+  if (creationSequence && prefix[6]) {
+    exact(prefix[6], ["at", "attempt", "event", "operation", "proofDigest",
+      "proofFileSha256", "tokenId"], "result proof");
+    if (prefix[5]?.outcome !== "explicit-success" || !resultProof ||
+        prefix[6].tokenId !== prefix[5].tokenId ||
+        prefix[6].proofDigest !== digestJson(resultProof) ||
+        prefix[6].proofFileSha256 !== digestText(`${JSON.stringify(resultProof)}\n`))
+      fail("review membership secret recovery result binding drift");
+    validateReviewMembershipSecretRecoveryResultProof(resultProof,
+      { accountId, sourceSha, authorityProof, replacementTokenId: prefix[6].tokenId },
+      Date.parse(resultProof.capturedAt));
+    if (Date.parse(prefix[5].at) > Date.parse(resultProof.capturedAt) ||
+        Date.parse(resultProof.capturedAt) > Date.parse(prefix[6].at))
+      fail("review membership secret recovery result chronology drift");
+  }
+  const forbiddenKeys = ["build", "deployment", "migration0010", "trigger",
+    "workerResource", "wrapper"];
+  if (complete) {
+    exact(terminal, ["at", "attempt", "event", "forbiddenWrites", "requestDigest",
+      "resultProofDigest", "secretFileSha256", "tokenId"], "complete terminal");
+    if (!creationSequence || prefix.length !== creationPrefix.length ||
+        terminal.tokenId !== prefix[5].tokenId ||
+        terminal.resultProofDigest !== digestJson(resultProof) ||
+        terminal.requestDigest !== authorityProof.requestDigest ||
+        terminal.secretFileSha256 !== secretFileSha256 ||
+        !/^[0-9a-f]{64}$/u.test(secretFileSha256 ?? "") ||
+        secretFileSha256 !== digestText(`${responseDocument.result.value}\n`) ||
+        !same(sorted(Object.keys(terminal.forbiddenWrites ?? {})), forbiddenKeys) ||
+        Object.values(terminal.forbiddenWrites).some((value) => value !== false))
+      fail("review membership secret recovery complete terminal drift");
+  } else {
+    if (cleanupSequence) {
+      const cleanupMain = prefix[6];
+      const cleanupChecked = prefix[7];
+      const cleanupProofBound = prefix[8];
+      const cleanupIntent = prefix[9];
+      const cleanupClassified = prefix[10];
+      const cleanupBound = prefix[11];
+      if (prefix[5].outcome === "explicit-failure")
+        fail("review membership secret recovery cleanup source drift");
+      if (cleanupMain) {
+        exact(cleanupMain, ["at", "attempt", "event", "operation", "proofDigest",
+          "proofFileSha256", "rawFileSha256", "sourceSha"], "cleanup current-main");
+        validateCurrentMainProof(cleanupCurrentMainProof, sourceSha,
+          Date.parse(cleanupMain.at));
+        if (cleanupMain.sourceSha !== sourceSha ||
+            cleanupMain.proofDigest !== digestJson(cleanupCurrentMainProof) ||
+            cleanupMain.proofFileSha256 !== digestText(
+              `${JSON.stringify(cleanupCurrentMainProof)}\n`) ||
+            cleanupMain.rawFileSha256 !== digestText(
+              `${JSON.stringify(cleanupCurrentMainProof.raw)}\n`))
+          fail("review membership secret recovery cleanup current-main drift");
+      }
+      if (cleanupChecked) {
+        exact(cleanupChecked, ["at", "attempt", "event", "expiresAt", "operation",
+          "proofDigest"], "cleanup authority check");
+        if (cleanupChecked.proofDigest !== authorityProof.proof_digest ||
+            cleanupChecked.expiresAt !== authorityProof.expiresAt ||
+            Date.parse(cleanupChecked.at) < Date.parse(authorityProof.capturedAt) ||
+            Date.parse(authorityProof.expiresAt) - Date.parse(cleanupChecked.at) < 5 * 60_000)
+          fail("review membership secret recovery cleanup authority drift");
+      }
+        if (cleanupProofBound) {
+        exact(cleanupProofBound, ["at", "attempt", "event", "operation", "proofDigest",
+          "proofFileSha256", "tokenId"], "cleanup pre-delete proof");
+        validateReviewMembershipSecretRecoveryInventoryProof(cleanupPreDeleteInventoryProof,
+          { accountId, sourceSha, attemptCoordinate,
+            expectedTokenState: "exact-journal-created-unwrapped" },
+          Date.parse(cleanupProofBound.at), 30_000);
+        const cleanupTokenId = cleanupPreDeleteInventoryProof.matchingRecoveryTokenIds[0];
+        if (cleanupProofBound.tokenId !== cleanupTokenId ||
+            cleanupProofBound.proofDigest !== cleanupPreDeleteInventoryProof.proof_digest ||
+            cleanupProofBound.proofFileSha256 !== digestText(
+              `${JSON.stringify(cleanupPreDeleteInventoryProof)}\n`) ||
+            Date.parse(cleanupMain.at) > Date.parse(cleanupChecked.at) ||
+            Date.parse(cleanupChecked.at) >
+              Date.parse(cleanupPreDeleteInventoryProof.capturedAt) ||
+            Date.parse(cleanupPreDeleteInventoryProof.capturedAt) >
+              Date.parse(cleanupProofBound.at) ||
+            cleanupTokenId === authorityProof.lostTokenId ||
+            cleanupTokenId === authorityProof.bootstrapTokenId ||
+            (prefix[5].outcome === "explicit-success" &&
+              cleanupTokenId !== prefix[5].tokenId))
+          fail("review membership secret recovery cleanup pre-delete drift");
+      }
+      if (cleanupIntent) {
+        const cleanupRequest = { method: "DELETE",
+          path: `/user/tokens/${cleanupProofBound.tokenId}`, body: undefined };
+        exact(cleanupIntent, ["at", "attempt", "authorityProofDigest", "event", "method",
+          "operation", "path", "requestDigest", "tokenId"], "cleanup intent");
+        if (cleanupIntent.method !== cleanupRequest.method ||
+            cleanupIntent.path !== cleanupRequest.path ||
+            cleanupIntent.tokenId !== cleanupProofBound.tokenId ||
+            cleanupIntent.requestDigest !== digestJson(cleanupRequest) ||
+            cleanupIntent.authorityProofDigest !== authorityProof.proof_digest ||
+            Date.parse(cleanupIntent.at) -
+              Date.parse(cleanupCurrentMainProof.capturedAt) > 5 * 60_000 ||
+            Date.parse(cleanupIntent.at) -
+              Date.parse(cleanupPreDeleteInventoryProof.capturedAt) > 30_000 ||
+            Date.parse(cleanupIntent.at) >= Date.parse(authorityProof.expiresAt))
+          fail("review membership secret recovery cleanup intent drift");
+      }
+      if (cleanupClassified) {
+        exact(cleanupClassified, ["at", "attempt", "event", "operation", "outcome",
+          "requestDigest", "responseDigest", "responseFileSha256", "status", "tokenId"],
+        "cleanup classification");
+        const outcome = cleanupClassified.outcome;
+        if (!["ambiguous", "explicit-failure", "explicit-success"].includes(outcome) ||
+            cleanupClassified.tokenId !== cleanupIntent.tokenId ||
+            cleanupClassified.requestDigest !== cleanupIntent.requestDigest ||
+            !Number.isInteger(cleanupClassified.status) ||
+            cleanupClassified.responseDigest !== digestJson(cleanupResponseDocument) ||
+            cleanupClassified.responseFileSha256 !== cleanupResponseFileSha256 ||
+            cleanupResponseFileSha256 !== digestText(
+              `${JSON.stringify(cleanupResponseDocument)}\n`) ||
+            (outcome === "explicit-success" &&
+              (cleanupClassified.status < 200 || cleanupClassified.status >= 300 ||
+                cleanupResponseDocument?.success !== true)) ||
+            (outcome === "explicit-failure" &&
+              (cleanupClassified.status < 400 || cleanupResponseDocument?.success !== false)))
+          fail("review membership secret recovery cleanup classification drift");
+      }
+      if (cleanupBound) {
+        exact(cleanupBound, ["at", "attempt", "deletionTombstone", "event", "operation",
+          "proofDigest", "proofFileSha256", "reconciliation", "requestDigest", "tokenId"],
+        "cleanup bound");
+        validateReviewMembershipSecretRecoveryInventoryProof(cleanupAbsenceInventoryProof,
+          { accountId, sourceSha, attemptCoordinate, expectedTokenState: "exact-absence" },
+          Date.parse(cleanupBound.at), 30_000);
+        if (cleanupBound.tokenId !== cleanupIntent.tokenId ||
+            cleanupBound.requestDigest !== cleanupIntent.requestDigest ||
+            cleanupBound.deletionTombstone !== true ||
+            !["explicit-success-exact-absence", "ambiguous-exact-absence"]
+              .includes(cleanupBound.reconciliation) ||
+            cleanupBound.reconciliation.startsWith("explicit-success") !==
+              (cleanupClassified.outcome === "explicit-success") ||
+            cleanupBound.proofDigest !== cleanupAbsenceInventoryProof.proof_digest ||
+            cleanupBound.proofFileSha256 !== digestText(
+              `${JSON.stringify(cleanupAbsenceInventoryProof)}\n`) ||
+            Date.parse(cleanupAbsenceInventoryProof.capturedAt) <
+              Date.parse(cleanupClassified.at))
+          fail("review membership secret recovery cleanup bound drift");
+      }
+    }
+    exact(terminal, ["activeMutation", "at", "attempt", "cleanupComplete", "event",
+      "forbiddenWrites", "residualProofDigest", "residualProofFileSha256", "tokenId",
+      "tokenState"], "blocked terminal");
+    const lastPrefixAt = Date.parse(prefix.at(-1).at);
+    const cleanupBound = cleanupSequence && prefix.at(-1)?.event === "mutation-bound";
+    const cleanupIntent = cleanupSequence && prefix.some(({ event, operation }) =>
+      event === "mutation-intent" && operation ===
+        "membership-secret-recovery-cleanup-user-token");
+    const unresolvedCreate = prefix[4] && (!prefix[5] || prefix[5].outcome === "ambiguous");
+    const expectedActiveMutation = cleanupIntent && !cleanupBound ?
+      "membership-secret-recovery-cleanup-user-token" : unresolvedCreate ?
+        "membership-secret-recovery-create-user-token" : null;
+    if (!residualInventoryProof ||
+        !["exact-absence", "exact-journal-created-unwrapped"].includes(terminal.tokenState) ||
+        terminal.cleanupComplete !== (terminal.tokenState === "exact-absence") ||
+        terminal.tokenId !== (terminal.tokenState === "exact-absence" ? null :
+          residualInventoryProof.matchingRecoveryTokenIds[0]) ||
+        terminal.activeMutation !== expectedActiveMutation ||
+        terminal.residualProofDigest !== residualInventoryProof.proof_digest ||
+        terminal.residualProofFileSha256 !== digestText(
+          `${JSON.stringify(residualInventoryProof)}\n`) ||
+        Date.parse(residualInventoryProof.capturedAt) < lastPrefixAt ||
+        Date.parse(residualInventoryProof.capturedAt) > Date.parse(terminal.at) ||
+        !same(sorted(Object.keys(terminal.forbiddenWrites ?? {})), forbiddenKeys) ||
+        Object.values(terminal.forbiddenWrites).some((value) => value !== false))
+      fail("review membership secret recovery blocked terminal drift");
+    validateReviewMembershipSecretRecoveryInventoryProof(residualInventoryProof,
+      { accountId, sourceSha, attemptCoordinate, expectedTokenState: terminal.tokenState },
+      Date.parse(terminal.at), 5 * 60_000);
+  }
+  return { outcome: complete ? "workers-builds-review-membership-secret-recovery-complete" :
+    "workers-builds-review-membership-secret-recovery-blocked", mutation: false,
+  terminal: terminal.event, tokenId: terminal.tokenId };
+}
+
+export function issueReviewMembershipSecretRecoverySuccessorProof({ authorityProof,
+  authorityFileSha256, records, journalFileSha256, responseFileSha256, secretFileSha256,
+  resultProof, resultProofFileSha256 }) {
+  const terminal = records?.at(-1);
+  const classified = records?.find(({ event, operation }) =>
+    event === "provider-response-classified" && operation ===
+      "membership-secret-recovery-create-user-token");
+  if (terminal?.event !== "membership-secret-recovery-complete" ||
+      classified?.outcome !== "explicit-success" || terminal.tokenId !== classified.tokenId ||
+      resultProof?.tokenId !== terminal.tokenId ||
+      resultProof?.ownerUserId !== authorityProof?.ownerUserId ||
+      !same(resultProof?.userPermissions, authorityProof?.requiredUserPermissions) ||
+      !same(resultProof?.accountPermissions, []) || !same(resultProof?.accountResources, []) ||
+      !same(resultProof?.zonePermissions, []) || !same(resultProof?.zoneResources, []) ||
+      authorityFileSha256 !== digestText(`${JSON.stringify(authorityProof)}\n`) ||
+      journalFileSha256 !== digestText(
+        `${records.map((record) => JSON.stringify(record)).join("\n")}\n`) ||
+      responseFileSha256 !== classified.responseFileSha256 ||
+      secretFileSha256 !== terminal.secretFileSha256 ||
+      resultProofFileSha256 !== digestText(`${JSON.stringify(resultProof)}\n`) ||
+      terminal.resultProofDigest !== digestJson(resultProof) ||
+      ![authorityFileSha256, journalFileSha256, responseFileSha256, secretFileSha256,
+        resultProofFileSha256].every((value) => /^[0-9a-f]{64}$/u.test(value ?? "")))
+    fail("review membership secret recovery successor evidence drift");
+  const unsigned = {
+    outcome: "workers-builds-review-membership-secret-recovery-successor-valid",
+    mutation: false, sourceSha: authorityProof.sourceSha, accountId: authorityProof.accountId,
+    capturedAt: terminal.at, tokenId: terminal.tokenId, ownerUserId: authorityProof.ownerUserId,
+    userPermissions: structuredClone(authorityProof.requiredUserPermissions),
+    accountPermissions: [], accountResources: [], zonePermissions: [], zoneResources: [],
+    authorityProofDigest: authorityProof.proof_digest, authorityFileSha256,
+    journalFileSha256, terminalRecordSha256: terminal.recordSha256,
+    responseFileSha256, secretFileSha256, resultProofDigest: digestJson(resultProof),
+    resultProofFileSha256, incidentDigest: authorityProof.incidentDigest,
+    membershipSuccessorEvidenceDigest: authorityProof.membershipSuccessorEvidenceDigest,
+    programDeliveryProofDigest: authorityProof.programDeliveryProofDigest,
+    attemptCoordinateDigest: authorityProof.attemptCoordinateDigest,
+    nextRotationRequirement: "fresh-namespace-authority-journal-and-executor",
+  };
+  return { ...unsigned, proof_digest: digestJson(unsigned) };
+}
+
+export function validateReviewMembershipSecretRecoverySuccessorProof(proof, arguments_) {
+  const expected = issueReviewMembershipSecretRecoverySuccessorProof(arguments_);
+  if (!same(proof, expected))
+    fail("review membership secret recovery successor proof drift");
+  return proof;
+}
+
+export function validateReviewMembershipSecretRecoverySuccessorEvidence(evidence,
+{ accountId }) {
+  const { authorityProof, authorityFileSha256, records, journalFileSha256,
+    attemptCoordinate, preCreateInventoryProof, currentMainProof, responseDocument,
+    responseFileSha256, secretFileSha256, resultProof, resultProofFileSha256,
+    successorProof, successorProofFileSha256 } = evidence ?? {};
+  validateReviewMembershipSecretRecoveryJournal(records, authorityProof,
+    { accountId, sourceSha: authorityProof?.sourceSha, attemptCoordinate,
+      preCreateInventoryProof, currentMainProof, responseDocument, responseFileSha256,
+      secretFileSha256, resultProof });
+  validateReviewMembershipSecretRecoverySuccessorProof(successorProof,
+    { authorityProof, authorityFileSha256, records, journalFileSha256,
+      responseFileSha256, secretFileSha256, resultProof, resultProofFileSha256 });
+  if (authorityProof.accountId !== accountId ||
+      authorityFileSha256 !== digestText(`${JSON.stringify(authorityProof)}\n`) ||
+      journalFileSha256 !== digestText(
+        `${records.map((record) => JSON.stringify(record)).join("\n")}\n`) ||
+      resultProofFileSha256 !== digestText(`${JSON.stringify(resultProof)}\n`) ||
+      successorProofFileSha256 !== digestText(`${JSON.stringify(successorProof)}\n`) ||
+      successorProof.membershipSuccessorEvidenceDigest !==
+        reviewMembershipSuccessorEvidenceDigest ||
+      successorProof.tokenId === reviewMembershipSecretRecoveryIncident.lostTokenId ||
+      successorProof.ownerUserId !== reviewMembershipSecretRecoveryIncident.ownerUserId ||
+      !same(successorProof.userPermissions, ["Memberships:Read", "User Details:Read"]) ||
+      !same(successorProof.accountPermissions, []) ||
+      !same(successorProof.accountResources, []) ||
+      !same(successorProof.zonePermissions, []) || !same(successorProof.zoneResources, []))
+    fail("review membership secret recovery successor evidence drift");
+  return {
+    predecessorReviewBuildTokenUuid:
+      reviewMembershipSuccessorRotationIncident.predecessorReviewBuildTokenUuid,
+    predecessorReviewTokenId: reviewMembershipSecretRecoveryIncident.lostTokenId,
+    replacementReviewTokenId: successorProof.tokenId,
+    evidenceSourceSha: successorProof.sourceSha,
+    evidenceDigest: digestJson({ authorityFileSha256, journalFileSha256,
+      responseFileSha256, secretFileSha256, resultProofFileSha256,
+      successorProofDigest: successorProof.proof_digest, successorProofFileSha256 }),
+  };
+}
+
 export function reviewTokenRotationLivePredecessorName(membershipSuccessorValidation) {
   if (membershipSuccessorValidation === undefined) return reviewBuildTokenNames.predecessor;
-  const coordinate = reviewMembershipSuccessorRotationIncident;
-  if (!same(membershipSuccessorValidation, {
-    predecessorReviewBuildTokenUuid: coordinate.predecessorReviewBuildTokenUuid,
-    predecessorReviewTokenId: coordinate.predecessorReviewTokenId,
-    replacementReviewTokenId: coordinate.replacementReviewTokenId,
-    evidenceSourceSha: coordinate.sourceSha,
-    evidenceDigest: reviewMembershipSuccessorEvidenceDigest,
-  })) fail("review membership successor live predecessor drift");
+  if (membershipSuccessorValidation.predecessorReviewBuildTokenUuid !==
+        reviewMembershipSuccessorRotationIncident.predecessorReviewBuildTokenUuid ||
+      !/^[0-9a-f]{32}$/u.test(membershipSuccessorValidation.predecessorReviewTokenId ?? "") ||
+      !/^[0-9a-f]{32}$/u.test(membershipSuccessorValidation.replacementReviewTokenId ?? "") ||
+      membershipSuccessorValidation.predecessorReviewTokenId ===
+        membershipSuccessorValidation.replacementReviewTokenId ||
+      !gitShaPattern.test(membershipSuccessorValidation.evidenceSourceSha ?? "") ||
+      !/^[0-9a-f]{64}$/u.test(membershipSuccessorValidation.evidenceDigest ?? ""))
+    fail("review membership successor live predecessor drift");
   return reviewBuildTokenNames.current;
 }
 
 function reviewTokenRotationMembershipSuccessorFromAuthority(authorityProof) {
-  if (authorityProof.evidenceDigests.membershipSuccessor === undefined) return undefined;
+  if (authorityProof.evidenceDigests.membershipSuccessor === undefined &&
+      authorityProof.evidenceDigests.membershipSecretRecoverySuccessor === undefined)
+    return undefined;
   return {
     predecessorReviewBuildTokenUuid:
       authorityProof.journalIdentities.predecessorReviewBuildTokenUuid,
-    predecessorReviewTokenId:
-      reviewMembershipSuccessorRotationIncident.predecessorReviewTokenId,
+    predecessorReviewTokenId: authorityProof.evidenceDigests.
+      membershipSecretRecoverySuccessor === undefined ?
+        reviewMembershipSuccessorRotationIncident.predecessorReviewTokenId :
+        reviewMembershipSuccessorRotationIncident.replacementReviewTokenId,
     replacementReviewTokenId: authorityProof.replacementToken.tokenId,
-    evidenceSourceSha: reviewMembershipSuccessorRotationIncident.sourceSha,
-    evidenceDigest: authorityProof.evidenceDigests.membershipSuccessor,
+    evidenceSourceSha: authorityProof.sourceSha,
+    evidenceDigest: authorityProof.evidenceDigests.membershipSecretRecoverySuccessor ??
+      authorityProof.evidenceDigests.membershipSuccessor,
   };
 }
 
@@ -1418,7 +2145,8 @@ function reviewTokenRotationEvidenceDigests({ reviewActivationProof, reviewActiv
   productionSentinelProof, predecessorTokenAuthorityProofs,
   replacementTokenAuthorityProof, replacementTokenOwnerMembershipProof, buildUsageProof,
   productionBaselineProof, programDeliveryProof, rotationAttemptCoordinate,
-  membershipSuccessorValidation = undefined }) {
+  membershipSuccessorValidation = undefined,
+  membershipSecretRecoverySuccessorValidation = undefined }) {
   return {
     reviewActivationProof: digestJson(reviewActivationProof),
     reviewActivationJournal: digestJson(reviewActivationJournal),
@@ -1437,6 +2165,10 @@ function reviewTokenRotationEvidenceDigests({ reviewActivationProof, reviewActiv
     rotationAttempt: digestJson(rotationAttemptCoordinate),
     ...(membershipSuccessorValidation ? {
       membershipSuccessor: membershipSuccessorValidation.evidenceDigest,
+    } : {}),
+    ...(membershipSecretRecoverySuccessorValidation ? {
+      membershipSecretRecoverySuccessor:
+        membershipSecretRecoverySuccessorValidation.evidenceDigest,
     } : {}),
   };
 }
@@ -1472,10 +2204,15 @@ export function issueReviewTokenRotationAuthority({ production, review, accountI
   programDeliveryProof, programLedgerDocument, programLedgerFileSha256,
   rotationAttemptCoordinate, attemptFilesystemEvidence,
   replacementTokenSecretSha256,
-  membershipSuccessorEvidence = undefined }, now = Date.now()) {
+  membershipSuccessorEvidence = undefined,
+  membershipSecretRecoverySuccessorEvidence = undefined }, now = Date.now()) {
   const membershipSuccessorValidation = membershipSuccessorEvidence ?
     validateReviewMembershipSuccessorRotationEvidence(membershipSuccessorEvidence,
       { accountId }) : undefined;
+  const membershipSecretRecoverySuccessorValidation =
+    membershipSecretRecoverySuccessorEvidence ?
+      validateReviewMembershipSecretRecoverySuccessorEvidence(
+        membershipSecretRecoverySuccessorEvidence, { accountId }) : undefined;
   validateRepositoryConnectionOwnerProof(repositoryConnectionProof, accountId, sourceSha, now);
   const sentinel = validateSentinelRefAbsence(productionSentinelProof, now);
   validateTokenAuthorityProofs({ production, review, accountId,
@@ -1513,6 +2250,21 @@ export function issueReviewTokenRotationAuthority({ production, review, accountI
     replacementTokenId === reviewMembershipSuccessorRotationIncident.replacementReviewTokenId;
   if (membershipSuccessorRequired !== Boolean(membershipSuccessorValidation))
     fail("review token rotation membership successor evidence drift");
+  const secretRecoverySuccessorRequired = Boolean(membershipSuccessorValidation) &&
+    replacementTokenId !== reviewMembershipSuccessorRotationIncident.replacementReviewTokenId;
+  if (secretRecoverySuccessorRequired !==
+      Boolean(membershipSecretRecoverySuccessorValidation))
+    fail("review token rotation membership secret recovery successor evidence drift");
+  if (membershipSecretRecoverySuccessorValidation &&
+      (membershipSecretRecoverySuccessorValidation.predecessorReviewBuildTokenUuid !==
+          membershipSuccessorValidation.predecessorReviewBuildTokenUuid ||
+       membershipSecretRecoverySuccessorValidation.predecessorReviewTokenId !==
+          membershipSuccessorValidation.replacementReviewTokenId ||
+       membershipSecretRecoverySuccessorValidation.replacementReviewTokenId !==
+          replacementTokenId))
+    fail("review token rotation membership secret recovery identity drift");
+  const currentMembershipSuccessorValidation =
+    membershipSecretRecoverySuccessorValidation ?? membershipSuccessorValidation;
   const livePredecessorReviewBuildTokenUuid = membershipSuccessorValidation?.
     predecessorReviewBuildTokenUuid ?? setup.reviewBuildTokenUuid;
   if (identities.productionTriggerUuid !== setup.productionTriggerUuid ||
@@ -1522,10 +2274,10 @@ export function issueReviewTokenRotationAuthority({ production, review, accountI
       identities.repositoryConnectionUuid !== setup.repositoryConnectionUuid ||
       tokenRows.review.build_token_uuid !== livePredecessorReviewBuildTokenUuid ||
       tokenRows.production.build_token_uuid !== setup.productionBuildTokenUuid ||
-      membershipSuccessorValidation &&
+      currentMembershipSuccessorValidation &&
         (tokenRows.review.cloudflare_token_id !==
-          membershipSuccessorValidation.predecessorReviewTokenId ||
-         replacementTokenId !== membershipSuccessorValidation.replacementReviewTokenId) ||
+          currentMembershipSuccessorValidation.predecessorReviewTokenId ||
+         replacementTokenId !== currentMembershipSuccessorValidation.replacementReviewTokenId) ||
       replacementTokenId === tokenRows.review.cloudflare_token_id ||
       replacementTokenId === tokenRows.production.cloudflare_token_id ||
       Date.parse(replacementTokenAuthorityProof.modifiedOn) <= Date.parse(journal.terminalAt) ||
@@ -1575,7 +2327,7 @@ export function issueReviewTokenRotationAuthority({ production, review, accountI
       repositoryConnectionProof, productionSentinelProof, predecessorTokenAuthorityProofs,
       replacementTokenAuthorityProof, replacementTokenOwnerMembershipProof, buildUsageProof,
       productionBaselineProof, programDeliveryProof, rotationAttemptCoordinate,
-      membershipSuccessorValidation }),
+      membershipSuccessorValidation, membershipSecretRecoverySuccessorValidation }),
     allowedWrites: ["create-one-exact-replacement-review-build-token-wrapper",
       "patch-only-journaled-production-trigger-token-reference",
       "patch-only-journaled-review-trigger-token-reference",
@@ -1615,6 +2367,10 @@ function validateHistoricalReviewTokenRotationAuthority(proof, { production, rev
     "rotationAttempt"];
   const successorAuthority = proof?.evidenceDigests?.membershipSuccessor !== undefined;
   if (successorAuthority) evidenceKeys.push("membershipSuccessor");
+  const secretRecoverySuccessorAuthority =
+    proof?.evidenceDigests?.membershipSecretRecoverySuccessor !== undefined;
+  if (secretRecoverySuccessorAuthority)
+    evidenceKeys.push("membershipSecretRecoverySuccessor");
   const captured = Date.parse(proof?.capturedAt ?? "");
   const expires = Date.parse(proof?.expiresAt ?? "");
   const unsigned = { ...proof };
@@ -1632,9 +2388,10 @@ function validateHistoricalReviewTokenRotationAuthority(proof, { production, rev
       successorAuthority &&
         (proof.evidenceDigests.membershipSuccessor !== reviewMembershipSuccessorEvidenceDigest ||
          proof.journalIdentities?.predecessorReviewBuildTokenUuid !==
-           reviewMembershipSuccessorRotationIncident.predecessorReviewBuildTokenUuid ||
-         proof.replacementToken?.tokenId !==
-           reviewMembershipSuccessorRotationIncident.replacementReviewTokenId) ||
+           reviewMembershipSuccessorRotationIncident.predecessorReviewBuildTokenUuid) ||
+      secretRecoverySuccessorAuthority !==
+        (successorAuthority && proof.replacementToken?.tokenId !==
+          reviewMembershipSuccessorRotationIncident.replacementReviewTokenId) ||
       proof.planDigest !== planDigest ||
       proof.productionContractDigest !== digestJson(production) ||
       proof.reviewContractDigest !== digestJson(review) ||
@@ -4867,6 +5624,28 @@ export function provisioningSetupPlan(production, review) {
       "ATRINIK_REVIEW_MEMBERSHIP_SUCCESSOR_JOURNAL_FILE",
       "ATRINIK_REVIEW_MEMBERSHIP_SUCCESSOR_RESULT_PROOF_FILE",
       "ATRINIK_REVIEW_MEMBERSHIP_SUCCESSOR_SNAPSHOT_MANIFEST_FILE",
+      "ATRINIK_REVIEW_MEMBERSHIP_SECRET_RECOVERY_INCIDENT_PROOF_FILE",
+      "ATRINIK_REVIEW_MEMBERSHIP_SECRET_RECOVERY_PROGRAM_PROOF_FILE",
+      "ATRINIK_REVIEW_MEMBERSHIP_SECRET_RECOVERY_PROGRAM_LEDGER_FILE",
+      "ATRINIK_REVIEW_MEMBERSHIP_SECRET_RECOVERY_ATTEMPT_COORDINATE_FILE",
+      "ATRINIK_REVIEW_MEMBERSHIP_SECRET_RECOVERY_EXECUTOR_FILE",
+      "ATRINIK_REVIEW_MEMBERSHIP_SECRET_RECOVERY_JOURNAL_FILE",
+      "ATRINIK_REVIEW_MEMBERSHIP_SECRET_RECOVERY_PRE_CREATE_PROOF_FILE",
+      "ATRINIK_REVIEW_MEMBERSHIP_SECRET_RECOVERY_AUTHORITY_CURRENT_MAIN_PROOF_FILE",
+      "ATRINIK_REVIEW_MEMBERSHIP_SECRET_RECOVERY_MUTATION_CURRENT_MAIN_PROOF_FILE",
+      "ATRINIK_REVIEW_MEMBERSHIP_SECRET_RECOVERY_BOOTSTRAP_POLICY_PROOF_FILE",
+      "ATRINIK_REVIEW_MEMBERSHIP_SECRET_RECOVERY_AUTHORITY_PROOF_OUTPUT_FILE",
+      "ATRINIK_REVIEW_MEMBERSHIP_SECRET_RECOVERY_AUTHORITY_PROOF_FILE",
+      "ATRINIK_REVIEW_MEMBERSHIP_SECRET_RECOVERY_PROVIDER_RESPONSE_FILE",
+      "ATRINIK_REVIEW_MEMBERSHIP_SECRET_RECOVERY_SECRET_FILE",
+      "ATRINIK_REVIEW_MEMBERSHIP_SECRET_RECOVERY_RESULT_PROOF_FILE",
+      "ATRINIK_REVIEW_MEMBERSHIP_SECRET_RECOVERY_SUCCESSOR_PROOF_OUTPUT_FILE",
+      "ATRINIK_REVIEW_MEMBERSHIP_SECRET_RECOVERY_SUCCESSOR_PROOF_FILE",
+      "ATRINIK_REVIEW_MEMBERSHIP_SECRET_RECOVERY_RESIDUAL_PROOF_FILE",
+      "ATRINIK_REVIEW_MEMBERSHIP_SECRET_RECOVERY_CLEANUP_CURRENT_MAIN_PROOF_FILE",
+      "ATRINIK_REVIEW_MEMBERSHIP_SECRET_RECOVERY_CLEANUP_PRE_DELETE_PROOF_FILE",
+      "ATRINIK_REVIEW_MEMBERSHIP_SECRET_RECOVERY_CLEANUP_RESPONSE_FILE",
+      "ATRINIK_REVIEW_MEMBERSHIP_SECRET_RECOVERY_CLEANUP_ABSENCE_PROOF_FILE",
       "ATRINIK_REVIEW_TOKEN_ROTATION_AUTHORITY_PROOF_OUTPUT_FILE",
       "ATRINIK_REVIEW_TOKEN_ROTATION_AUTHORITY_PROOF_FILE",
       "ATRINIK_REVIEW_TOKEN_ROTATION_PREDECESSOR_PROOF_FILE",
@@ -5690,6 +6469,102 @@ export function provisioningSetupPlan(production, review) {
       forbidden: ["account-owned-token", "predecessor-token-policy-update",
         "production-trigger-activation", "migration-0010", "manual-api-build",
         "initial-production-build", "worker-resource-or-repository-connection-mutation"],
+      secretRecovery: {
+        gate: "distinct-lost-one-time-secret-recovery",
+        incident: structuredClone(reviewMembershipSecretRecoveryIncident),
+        authorityLifetimeMinutes: reviewMembershipSecretRecoveryAuthorityLifetimeMs / 60_000,
+        operations: [
+          { id: "membership-secret-recovery-bind-program-attempt-and-prior-terminal",
+            actor: "workers-builds-control-plane-operator", mutation: false,
+            action: "bind-exact-122-terminal-124-contract-current-program-ledger-and-fresh-empty-attempt",
+            produces: { proof_digest: "exact-secret-recovery-program-and-attempt-digest" } },
+          { id: "membership-secret-recovery-pre-create",
+            actor: "cloudflare-user-token-owner", mutation: false,
+            action: "prove-exhaustive-lost-token-present-and-unique-recovery-name-absent",
+            produces: { proof_digest: "fresh-exhaustive-user-token-pre-create-digest" } },
+          { id: "membership-secret-recovery-authority",
+            actor: "cloudflare-user-token-owner", mutation: false,
+            action: "bind-fresh-main-exact-bootstrap-policy-two-permission-request-and-attempt",
+            command:
+              "npm run provision:workers-builds:verify-review-membership-secret-recovery-authority",
+            precondition: { programAndAttempt: resultReference(
+              "membership-secret-recovery-bind-program-attempt-and-prior-terminal",
+              "proof_digest"), providerState: resultReference(
+              "membership-secret-recovery-pre-create", "proof_digest") },
+            produces: { proof_digest: "bounded-membership-secret-recovery-authority-digest",
+              request_digest: "exact-two-user-read-permission-request-digest" } },
+          { id: "membership-secret-recovery-create-user-token",
+            actor: "cloudflare-user-token-owner", mutation: true,
+            action: "post-at-most-once-one-attempt-unique-exact-policy-user-token",
+            precondition: { authority: resultReference(
+              "membership-secret-recovery-authority", "proof_digest"),
+            currentMainProof: currentMainMutationPrecondition(), providerState: resultReference(
+              "membership-secret-recovery-pre-create", "proof_digest") },
+            request: { method: "POST", path: "/user/tokens",
+              body: { name: "authority-derived-attempt-unique-recovery-name",
+                policies: [{ effect: "allow", resources: {
+                  [`com.cloudflare.api.user.${reviewMembershipSecretRecoveryIncident.ownerUserId}`]: "*",
+                }, permission_groups: [
+                  { id: privateFileReference(
+                    "ATRINIK_USER_DETAILS_READ_PERMISSION_GROUP_ID_FILE") },
+                  { id: privateFileReference(
+                    "ATRINIK_MEMBERSHIPS_READ_PERMISSION_GROUP_ID_FILE") },
+                ] }] } },
+            produces: { token_id: "exact-journal-created-user-token-id",
+              token_secret: "owner-only-never-journaled-one-time-secret" } },
+          { id: "membership-secret-recovery-result",
+            actor: "cloudflare-user-token-owner", mutation: false,
+            action: "bind-new-id-owner-exact-policy-secret-file-digest-and-terminal-journal",
+            command:
+              "npm run provision:workers-builds:verify-review-membership-secret-recovery-result",
+            precondition: { authority: resultReference(
+              "membership-secret-recovery-authority", "proof_digest") },
+            produces: { proof_digest: "new-membership-successor-coordinate-digest",
+              result_proof_digest: "new-membership-successor-policy-digest",
+              token_id: "exact-journal-created-user-token-id",
+              successor: "new-membership-successor-coordinate-for-fresh-rotation" } },
+        ],
+        blockedTerminal:
+          "fresh-post-prefix-exhaustive-exact-absence-or-journal-created-unwrapped-token-proof",
+        cleanup: {
+          actor: "cloudflare-user-token-owner", mutation: true,
+          action: "delete-only-this-journal-created-token-after-fresh-exhaustive-wrapper-unreference",
+          precondition: { authority: resultReference(
+            "membership-secret-recovery-authority", "proof_digest"),
+          currentMainProof: currentMainMutationPrecondition(),
+          providerState:
+            "fresh-exhaustive-exact-journal-created-token-with-zero-build-wrapper-references" },
+          request: { method: "DELETE", path: "/user/tokens/{journal_created_token_id}" },
+          journalOperations: ["membership-secret-recovery-cleanup-user-token",
+            "membership-secret-recovery-cleanup-pre-delete"],
+          produces: { terminal:
+            "checksum-valid-blocked-terminal-with-post-prefix-exact-absence-proof" },
+        },
+        handoff: {
+          target: "reviewTokenRotation",
+          requirement: "new-namespace-authority-journal-and-executor",
+          evidence: [
+            privateFileReference(
+              "ATRINIK_REVIEW_MEMBERSHIP_SECRET_RECOVERY_AUTHORITY_PROOF_FILE"),
+            privateFileReference("ATRINIK_REVIEW_MEMBERSHIP_SECRET_RECOVERY_JOURNAL_FILE"),
+            privateFileReference(
+              "ATRINIK_REVIEW_MEMBERSHIP_SECRET_RECOVERY_ATTEMPT_COORDINATE_FILE"),
+            privateFileReference(
+              "ATRINIK_REVIEW_MEMBERSHIP_SECRET_RECOVERY_PRE_CREATE_PROOF_FILE"),
+            privateFileReference(
+              "ATRINIK_REVIEW_MEMBERSHIP_SECRET_RECOVERY_MUTATION_CURRENT_MAIN_PROOF_FILE"),
+            privateFileReference(
+              "ATRINIK_REVIEW_MEMBERSHIP_SECRET_RECOVERY_PROVIDER_RESPONSE_FILE"),
+            privateFileReference("ATRINIK_REVIEW_MEMBERSHIP_SECRET_RECOVERY_SECRET_FILE"),
+            privateFileReference(
+              "ATRINIK_REVIEW_MEMBERSHIP_SECRET_RECOVERY_RESULT_PROOF_FILE"),
+            privateFileReference(
+              "ATRINIK_REVIEW_MEMBERSHIP_SECRET_RECOVERY_SUCCESSOR_PROOF_FILE"),
+          ],
+          authorityEvidenceDigest: "membershipSecretRecoverySuccessor",
+        },
+        forbidden: structuredClone(review.automaticReview.membershipSecretRecovery.forbidden),
+      },
     },
     disposableProof: {
       gate: "review-trigger-activation-and-proof",
@@ -6159,12 +7034,66 @@ export function validateSetupPlan(plan) {
       membershipRepair.failureRollback?.actor !== "cloudflare-user-token-owner" ||
       membershipRepair.failureRollback?.mutation !== true)
     fail("review membership repair plan drift");
-  inspect({ ...membershipRepair, operations: undefined, failureRollback: undefined });
+  const secretRecovery = membershipRepair.secretRecovery;
+  const expectedSecretRecoveryOperations = [
+    ["membership-secret-recovery-bind-program-attempt-and-prior-terminal",
+      "workers-builds-control-plane-operator", false],
+    ["membership-secret-recovery-pre-create", "cloudflare-user-token-owner", false],
+    ["membership-secret-recovery-authority", "cloudflare-user-token-owner", false],
+    ["membership-secret-recovery-create-user-token", "cloudflare-user-token-owner", true],
+    ["membership-secret-recovery-result", "cloudflare-user-token-owner", false],
+  ];
+  if (!secretRecovery || secretRecovery.gate !== "distinct-lost-one-time-secret-recovery" ||
+      !same(secretRecovery.incident, reviewMembershipSecretRecoveryIncident) ||
+      secretRecovery.authorityLifetimeMinutes !==
+        reviewMembershipSecretRecoveryAuthorityLifetimeMs / 60_000 ||
+      !same(secretRecovery.operations?.map(({ id, actor, mutation }) =>
+        [id, actor, mutation]), expectedSecretRecoveryOperations) ||
+      secretRecovery.operations[3].request?.method !== "POST" ||
+      secretRecovery.operations[3].request?.path !== "/user/tokens" ||
+      secretRecovery.cleanup?.request?.method !== "DELETE" ||
+      secretRecovery.cleanup?.request?.path !== "/user/tokens/{journal_created_token_id}" ||
+      !same(secretRecovery.handoff, {
+        target: "reviewTokenRotation",
+        requirement: "new-namespace-authority-journal-and-executor",
+        evidence: [
+          privateFileReference(
+            "ATRINIK_REVIEW_MEMBERSHIP_SECRET_RECOVERY_AUTHORITY_PROOF_FILE"),
+          privateFileReference("ATRINIK_REVIEW_MEMBERSHIP_SECRET_RECOVERY_JOURNAL_FILE"),
+          privateFileReference(
+            "ATRINIK_REVIEW_MEMBERSHIP_SECRET_RECOVERY_ATTEMPT_COORDINATE_FILE"),
+          privateFileReference(
+            "ATRINIK_REVIEW_MEMBERSHIP_SECRET_RECOVERY_PRE_CREATE_PROOF_FILE"),
+          privateFileReference(
+            "ATRINIK_REVIEW_MEMBERSHIP_SECRET_RECOVERY_MUTATION_CURRENT_MAIN_PROOF_FILE"),
+          privateFileReference(
+            "ATRINIK_REVIEW_MEMBERSHIP_SECRET_RECOVERY_PROVIDER_RESPONSE_FILE"),
+          privateFileReference("ATRINIK_REVIEW_MEMBERSHIP_SECRET_RECOVERY_SECRET_FILE"),
+          privateFileReference(
+            "ATRINIK_REVIEW_MEMBERSHIP_SECRET_RECOVERY_RESULT_PROOF_FILE"),
+          privateFileReference(
+            "ATRINIK_REVIEW_MEMBERSHIP_SECRET_RECOVERY_SUCCESSOR_PROOF_FILE"),
+        ],
+        authorityEvidenceDigest: "membershipSecretRecoverySuccessor",
+      }) ||
+      !same(secretRecovery.forbidden, ["replay-or-amend-membership-repair-122",
+        "adopt-bootstrap-as-replacement", "wrapper-or-trigger-mutation",
+        "production-activation", "manual-or-initial-build", "migration-0010",
+        "worker-resource-mutation"]))
+    fail("review membership secret recovery plan drift");
+  inspect({ ...membershipRepair, operations: undefined, failureRollback: undefined,
+    secretRecovery: undefined });
   for (const operation of membershipRepair.operations) {
     inspect(operation);
     available.set(operation.id, new Set(Object.keys(operation.produces ?? {})));
   }
   inspect(membershipRepair.failureRollback);
+  inspect({ ...secretRecovery, operations: undefined, cleanup: undefined });
+  for (const operation of secretRecovery.operations) {
+    inspect(operation);
+    available.set(operation.id, new Set(Object.keys(operation.produces ?? {})));
+  }
+  inspect(secretRecovery.cleanup);
   const disposableAuthority = plan.disposableProof?.authorityOperation;
   if (!same(disposableAuthority && [disposableAuthority.id, disposableAuthority.actor,
     disposableAuthority.mutation, disposableAuthority.action],
@@ -7407,6 +8336,66 @@ async function readReviewTokenRotationAuthorityEvidence(environment = process.en
       environment.ATRINIK_REVIEW_MEMBERSHIP_SUCCESSOR_SNAPSHOT_MANIFEST_FILE,
       "review membership successor snapshot manifest"),
   } : undefined;
+  const secretRecoverySuccessorInputNames = [
+    "ATRINIK_REVIEW_MEMBERSHIP_SECRET_RECOVERY_AUTHORITY_PROOF_FILE",
+    "ATRINIK_REVIEW_MEMBERSHIP_SECRET_RECOVERY_JOURNAL_FILE",
+    "ATRINIK_REVIEW_MEMBERSHIP_SECRET_RECOVERY_ATTEMPT_COORDINATE_FILE",
+    "ATRINIK_REVIEW_MEMBERSHIP_SECRET_RECOVERY_PRE_CREATE_PROOF_FILE",
+    "ATRINIK_REVIEW_MEMBERSHIP_SECRET_RECOVERY_MUTATION_CURRENT_MAIN_PROOF_FILE",
+    "ATRINIK_REVIEW_MEMBERSHIP_SECRET_RECOVERY_PROVIDER_RESPONSE_FILE",
+    "ATRINIK_REVIEW_MEMBERSHIP_SECRET_RECOVERY_SECRET_FILE",
+    "ATRINIK_REVIEW_MEMBERSHIP_SECRET_RECOVERY_RESULT_PROOF_FILE",
+    "ATRINIK_REVIEW_MEMBERSHIP_SECRET_RECOVERY_SUCCESSOR_PROOF_FILE",
+  ];
+  const secretRecoverySuccessorInputCount = secretRecoverySuccessorInputNames
+    .filter((name) => environment[name]).length;
+  if (secretRecoverySuccessorInputCount !== 0 &&
+      secretRecoverySuccessorInputCount !== secretRecoverySuccessorInputNames.length)
+    fail("review membership secret recovery successor private input set is incomplete");
+  const membershipSecretRecoverySuccessorEvidence = secretRecoverySuccessorInputCount ? {
+    authorityProof: await readPrivateJson(
+      environment.ATRINIK_REVIEW_MEMBERSHIP_SECRET_RECOVERY_AUTHORITY_PROOF_FILE,
+      "review membership secret recovery authority proof"),
+    authorityFileSha256: await readPrivateFileSha256(
+      environment.ATRINIK_REVIEW_MEMBERSHIP_SECRET_RECOVERY_AUTHORITY_PROOF_FILE,
+      "review membership secret recovery authority proof"),
+    records: await readPrivateJsonLines(
+      environment.ATRINIK_REVIEW_MEMBERSHIP_SECRET_RECOVERY_JOURNAL_FILE,
+      "review membership secret recovery journal"),
+    journalFileSha256: await readPrivateFileSha256(
+      environment.ATRINIK_REVIEW_MEMBERSHIP_SECRET_RECOVERY_JOURNAL_FILE,
+      "review membership secret recovery journal"),
+    attemptCoordinate: await readPrivateJson(
+      environment.ATRINIK_REVIEW_MEMBERSHIP_SECRET_RECOVERY_ATTEMPT_COORDINATE_FILE,
+      "review membership secret recovery attempt coordinate"),
+    preCreateInventoryProof: await readPrivateJson(
+      environment.ATRINIK_REVIEW_MEMBERSHIP_SECRET_RECOVERY_PRE_CREATE_PROOF_FILE,
+      "review membership secret recovery pre-create proof"),
+    currentMainProof: await readPrivateJson(
+      environment.ATRINIK_REVIEW_MEMBERSHIP_SECRET_RECOVERY_MUTATION_CURRENT_MAIN_PROOF_FILE,
+      "review membership secret recovery mutation current-main proof"),
+    responseDocument: await readPrivateJson(
+      environment.ATRINIK_REVIEW_MEMBERSHIP_SECRET_RECOVERY_PROVIDER_RESPONSE_FILE,
+      "review membership secret recovery provider response"),
+    responseFileSha256: await readPrivateFileSha256(
+      environment.ATRINIK_REVIEW_MEMBERSHIP_SECRET_RECOVERY_PROVIDER_RESPONSE_FILE,
+      "review membership secret recovery provider response"),
+    secretFileSha256: await readPrivateFileSha256(
+      environment.ATRINIK_REVIEW_MEMBERSHIP_SECRET_RECOVERY_SECRET_FILE,
+      "review membership secret recovery secret"),
+    resultProof: await readPrivateJson(
+      environment.ATRINIK_REVIEW_MEMBERSHIP_SECRET_RECOVERY_RESULT_PROOF_FILE,
+      "review membership secret recovery result proof"),
+    resultProofFileSha256: await readPrivateFileSha256(
+      environment.ATRINIK_REVIEW_MEMBERSHIP_SECRET_RECOVERY_RESULT_PROOF_FILE,
+      "review membership secret recovery result proof"),
+    successorProof: await readPrivateJson(
+      environment.ATRINIK_REVIEW_MEMBERSHIP_SECRET_RECOVERY_SUCCESSOR_PROOF_FILE,
+      "review membership secret recovery successor proof"),
+    successorProofFileSha256: await readPrivateFileSha256(
+      environment.ATRINIK_REVIEW_MEMBERSHIP_SECRET_RECOVERY_SUCCESSOR_PROOF_FILE,
+      "review membership secret recovery successor proof"),
+  } : undefined;
   return {
     reviewActivationProof: await readPrivateJson(
       environment.ATRINIK_REVIEW_ACTIVATION_PROOF_FILE, "review activation proof"),
@@ -7456,6 +8445,9 @@ async function readReviewTokenRotationAuthorityEvidence(environment = process.en
     rotationAttemptCoordinate: attemptCoordinate,
     attemptFilesystemEvidence,
     ...(membershipSuccessorEvidence ? { membershipSuccessorEvidence } : {}),
+    ...(membershipSecretRecoverySuccessorEvidence ? {
+      membershipSecretRecoverySuccessorEvidence,
+    } : {}),
     buildUsageProof: await readPrivateJson(environment.ATRINIK_WORKERS_BUILDS_USAGE_PROOF_FILE,
       "Workers Builds usage proof"),
   };
@@ -7477,6 +8469,103 @@ async function readReviewMembershipRepairAuthorityEvidence(environment, sourceSh
       environment.ATRINIK_REVIEW_MEMBERSHIP_REPAIR_CURRENT_STATE_PROOF_FILE,
       "review membership repair current state proof"),
     currentMainProofDigest: digestJson(currentMainProof),
+  };
+}
+
+async function readReviewMembershipSecretRecoveryEvidence(environment, sourceSha,
+{ verifyInitialAttempt = false, useAuthorityCurrentMainProof = false,
+  testCapability = undefined } = {}) {
+  if (testCapability && !membershipSecretRecoveryTestCapabilities.has(testCapability))
+    fail("membership secret recovery test capability is unavailable");
+  const authorityCurrentMainProof = useAuthorityCurrentMainProof ? await readPrivateJson(
+      environment.ATRINIK_REVIEW_MEMBERSHIP_SECRET_RECOVERY_AUTHORITY_CURRENT_MAIN_PROOF_FILE,
+      "review membership secret recovery authority current-main proof") : undefined;
+  if (useAuthorityCurrentMainProof)
+    validateCurrentMainProof(authorityCurrentMainProof, sourceSha,
+      Date.parse(authorityCurrentMainProof?.capturedAt ?? ""));
+  const currentMainProof = useAuthorityCurrentMainProof ? authorityCurrentMainProof :
+    await readCurrentMainProof(environment, sourceSha);
+  const attemptCoordinate = await readPrivateJson(
+    environment.ATRINIK_REVIEW_MEMBERSHIP_SECRET_RECOVERY_ATTEMPT_COORDINATE_FILE,
+    "review membership secret recovery attempt coordinate");
+  const programLedgerPath =
+    environment.ATRINIK_REVIEW_MEMBERSHIP_SECRET_RECOVERY_PROGRAM_LEDGER_FILE;
+  const membershipSuccessorEvidence = testCapability?.membershipSuccessorEvidence ?? {
+    incidentProof: await readPrivateJson(
+      environment.ATRINIK_REVIEW_MEMBERSHIP_SUCCESSOR_INCIDENT_PROOF_FILE,
+      "review membership successor incident proof"),
+    membershipRepairAuthorityProof: await readPrivateJson(
+      environment.ATRINIK_REVIEW_MEMBERSHIP_SUCCESSOR_AUTHORITY_PROOF_FILE,
+      "review membership successor authority proof"),
+    membershipRepairAuthorityFileSha256: await readPrivateFileSha256(
+      environment.ATRINIK_REVIEW_MEMBERSHIP_SUCCESSOR_AUTHORITY_PROOF_FILE,
+      "review membership successor authority proof"),
+    membershipRepairJournalRecords: await readPrivateJsonLines(
+      environment.ATRINIK_REVIEW_MEMBERSHIP_SUCCESSOR_JOURNAL_FILE,
+      "review membership successor journal"),
+    membershipRepairJournalFileSha256: await readPrivateFileSha256(
+      environment.ATRINIK_REVIEW_MEMBERSHIP_SUCCESSOR_JOURNAL_FILE,
+      "review membership successor journal"),
+    membershipRepairResultProof: await readPrivateJson(
+      environment.ATRINIK_REVIEW_MEMBERSHIP_SUCCESSOR_RESULT_PROOF_FILE,
+      "review membership successor result proof"),
+    membershipRepairResultProofFileSha256: await readPrivateFileSha256(
+      environment.ATRINIK_REVIEW_MEMBERSHIP_SUCCESSOR_RESULT_PROOF_FILE,
+      "review membership successor result proof"),
+    membershipRepairSnapshotManifestFileSha256: await readPrivateFileSha256(
+      environment.ATRINIK_REVIEW_MEMBERSHIP_SUCCESSOR_SNAPSHOT_MANIFEST_FILE,
+      "review membership successor snapshot manifest"),
+  };
+  return {
+    incidentProof: await readPrivateJson(
+      environment.ATRINIK_REVIEW_MEMBERSHIP_SECRET_RECOVERY_INCIDENT_PROOF_FILE,
+      "review membership secret recovery incident proof"),
+    membershipSuccessorEvidence,
+    bootstrapPolicyProof: await readPrivateJson(
+      environment.ATRINIK_REVIEW_MEMBERSHIP_SECRET_RECOVERY_BOOTSTRAP_POLICY_PROOF_FILE,
+      "review membership secret recovery bootstrap policy proof"),
+    permissionGroupProof: await readPrivateJson(
+      environment.ATRINIK_REVIEW_MEMBERSHIP_REPAIR_PERMISSION_GROUP_PROOF_FILE,
+      "review membership secret recovery permission group proof"),
+    currentReviewActiveProof: await readPrivateJson(
+      environment.ATRINIK_REVIEW_MEMBERSHIP_REPAIR_CURRENT_STATE_PROOF_FILE,
+      "review membership secret recovery current state proof"),
+    currentMainProofDigest: digestJson(currentMainProof),
+    programDeliveryProof: await readPrivateJson(
+      environment.ATRINIK_REVIEW_MEMBERSHIP_SECRET_RECOVERY_PROGRAM_PROOF_FILE,
+      "review membership secret recovery program proof"),
+    programLedgerDocument: await readPrivateJson(programLedgerPath,
+      "review membership secret recovery program ledger"),
+    programLedgerFileSha256: await readPrivateFileSha256(programLedgerPath,
+      "review membership secret recovery program ledger"),
+    attemptCoordinate,
+    attemptFilesystemEvidence: verifyInitialAttempt ? await (async () => {
+      if (attemptCoordinate.executorPath !==
+            resolve(environment.ATRINIK_REVIEW_MEMBERSHIP_SECRET_RECOVERY_EXECUTOR_FILE ?? "") ||
+          attemptCoordinate.journalPath !==
+            resolve(environment.ATRINIK_REVIEW_MEMBERSHIP_SECRET_RECOVERY_JOURNAL_FILE ?? ""))
+        fail("review membership secret recovery attempt environment drift");
+      await validateReviewMembershipSecretRecoveryAttemptPreparation(
+        attemptCoordinate, sourceSha);
+      return {
+        executorSha256: attemptCoordinate.executorSha256,
+        initialJournalSha256: attemptCoordinate.initialJournalSha256,
+        journalPathSha256: attemptCoordinate.journalPathSha256,
+        responsePathSha256: attemptCoordinate.responsePathSha256,
+        secretOutputPathSha256: attemptCoordinate.secretOutputPathSha256,
+        responseAbsent: true, secretOutputAbsent: true,
+      };
+    })() : {
+      executorSha256: attemptCoordinate.executorSha256,
+      initialJournalSha256: attemptCoordinate.initialJournalSha256,
+      journalPathSha256: attemptCoordinate.journalPathSha256,
+      responsePathSha256: attemptCoordinate.responsePathSha256,
+      secretOutputPathSha256: attemptCoordinate.secretOutputPathSha256,
+      responseAbsent: true, secretOutputAbsent: true,
+    },
+    preCreateInventoryProof: await readPrivateJson(
+      environment.ATRINIK_REVIEW_MEMBERSHIP_SECRET_RECOVERY_PRE_CREATE_PROOF_FILE,
+      "review membership secret recovery pre-create proof"),
   };
 }
 
@@ -8642,6 +9731,8 @@ export const credentialedProvisioningModes = Object.freeze([
   "--verify-review-activation-authority-proof",
   "--verify-review-membership-repair-authority",
   "--verify-review-membership-repair-result",
+  "--verify-review-membership-secret-recovery-authority",
+  "--verify-review-membership-secret-recovery-result",
   "--verify-review-token-rotation-authority",
   "--verify-review-token-rotation-authority-proof-historical",
   "--verify-review-token-rotation-provider-normalized-authority-proof-historical",
@@ -8681,6 +9772,8 @@ async function runProvisioningCliCore(mode = process.argv[2] ?? "--validate-only
   const providerNormalizedTestCapability = testCapabilities?.providerNormalized ??
     testCapabilities;
   const blockedDeleteTestCapability = testCapabilities?.blockedDelete ?? testCapabilities;
+  const membershipSecretRecoveryTestCapability =
+    testCapabilities?.membershipSecretRecovery;
   const incidentCoordinate = providerNormalizedIncidentCoordinate(
     providerNormalizedTestCapability);
   if (mode === "--validate-only") {
@@ -9096,6 +10189,107 @@ async function runProvisioningCliCore(mode = process.argv[2] ?? "--validate-only
     process.stdout.write(`${JSON.stringify({
       outcome: "workers-builds-review-membership-repair-result-valid", mutation: false,
       sourceSha, tokenId: replacementTokenId, proof_digest: digestJson(resultProof) })}\n`);
+    return;
+  }
+  if (mode === "--verify-review-membership-secret-recovery-authority") {
+    const accountId = await readPrivateValue(process.env.ATRINIK_CLOUDFLARE_ACCOUNT_ID_FILE,
+      "Cloudflare account ID", accountIdPattern);
+    const evidence = await readReviewMembershipSecretRecoveryEvidence(process.env, sourceSha,
+      { verifyInitialAttempt: true, testCapability: membershipSecretRecoveryTestCapability });
+    const proof = issueReviewMembershipSecretRecoveryAuthority({ production, review, accountId,
+      sourceSha, ...evidence });
+    await writePrivateProof(
+      process.env.ATRINIK_REVIEW_MEMBERSHIP_SECRET_RECOVERY_AUTHORITY_PROOF_OUTPUT_FILE, proof);
+    process.stdout.write(`${JSON.stringify({ outcome: proof.outcome, mutation: false,
+      sourceSha, expiresAt: proof.expiresAt, proof_digest: proof.proof_digest,
+      requestDigest: proof.requestDigest })}\n`);
+    return;
+  }
+  if (mode === "--verify-review-membership-secret-recovery-result") {
+    const accountId = await readPrivateValue(process.env.ATRINIK_CLOUDFLARE_ACCOUNT_ID_FILE,
+      "Cloudflare account ID", accountIdPattern);
+    const evidence = await readReviewMembershipSecretRecoveryEvidence(process.env, sourceSha,
+      { useAuthorityCurrentMainProof: true,
+        testCapability: membershipSecretRecoveryTestCapability });
+    const authorityProof = await readPrivateJson(
+      process.env.ATRINIK_REVIEW_MEMBERSHIP_SECRET_RECOVERY_AUTHORITY_PROOF_FILE,
+      "review membership secret recovery authority proof");
+    validateReviewMembershipSecretRecoveryAuthority(authorityProof,
+      { production, review, accountId, sourceSha, ...evidence },
+      Date.parse(authorityProof.capturedAt), 0);
+    const records = await readPrivateJsonLines(
+      process.env.ATRINIK_REVIEW_MEMBERSHIP_SECRET_RECOVERY_JOURNAL_FILE,
+      "review membership secret recovery journal");
+    const currentMainProof = records.some(({ event }) => event === "current-main-proof-bound") ?
+      await readPrivateJson(
+        process.env.ATRINIK_REVIEW_MEMBERSHIP_SECRET_RECOVERY_MUTATION_CURRENT_MAIN_PROOF_FILE,
+        "review membership secret recovery mutation current-main proof") : undefined;
+    const classified = records.some(({ event }) => event === "provider-response-classified");
+    const responseDocument = classified ? await readPrivateJson(
+      evidence.attemptCoordinate.responsePath,
+      "review membership secret recovery provider response") : undefined;
+    const responseFileSha256 = classified ? await readPrivateFileSha256(
+      evidence.attemptCoordinate.responsePath,
+      "review membership secret recovery provider response") : undefined;
+    const complete = records.at(-1)?.event === "membership-secret-recovery-complete";
+    const secretFileSha256 = complete ? await readPrivateFileSha256(
+      evidence.attemptCoordinate.secretOutputPath,
+      "review membership secret recovery secret output") : undefined;
+    const cleanup = records.some(({ operation }) => operation ===
+      "membership-secret-recovery-cleanup-user-token");
+    const cleanupCurrentMainProof = cleanup ? await readPrivateJson(
+      process.env.ATRINIK_REVIEW_MEMBERSHIP_SECRET_RECOVERY_CLEANUP_CURRENT_MAIN_PROOF_FILE,
+      "review membership secret recovery cleanup current-main proof") : undefined;
+    const cleanupPreDeleteBound = records.some(({ event, operation }) =>
+      event === "provider-proof-bound" && operation ===
+        "membership-secret-recovery-cleanup-pre-delete");
+    const cleanupPreDeleteInventoryProof = cleanupPreDeleteBound ? await readPrivateJson(
+      process.env.ATRINIK_REVIEW_MEMBERSHIP_SECRET_RECOVERY_CLEANUP_PRE_DELETE_PROOF_FILE,
+      "review membership secret recovery cleanup pre-delete proof") : undefined;
+    const cleanupClassified = records.some(({ event, operation }) =>
+      event === "provider-response-classified" && operation ===
+        "membership-secret-recovery-cleanup-user-token");
+    const cleanupResponseDocument = cleanupClassified ? await readPrivateJson(
+      process.env.ATRINIK_REVIEW_MEMBERSHIP_SECRET_RECOVERY_CLEANUP_RESPONSE_FILE,
+      "review membership secret recovery cleanup provider response") : undefined;
+    const cleanupResponseFileSha256 = cleanupClassified ? await readPrivateFileSha256(
+      process.env.ATRINIK_REVIEW_MEMBERSHIP_SECRET_RECOVERY_CLEANUP_RESPONSE_FILE,
+      "review membership secret recovery cleanup provider response") : undefined;
+    const cleanupBound = records.some(({ event, operation }) => event === "mutation-bound" &&
+      operation === "membership-secret-recovery-cleanup-user-token");
+    const cleanupAbsenceInventoryProof = cleanupBound ? await readPrivateJson(
+      process.env.ATRINIK_REVIEW_MEMBERSHIP_SECRET_RECOVERY_CLEANUP_ABSENCE_PROOF_FILE,
+      "review membership secret recovery cleanup absence proof") : undefined;
+    const resultProof = complete ? await readPrivateJson(
+      process.env.ATRINIK_REVIEW_MEMBERSHIP_SECRET_RECOVERY_RESULT_PROOF_FILE,
+      "review membership secret recovery result proof") : undefined;
+    const residualInventoryProof = complete ? undefined : await readPrivateJson(
+      process.env.ATRINIK_REVIEW_MEMBERSHIP_SECRET_RECOVERY_RESIDUAL_PROOF_FILE,
+      "review membership secret recovery residual proof");
+    const result = validateReviewMembershipSecretRecoveryJournal(records, authorityProof,
+      { accountId, sourceSha, attemptCoordinate: evidence.attemptCoordinate,
+        preCreateInventoryProof: evidence.preCreateInventoryProof, currentMainProof,
+        responseDocument, responseFileSha256, secretFileSha256, resultProof,
+        residualInventoryProof, cleanupCurrentMainProof, cleanupPreDeleteInventoryProof,
+        cleanupResponseDocument, cleanupResponseFileSha256,
+        cleanupAbsenceInventoryProof });
+    const successorProof = complete ? issueReviewMembershipSecretRecoverySuccessorProof({
+      authorityProof, authorityFileSha256: await readPrivateFileSha256(
+        process.env.ATRINIK_REVIEW_MEMBERSHIP_SECRET_RECOVERY_AUTHORITY_PROOF_FILE,
+        "review membership secret recovery authority proof"), records,
+      journalFileSha256: await readPrivateFileSha256(
+        process.env.ATRINIK_REVIEW_MEMBERSHIP_SECRET_RECOVERY_JOURNAL_FILE,
+        "review membership secret recovery journal"), responseFileSha256, secretFileSha256,
+      resultProof, resultProofFileSha256: await readPrivateFileSha256(
+        process.env.ATRINIK_REVIEW_MEMBERSHIP_SECRET_RECOVERY_RESULT_PROOF_FILE,
+        "review membership secret recovery result proof") }) : undefined;
+    if (successorProof) await writePrivateProof(
+      process.env.ATRINIK_REVIEW_MEMBERSHIP_SECRET_RECOVERY_SUCCESSOR_PROOF_OUTPUT_FILE,
+      successorProof);
+    process.stdout.write(`${JSON.stringify({ ...result, sourceSha,
+      proof_digest: complete ? successorProof.proof_digest :
+        residualInventoryProof.proof_digest,
+      resultProofDigest: complete ? digestJson(resultProof) : undefined })}\n`);
     return;
   }
   if (mode === "--verify-review-token-rotation-authority") {
