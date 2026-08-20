@@ -828,10 +828,15 @@ owner-only file, read back the new token policy, and run
 `provision:workers-builds:verify-review-membership-repair-result`. The result
 must bind a new token ID, the same accepted owner, exactly Memberships Read and
 User Details Read, and empty account/zone permissions and resources. Then use
-the existing journaled review-token rotation to create the wrapper, repoint the
-inert production trigger and final review trigger, prove the old wrapper is
-globally unreferenced, and retire it. Finally run the existing disposable
-automatic push proof. Any ambiguous durable intent is reconciled and never
+the distinct membership-successor rotation authority to bind the exact repair
+authority, four-record creation journal, terminal result proof, and snapshot
+manifest. It derives the live predecessor wrapper and underlying token from the
+immutable prior rotation terminal; the absent original inert-setup wrapper is
+provenance only and must never be relabeled as live. The successor runs the
+same journaled, fresh-main, fresh-exhaustive-proof state machine to create the
+wrapper, repoint the inert production trigger and final review trigger, prove
+the old wrapper is globally unreferenced, and retire it. Finally run the
+existing disposable automatic push proof. Any ambiguous durable intent is reconciled and never
 blindly retried; any failure restores the exact predecessor trigger references
 or records an exhaustive blocked terminal. Production activation, migration
 `0010`, manual/API builds, and Worker-resource mutation remain forbidden.
