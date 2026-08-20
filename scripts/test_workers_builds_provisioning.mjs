@@ -42,6 +42,7 @@ import {
   reviewBuildTokenNames,
   reviewMembershipRepairIncident,
   reviewMembershipSuccessorRotationIncident,
+  reviewTokenRotationLivePredecessorName,
   publicStagedProofSummary,
   provisioningDryRunSummary,
   provisioningSetupPlan,
@@ -2349,6 +2350,21 @@ test("renews only a bounded disposable proof authority from exact review-active 
 });
 
 test("issues one journal-bound review-token rotation authority", () => {
+  assert.equal(reviewTokenRotationLivePredecessorName(undefined),
+    reviewBuildTokenNames.predecessor);
+  const successorCoordinate = reviewMembershipSuccessorRotationIncident;
+  const successorSelection = {
+    predecessorReviewBuildTokenUuid: successorCoordinate.predecessorReviewBuildTokenUuid,
+    predecessorReviewTokenId: successorCoordinate.predecessorReviewTokenId,
+    replacementReviewTokenId: successorCoordinate.replacementReviewTokenId,
+    evidenceSourceSha: successorCoordinate.sourceSha,
+    evidenceDigest: "876b9d46ed1c063cf9ac9d702d5953bad9eb26c366668e3a2bc7d7e7f912cf12",
+  };
+  assert.equal(reviewTokenRotationLivePredecessorName(successorSelection),
+    reviewBuildTokenNames.current);
+  assert.throws(() => reviewTokenRotationLivePredecessorName({ ...successorSelection,
+    predecessorReviewBuildTokenUuid: reviewTokenUuid }),
+  /live predecessor drift/u);
   const now = Date.now();
   const { evidence: disposable } = disposableReviewAuthorityFixture(now);
   const replacementTokenId = "replacement-review-token-id";
