@@ -538,6 +538,19 @@ export function validateReviewMembershipSuccessorRotationEvidence({
   };
 }
 
+export function reviewTokenRotationLivePredecessorName(membershipSuccessorValidation) {
+  if (membershipSuccessorValidation === undefined) return reviewBuildTokenNames.predecessor;
+  const coordinate = reviewMembershipSuccessorRotationIncident;
+  if (!same(membershipSuccessorValidation, {
+    predecessorReviewBuildTokenUuid: coordinate.predecessorReviewBuildTokenUuid,
+    predecessorReviewTokenId: coordinate.predecessorReviewTokenId,
+    replacementReviewTokenId: coordinate.replacementReviewTokenId,
+    evidenceSourceSha: coordinate.sourceSha,
+    evidenceDigest: reviewMembershipSuccessorEvidenceDigest,
+  })) fail("review membership successor live predecessor drift");
+  return reviewBuildTokenNames.current;
+}
+
 function digestJson(value) {
   return createHash("sha256").update(JSON.stringify(value)).digest("hex");
 }
@@ -9053,12 +9066,17 @@ async function runProvisioningCliCore(mode = process.argv[2] ?? "--validate-only
       "Cloudflare account ID", accountIdPattern);
     const evidence = await readReviewTokenRotationAuthorityEvidence(process.env,
       { requireCurrent: false, verifyInitialAttempt: true });
+    const membershipSuccessorValidation = evidence.membershipSuccessorEvidence ?
+      validateReviewMembershipSuccessorRotationEvidence(
+        evidence.membershipSuccessorEvidence, { accountId }) : undefined;
+    const livePredecessorName = reviewTokenRotationLivePredecessorName(
+      membershipSuccessorValidation);
     const current = await validateStagedSnapshotDirectory({
       snapshotDirectory: process.env.ATRINIK_PROVIDER_SNAPSHOT_DIRECTORY,
       production, review, accountId,
       tokenAuthorityProofs: evidence.predecessorTokenAuthorityProofs, sourceSha,
     }, { reviewActive: true, requireReviewResult: false, authorityRequired: false,
-      includeLiveIdentities: true, reviewTokenName: reviewBuildTokenNames.predecessor });
+      includeLiveIdentities: true, reviewTokenName: livePredecessorName });
     await writePrivateProof(
       process.env.ATRINIK_REVIEW_TOKEN_ROTATION_PREDECESSOR_PROOF_OUTPUT_FILE, current);
     const tokenRows = requireExhaustiveEnvelope(await loadSnapshot(
@@ -9067,9 +9085,10 @@ async function runProvisioningCliCore(mode = process.argv[2] ?? "--validate-only
     const productionToken = tokenRows.find(({ build_token_name: name }) =>
       name === "Atrinik metaserver production");
     const reviewToken = tokenRows.find(({ build_token_name: name }) =>
-      name === reviewBuildTokenNames.predecessor);
+      name === livePredecessorName);
     if (!productionToken || !reviewToken || tokenRows.some(({ build_token_name: name }) =>
-      name === reviewBuildTokenNames.current))
+      name === (membershipSuccessorValidation ? reviewBuildTokenNames.predecessor :
+        reviewBuildTokenNames.current)))
       fail("review token rotation predecessor wrapper inventory drift");
     const productionPreservationDigest = await snapshotProductionPreservationDigest(
       process.env.ATRINIK_PROVIDER_SNAPSHOT_DIRECTORY, production);
