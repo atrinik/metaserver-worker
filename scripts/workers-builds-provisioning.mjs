@@ -8303,6 +8303,10 @@ export async function validateReviewTokenRotationSnapshotDirectory({ snapshotDir
   const successorAuthority = membershipSuccessorValidation !== undefined;
   const proofValidationTime = Date.parse(authorityProof?.capturedAt ?? "");
   if (!Number.isFinite(proofValidationTime) ||
+      productionTriggerUuid !== authorityProof.journalIdentities.productionTriggerUuid ||
+      reviewTriggerUuid !== authorityProof.journalIdentities.reviewTriggerUuid ||
+      predecessorReviewTokenUuid !==
+        authorityProof.journalIdentities.predecessorReviewBuildTokenUuid ||
       authorityProof?.evidenceDigests?.productionSentinel !==
         digestJson(productionSentinelProof) ||
       authorityProof?.evidenceDigests?.replacementTokenAuthority !==
@@ -8345,6 +8349,9 @@ export async function validateReviewTokenRotationSnapshotDirectory({ snapshotDir
   if (productionTrigger.repo_connection?.repo_connection_uuid !==
       reviewTrigger.repo_connection?.repo_connection_uuid)
     fail("review token rotation repository connection drift");
+  if (productionTrigger.repo_connection.repo_connection_uuid !==
+      authorityProof.journalIdentities.repositoryConnectionUuid)
+    fail("review token rotation authority identity drift");
   const productionEnvironment = await loadSnapshot(snapshotDirectory,
     `${core.name}.trigger-${productionTriggerUuid}.environment.json`);
   const reviewEnvironment = await loadSnapshot(snapshotDirectory,

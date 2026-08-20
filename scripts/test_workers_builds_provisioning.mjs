@@ -2794,6 +2794,10 @@ test("validates exact review-token rotation rollback and residual journals", asy
   };
   assert.equal((await validateReviewTokenRotationSnapshotDirectory(
     successorSnapshotArguments)).phase, "predecessor");
+  await assert.rejects(validateReviewTokenRotationSnapshotDirectory({
+    ...successorSnapshotArguments,
+    predecessorReviewTokenUuid: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+  }), /authority evidence drift/u);
   const successorTokens = JSON.parse(await readFile(resolve(successorSnapshotDirectory,
     "build-tokens.json"), "utf8"));
   successorTokens.result[1].build_token_name = reviewBuildTokenNames.predecessor;
