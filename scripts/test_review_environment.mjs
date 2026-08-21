@@ -73,6 +73,11 @@ test("automatic review has no bindings, routes, secrets, or deployable version",
     (value) => value.result.branchCreatesWorkerVersion = true,
     (value) => value.result.reviewUrl = "https://public.workers.dev",
     (value) => value.tokenAuthority.accountPermissions.push("Workers Scripts:Read"),
+    (value) => value.membershipReadRepair.requiredUserPermissions.pop(),
+    (value) => value.membershipReadRepair.accountOwnedTokenSupported = true,
+    (value) => value.membershipReadRepair.wrapperMutation = false,
+    (value) => value.membershipSecretRecovery.requiredUserPermissions.pop(),
+    (value) => value.membershipSecretRecovery.lostTokenId = "0".repeat(32),
     (value) => value.tokenAuthority.productionRead = true,
     (value) => value.localValidation.workersDev = true,
     (value) => value.localValidation.configSha256 = "0".repeat(64),
@@ -117,11 +122,13 @@ test("review trigger delegates to the exact sanitized repository entrypoint", ()
 
 test("review-root package delegates validation and sentinel rejection", async () => {
   const reviewRoot = resolve(root, "deployment/review-check");
+  const childEnvironment = { ...process.env };
+  delete childEnvironment.NODE_TEST_CONTEXT;
   const validated = await execFileAsync("npm", ["run", "validate"],
-    { cwd: reviewRoot, encoding: "utf8" });
+    { cwd: reviewRoot, encoding: "utf8", env: childEnvironment });
   assert.match(validated.stdout, /"outcome":"review-contract-valid"/u);
   await assert.rejects(execFileAsync("npm", ["run", "reject-sentinel"],
-    { cwd: reviewRoot, encoding: "utf8" }), (error) => {
+    { cwd: reviewRoot, encoding: "utf8", env: childEnvironment }), (error) => {
     assert.equal(error.code, 1);
     assert.match(error.stderr, /"reason":"reserved review sentinel never executes repository code"/u);
     return true;

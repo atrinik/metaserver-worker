@@ -23,6 +23,7 @@ import {
   createNoOwnedIncidentTestCapability,
   createNoOwnedTerminalContextReaderForTest,
   createProviderNormalizedIncidentTestCapability,
+  createReviewMembershipSecretRecoveryTestCapability,
   issueReviewTokenRotationBlockedDeleteAuthority,
   credentialedSourceSha,
   credentialedProvisioningModes,
@@ -30,6 +31,9 @@ import {
   initialBootstrapPredecessorConfiguration,
   issueDisposableReviewAuthority,
   issueReviewActivationAuthority,
+  issueReviewMembershipRepairAuthority,
+  issueReviewMembershipSecretRecoveryAuthority,
+  issueReviewMembershipSecretRecoverySuccessorProof,
   issueReviewTokenRotationAuthority,
   loadSnapshot,
   materializeProductionConfigurations,
@@ -39,6 +43,10 @@ import {
   productionEnvironmentSpec,
   productionTriggerSpec,
   reviewBuildTokenNames,
+  reviewMembershipRepairIncident,
+  reviewMembershipSecretRecoveryIncident,
+  reviewMembershipSuccessorRotationIncident,
+  reviewTokenRotationLivePredecessorName,
   publicStagedProofSummary,
   provisioningDryRunSummary,
   provisioningSetupPlan,
@@ -73,6 +81,20 @@ import {
   validateReviewActivationSnapshot,
   validateReviewActivationAuthority,
   validateReviewActivationAuthorityCheckpoint,
+  validateReviewMembershipRepairAuthority,
+  validateReviewMembershipRepairIncident,
+  validateReviewMembershipRepairResultProof,
+  validateReviewMembershipSecretRecoveryAttemptCoordinate,
+  validateReviewMembershipSecretRecoveryAttemptPreparation,
+  validateReviewMembershipSecretRecoveryAuthority,
+  validateReviewMembershipSecretRecoveryIncident,
+  validateReviewMembershipSecretRecoveryInventoryProof,
+  validateReviewMembershipSecretRecoveryJournal,
+  validateReviewMembershipSecretRecoveryProgramProof,
+  validateReviewMembershipSecretRecoveryResultProof,
+  validateReviewMembershipSecretRecoverySuccessorEvidence,
+  validateReviewMembershipSecretRecoverySuccessorProof,
+  validateReviewMembershipSuccessorRotationEvidence,
   validateReplacementReviewTokenAuthorityProof,
   validateReplacementTokenOwnerMembershipProof,
   validateReviewTokenRotationReadback,
@@ -165,8 +187,91 @@ const resourceUuid = "11111111-1111-4111-8111-111111111111";
 const reviewTriggerUuid = "22222222-2222-4222-8222-222222222222";
 const reviewTokenUuid = "33333333-3333-4333-8333-333333333333";
 const execFileAsync = promisify(execFile);
+const jsonDigest = (value) => createHash("sha256")
+  .update(JSON.stringify(value)).digest("hex");
 const checksummedRecord = (payload) => ({ ...payload,
   recordSha256: createHash("sha256").update(JSON.stringify(payload)).digest("hex") });
+
+function membershipSuccessorEvidenceFixture() {
+  const coordinate = reviewMembershipSuccessorRotationIncident;
+  const incidentUnsigned = { ...reviewMembershipRepairIncident, mutation: false,
+    outcome: "workers-builds-review-membership-repair-incident-valid" };
+  const incidentProof = { ...incidentUnsigned, proof_digest: jsonDigest(incidentUnsigned) };
+  const membershipRepairAuthorityProof = {
+    outcome: "workers-builds-review-membership-repair-authority-valid", mutation: false,
+    phase: "review-membership-read-policy-and-proof",
+    accountId: "b1348660cac63549f606c8344dbf08a5", sourceSha: coordinate.sourceSha,
+    capturedAt: "2026-08-19T23:50:07.652Z", expiresAt: "2026-08-20T00:05:07.652Z",
+    planDigest: "5646d8a5bcf75c9487f6d9282de86dedeef81d022f8b6bf4ed92e8b490065093",
+    incidentDigest: "ff960943097caaa0e881c3039d323f95e1baa323003de1dda273b726f6e65f63",
+    predecessorPolicyDigest:
+      "87569284f5a55307fe9bad49794d608ff4abb045bf6a907e3c9c6d519974730c",
+    currentReviewActiveProofDigest:
+      "7026ea0d737d3cf27bca03fd9e2218a644463dcc0f8a78110362fce35e53155e",
+    permissionGroupProofDigest:
+      "fbc3df5ff1386563fe11bc730eae8c37d55462cca0d821c5395bb418251da2eb",
+    currentMainProofDigest:
+      "0f2fa23ba24fb5e328503cb4e1000447f72b474c28991a406d24fdaed877d6d5",
+    predecessorTokenId: coordinate.predecessorReviewTokenId,
+    predecessorBuildTokenUuid: coordinate.predecessorReviewBuildTokenUuid,
+    replacementTokenName: "Atrinik metaserver review membership-readable",
+    permissionGroupIds: { "Memberships Read": "3518d0f75557482e952c6762d3e64903",
+      "User Details Read": "8acbe5bb0d54464ab867149d7f7cf8ac" },
+    predecessorUserPermissions: ["User Details:Read"],
+    requiredUserPermissions: ["Memberships:Read", "User Details:Read"],
+    userResource: "com.cloudflare.api.user.b33f81835d7dc584622ca841b124a9a5",
+    accountPermissions: [], accountResources: [], zonePermissions: [], zoneResources: [],
+    allowedWrites: ["post-one-exact-membership-readable-user-token",
+      "delete-only-journal-created-unwrapped-user-token-on-failure"],
+    forbidden: ["account-owned-token", "build-token-wrapper-mutation", "trigger-mutation",
+      "production-activation", "manual-api-build", "migration-0010",
+      "worker-resource-mutation"], proof_digest: coordinate.membershipRepairAuthorityDigest,
+  };
+  const journalPayloads = [
+    { event: "membership-repair-started", at: "2026-08-19T23:51:57.349Z", attempt: 1,
+      authorityProofDigest: membershipRepairAuthorityProof.proof_digest,
+      currentMainProofDigest:
+        "0f2fa23ba24fb5e328503cb4e1000447f72b474c28991a406d24fdaed877d6d5",
+      preCreateInventoryDigest:
+        "9c22d88a14b9aa24682bcca8ed365413425c80794299a7621212543f937ab51e",
+      requestDigest: "0c782a10dd63e8eea792d26227ac95fb556b2b383585aec4074c0c13372f38fd" },
+    { event: "mutation-intent", operation: "membership-repair-create-user-token",
+      at: "2026-08-19T23:51:57.352Z", attempt: 1, method: "POST", path: "/user/tokens",
+      requestDigest: "0c782a10dd63e8eea792d26227ac95fb556b2b383585aec4074c0c13372f38fd",
+      authorityProofDigest: membershipRepairAuthorityProof.proof_digest },
+    { event: "provider-response-classified", operation: "membership-repair-create-user-token",
+      at: "2026-08-19T23:51:57.891Z", attempt: 1, outcome: "explicit-success", status: 200,
+      responseDigest: "05548fed4b3a2dccb586212a5d5ad5bcb5bdc5913f060ec258ced6160928b749",
+      requestDigest: "0c782a10dd63e8eea792d26227ac95fb556b2b383585aec4074c0c13372f38fd",
+      tokenId: coordinate.replacementReviewTokenId },
+    { event: "membership-repair-complete", at: "2026-08-19T23:53:09.279Z", attempt: 1,
+      tokenId: coordinate.replacementReviewTokenId,
+      resultProofDigest: coordinate.membershipRepairResultProofDigest,
+      requestDigest: "0c782a10dd63e8eea792d26227ac95fb556b2b383585aec4074c0c13372f38fd",
+      forbiddenWrites: { wrapper: false, trigger: false, build: false, deployment: false,
+        migration0010: false, workerResource: false } },
+  ];
+  const membershipRepairJournalRecords = journalPayloads.map(checksummedRecord);
+  const membershipRepairResultProof = {
+    source: "cloudflare-owner-token-policy-readback", accountId:
+      membershipRepairAuthorityProof.accountId, sourceSha: coordinate.sourceSha,
+    capturedAt: "2026-08-19T23:53:09.263Z", kind: "review-replacement",
+    tokenId: coordinate.replacementReviewTokenId,
+    ownerUserId: reviewMembershipRepairIncident.ownerUserId,
+    modifiedOn: "2026-08-19T23:51:58Z",
+    userPermissions: ["Memberships:Read", "User Details:Read"], accountPermissions: [],
+    accountResources: [], zonePermissions: [], zoneResources: [],
+  };
+  return { incidentProof, membershipRepairAuthorityProof, membershipRepairJournalRecords,
+    membershipRepairResultProof, evidence: { incidentProof, membershipRepairAuthorityProof,
+      membershipRepairAuthorityFileSha256: coordinate.membershipRepairAuthorityFileSha256,
+      membershipRepairJournalRecords,
+      membershipRepairJournalFileSha256: coordinate.membershipRepairJournalSha256,
+      membershipRepairResultProof,
+      membershipRepairResultProofFileSha256: coordinate.membershipRepairResultProofFileSha256,
+      membershipRepairSnapshotManifestFileSha256:
+        coordinate.membershipRepairSnapshotManifestSha256 } };
+}
 
 function envelope(result) {
   return Array.isArray(result) ? { success: true, result, result_info: {
@@ -571,6 +676,7 @@ function disposableReviewAuthorityFixture(now = Date.now(),
   const replacementTokenAuthorityProof = {
     ...configured.tokenAuthorityProofs.find(({ kind }) => kind === "review"),
     kind: "review-replacement", tokenId: replacementTokenId,
+    userPermissions: ["Memberships:Read", "User Details:Read"],
     ownerUserId: "1".repeat(32),
     capturedAt: new Date(now - 3_200).toISOString(),
     modifiedOn: new Date(now - 3_300).toISOString(),
@@ -827,6 +933,7 @@ function disposableReviewAuthorityFixture(now = Date.now(),
     programDeliveryProof, programLedgerDocument, programLedgerFileSha256,
     rotationAttemptCoordinate, attemptFilesystemEvidence: rotationArguments.attemptFilesystemEvidence,
     buildUsageProof: configured.reviewBuildState.buildUsageProof,
+    reviewTokenRotationAuthorityArguments: rotationArguments,
   };
   const proof = issueDisposableReviewAuthority({ production, review, accountId,
     sourceSha: currentSourceSha, ...evidence, tokenRows: {
@@ -835,6 +942,891 @@ function disposableReviewAuthorityFixture(now = Date.now(),
     } }, now);
   return { proof, evidence, production, review, accountId, sourceSha: currentSourceSha };
 }
+
+function successorRotationAuthorityFixture(now = Date.now(),
+productionPreservationDigest = "8".repeat(64)) {
+  const { evidence } = disposableReviewAuthorityFixture(now,
+    "/secure/issue-129/successor-rotation", productionPreservationDigest);
+  const arguments_ = structuredClone(evidence.reviewTokenRotationAuthorityArguments);
+  const successor = reviewMembershipSuccessorRotationIncident;
+  const membershipFixture = membershipSuccessorEvidenceFixture();
+  arguments_.membershipSuccessorEvidence = membershipFixture.evidence;
+  arguments_.accountId = membershipFixture.membershipRepairAuthorityProof.accountId;
+  for (const item of [arguments_.reviewActivationProof, arguments_.currentReviewActiveProof,
+    arguments_.repositoryConnectionProof, arguments_.replacementTokenAuthorityProof,
+    arguments_.replacementTokenOwnerMembershipProof, arguments_.buildUsageProof,
+    arguments_.productionBaselineProof, ...arguments_.predecessorTokenAuthorityProofs])
+    item.accountId = arguments_.accountId;
+  arguments_.predecessorTokenAuthorityProofs.find(({ kind }) => kind === "production")
+    .accountResources = [arguments_.accountId];
+  arguments_.replacementTokenId = successor.replacementReviewTokenId;
+  arguments_.replacementTokenAuthorityProof.tokenId = successor.replacementReviewTokenId;
+  arguments_.currentReviewActiveProof.liveIdentities.reviewBuildTokenUuid =
+    successor.predecessorReviewBuildTokenUuid;
+  arguments_.currentReviewActiveProof.proof_digest = jsonDigest({
+    state_digest: arguments_.currentReviewActiveProof.state_digest,
+    snapshotStartedAt: arguments_.currentReviewActiveProof.snapshotStartedAt,
+    snapshotCompletedAt: arguments_.currentReviewActiveProof.snapshotCompletedAt,
+    capturedAt: arguments_.currentReviewActiveProof.capturedAt,
+    liveIdentities: arguments_.currentReviewActiveProof.liveIdentities,
+  });
+  arguments_.productionBaselineProof.currentReviewActiveProofDigest =
+    arguments_.currentReviewActiveProof.proof_digest;
+  const { proof_digest: _baselineDigest, ...baselineUnsigned } =
+    arguments_.productionBaselineProof;
+  arguments_.productionBaselineProof.proof_digest = jsonDigest(baselineUnsigned);
+  arguments_.predecessorTokenAuthorityProofs.find(({ kind }) => kind === "review").tokenId =
+    successor.predecessorReviewTokenId;
+  arguments_.tokenRows.review = { build_token_uuid: successor.predecessorReviewBuildTokenUuid,
+    cloudflare_token_id: successor.predecessorReviewTokenId };
+  arguments_.reviewActivationJournal = arguments_.reviewActivationJournal.map((record) => {
+    if (record.event !== "provider-proof-bound" || record.operation !== "review-activation")
+      return record;
+    const { recordSha256: _recordSha256, ...payload } = record;
+    payload.proofFileSha256 = jsonDigest(arguments_.reviewActivationProof);
+    return checksummedRecord(payload);
+  });
+  return { arguments_, proof: issueReviewTokenRotationAuthority(arguments_, now - 2_500),
+    membershipFixture };
+}
+
+test("binds only the exact fresh membership-readable review token repair", async () => {
+  const now = Date.now();
+  const sourceSha = "a".repeat(40);
+  const incidentUnsigned = {
+    ...reviewMembershipRepairIncident,
+    mutation: false,
+    outcome: "workers-builds-review-membership-repair-incident-valid",
+  };
+  const incidentProof = { ...incidentUnsigned,
+    proof_digest: jsonDigest(incidentUnsigned) };
+  assert.equal(validateReviewMembershipRepairIncident(incidentProof).failedBuildUuid,
+    "68747ae8-f5ca-45d4-955b-61151ba9075f");
+  const currentReviewActiveProof = reviewActiveProof(new Date(now).toISOString(),
+    "d".repeat(64), sourceSha, {
+      productionTriggerUuid: "11111111-1111-4111-8111-111111111111",
+      reviewTriggerUuid: "22222222-2222-4222-8222-222222222222",
+      productionBuildTokenUuid: "33333333-3333-4333-8333-333333333333",
+      reviewBuildTokenUuid: reviewMembershipRepairIncident.reviewBuildTokenUuid,
+      repositoryConnectionUuid: "44444444-4444-4444-8444-444444444444",
+      productionEnvironmentDigest: "e".repeat(64),
+      reviewEnvironmentDigest: "f".repeat(64),
+    });
+  const predecessorPolicyProof = {
+    source: "cloudflare-owner-token-policy-readback",
+    kind: "review-membership-repair-predecessor",
+    accountId, sourceSha, tokenId: reviewMembershipRepairIncident.reviewTokenId,
+    ownerUserId: reviewMembershipRepairIncident.ownerUserId,
+    modifiedOn: new Date(now - 60_000).toISOString(),
+    capturedAt: new Date(now).toISOString(), userPermissions: ["User Details:Read"],
+    accountPermissions: [], accountResources: [], zonePermissions: [], zoneResources: [],
+  };
+  const permissionGroupUnsigned = {
+    source: "cloudflare-user-token-permission-groups-readback", sourceSha,
+    capturedAt: new Date(now).toISOString(), mutation: false,
+    outcome: "review-membership-permission-groups-valid",
+    groups: [
+      { id: "1".repeat(32), name: "Memberships Read", scope: "com.cloudflare.api.user" },
+      { id: "2".repeat(32), name: "User Details Read", scope: "com.cloudflare.api.user" },
+    ],
+  };
+  const permissionGroupProof = { ...permissionGroupUnsigned,
+    proof_digest: jsonDigest(permissionGroupUnsigned) };
+  const arguments_ = { production, review, accountId, sourceSha, incidentProof,
+    predecessorPolicyProof, currentReviewActiveProof, permissionGroupProof,
+    currentMainProofDigest: "b".repeat(64) };
+  const authority = issueReviewMembershipRepairAuthority(arguments_, now);
+  assert.deepEqual(authority.requiredUserPermissions,
+    ["Memberships:Read", "User Details:Read"]);
+  assert.deepEqual(authority.allowedWrites,
+    ["post-one-exact-membership-readable-user-token",
+      "delete-only-journal-created-unwrapped-user-token-on-failure"]);
+  assert.equal(validateReviewMembershipRepairAuthority(authority, arguments_, now + 1_000)
+    .proof_digest, authority.proof_digest);
+  const replacementTokenId = "c".repeat(32);
+  const resultProof = { ...predecessorPolicyProof, kind: "review-replacement",
+    tokenId: replacementTokenId,
+    modifiedOn: new Date(now + 1_000).toISOString(),
+    capturedAt: new Date(now + 2_000).toISOString(),
+    userPermissions: ["Memberships:Read", "User Details:Read"] };
+  assert.equal(validateReviewMembershipRepairResultProof(resultProof, { accountId, sourceSha,
+    authorityProof: authority, replacementTokenId }, now + 3_000).tokenId,
+  replacementTokenId);
+  assert.throws(() => validateReviewMembershipRepairIncident({ ...incidentProof,
+    failedBuildUuid: "11111111-1111-4111-8111-111111111111" }),
+  /incident .*drift/u);
+  assert.throws(() => validateReviewMembershipRepairResultProof({ ...resultProof,
+    userPermissions: ["User Details:Read"] }, { accountId, sourceSha,
+    authorityProof: authority, replacementTokenId }, now + 3_000), /token policy drift/u);
+  assert.throws(() => validateReviewMembershipRepairResultProof({ ...resultProof,
+    accountPermissions: ["Workers Scripts:Read"] }, { accountId, sourceSha,
+    authorityProof: authority, replacementTokenId }, now + 3_000), /token policy drift/u);
+
+  const temporary = await mkdtemp(resolve(tmpdir(), "atrinik-membership-repair-cli-"));
+  const privateFile = async (name, value) => {
+    const path = resolve(temporary, name);
+    await writeFile(path, typeof value === "string" ? `${value}\n` :
+      `${JSON.stringify(value)}\n`, { mode: 0o600 });
+    return path;
+  };
+  const authorityOutputPath = resolve(temporary, "authority-output.json");
+  const previousEnvironment = { ...process.env };
+  const originalWrite = process.stdout.write;
+  const cliOutput = [];
+  try {
+    Object.assign(process.env, {
+      ATRINIK_CLOUDFLARE_ACCOUNT_ID_FILE: await privateFile("account-id", accountId),
+      ATRINIK_GITHUB_CURRENT_MAIN_PROOF_FILE: await privateFile("current-main.json",
+        authenticatedCurrentMainProof(sourceSha)),
+      ATRINIK_REVIEW_MEMBERSHIP_REPAIR_INCIDENT_PROOF_FILE: await privateFile(
+        "incident.json", incidentProof),
+      ATRINIK_REVIEW_MEMBERSHIP_REPAIR_PREDECESSOR_POLICY_PROOF_FILE: await privateFile(
+        "predecessor-policy.json", predecessorPolicyProof),
+      ATRINIK_REVIEW_MEMBERSHIP_REPAIR_PERMISSION_GROUP_PROOF_FILE: await privateFile(
+        "permission-groups.json", permissionGroupProof),
+      ATRINIK_REVIEW_MEMBERSHIP_REPAIR_CURRENT_STATE_PROOF_FILE: await privateFile(
+        "current-review.json", currentReviewActiveProof),
+      ATRINIK_REVIEW_MEMBERSHIP_REPAIR_AUTHORITY_PROOF_OUTPUT_FILE: authorityOutputPath,
+    });
+    process.stdout.write = (chunk) => { cliOutput.push(String(chunk)); return true; };
+    const providerSnapshotReader = async () => {
+      throw new Error("membership repair verification must not read provider state");
+    };
+    await runProvisioningCliForTest("--verify-review-membership-repair-authority",
+      async () => sourceSha, providerSnapshotReader);
+    const cliAuthority = JSON.parse(await readFile(authorityOutputPath, "utf8"));
+    assert.equal(cliAuthority.proof_digest,
+      JSON.parse(cliOutput.at(-1)).proof_digest);
+    await assert.rejects(runProvisioningCliForTest(
+      "--verify-review-membership-repair-authority", async () => sourceSha,
+      providerSnapshotReader), /already exists/u);
+    Object.assign(process.env, {
+      ATRINIK_REVIEW_MEMBERSHIP_REPAIR_AUTHORITY_PROOF_FILE: authorityOutputPath,
+      ATRINIK_REPLACEMENT_REVIEW_BUILD_TOKEN_ID_FILE: await privateFile(
+        "replacement-token-id", replacementTokenId),
+      ATRINIK_REPLACEMENT_REVIEW_BUILD_TOKEN_PERMISSION_PROOF_FILE: await privateFile(
+        "replacement-policy.json", resultProof),
+    });
+    await runProvisioningCliForTest("--verify-review-membership-repair-result",
+      async () => sourceSha, providerSnapshotReader);
+    const result = JSON.parse(cliOutput.at(-1));
+    assert.equal(result.outcome, "workers-builds-review-membership-repair-result-valid");
+    assert.equal(result.tokenId, replacementTokenId);
+    assert.equal(result.proof_digest, jsonDigest(resultProof));
+  } finally {
+    process.stdout.write = originalWrite;
+    for (const key of Object.keys(process.env)) if (!(key in previousEnvironment))
+      delete process.env[key];
+    Object.assign(process.env, previousEnvironment);
+    await rm(temporary, { recursive: true, force: true });
+  }
+});
+
+test("binds one distinct lost-secret recovery attempt and exact terminal evidence", async () => {
+  const now = Date.now();
+  const sourceSha = "a".repeat(40);
+  const incidentUnsigned = { ...reviewMembershipSecretRecoveryIncident, mutation: false,
+    outcome: "workers-builds-review-membership-secret-recovery-incident-valid" };
+  const incidentProof = { ...incidentUnsigned, proof_digest: jsonDigest(incidentUnsigned) };
+  validateReviewMembershipSecretRecoveryIncident(incidentProof);
+  const membershipFixture = membershipSuccessorEvidenceFixture();
+  const recoveryAccountId = membershipFixture.membershipRepairAuthorityProof.accountId;
+  const programLedgerDocument = {
+    schema_version: 1, generation: 7,
+    ledger_id: `delivery-v1:issue:${reviewMembershipSecretRecoveryIncident.leafIssueNodeId}`,
+    program: {
+      master_issue: { number: reviewMembershipSecretRecoveryIncident.masterIssueNumber,
+        node_id: reviewMembershipSecretRecoveryIncident.masterIssueNodeId },
+      leaf_issue: { number: reviewMembershipSecretRecoveryIncident.leafIssueNumber,
+        node_id: reviewMembershipSecretRecoveryIncident.leafIssueNodeId },
+    },
+    authority: { allowed: { issues: [reviewMembershipSecretRecoveryIncident.masterIssueNodeId,
+      reviewMembershipSecretRecoveryIncident.leafIssueNodeId] } },
+  };
+  const programUnsigned = {
+    outcome: "workers-builds-review-membership-secret-recovery-program-valid", mutation: false,
+    sourceSha, capturedAt: new Date(now - 4_000).toISOString(),
+    masterIssueNumber: reviewMembershipSecretRecoveryIncident.masterIssueNumber,
+    masterIssueNodeId: reviewMembershipSecretRecoveryIncident.masterIssueNodeId,
+    leafIssueNumber: reviewMembershipSecretRecoveryIncident.leafIssueNumber,
+    leafIssueNodeId: reviewMembershipSecretRecoveryIncident.leafIssueNodeId,
+    programLedgerCoordinate: reviewMembershipSecretRecoveryIncident.ledgerCoordinate,
+    programLedgerGeneration: programLedgerDocument.generation,
+    programLedgerSha256: jsonDigest(programLedgerDocument),
+    programLedgerFileSha256: "1".repeat(64),
+    membershipSuccessorEvidenceDigest:
+      reviewMembershipSecretRecoveryIncident.membershipSuccessorEvidenceDigest,
+    successorRotationContractSourceSha:
+      reviewMembershipSecretRecoveryIncident.successorRotationContractSourceSha,
+    successorRotationPlanDigest:
+      reviewMembershipSecretRecoveryIncident.successorRotationPlanDigest,
+  };
+  const programDeliveryProof = { ...programUnsigned,
+    proof_digest: jsonDigest(programUnsigned) };
+  validateReviewMembershipSecretRecoveryProgramProof(programDeliveryProof, sourceSha,
+    programLedgerDocument, "1".repeat(64), now);
+  const attemptFilesystemEvidence = { executorSha256: "2".repeat(64),
+    initialJournalSha256: createHash("sha256").update("").digest("hex"),
+    journalPathSha256: createHash("sha256").update(
+      "/secure/issue-131/recovery.jsonl").digest("hex"),
+    responsePathSha256: createHash("sha256").update(
+      "/secure/issue-131/create-response.json").digest("hex"),
+    secretOutputPathSha256: createHash("sha256").update(
+      "/secure/issue-131/replacement-token").digest("hex"),
+    responseAbsent: true, secretOutputAbsent: true };
+  const attemptUnsigned = {
+    repository: "atrinik/metaserver-worker", sourceSha, mutation: false,
+    attemptNamespace: "review-membership-secret-recovery-131-0123456789abcdef",
+    capturedAt: new Date(now - 3_000).toISOString(),
+    executorSha256: attemptFilesystemEvidence.executorSha256,
+    initialJournalSha256: attemptFilesystemEvidence.initialJournalSha256,
+    journalPathSha256: attemptFilesystemEvidence.journalPathSha256,
+    responsePathSha256: attemptFilesystemEvidence.responsePathSha256,
+    secretOutputPathSha256: attemptFilesystemEvidence.secretOutputPathSha256,
+    executorPath: "/secure/issue-131/run-recovery.mjs",
+    journalPath: "/secure/issue-131/recovery.jsonl",
+    responsePath: "/secure/issue-131/create-response.json",
+    secretOutputPath: "/secure/issue-131/replacement-token",
+    journalId: jsonDigest({
+      attemptNamespace: "review-membership-secret-recovery-131-0123456789abcdef",
+      executorSha256: attemptFilesystemEvidence.executorSha256,
+      journalPathSha256: attemptFilesystemEvidence.journalPathSha256,
+      secretOutputPathSha256: attemptFilesystemEvidence.secretOutputPathSha256,
+    }),
+  };
+  const attemptCoordinate = { ...attemptUnsigned, proof_digest: jsonDigest(attemptUnsigned) };
+  validateReviewMembershipSecretRecoveryAttemptCoordinate(attemptCoordinate, sourceSha,
+    attemptFilesystemEvidence, now);
+  const inventoryUnsigned = {
+    source: "cloudflare-user-token-exhaustive-inventory", sourceSha,
+    accountId: recoveryAccountId,
+    capturedAt: new Date(now - 2_000).toISOString(), mutation: false,
+    outcome: "workers-builds-review-membership-secret-recovery-inventory-valid",
+    attemptCoordinateDigest: attemptCoordinate.proof_digest,
+    lostTokenIdPresent: true, matchingRecoveryTokenIds: [], tokenState: "pre-create",
+    referencingBuildTokenUuids: [], buildTokenInventoryDigest: "7".repeat(64),
+    tokenInventoryDigest: "6".repeat(64),
+  };
+  const preCreateInventoryProof = { ...inventoryUnsigned,
+    proof_digest: jsonDigest(inventoryUnsigned) };
+  validateReviewMembershipSecretRecoveryInventoryProof(preCreateInventoryProof,
+    { accountId: recoveryAccountId, sourceSha, attemptCoordinate }, now);
+  const bootstrapPolicyProof = {
+    source: "cloudflare-owner-token-policy-readback",
+    kind: "review-membership-secret-recovery-bootstrap", accountId: recoveryAccountId, sourceSha,
+    tokenId: "7".repeat(32), ownerUserId: reviewMembershipSecretRecoveryIncident.ownerUserId,
+    modifiedOn: new Date(now - 60_000).toISOString(),
+    capturedAt: new Date(now - 1_000).toISOString(),
+    userPermissions: ["API Tokens Write:Edit"], accountPermissions: [], accountResources: [],
+    zonePermissions: [], zoneResources: [],
+  };
+  const permissionUnsigned = {
+    source: "cloudflare-user-token-permission-groups-readback", sourceSha,
+    capturedAt: new Date(now - 1_000).toISOString(), mutation: false,
+    outcome: "review-membership-permission-groups-valid",
+    groups: [
+      { id: "8".repeat(32), name: "Memberships Read", scope: "com.cloudflare.api.user" },
+      { id: "9".repeat(32), name: "User Details Read", scope: "com.cloudflare.api.user" },
+    ],
+  };
+  const permissionGroupProof = { ...permissionUnsigned,
+    proof_digest: jsonDigest(permissionUnsigned) };
+  const currentReviewActiveProof = reviewActiveProof(new Date(now - 1_000).toISOString(),
+    "a".repeat(64), sourceSha, {
+      productionTriggerUuid: "11111111-1111-4111-8111-111111111111",
+      reviewTriggerUuid: "22222222-2222-4222-8222-222222222222",
+      productionBuildTokenUuid: "33333333-3333-4333-8333-333333333333",
+      reviewBuildTokenUuid:
+        reviewMembershipSuccessorRotationIncident.predecessorReviewBuildTokenUuid,
+      repositoryConnectionUuid: "44444444-4444-4444-8444-444444444444",
+      productionEnvironmentDigest: "b".repeat(64), reviewEnvironmentDigest: "c".repeat(64),
+    });
+  currentReviewActiveProof.accountId = recoveryAccountId;
+  const authorityArguments = { production, review, accountId: recoveryAccountId, sourceSha,
+    incidentProof,
+    membershipSuccessorEvidence: membershipFixture.evidence, bootstrapPolicyProof,
+    permissionGroupProof, currentReviewActiveProof, currentMainProofDigest: "d".repeat(64),
+    programDeliveryProof, programLedgerDocument, programLedgerFileSha256: "1".repeat(64),
+    attemptCoordinate, attemptFilesystemEvidence, preCreateInventoryProof };
+  const authority = issueReviewMembershipSecretRecoveryAuthority(authorityArguments, now);
+  validateReviewMembershipSecretRecoveryAuthority(authority, authorityArguments, now + 1_000);
+  assert.equal(authority.lostTokenId,
+    reviewMembershipSuccessorRotationIncident.replacementReviewTokenId);
+  assert.notEqual(authority.bootstrapTokenId, authority.lostTokenId);
+  const replacementTokenId = "e".repeat(32);
+  const resultProof = { ...bootstrapPolicyProof,
+    kind: "review-membership-secret-recovery-result", tokenId: replacementTokenId,
+    modifiedOn: new Date(now + 1_000).toISOString(),
+    capturedAt: new Date(now + 2_000).toISOString(),
+    userPermissions: ["Memberships:Read", "User Details:Read"] };
+  validateReviewMembershipSecretRecoveryResultProof(resultProof,
+    { accountId: recoveryAccountId, sourceSha, authorityProof: authority, replacementTokenId },
+    now + 3_000);
+  const at = (offset) => new Date(now + offset).toISOString();
+  const mutationCurrentMainProof = authenticatedCurrentMainProof(sourceSha, at(15));
+  const responseDocument = { success: true, errors: [], messages: [], result: {
+    id: replacementTokenId, name: authority.replacementTokenName,
+    value: "fixture-secret-never-written" } };
+  const responseFileSha256 = createHash("sha256")
+    .update(`${JSON.stringify(responseDocument)}\n`).digest("hex");
+  const secretFileSha256 = createHash("sha256")
+    .update("fixture-secret-never-written\n").digest("hex");
+  const payloads = [
+    { event: "membership-secret-recovery-started", at: at(10), attempt: 1,
+      authorityProofDigest: authority.proof_digest,
+      attemptCoordinateDigest: attemptCoordinate.proof_digest,
+      preCreateInventoryProofDigest: preCreateInventoryProof.proof_digest,
+      requestDigest: authority.requestDigest },
+    { event: "current-main-proof-bound", operation:
+      "membership-secret-recovery-create-user-token", at: at(20), attempt: 1,
+      sourceSha, proofDigest: jsonDigest(mutationCurrentMainProof),
+      proofFileSha256: createHash("sha256")
+        .update(`${JSON.stringify(mutationCurrentMainProof)}\n`).digest("hex"),
+      rawFileSha256: createHash("sha256")
+        .update(`${JSON.stringify(mutationCurrentMainProof.raw)}\n`).digest("hex") },
+    { event: "membership-secret-recovery-authority-checked", operation:
+      "membership-secret-recovery-create-user-token", at: at(30), attempt: 1,
+      proofDigest: authority.proof_digest, expiresAt: authority.expiresAt },
+    { event: "provider-proof-bound", operation: "membership-secret-recovery-pre-create",
+      at: at(40), attempt: 1, proofDigest: preCreateInventoryProof.proof_digest,
+      proofFileSha256: createHash("sha256")
+        .update(`${JSON.stringify(preCreateInventoryProof)}\n`).digest("hex") },
+    { event: "mutation-intent", operation: "membership-secret-recovery-create-user-token",
+      at: at(50), attempt: 1, method: "POST", path: "/user/tokens",
+      requestDigest: authority.requestDigest, authorityProofDigest: authority.proof_digest },
+    { event: "provider-response-classified", operation:
+      "membership-secret-recovery-create-user-token", at: at(1_500), attempt: 1,
+      outcome: "explicit-success", status: 200, responseDigest: jsonDigest(responseDocument),
+      responseFileSha256, requestDigest: authority.requestDigest,
+      tokenId: replacementTokenId },
+    { event: "provider-proof-bound", operation: "membership-secret-recovery-result",
+      at: at(2_500), attempt: 1, tokenId: replacementTokenId,
+      proofDigest: jsonDigest(resultProof), proofFileSha256: createHash("sha256")
+        .update(`${JSON.stringify(resultProof)}\n`).digest("hex") },
+  ];
+  const completePayload = { event: "membership-secret-recovery-complete", at: at(2_600),
+    attempt: 1, tokenId: replacementTokenId, resultProofDigest: jsonDigest(resultProof),
+    secretFileSha256, requestDigest: authority.requestDigest,
+    forbiddenWrites: { wrapper: false, trigger: false, build: false, deployment: false,
+      migration0010: false, workerResource: false } };
+  const completeRecords = [...payloads, completePayload].map(checksummedRecord);
+  assert.equal(validateReviewMembershipSecretRecoveryJournal(completeRecords, authority,
+    { accountId: recoveryAccountId, sourceSha, attemptCoordinate, preCreateInventoryProof,
+      currentMainProof: mutationCurrentMainProof, responseDocument, responseFileSha256,
+      secretFileSha256, resultProof }).terminal,
+  "membership-secret-recovery-complete");
+  const successorArguments = { authorityProof: authority,
+    authorityFileSha256: createHash("sha256")
+      .update(`${JSON.stringify(authority)}\n`).digest("hex"), records: completeRecords,
+    journalFileSha256: createHash("sha256").update(
+      `${completeRecords.map((record) => JSON.stringify(record)).join("\n")}\n`).digest("hex"),
+    responseFileSha256, secretFileSha256, resultProof,
+    resultProofFileSha256: createHash("sha256")
+      .update(`${JSON.stringify(resultProof)}\n`).digest("hex") };
+  const successorProof = issueReviewMembershipSecretRecoverySuccessorProof(successorArguments);
+  assert.equal(validateReviewMembershipSecretRecoverySuccessorProof(successorProof,
+    successorArguments).tokenId, replacementTokenId);
+  assert.equal(successorProof.nextRotationRequirement,
+    "fresh-namespace-authority-journal-and-executor");
+  const successorEvidence = { ...successorArguments, attemptCoordinate,
+    preCreateInventoryProof, currentMainProof: mutationCurrentMainProof, responseDocument,
+    successorProof, successorProofFileSha256: createHash("sha256")
+      .update(`${JSON.stringify(successorProof)}\n`).digest("hex") };
+  const successorValidation = validateReviewMembershipSecretRecoverySuccessorEvidence(
+    successorEvidence, { accountId: recoveryAccountId });
+  assert.deepEqual(successorValidation, {
+    predecessorReviewBuildTokenUuid:
+      reviewMembershipSuccessorRotationIncident.predecessorReviewBuildTokenUuid,
+    predecessorReviewTokenId: reviewMembershipSecretRecoveryIncident.lostTokenId,
+    replacementReviewTokenId: replacementTokenId,
+    evidenceSourceSha: sourceSha,
+    evidenceDigest: jsonDigest({
+      authorityFileSha256: successorArguments.authorityFileSha256,
+      journalFileSha256: successorArguments.journalFileSha256,
+      responseFileSha256, secretFileSha256,
+      resultProofFileSha256: successorArguments.resultProofFileSha256,
+      successorProofDigest: successorProof.proof_digest,
+      successorProofFileSha256: createHash("sha256")
+        .update(`${JSON.stringify(successorProof)}\n`).digest("hex"),
+    }),
+  });
+  assert.throws(() => validateReviewMembershipSecretRecoverySuccessorEvidence({
+    ...successorEvidence, successorProof: { ...successorProof, tokenId: "0".repeat(32) } },
+  { accountId: recoveryAccountId }), /successor proof drift/u);
+
+  const freshRotation = successorRotationAuthorityFixture(now + 3_000);
+  freshRotation.arguments_.membershipSecretRecoverySuccessorEvidence = successorEvidence;
+  freshRotation.arguments_.replacementTokenId = replacementTokenId;
+  freshRotation.arguments_.replacementTokenAuthorityProof.tokenId = replacementTokenId;
+  freshRotation.arguments_.replacementTokenSecretSha256 = secretFileSha256;
+  freshRotation.arguments_.predecessorTokenAuthorityProofs.find(({ kind }) => kind === "review")
+    .tokenId = reviewMembershipSecretRecoveryIncident.lostTokenId;
+  freshRotation.arguments_.tokenRows.review.cloudflare_token_id =
+    reviewMembershipSecretRecoveryIncident.lostTokenId;
+  const freshRotationAuthority = issueReviewTokenRotationAuthority(
+    freshRotation.arguments_, now + 500);
+  assert.equal(freshRotationAuthority.replacementToken.tokenId, replacementTokenId);
+  assert.equal(freshRotationAuthority.evidenceDigests.membershipSecretRecoverySuccessor,
+    successorValidation.evidenceDigest);
+  const missingSuccessor = structuredClone(freshRotation.arguments_);
+  delete missingSuccessor.membershipSecretRecoverySuccessorEvidence;
+  assert.throws(() => issueReviewTokenRotationAuthority(missingSuccessor, now + 500),
+    /membership secret recovery successor evidence drift/u);
+  const residualUnsigned = { ...inventoryUnsigned, capturedAt: at(2_000),
+    tokenState: "exact-absence", tokenInventoryDigest: "f".repeat(64) };
+  const residualInventoryProof = { ...residualUnsigned,
+    proof_digest: jsonDigest(residualUnsigned) };
+  const blockedPayload = { event: "membership-secret-recovery-blocked", at: at(2_100),
+    attempt: 1, tokenState: "exact-absence", tokenId: null, cleanupComplete: true,
+    activeMutation: "membership-secret-recovery-create-user-token",
+    residualProofDigest: residualInventoryProof.proof_digest,
+    residualProofFileSha256: createHash("sha256")
+      .update(`${JSON.stringify(residualInventoryProof)}\n`).digest("hex"),
+    forbiddenWrites: completePayload.forbiddenWrites };
+  const blockedRecords = [...payloads.slice(0, 5), blockedPayload].map(checksummedRecord);
+  assert.equal(validateReviewMembershipSecretRecoveryJournal(blockedRecords, authority,
+    { accountId: recoveryAccountId, sourceSha, attemptCoordinate, preCreateInventoryProof,
+      currentMainProof: mutationCurrentMainProof,
+      residualInventoryProof }).terminal, "membership-secret-recovery-blocked");
+  const cleanupCurrentMainProof = authenticatedCurrentMainProof(sourceSha, at(2_700));
+  const cleanupPreDeleteUnsigned = { ...inventoryUnsigned, capturedAt: at(2_740),
+    tokenState: "exact-journal-created-unwrapped",
+    matchingRecoveryTokenIds: [replacementTokenId], tokenInventoryDigest: "1".repeat(64) };
+  const cleanupPreDeleteInventoryProof = { ...cleanupPreDeleteUnsigned,
+    proof_digest: jsonDigest(cleanupPreDeleteUnsigned) };
+  const cleanupRequestDigest = jsonDigest({ method: "DELETE",
+    path: `/user/tokens/${replacementTokenId}`, body: undefined });
+  const cleanupResponseDocument = { success: true, errors: [], messages: [], result: null };
+  const cleanupResponseFileSha256 = createHash("sha256")
+    .update(`${JSON.stringify(cleanupResponseDocument)}\n`).digest("hex");
+  const cleanupAbsenceUnsigned = { ...inventoryUnsigned, capturedAt: at(2_850),
+    tokenState: "exact-absence", tokenInventoryDigest: "2".repeat(64) };
+  const cleanupAbsenceInventoryProof = { ...cleanupAbsenceUnsigned,
+    proof_digest: jsonDigest(cleanupAbsenceUnsigned) };
+  const cleanupResidualUnsigned = { ...cleanupAbsenceUnsigned, capturedAt: at(2_880),
+    tokenInventoryDigest: "3".repeat(64) };
+  const cleanupResidualInventoryProof = { ...cleanupResidualUnsigned,
+    proof_digest: jsonDigest(cleanupResidualUnsigned) };
+  const cleanupPayloads = [
+    ...payloads.slice(0, 6),
+    { event: "current-main-proof-bound", operation:
+      "membership-secret-recovery-cleanup-user-token", at: at(2_710), attempt: 1,
+      sourceSha, proofDigest: jsonDigest(cleanupCurrentMainProof),
+      proofFileSha256: createHash("sha256")
+        .update(`${JSON.stringify(cleanupCurrentMainProof)}\n`).digest("hex"),
+      rawFileSha256: createHash("sha256")
+        .update(`${JSON.stringify(cleanupCurrentMainProof.raw)}\n`).digest("hex") },
+    { event: "membership-secret-recovery-authority-checked", operation:
+      "membership-secret-recovery-cleanup-user-token", at: at(2_720), attempt: 1,
+      proofDigest: authority.proof_digest, expiresAt: authority.expiresAt },
+    { event: "provider-proof-bound", operation:
+      "membership-secret-recovery-cleanup-pre-delete", at: at(2_750), attempt: 1,
+      tokenId: replacementTokenId, proofDigest: cleanupPreDeleteInventoryProof.proof_digest,
+      proofFileSha256: createHash("sha256")
+        .update(`${JSON.stringify(cleanupPreDeleteInventoryProof)}\n`).digest("hex") },
+    { event: "mutation-intent", operation: "membership-secret-recovery-cleanup-user-token",
+      at: at(2_760), attempt: 1, method: "DELETE",
+      path: `/user/tokens/${replacementTokenId}`, tokenId: replacementTokenId,
+      requestDigest: cleanupRequestDigest, authorityProofDigest: authority.proof_digest },
+    { event: "provider-response-classified", operation:
+      "membership-secret-recovery-cleanup-user-token", at: at(2_800), attempt: 1,
+      outcome: "explicit-success", status: 200,
+      responseDigest: jsonDigest(cleanupResponseDocument), responseFileSha256:
+        cleanupResponseFileSha256, requestDigest: cleanupRequestDigest,
+      tokenId: replacementTokenId },
+    { event: "mutation-bound", operation: "membership-secret-recovery-cleanup-user-token",
+      at: at(2_860), attempt: 1, tokenId: replacementTokenId,
+      requestDigest: cleanupRequestDigest, deletionTombstone: true,
+      reconciliation: "explicit-success-exact-absence",
+      proofDigest: cleanupAbsenceInventoryProof.proof_digest,
+      proofFileSha256: createHash("sha256")
+        .update(`${JSON.stringify(cleanupAbsenceInventoryProof)}\n`).digest("hex") },
+  ];
+  const cleanupTerminal = { ...blockedPayload, at: at(2_900), tokenState: "exact-absence",
+    tokenId: null, cleanupComplete: true, activeMutation: null,
+    residualProofDigest: cleanupResidualInventoryProof.proof_digest,
+    residualProofFileSha256: createHash("sha256")
+      .update(`${JSON.stringify(cleanupResidualInventoryProof)}\n`).digest("hex") };
+  const cleanupRecords = [...cleanupPayloads, cleanupTerminal].map(checksummedRecord);
+  const cleanupArguments = { accountId: recoveryAccountId, sourceSha, attemptCoordinate,
+    preCreateInventoryProof, currentMainProof: mutationCurrentMainProof,
+    responseDocument, responseFileSha256, cleanupCurrentMainProof,
+    cleanupPreDeleteInventoryProof, cleanupResponseDocument, cleanupResponseFileSha256,
+    cleanupAbsenceInventoryProof, residualInventoryProof: cleanupResidualInventoryProof };
+  assert.equal(validateReviewMembershipSecretRecoveryJournal(cleanupRecords, authority,
+    cleanupArguments).terminal, "membership-secret-recovery-blocked");
+  assert.throws(() => validateReviewMembershipSecretRecoveryJournal(cleanupRecords, authority,
+    { ...cleanupArguments, cleanupPreDeleteInventoryProof: {
+      ...cleanupPreDeleteInventoryProof,
+      referencingBuildTokenUuids: ["11111111-1111-4111-8111-111111111111"] } }),
+  /inventory proof drift/u);
+
+  const temporary = await mkdtemp(resolve(tmpdir(), "atrinik-secret-recovery-cli-"));
+  const previousEnvironment = { ...process.env };
+  const originalWrite = process.stdout.write;
+  const cliOutput = [];
+  try {
+    await chmod(temporary, 0o700);
+    const privateFile = async (name, value) => {
+      const path = resolve(temporary, name);
+      await writeFile(path, typeof value === "string" ? `${value}\n` :
+        `${JSON.stringify(value)}\n`, { mode: 0o600 });
+      return path;
+    };
+    const executorPath = await privateFile("run-secret-recovery.mjs", "export {};");
+    const journalPath = resolve(temporary, "secret-recovery.jsonl");
+    await writeFile(journalPath, "", { mode: 0o600 });
+    const responsePath = resolve(temporary, "create-response.json");
+    const secretOutputPath = resolve(temporary, "replacement-token-secret");
+    const executorSha256 = createHash("sha256").update("export {};\n").digest("hex");
+    const cliNamespace = "review-membership-secret-recovery-131-fedcba9876543210";
+    const cliAttemptUnsigned = { repository: "atrinik/metaserver-worker", sourceSha,
+      mutation: false, attemptNamespace: cliNamespace,
+      capturedAt: new Date().toISOString(), executorPath, journalPath, responsePath,
+      secretOutputPath, executorSha256,
+      initialJournalSha256: createHash("sha256").update("").digest("hex"),
+      journalPathSha256: createHash("sha256").update(journalPath).digest("hex"),
+      responsePathSha256: createHash("sha256").update(responsePath).digest("hex"),
+      secretOutputPathSha256: createHash("sha256").update(secretOutputPath).digest("hex"),
+      journalId: jsonDigest({ attemptNamespace: cliNamespace, executorSha256,
+        journalPathSha256: createHash("sha256").update(journalPath).digest("hex"),
+        secretOutputPathSha256: createHash("sha256")
+          .update(secretOutputPath).digest("hex") }) };
+    const cliAttemptCoordinate = { ...cliAttemptUnsigned,
+      proof_digest: jsonDigest(cliAttemptUnsigned) };
+    const programLedgerPath = await privateFile("leaf-ledger.json", programLedgerDocument);
+    const programLedgerFileSha256 = createHash("sha256")
+      .update(`${JSON.stringify(programLedgerDocument)}\n`).digest("hex");
+    const cliProgramUnsigned = { ...programUnsigned, capturedAt: new Date().toISOString(),
+      programLedgerFileSha256 };
+    const cliProgramProof = { ...cliProgramUnsigned,
+      proof_digest: jsonDigest(cliProgramUnsigned) };
+    const cliInventoryUnsigned = { ...inventoryUnsigned, capturedAt: new Date().toISOString(),
+      attemptCoordinateDigest: cliAttemptCoordinate.proof_digest };
+    const cliPreCreateInventoryProof = { ...cliInventoryUnsigned,
+      proof_digest: jsonDigest(cliInventoryUnsigned) };
+    const authorityCurrentMainProof = authenticatedCurrentMainProof(sourceSha);
+    const authorityCurrentMainPath = await privateFile(
+      "authority-current-main.json", authorityCurrentMainProof);
+    const authorityOutputPath = resolve(temporary, "secret-recovery-authority.json");
+    const successorOutputPath = resolve(temporary, "secret-recovery-successor.json");
+    Object.assign(process.env, {
+      ATRINIK_CLOUDFLARE_ACCOUNT_ID_FILE: await privateFile("account-id", recoveryAccountId),
+      ATRINIK_GITHUB_CURRENT_MAIN_PROOF_FILE: authorityCurrentMainPath,
+      ATRINIK_REVIEW_MEMBERSHIP_SECRET_RECOVERY_AUTHORITY_CURRENT_MAIN_PROOF_FILE:
+        authorityCurrentMainPath,
+      ATRINIK_REVIEW_MEMBERSHIP_SECRET_RECOVERY_INCIDENT_PROOF_FILE: await privateFile(
+        "incident.json", incidentProof),
+      ATRINIK_REVIEW_MEMBERSHIP_SECRET_RECOVERY_BOOTSTRAP_POLICY_PROOF_FILE: await privateFile(
+        "bootstrap-policy.json", bootstrapPolicyProof),
+      ATRINIK_REVIEW_MEMBERSHIP_REPAIR_PERMISSION_GROUP_PROOF_FILE: await privateFile(
+        "permission-groups.json", permissionGroupProof),
+      ATRINIK_REVIEW_MEMBERSHIP_REPAIR_CURRENT_STATE_PROOF_FILE: await privateFile(
+        "current-review.json", currentReviewActiveProof),
+      ATRINIK_REVIEW_MEMBERSHIP_SECRET_RECOVERY_PROGRAM_PROOF_FILE: await privateFile(
+        "program-proof.json", cliProgramProof),
+      ATRINIK_REVIEW_MEMBERSHIP_SECRET_RECOVERY_PROGRAM_LEDGER_FILE: programLedgerPath,
+      ATRINIK_REVIEW_MEMBERSHIP_SECRET_RECOVERY_ATTEMPT_COORDINATE_FILE: await privateFile(
+        "attempt-coordinate.json", cliAttemptCoordinate),
+      ATRINIK_REVIEW_MEMBERSHIP_SECRET_RECOVERY_EXECUTOR_FILE: executorPath,
+      ATRINIK_REVIEW_MEMBERSHIP_SECRET_RECOVERY_JOURNAL_FILE: journalPath,
+      ATRINIK_REVIEW_MEMBERSHIP_SECRET_RECOVERY_PRE_CREATE_PROOF_FILE: await privateFile(
+        "pre-create.json", cliPreCreateInventoryProof),
+      ATRINIK_REVIEW_MEMBERSHIP_SECRET_RECOVERY_AUTHORITY_PROOF_OUTPUT_FILE:
+        authorityOutputPath,
+      ATRINIK_REVIEW_MEMBERSHIP_SECRET_RECOVERY_SUCCESSOR_PROOF_OUTPUT_FILE:
+        successorOutputPath,
+    });
+    process.stdout.write = (chunk) => { cliOutput.push(String(chunk)); return true; };
+    const testCapability = { membershipSecretRecovery:
+      createReviewMembershipSecretRecoveryTestCapability(membershipFixture.evidence) };
+    const noProviderRead = async () => {
+      throw new Error("secret recovery verifier must not read provider state");
+    };
+    await runProvisioningCliForTest(
+      "--verify-review-membership-secret-recovery-authority", async () => sourceSha,
+      noProviderRead, testCapability);
+    const cliAuthority = JSON.parse(await readFile(authorityOutputPath, "utf8"));
+    assert.equal(JSON.parse(cliOutput.at(-1)).proof_digest, cliAuthority.proof_digest);
+    const cliAttemptFilesystemEvidence = {
+      executorSha256, initialJournalSha256: createHash("sha256").update("").digest("hex"),
+      journalPathSha256: cliAttemptCoordinate.journalPathSha256,
+      responsePathSha256: cliAttemptCoordinate.responsePathSha256,
+      secretOutputPathSha256: cliAttemptCoordinate.secretOutputPathSha256,
+      responseAbsent: true, secretOutputAbsent: true };
+    assert.deepEqual(issueReviewMembershipSecretRecoveryAuthority({ production, review,
+      accountId: recoveryAccountId, sourceSha, incidentProof,
+      membershipSuccessorEvidence: membershipFixture.evidence, bootstrapPolicyProof,
+      permissionGroupProof, currentReviewActiveProof,
+      currentMainProofDigest: jsonDigest(authorityCurrentMainProof),
+      programDeliveryProof: cliProgramProof, programLedgerDocument,
+      programLedgerFileSha256, attemptCoordinate: cliAttemptCoordinate,
+      attemptFilesystemEvidence: cliAttemptFilesystemEvidence,
+      preCreateInventoryProof: cliPreCreateInventoryProof },
+    Date.parse(cliAuthority.capturedAt)), cliAuthority);
+    const cliReplacementTokenId = "f".repeat(32);
+    const cliSecret = "owner-only-fixture-secret";
+    const cliResponseDocument = { success: true, errors: [], messages: [], result: {
+      id: cliReplacementTokenId, name: cliAuthority.replacementTokenName, value: cliSecret } };
+    await privateFile("create-response.json", cliResponseDocument);
+    await privateFile("replacement-token-secret", cliSecret);
+    const cliResultProof = { ...bootstrapPolicyProof,
+      kind: "review-membership-secret-recovery-result", tokenId: cliReplacementTokenId,
+      modifiedOn: new Date(Date.parse(cliAuthority.capturedAt) + 1_000).toISOString(),
+      capturedAt: new Date(Date.parse(cliAuthority.capturedAt) + 2_000).toISOString(),
+      userPermissions: ["Memberships:Read", "User Details:Read"] };
+    const cliMutationMainProof = authenticatedCurrentMainProof(sourceSha,
+      new Date(Date.parse(cliAuthority.capturedAt) + 10).toISOString());
+    const cliMutationMainPath = await privateFile("mutation-current-main.json",
+      cliMutationMainProof);
+    const cliAt = (offset) => new Date(Date.parse(cliAuthority.capturedAt) + offset).toISOString();
+    const cliResponseSha = createHash("sha256")
+      .update(`${JSON.stringify(cliResponseDocument)}\n`).digest("hex");
+    const cliSecretSha = createHash("sha256").update(`${cliSecret}\n`).digest("hex");
+    const cliPayloads = [
+      { event: "membership-secret-recovery-started", at: cliAt(5), attempt: 1,
+        authorityProofDigest: cliAuthority.proof_digest,
+        attemptCoordinateDigest: cliAttemptCoordinate.proof_digest,
+        preCreateInventoryProofDigest: cliPreCreateInventoryProof.proof_digest,
+        requestDigest: cliAuthority.requestDigest },
+      { event: "current-main-proof-bound", operation:
+        "membership-secret-recovery-create-user-token", at: cliAt(20), attempt: 1,
+        sourceSha, proofDigest: jsonDigest(cliMutationMainProof),
+        proofFileSha256: createHash("sha256")
+          .update(`${JSON.stringify(cliMutationMainProof)}\n`).digest("hex"),
+        rawFileSha256: createHash("sha256")
+          .update(`${JSON.stringify(cliMutationMainProof.raw)}\n`).digest("hex") },
+      { event: "membership-secret-recovery-authority-checked", operation:
+        "membership-secret-recovery-create-user-token", at: cliAt(30), attempt: 1,
+        proofDigest: cliAuthority.proof_digest, expiresAt: cliAuthority.expiresAt },
+      { event: "provider-proof-bound", operation: "membership-secret-recovery-pre-create",
+        at: cliAt(40), attempt: 1, proofDigest: cliPreCreateInventoryProof.proof_digest,
+        proofFileSha256: createHash("sha256")
+          .update(`${JSON.stringify(cliPreCreateInventoryProof)}\n`).digest("hex") },
+      { event: "mutation-intent", operation: "membership-secret-recovery-create-user-token",
+        at: cliAt(50), attempt: 1, method: "POST", path: "/user/tokens",
+        requestDigest: cliAuthority.requestDigest,
+        authorityProofDigest: cliAuthority.proof_digest },
+      { event: "provider-response-classified", operation:
+        "membership-secret-recovery-create-user-token", at: cliAt(1_500), attempt: 1,
+        outcome: "explicit-success", status: 200,
+        responseDigest: jsonDigest(cliResponseDocument), responseFileSha256: cliResponseSha,
+        requestDigest: cliAuthority.requestDigest, tokenId: cliReplacementTokenId },
+      { event: "provider-proof-bound", operation: "membership-secret-recovery-result",
+        at: cliAt(2_500), attempt: 1, tokenId: cliReplacementTokenId,
+        proofDigest: jsonDigest(cliResultProof), proofFileSha256: createHash("sha256")
+          .update(`${JSON.stringify(cliResultProof)}\n`).digest("hex") },
+    ];
+    const cliTerminal = { event: "membership-secret-recovery-complete", at: cliAt(2_600),
+      attempt: 1, tokenId: cliReplacementTokenId,
+      resultProofDigest: jsonDigest(cliResultProof), secretFileSha256: cliSecretSha,
+      requestDigest: cliAuthority.requestDigest, forbiddenWrites: completePayload.forbiddenWrites };
+    await writeFile(journalPath,
+      `${[...cliPayloads, cliTerminal].map(checksummedRecord)
+        .map((record) => JSON.stringify(record)).join("\n")}\n`, { mode: 0o600 });
+    Object.assign(process.env, {
+      ATRINIK_REVIEW_MEMBERSHIP_SECRET_RECOVERY_AUTHORITY_PROOF_FILE: authorityOutputPath,
+      ATRINIK_REVIEW_MEMBERSHIP_SECRET_RECOVERY_MUTATION_CURRENT_MAIN_PROOF_FILE:
+        cliMutationMainPath,
+      ATRINIK_REVIEW_MEMBERSHIP_SECRET_RECOVERY_RESULT_PROOF_FILE: await privateFile(
+        "result-proof.json", cliResultProof),
+    });
+    await runProvisioningCliForTest(
+      "--verify-review-membership-secret-recovery-result", async () => sourceSha,
+      noProviderRead, testCapability);
+    const cliResult = JSON.parse(cliOutput.at(-1));
+    assert.equal(cliResult.terminal, "membership-secret-recovery-complete");
+    assert.equal(cliResult.tokenId, cliReplacementTokenId);
+    const cliSuccessor = JSON.parse(await readFile(successorOutputPath, "utf8"));
+    assert.equal(cliResult.proof_digest, cliSuccessor.proof_digest);
+    assert.equal(cliSuccessor.tokenId, cliReplacementTokenId);
+  } finally {
+    process.stdout.write = originalWrite;
+    for (const key of Object.keys(process.env)) if (!(key in previousEnvironment))
+      delete process.env[key];
+    Object.assign(process.env, previousEnvironment);
+    await rm(temporary, { recursive: true, force: true });
+  }
+  assert.throws(() => validateReviewMembershipSecretRecoveryAttemptCoordinate(
+    { ...attemptCoordinate, executorSha256: "f".repeat(64) }, sourceSha,
+    attemptFilesystemEvidence, now), /attempt coordinate drift/u);
+  assert.throws(() => validateReviewMembershipSecretRecoveryJournal(
+    completeRecords.map((record, index) => index === 4 ? { ...record,
+      requestDigest: "0".repeat(64) } : record), authority,
+    { accountId: recoveryAccountId, sourceSha, attemptCoordinate, preCreateInventoryProof,
+      currentMainProof: mutationCurrentMainProof, responseDocument, responseFileSha256,
+      secretFileSha256, resultProof }),
+  /framing drift/u);
+  assert.throws(() => validateReviewMembershipSecretRecoveryJournal(
+    completeRecords, authority,
+    { accountId: recoveryAccountId, sourceSha, attemptCoordinate, preCreateInventoryProof,
+      currentMainProof: mutationCurrentMainProof, responseDocument,
+      responseFileSha256: "0".repeat(64), secretFileSha256, resultProof }),
+  /classification drift/u);
+  assert.throws(() => validateReviewMembershipSecretRecoveryJournal(
+    completeRecords, authority,
+    { accountId: recoveryAccountId, sourceSha, attemptCoordinate, preCreateInventoryProof,
+      currentMainProof: mutationCurrentMainProof, responseDocument, responseFileSha256,
+      secretFileSha256: "0".repeat(64), resultProof }),
+  /complete terminal drift/u);
+});
+
+test("requires an owner-only empty membership secret recovery attempt", async () => {
+  const temporary = await mkdtemp(resolve(tmpdir(), "atrinik-membership-secret-attempt-"));
+  const sourceSha = "a".repeat(40);
+  const executorPath = resolve(temporary, "run-recovery.mjs");
+  const journalPath = resolve(temporary, "recovery.jsonl");
+  const responsePath = resolve(temporary, "response.json");
+  const secretOutputPath = resolve(temporary, "secret");
+  try {
+    await chmod(temporary, 0o700);
+    await writeFile(executorPath, "export {};\n", { mode: 0o600 });
+    await writeFile(journalPath, "", { mode: 0o600 });
+    const executorSha256 = createHash("sha256").update("export {};\n").digest("hex");
+    const attemptNamespace = "review-membership-secret-recovery-131-fedcba9876543210";
+    const unsigned = { repository: "atrinik/metaserver-worker", sourceSha, mutation: false,
+      attemptNamespace, capturedAt: new Date().toISOString(), executorPath, journalPath,
+      responsePath, secretOutputPath, executorSha256,
+      initialJournalSha256: createHash("sha256").update("").digest("hex"),
+      journalPathSha256: createHash("sha256").update(journalPath).digest("hex"),
+      responsePathSha256: createHash("sha256").update(responsePath).digest("hex"),
+      secretOutputPathSha256: createHash("sha256").update(secretOutputPath).digest("hex"),
+      journalId: jsonDigest({ attemptNamespace, executorSha256,
+        journalPathSha256: createHash("sha256").update(journalPath).digest("hex"),
+        secretOutputPathSha256: createHash("sha256").update(secretOutputPath).digest("hex") }),
+    };
+    const coordinate = { ...unsigned, proof_digest: jsonDigest(unsigned) };
+    assert.equal((await validateReviewMembershipSecretRecoveryAttemptPreparation(
+      coordinate, sourceSha)).journalId, coordinate.journalId);
+    await writeFile(secretOutputPath, "not-a-real-secret\n", { mode: 0o600 });
+    await assert.rejects(validateReviewMembershipSecretRecoveryAttemptPreparation(
+      coordinate, sourceSha), /attempt coordinate drift/u);
+  } finally { await rm(temporary, { recursive: true, force: true }); }
+});
+
+test("binds the membership repair terminal to the current terminal wrapper successor", () => {
+  assert.deepEqual(reviewMembershipSuccessorRotationIncident, {
+    sourceSha: "85cce723eb109a26e9bb9d375bc5382129466ee0",
+    predecessorReviewBuildTokenUuid: "79a6606b-f3b4-436e-abe9-10e8650c50e8",
+    predecessorReviewTokenId: "c6be328862f30f76fdc5cf455eae0777",
+    replacementReviewTokenId: "65b2e92887b640023f74bc79eb3130b1",
+    membershipRepairAuthorityFileSha256:
+      "ca744001d431e1804a13e0a675814313d4638f6e14e123d6ba729310b4f45de1",
+    membershipRepairAuthorityDigest:
+      "a4e1c79bf3f0fdfd06f53d60cda32459535263c8fd1b0d55028817091da0c97a",
+    membershipRepairJournalSha256:
+      "30e92d5717aa8c6f8dfc9042dcf6213d002804d154d42d00c6df3ed9f31d5f42",
+    membershipRepairTerminalRecordSha256:
+      "dd29e847092294ad7139dcc4bb83253487bcabed4a5ff4a009eb09a8708f0708",
+    membershipRepairResultProofFileSha256:
+      "1e49fe673e752a24a7980a91fce7deb1beb25541ce815983919160cd3147f025",
+    membershipRepairResultProofDigest:
+      "941573b734a760e7f1b26c15f497dff88f4628622015d8bd2893c370497846ae",
+    membershipRepairSnapshotManifestSha256:
+      "e18961b746e9f76d20c2d2b4567ebbea233f2148225530d41cc5e906ad639495",
+  });
+  const incidentUnsigned = { ...reviewMembershipRepairIncident, mutation: false,
+    outcome: "workers-builds-review-membership-repair-incident-valid" };
+  const incidentProof = { ...incidentUnsigned, proof_digest: jsonDigest(incidentUnsigned) };
+  const membershipRepairAuthorityProof = {
+    outcome: "workers-builds-review-membership-repair-authority-valid", mutation: false,
+    phase: "review-membership-read-policy-and-proof",
+    accountId: "b1348660cac63549f606c8344dbf08a5",
+    sourceSha: reviewMembershipSuccessorRotationIncident.sourceSha,
+    capturedAt: "2026-08-19T23:50:07.652Z", expiresAt: "2026-08-20T00:05:07.652Z",
+    planDigest: "5646d8a5bcf75c9487f6d9282de86dedeef81d022f8b6bf4ed92e8b490065093",
+    incidentDigest: "ff960943097caaa0e881c3039d323f95e1baa323003de1dda273b726f6e65f63",
+    predecessorPolicyDigest:
+      "87569284f5a55307fe9bad49794d608ff4abb045bf6a907e3c9c6d519974730c",
+    currentReviewActiveProofDigest:
+      "7026ea0d737d3cf27bca03fd9e2218a644463dcc0f8a78110362fce35e53155e",
+    permissionGroupProofDigest:
+      "fbc3df5ff1386563fe11bc730eae8c37d55462cca0d821c5395bb418251da2eb",
+    currentMainProofDigest:
+      "0f2fa23ba24fb5e328503cb4e1000447f72b474c28991a406d24fdaed877d6d5",
+    predecessorTokenId: reviewMembershipSuccessorRotationIncident.predecessorReviewTokenId,
+    predecessorBuildTokenUuid:
+      reviewMembershipSuccessorRotationIncident.predecessorReviewBuildTokenUuid,
+    replacementTokenName: "Atrinik metaserver review membership-readable",
+    permissionGroupIds: { "Memberships Read": "3518d0f75557482e952c6762d3e64903",
+      "User Details Read": "8acbe5bb0d54464ab867149d7f7cf8ac" },
+    predecessorUserPermissions: ["User Details:Read"],
+    requiredUserPermissions: ["Memberships:Read", "User Details:Read"],
+    userResource: "com.cloudflare.api.user.b33f81835d7dc584622ca841b124a9a5",
+    accountPermissions: [], accountResources: [], zonePermissions: [], zoneResources: [],
+    allowedWrites: ["post-one-exact-membership-readable-user-token",
+      "delete-only-journal-created-unwrapped-user-token-on-failure"],
+    forbidden: ["account-owned-token", "build-token-wrapper-mutation", "trigger-mutation",
+      "production-activation", "manual-api-build", "migration-0010",
+      "worker-resource-mutation"],
+    proof_digest: reviewMembershipSuccessorRotationIncident.membershipRepairAuthorityDigest,
+  };
+  const journalPayloads = [
+    { event: "membership-repair-started", at: "2026-08-19T23:51:57.349Z", attempt: 1,
+      authorityProofDigest: membershipRepairAuthorityProof.proof_digest,
+      currentMainProofDigest:
+        "0f2fa23ba24fb5e328503cb4e1000447f72b474c28991a406d24fdaed877d6d5",
+      preCreateInventoryDigest:
+        "9c22d88a14b9aa24682bcca8ed365413425c80794299a7621212543f937ab51e",
+      requestDigest: "0c782a10dd63e8eea792d26227ac95fb556b2b383585aec4074c0c13372f38fd" },
+    { event: "mutation-intent", operation: "membership-repair-create-user-token",
+      at: "2026-08-19T23:51:57.352Z", attempt: 1, method: "POST", path: "/user/tokens",
+      requestDigest: "0c782a10dd63e8eea792d26227ac95fb556b2b383585aec4074c0c13372f38fd",
+      authorityProofDigest: membershipRepairAuthorityProof.proof_digest },
+    { event: "provider-response-classified",
+      operation: "membership-repair-create-user-token", at: "2026-08-19T23:51:57.891Z",
+      attempt: 1, outcome: "explicit-success", status: 200,
+      responseDigest: "05548fed4b3a2dccb586212a5d5ad5bcb5bdc5913f060ec258ced6160928b749",
+      requestDigest: "0c782a10dd63e8eea792d26227ac95fb556b2b383585aec4074c0c13372f38fd",
+      tokenId: reviewMembershipSuccessorRotationIncident.replacementReviewTokenId },
+    { event: "membership-repair-complete", at: "2026-08-19T23:53:09.279Z", attempt: 1,
+      tokenId: reviewMembershipSuccessorRotationIncident.replacementReviewTokenId,
+      resultProofDigest: reviewMembershipSuccessorRotationIncident.membershipRepairResultProofDigest,
+      requestDigest: "0c782a10dd63e8eea792d26227ac95fb556b2b383585aec4074c0c13372f38fd",
+      forbiddenWrites: { wrapper: false, trigger: false, build: false, deployment: false,
+        migration0010: false, workerResource: false } },
+  ];
+  const membershipRepairJournalRecords = journalPayloads.map((record) =>
+    ({ ...record, recordSha256: jsonDigest(record) }));
+  const membershipRepairResultProof = {
+    source: "cloudflare-owner-token-policy-readback",
+    accountId: membershipRepairAuthorityProof.accountId,
+    sourceSha: reviewMembershipSuccessorRotationIncident.sourceSha,
+    capturedAt: "2026-08-19T23:53:09.263Z", kind: "review-replacement",
+    tokenId: reviewMembershipSuccessorRotationIncident.replacementReviewTokenId,
+    ownerUserId: reviewMembershipRepairIncident.ownerUserId,
+    modifiedOn: "2026-08-19T23:51:58Z",
+    userPermissions: ["Memberships:Read", "User Details:Read"], accountPermissions: [],
+    accountResources: [], zonePermissions: [], zoneResources: [],
+  };
+  const arguments_ = { incidentProof, membershipRepairAuthorityProof,
+    membershipRepairAuthorityFileSha256:
+      reviewMembershipSuccessorRotationIncident.membershipRepairAuthorityFileSha256,
+    membershipRepairJournalRecords,
+    membershipRepairJournalFileSha256:
+      reviewMembershipSuccessorRotationIncident.membershipRepairJournalSha256,
+    membershipRepairResultProof,
+    membershipRepairResultProofFileSha256:
+      reviewMembershipSuccessorRotationIncident.membershipRepairResultProofFileSha256,
+    membershipRepairSnapshotManifestFileSha256:
+      reviewMembershipSuccessorRotationIncident.membershipRepairSnapshotManifestSha256 };
+  const result = validateReviewMembershipSuccessorRotationEvidence(arguments_, {
+    accountId: membershipRepairAuthorityProof.accountId,
+    sourceSha: reviewMembershipSuccessorRotationIncident.sourceSha,
+  });
+  assert.equal(result.predecessorReviewBuildTokenUuid,
+    reviewMembershipSuccessorRotationIncident.predecessorReviewBuildTokenUuid);
+  assert.equal(result.replacementReviewTokenId,
+    reviewMembershipSuccessorRotationIncident.replacementReviewTokenId);
+  assert.throws(() => validateReviewMembershipSuccessorRotationEvidence({ ...arguments_,
+    membershipRepairJournalRecords: membershipRepairJournalRecords.map((record, index) =>
+      index === 3 ? { ...record, tokenId: "f".repeat(32) } : record) }, {
+    accountId: membershipRepairAuthorityProof.accountId,
+    sourceSha: reviewMembershipSuccessorRotationIncident.sourceSha,
+  }), /evidence file binding drift/u);
+  assert.notEqual(result.predecessorReviewBuildTokenUuid,
+    "4069512a-d801-4af6-a5be-137fc83dbc0e");
+});
 
 test("accepts the checked-in provisioning composition", async () => {
   assert.equal((await validateCheckedInProvisioning()).production.productionBranch, "main");
@@ -1750,6 +2742,10 @@ test("gates every credentialed mode on the private current-main proof", async ()
     "--verify-review-activation",
     "--verify-review-activation-authority",
     "--verify-review-activation-authority-proof",
+    "--verify-review-membership-repair-authority",
+    "--verify-review-membership-repair-result",
+    "--verify-review-membership-secret-recovery-authority",
+    "--verify-review-membership-secret-recovery-result",
     "--verify-review-token-rotation-authority",
     "--verify-review-token-rotation-authority-proof-historical",
     "--verify-review-token-rotation-provider-normalized-authority-proof-historical",
@@ -2081,6 +3077,21 @@ test("renews only a bounded disposable proof authority from exact review-active 
 });
 
 test("issues one journal-bound review-token rotation authority", () => {
+  assert.equal(reviewTokenRotationLivePredecessorName(undefined),
+    reviewBuildTokenNames.predecessor);
+  const successorCoordinate = reviewMembershipSuccessorRotationIncident;
+  const successorSelection = {
+    predecessorReviewBuildTokenUuid: successorCoordinate.predecessorReviewBuildTokenUuid,
+    predecessorReviewTokenId: successorCoordinate.predecessorReviewTokenId,
+    replacementReviewTokenId: successorCoordinate.replacementReviewTokenId,
+    evidenceSourceSha: successorCoordinate.sourceSha,
+    evidenceDigest: "876b9d46ed1c063cf9ac9d702d5953bad9eb26c366668e3a2bc7d7e7f912cf12",
+  };
+  assert.equal(reviewTokenRotationLivePredecessorName(successorSelection),
+    reviewBuildTokenNames.current);
+  assert.throws(() => reviewTokenRotationLivePredecessorName({ ...successorSelection,
+    predecessorReviewBuildTokenUuid: reviewTokenUuid }),
+  /live predecessor drift/u);
   const now = Date.now();
   const { evidence: disposable } = disposableReviewAuthorityFixture(now);
   const replacementTokenId = "replacement-review-token-id";
@@ -2090,7 +3101,8 @@ test("issues one journal-bound review-token rotation authority", () => {
     modifiedOn: new Date(now - 2_000).toISOString(), accountId,
     sourceSha: "a".repeat(40), tokenId: replacementTokenId,
     ownerUserId: "1".repeat(32),
-    userPermissions: ["User Details:Read"], accountPermissions: [], accountResources: [],
+    userPermissions: ["Memberships:Read", "User Details:Read"],
+    accountPermissions: [], accountResources: [],
     zonePermissions: [], zoneResources: [],
   };
   const evidence = {
@@ -2153,6 +3165,11 @@ test("issues one journal-bound review-token rotation authority", () => {
   assert.equal(Date.parse(proof.expiresAt) - Date.parse(proof.capturedAt), 30 * 60_000);
   assert.equal(validateReviewTokenRotationAuthority(proof, arguments_, now + 20 * 60_000)
     .proof_digest, proof.proof_digest);
+  const { proof: successorProof } = successorRotationAuthorityFixture(now + 2_500);
+  assert.equal(successorProof.journalIdentities.predecessorReviewBuildTokenUuid,
+    successorCoordinate.predecessorReviewBuildTokenUuid);
+  assert.equal(successorProof.evidenceDigests.membershipSuccessor,
+    successorSelection.evidenceDigest);
   assert.throws(() => validateReviewTokenRotationAuthority(proof, arguments_,
     now + 26 * 60_000), /stale/u);
   const wrongPermission = structuredClone(arguments_);
@@ -2164,6 +3181,13 @@ test("issues one journal-bound review-token rotation authority", () => {
   reusedUnderlying.replacementTokenAuthorityProof.tokenId = "review-token-id";
   assert.throws(() => issueReviewTokenRotationAuthority({ ...reusedUnderlying }, now),
     /journal\/live\/token identity drift/u);
+  const unboundMembershipSuccessor = structuredClone(arguments_);
+  unboundMembershipSuccessor.replacementTokenId =
+    reviewMembershipSuccessorRotationIncident.replacementReviewTokenId;
+  unboundMembershipSuccessor.replacementTokenAuthorityProof.tokenId =
+    reviewMembershipSuccessorRotationIncident.replacementReviewTokenId;
+  assert.throws(() => issueReviewTokenRotationAuthority(unboundMembershipSuccessor, now),
+    /membership successor evidence drift/u);
   const wrongTrigger = structuredClone(arguments_);
   wrongTrigger.currentReviewActiveProof.liveIdentities.reviewTriggerUuid =
     "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
@@ -2312,6 +3336,84 @@ test("validates exact review-token rotation rollback and residual journals", asy
   const { evidence } = disposableReviewAuthorityFixture(now,
     "/secure/issue-66/disposable-proof", productionPreservationDigest);
   const authorityProof = evidence.reviewTokenRotationAuthorityProof;
+  const successorSnapshotDirectory = resolve(temporary, "successor-predecessor-snapshot");
+  await cp(blockedSnapshotDirectory, successorSnapshotDirectory, { recursive: true });
+  const writeSuccessorSnapshot = async (name, value) => {
+    const path = resolve(successorSnapshotDirectory, name);
+    await writeFile(path, `${JSON.stringify(value)}\n`, { mode: 0o600 });
+    await chmod(path, 0o600);
+  };
+  const successorFixture = successorRotationAuthorityFixture(now,
+    productionPreservationDigest);
+  const successorCoordinate = reviewMembershipSuccessorRotationIncident;
+  const successorProduction = providerTrigger(productionTriggerSpec(production, {
+    externalScriptId: scriptTag, repositoryConnectionUuid,
+    buildTokenUuid: successorCoordinate.predecessorReviewBuildTokenUuid,
+  }), productionTriggerUuid);
+  successorProduction.branch_includes = [successorFixture.arguments_.productionSentinelProof.branch];
+  const successorReview = providerTrigger(automaticReviewTriggerSpec(review, {
+    externalScriptId: scriptTag, repositoryConnectionUuid,
+    buildTokenUuid: successorCoordinate.predecessorReviewBuildTokenUuid,
+  }), reviewTriggerUuid);
+  const successorManifest = manifest(base);
+  successorManifest.accountId = successorFixture.arguments_.accountId;
+  await Promise.all([
+    writeSuccessorSnapshot("snapshot-manifest.json", successorManifest),
+    writeSuccessorSnapshot(`${production.workers[0].name}.triggers.json`,
+      envelope([successorProduction, successorReview])),
+    writeSuccessorSnapshot("account-triggers.json",
+      envelope([successorProduction, successorReview])),
+    writeSuccessorSnapshot("build-tokens.json", envelope([
+      { build_token_name: "Atrinik metaserver production",
+        build_token_uuid: "44444444-4444-4444-8444-444444444444",
+        cloudflare_token_id: "production-token-id", owner_type: "user" },
+      { build_token_name: reviewBuildTokenNames.current,
+        build_token_uuid: successorCoordinate.predecessorReviewBuildTokenUuid,
+        cloudflare_token_id: successorCoordinate.predecessorReviewTokenId,
+        owner_type: "user" },
+    ])),
+  ]);
+  const successorSnapshotArguments = {
+    snapshotDirectory: successorSnapshotDirectory, production, review,
+    accountId: successorFixture.arguments_.accountId, sourceSha,
+    phase: "predecessor",
+    productionSentinelProof: successorFixture.arguments_.productionSentinelProof,
+    predecessorTokenAuthorityProofs:
+      successorFixture.arguments_.predecessorTokenAuthorityProofs,
+    replacementTokenAuthorityProof:
+      successorFixture.arguments_.replacementTokenAuthorityProof,
+    replacementTokenId: successorFixture.arguments_.replacementTokenId,
+    productionTriggerUuid, reviewTriggerUuid,
+    predecessorReviewTokenUuid: successorCoordinate.predecessorReviewBuildTokenUuid,
+    replacementReviewTokenUuid: undefined, productionPreservationDigest,
+    authorityProof: successorFixture.proof,
+    productionBaselineProof: successorFixture.arguments_.productionBaselineProof,
+    now,
+  };
+  assert.equal((await validateReviewTokenRotationSnapshotDirectory(
+    successorSnapshotArguments)).phase, "predecessor");
+  await assert.rejects(validateReviewTokenRotationSnapshotDirectory({
+    ...successorSnapshotArguments,
+    predecessorReviewTokenUuid: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+  }), /authority evidence drift/u);
+  const successorTokens = JSON.parse(await readFile(resolve(successorSnapshotDirectory,
+    "build-tokens.json"), "utf8"));
+  successorTokens.result[1].build_token_name = reviewBuildTokenNames.predecessor;
+  await writeSuccessorSnapshot("build-tokens.json", successorTokens);
+  await assert.rejects(validateReviewTokenRotationSnapshotDirectory(
+    successorSnapshotArguments), /wrapper inventory drift/u);
+  successorTokens.result[1].build_token_name = reviewBuildTokenNames.current;
+  successorTokens.result[1].cloudflare_token_id = "foreign-token-id";
+  await writeSuccessorSnapshot("build-tokens.json", successorTokens);
+  await assert.rejects(validateReviewTokenRotationSnapshotDirectory(
+    successorSnapshotArguments), /membership successor predecessor drift/u);
+  successorTokens.result[1].cloudflare_token_id = successorCoordinate.predecessorReviewTokenId;
+  successorTokens.result.push({ ...successorTokens.result[1],
+    build_token_uuid: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa" });
+  successorTokens.result_info.total_count = 3;
+  await writeSuccessorSnapshot("build-tokens.json", successorTokens);
+  await assert.rejects(validateReviewTokenRotationSnapshotDirectory(
+    successorSnapshotArguments), /wrapper inventory drift/u);
   const restoredProof = { ...evidence.reviewTokenRotationProof,
     outcome: "workers-builds-review-token-rotation-predecessor-restored-valid",
     phase: "predecessor-restored", capturedAt: new Date(base + 145).toISOString(),
@@ -5188,7 +6290,7 @@ test("plans inert setup, separately gated activation, and ordered rollback", () 
     terminalRotationAlternatives);
   assert.deepEqual(plan.gates, ["provider-setup-authorization",
     "review-trigger-activation-and-proof", "review-token-rotation",
-    "production-trigger-activation", "migration-0010",
+    "review-membership-read-policy-and-proof", "production-trigger-activation", "migration-0010",
     "initial-automatic-production-proof"]);
   assert.ok(plan.reviewTokenRotation.forbidden.includes("production-trigger-activation"));
   const incidentRecovery = plan.reviewTokenRotation.providerNormalizedIncidentRecovery;
@@ -5394,9 +6496,18 @@ test("plans inert setup, separately gated activation, and ordered rollback", () 
   assert.ok(plan.privateInputs.includes(
     "ATRINIK_REVIEW_ACTIVATION_AUTHORITY_PROOF_OUTPUT_FILE"));
   assert.ok(plan.privateInputs.includes("ATRINIK_REVIEW_ACTIVATION_AUTHORITY_PROOF_FILE"));
+  for (const name of ["INCIDENT_PROOF", "AUTHORITY_PROOF", "JOURNAL", "RESULT_PROOF",
+    "SNAPSHOT_MANIFEST"])
+    assert.ok(plan.privateInputs.includes(`ATRINIK_REVIEW_MEMBERSHIP_SUCCESSOR_${name}_FILE`));
+  assert.equal(plan.reviewMembershipRepair.successorRotation.incident
+    .predecessorReviewBuildTokenUuid,
+  reviewMembershipSuccessorRotationIncident.predecessorReviewBuildTokenUuid);
   assert.ok(plan.setupOperations.filter(({ mutation }) => mutation)
     .every(({ actor, action }) => actor && action));
   assert.equal(validateSetupPlan(plan), plan);
+  const missingSuccessor = structuredClone(plan);
+  delete missingSuccessor.reviewMembershipRepair.successorRotation;
+  assert.throws(() => validateSetupPlan(missingSuccessor), /repair plan drift/u);
   const dangling = structuredClone(plan);
   dangling.productionActivation.request.body.build_token_uuid.resultReference =
     "missing-token.build_token_uuid";
@@ -5770,6 +6881,89 @@ test("pins every journaled review-token rotation phase and rejects field drift",
     replacementReviewTokenUuid, repositoryConnectionUuid }), /still referenced/u);
   assert.equal(validate("complete", replacementReviewTokenUuid, replacementReviewTokenUuid,
     [productionToken, replacementToken]).phase, "complete");
+  const successorPredecessorUuid =
+    reviewMembershipSuccessorRotationIncident.predecessorReviewBuildTokenUuid;
+  const successorReplacementUuid = "99999999-9999-4999-8999-999999999999";
+  const successorPredecessor = token(reviewBuildTokenNames.current, successorPredecessorUuid,
+    reviewMembershipSuccessorRotationIncident.predecessorReviewTokenId);
+  const successorReplacement = token(reviewBuildTokenNames.current, successorReplacementUuid,
+    reviewMembershipSuccessorRotationIncident.replacementReviewTokenId);
+  const membershipSuccessorValidation = {
+    predecessorReviewBuildTokenUuid: successorPredecessorUuid,
+    predecessorReviewTokenId:
+      reviewMembershipSuccessorRotationIncident.predecessorReviewTokenId,
+    replacementReviewTokenId:
+      reviewMembershipSuccessorRotationIncident.replacementReviewTokenId,
+    evidenceSourceSha: reviewMembershipSuccessorRotationIncident.sourceSha,
+    evidenceDigest: "876b9d46ed1c063cf9ac9d702d5953bad9eb26c366668e3a2bc7d7e7f912cf12",
+  };
+  const validateSuccessor = (phase, productionTokenUuid_, reviewTokenUuid_, tokenRows) =>
+    validateReviewTokenRotationReadback({ production, review, phase,
+      productionTrigger: trigger(false, productionTokenUuid_),
+      reviewTrigger: trigger(true, reviewTokenUuid_),
+      productionEnvironment: envelope(productionEnvironment),
+      reviewEnvironment: envelope(reviewEnvironment), buildTokens: envelope(tokenRows),
+      accountTriggers: envelope([trigger(false, productionTokenUuid_),
+        trigger(true, reviewTokenUuid_)]), productionScriptTag: scriptTag,
+      productionSentinel: sentinel, productionTriggerUuid,
+      reviewTriggerUuid: reviewTriggerIdentity,
+      predecessorReviewTokenUuid: successorPredecessorUuid,
+      replacementReviewTokenUuid: phase === "predecessor" ? undefined :
+        successorReplacementUuid, repositoryConnectionUuid,
+      membershipSuccessorValidation });
+  assert.equal(validateSuccessor("predecessor", successorPredecessorUuid,
+    successorPredecessorUuid, [productionToken, successorPredecessor]).phase, "predecessor");
+  assert.equal(validateSuccessor("replacement-created", successorPredecessorUuid,
+    successorPredecessorUuid,
+    [productionToken, successorPredecessor, successorReplacement]).phase,
+  "replacement-created");
+  assert.equal(validateSuccessor("production-repointed", successorReplacementUuid,
+    successorPredecessorUuid,
+    [productionToken, successorPredecessor, successorReplacement]).phase,
+  "production-repointed");
+  assert.equal(validateSuccessor("review-repointed", successorReplacementUuid,
+    successorReplacementUuid,
+    [productionToken, successorPredecessor, successorReplacement]).phase,
+  "review-repointed");
+  assert.equal(validateSuccessor("old-wrapper-unreferenced", successorReplacementUuid,
+    successorReplacementUuid,
+    [productionToken, successorPredecessor, successorReplacement]).phase,
+  "old-wrapper-unreferenced");
+  assert.equal(validateSuccessor("predecessor-restored", successorPredecessorUuid,
+    successorPredecessorUuid,
+    [productionToken, successorPredecessor, successorReplacement]).phase,
+  "predecessor-restored");
+  const successorAugmentedReview = trigger(true, successorPredecessorUuid);
+  successorAugmentedReview.branch_excludes = [production.productionBranch, sentinel];
+  const successorAugmentedArguments = { production, review,
+    productionTrigger: trigger(false, successorReplacementUuid),
+    reviewTrigger: successorAugmentedReview,
+    productionEnvironment: envelope(productionEnvironment),
+    reviewEnvironment: envelope(reviewEnvironment),
+    buildTokens: envelope([productionToken, successorPredecessor, successorReplacement]),
+    accountTriggers: envelope([trigger(false, successorReplacementUuid),
+      successorAugmentedReview]), productionScriptTag: scriptTag, productionSentinel: sentinel,
+    productionTriggerUuid, reviewTriggerUuid: reviewTriggerIdentity,
+    predecessorReviewTokenUuid: successorPredecessorUuid,
+    replacementReviewTokenUuid: successorReplacementUuid, repositoryConnectionUuid,
+    membershipSuccessorValidation };
+  assert.equal(validateReviewTokenRotationReadback({ ...successorAugmentedArguments,
+    phase: "production-repointed-review-augmented" }).phase,
+  "production-repointed-review-augmented");
+  assert.equal(validateReviewTokenRotationReadback({ ...successorAugmentedArguments,
+    phase: "production-restored-review-augmented",
+    productionTrigger: trigger(false, successorPredecessorUuid),
+    accountTriggers: envelope([trigger(false, successorPredecessorUuid),
+      successorAugmentedReview]) }).phase, "production-restored-review-augmented");
+  assert.equal(validateSuccessor("complete", successorReplacementUuid,
+    successorReplacementUuid, [productionToken, successorReplacement]).phase, "complete");
+  assert.throws(() => validateSuccessor("predecessor", successorPredecessorUuid,
+    successorPredecessorUuid, [productionToken, { ...successorPredecessor,
+      build_token_name: reviewBuildTokenNames.predecessor }]), /wrapper inventory drift/u);
+  assert.throws(() => validateSuccessor("replacement-created", successorPredecessorUuid,
+    successorPredecessorUuid, [productionToken, successorPredecessor,
+      { ...successorReplacement, build_token_uuid: successorPredecessorUuid }]),
+  /wrapper inventory drift/u);
   assert.throws(() => validate("complete", replacementReviewTokenUuid,
     predecessorReviewTokenUuid, [productionToken, replacementToken]), /drift/u);
   assert.throws(() => validate("old-wrapper-unreferenced", replacementReviewTokenUuid,
@@ -5794,7 +6988,7 @@ test("pins every journaled review-token rotation phase and rejects field drift",
     source: "cloudflare-owner-token-policy-readback", capturedAt: new Date(now).toISOString(),
     modifiedOn: new Date(now - 1_000).toISOString(), accountId, sourceSha: "a".repeat(40),
     tokenId: "replacement-review-token-id", ownerUserId: "1".repeat(32),
-    userPermissions: ["User Details:Read"],
+    userPermissions: ["Memberships:Read", "User Details:Read"],
     accountPermissions: [], accountResources: [], zonePermissions: [], zoneResources: [] };
   assert.equal(validateReplacementReviewTokenAuthorityProof({ review, accountId,
     proof: replacementProof, tokenId: replacementProof.tokenId,

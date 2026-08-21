@@ -109,7 +109,8 @@ export function validateAutomaticReview(value) {
     "previewBranchIncludes", "previewBranchExcludes",
     "pathIncludes", "pathExcludes", "buildCommand", "deployCommand",
     "providerBuildTimeoutMinutes", "checkCommandTimeoutMinutes", "buildEnvironment", "protectedInputs", "bindings", "routes", "localValidation", "costPolicy", "result", "forkPolicy",
-    "tokenAuthority", "controlPlaneOperator",
+    "tokenAuthority", "membershipReadRepair", "membershipSecretRecovery",
+    "controlPlaneOperator",
   ], "automatic review");
   exactKeys(value.providerTopology, [
     "mode", "maximumTriggersPerWorker", "productionTriggerRole", "reviewTriggerRole",
@@ -208,7 +209,8 @@ export function validateAutomaticReview(value) {
   exactValue(value.tokenAuthority.tokenReuse, false, "review token reuse");
   exactValue(value.tokenAuthority.tokenType, "user-api-token", "review token type");
   exactValue(value.tokenAuthority.tokenIdentity, "dedicated-nonhuman-no-personal-data", "review token identity");
-  exactArray(value.tokenAuthority.userPermissions, ["User Details:Read"], "review user token permissions");
+  exactArray(value.tokenAuthority.userPermissions, ["User Details:Read"],
+    "review user token permissions");
   for (const key of ["accountPermissions", "zonePermissions", "accountResources", "zoneResources"])
     exactArray(value.tokenAuthority[key], [], `review token ${key}`);
   exactValue(value.tokenAuthority.productionRead, false, "review production read authority");
@@ -216,6 +218,82 @@ export function validateAutomaticReview(value) {
   exactValue(value.tokenAuthority.provisioningGate,
     "prove-build-and-local-no-op-deploy-succeed-with-no-account-or-zone-resource-permissions",
     "review token provisioning gate");
+  exactKeys(value.membershipReadRepair, [
+    "issue", "mode", "predecessorTokenId", "predecessorBuildTokenUuid",
+    "predecessorUserPermissions", "requiredUserPermissions", "accountPermissions",
+    "zonePermissions", "accountResources", "zoneResources", "userResource",
+    "accountOwnedTokenSupported",
+    "wrapperMutation", "triggerMutation", "productionMutation", "verification", "rollback",
+  ], "review membership-read repair");
+  exactValue(value.membershipReadRepair.issue, 122, "review membership-read repair issue");
+  exactValue(value.membershipReadRepair.mode, "fresh-user-token-before-wrapper-rotation",
+    "review membership-read repair mode");
+  exactValue(value.membershipReadRepair.predecessorTokenId,
+    "c6be328862f30f76fdc5cf455eae0777", "review membership-read predecessor token");
+  exactValue(value.membershipReadRepair.predecessorBuildTokenUuid,
+    "79a6606b-f3b4-436e-abe9-10e8650c50e8", "review membership-read wrapper");
+  exactArray(value.membershipReadRepair.predecessorUserPermissions,
+    ["User Details:Read"], "review membership-read predecessor permissions");
+  exactArray(value.membershipReadRepair.requiredUserPermissions,
+    ["Memberships:Read", "User Details:Read"], "review membership-read required permissions");
+  exactValue(value.membershipReadRepair.userResource,
+    "com.cloudflare.api.user.b33f81835d7dc584622ca841b124a9a5",
+    "review membership-read self-user resource");
+  for (const key of ["accountPermissions", "zonePermissions", "accountResources", "zoneResources"])
+    exactArray(value.membershipReadRepair[key], [], `review membership-read ${key}`);
+  exactValue(value.membershipReadRepair.accountOwnedTokenSupported, false,
+    "review membership-read account-owned token support");
+  exactValue(value.membershipReadRepair.wrapperMutation,
+    "delegated-to-journaled-review-token-rotation",
+    "review membership-read wrapper mutation");
+  exactValue(value.membershipReadRepair.triggerMutation,
+    "delegated-to-journaled-review-token-rotation",
+    "review membership-read trigger mutation");
+  exactValue(value.membershipReadRepair.productionMutation, false,
+    "review membership-read production mutation");
+  exactValue(value.membershipReadRepair.verification,
+    "one-fresh-automatic-push-event-review-build-before-terminal-adoption",
+    "review membership-read verification");
+  exactValue(value.membershipReadRepair.rollback,
+    "delete-only-journal-created-unwrapped-user-token-on-failure",
+    "review membership-read rollback");
+  exactKeys(value.membershipSecretRecovery, [
+    "issue", "mode", "lostTokenId", "requiredUserPermissions", "userResource",
+    "accountPermissions", "zonePermissions", "accountResources", "zoneResources",
+    "attempt", "successor", "rollback", "forbidden",
+  ], "review membership secret recovery");
+  exactValue(value.membershipSecretRecovery.issue, 131,
+    "review membership secret recovery issue");
+  exactValue(value.membershipSecretRecovery.mode,
+    "distinct-user-token-after-lost-one-time-secret",
+    "review membership secret recovery mode");
+  exactValue(value.membershipSecretRecovery.lostTokenId,
+    "65b2e92887b640023f74bc79eb3130b1",
+    "review membership secret recovery lost token");
+  exactArray(value.membershipSecretRecovery.requiredUserPermissions,
+    ["Memberships:Read", "User Details:Read"],
+    "review membership secret recovery permissions");
+  exactValue(value.membershipSecretRecovery.userResource,
+    "com.cloudflare.api.user.b33f81835d7dc584622ca841b124a9a5",
+    "review membership secret recovery user resource");
+  for (const key of ["accountPermissions", "zonePermissions", "accountResources",
+    "zoneResources"])
+    exactArray(value.membershipSecretRecovery[key], [],
+      `review membership secret recovery ${key}`);
+  exactValue(value.membershipSecretRecovery.attempt,
+    "fresh-owner-only-empty-journal-and-executor-coordinate",
+    "review membership secret recovery attempt");
+  exactValue(value.membershipSecretRecovery.successor,
+    "new-membership-successor-coordinate-and-fresh-wrapper-rotation",
+    "review membership secret recovery successor");
+  exactValue(value.membershipSecretRecovery.rollback,
+    "delete-only-this-journal-created-unwrapped-user-token-after-exhaustive-unreference",
+    "review membership secret recovery rollback");
+  exactArray(value.membershipSecretRecovery.forbidden, [
+    "replay-or-amend-membership-repair-122", "adopt-bootstrap-as-replacement",
+    "wrapper-or-trigger-mutation", "production-activation", "manual-or-initial-build",
+    "migration-0010", "worker-resource-mutation",
+  ], "review membership secret recovery forbidden scope");
   exactKeys(value.controlPlaneOperator, [
     "actor", "when", "tokenType", "tokenIdentity", "credentialStorage", "permission", "resourceScope", "providerCapabilityFamilies",
     "productionBuildsControlPlaneReach",

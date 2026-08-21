@@ -176,6 +176,30 @@
   Bind the exact branch, commit, journal identity, predecessor journals, and current
   trigger/wrapper UUIDs; require exclusive one-use receipts, 40 minutes remaining
   before push, and five before deletion.
+  A membership-readable review-token repair must create a fresh user token,
+  never edit the failed token in place or use an account-owned token. Bind the
+  exact #120 failure and current review-active state, permit only User Details
+  Read plus Memberships Read on only that owner's self-user resource with no
+  account/zone scope, then hand the new
+  owner-only secret and policy proof to a distinct successor rotation. That
+  authority derives the live predecessor wrapper and token from the immutable
+  prior rotation terminal, never from the absent original setup wrapper, and
+  binds the exact membership-repair authority, journal, result, and snapshot
+  manifest before reusing the existing proof-gated rotation state machine. Every
+  forward, rollback, blocked, and terminal phase snapshot must select that
+  authority-bound predecessor by UUID and underlying token ID; the predecessor
+  and replacement may legitimately share the current wrapper name during the
+  successor rotation, so names alone never distinguish their generations.
+  API Tokens Write is a separate
+  owner-bootstrap boundary and must not be inferred from any Workers Builds
+  credential. A lost one-time secret from a completed membership repair is
+  recoverable only through the distinct #131 program/attempt-bound authority:
+  never replay or amend #122, never adopt the bootstrap as the replacement,
+  and never retry a durable POST intent. Bind exact complete or post-prefix
+  blocked evidence; cleanup is limited to the exact journal-created unwrapped
+  token after exhaustive wrapper-unreference proof. A successful recovery must
+  feed a new membership-successor coordinate into a wholly fresh wrapper
+  rotation namespace.
   It performs only readback and local protected-document materialization, and must never gain implicit
   provider mutation. Provider apply and live-canary execution remain gated by
   separate maintainer authorization; `npm run deploy:review-canary` must fail
