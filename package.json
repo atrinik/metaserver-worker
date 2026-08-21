@@ -12,7 +12,7 @@
     "dev:rendezvous": "wrangler dev -c wrangler.rendezvous.jsonc -c wrangler.jsonc",
     "test": "vitest run",
     "test:watch": "vitest",
-    "test:admin": "python3 -m unittest discover -s scripts -p 'test_*.py'",
+    "test:admin": "if python3 -c \"import sqlite3; sqlite3.connect(':memory:').close()\" >/dev/null 2>&1; then python3 -m unittest discover -s scripts -p 'test_*.py'; else PYSQLITE_DIR=$(mktemp -d /tmp/atrinik-pysqlite.XXXXXX) && python3 -m pip install --disable-pip-version-check --no-cache-dir --require-hashes --only-binary=:all: --target \"$PYSQLITE_DIR\" -r deployment/review-check/requirements.txt && PYTHONPATH=\"$PYSQLITE_DIR${PYTHONPATH:+:$PYTHONPATH}\" python3 -m unittest discover -s scripts -p 'test_*.py'; fi",
     "check": "npm run types:generate && npm run types:check && npm run typecheck && npm test && npm run test:admin && npm run test:deployment && npm run test:review && npm run test:provisioning && npm run deploy:dry-run && npm run deploy:dry-run:review-check && npm run test:service-bindings && npm run deploy:production:validate && npm run review:validate && npm run provision:workers-builds:validate",
     "test:deployment": "node --test scripts/test_production_delivery.mjs",
     "test:review": "node --test scripts/test_review_environment.mjs",

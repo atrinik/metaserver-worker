@@ -43,6 +43,9 @@ const contract = JSON.parse(
     "utf8",
   ),
 );
+const packageJson = JSON.parse(
+  await readFile(resolve(root, "package.json"), "utf8"),
+);
 const configs = await Promise.all(
   [
     "wrangler.jsonc",
@@ -112,6 +115,16 @@ function liveControlPlane(index) {
 test("accepts the checked-in production trigger and topology", () => {
   assert.doesNotThrow(() => validateContract(contract));
   assert.doesNotThrow(() => validateTopology(contract, configs));
+});
+
+test("bootstraps SQLite only when Workers Builds lacks sqlite3", () => {
+  const command = packageJson.scripts["test:admin"];
+  assert.match(command, /import sqlite3/u);
+  assert.match(command, /sqlite3\.connect\(':memory:'\)/u);
+  assert.match(command, /python3 -m pip install/u);
+  assert.match(command, /deployment\/review-check\/requirements\.txt/u);
+  assert.match(command, /PYTHONPATH=/u);
+  assert.match(command, /python3 -m unittest discover/u);
 });
 
 test("uses a bounded git ref fallback for GitHub API rate limits", () => {

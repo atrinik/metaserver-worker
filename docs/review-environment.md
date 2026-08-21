@@ -65,12 +65,13 @@ under the review root is a dry-run validation asset only; setup creates no
 review Worker or bootstrap version.
 
 Workers Builds currently provides Python 3.13 without CPython's `_sqlite3`
-extension in its Ubuntu image. The review-only build installs the pinned
-`pysqlite3-binary` wheel from `deployment/review-check/requirements.txt` into
-an ephemeral `/tmp` directory and exposes it only to the Python administrative
-test subprocesses. The production install command does not install or load
-this fallback, and the wheel is hash-pinned for the supported x86_64 Python
-3.13/3.14 runtimes.
+extension in its Ubuntu image. The review build and the production
+`test:admin` script install the pinned `pysqlite3-binary` wheel from
+`deployment/review-check/requirements.txt` into an ephemeral `/tmp` directory
+only when a usable system `sqlite3` module is unavailable, and expose it only
+to the Python administrative test subprocesses. The wheel is hash-pinned for
+the supported x86_64 Python 3.13/3.14 runtimes; no Python package is retained
+in the Worker or production runtime.
 
 The provider contract is pinned in the machine document and was reverified on
 2026-08-16 against Cloudflare's
