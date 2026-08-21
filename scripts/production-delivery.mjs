@@ -219,7 +219,7 @@ export function validateContract(contract) {
     fail("Workers Builds production trigger drift");
   if (
     contract.installCommand !==
-      "env -i HOME=/tmp/atrinik-npm-home PATH=\"$PATH\" npm_config_cache=/tmp/atrinik-npm-cache npm install --global --ignore-scripts npm@11.16.0 && env -i HOME=/tmp/atrinik-npm-home PATH=\"$PATH\" npm_config_cache=/tmp/atrinik-npm-cache npm ci --ignore-scripts" ||
+      "env -i HOME=\"$HOME\" PATH=\"$PATH\" npm_config_cache=/tmp/atrinik-npm-cache npm install --global --ignore-scripts npm@11.16.0 && env -i HOME=\"$HOME\" PATH=\"$PATH\" npm_config_cache=/tmp/atrinik-npm-cache npm ci --ignore-scripts" ||
     contract.validationCommand !== "npm run check" ||
     contract.deployCommand !== "npm run deploy:production" ||
     contract.reviewCommand !== "npm run deploy:production:dry-run"

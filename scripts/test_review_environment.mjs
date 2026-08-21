@@ -108,7 +108,7 @@ test("review trigger delegates to the exact sanitized repository entrypoint", ()
   const valid = { "review:build": `${production.installCommand} && npm run review:branch` };
   validateReviewBuildEntrypoint(valid, production);
   assert.match(production.installCommand,
-    /env -i HOME=\/tmp\/atrinik-npm-home PATH="\$PATH"/u);
+    /env -i HOME="\$HOME" PATH="\$PATH"/u);
   for (const command of [
     "npm ci --ignore-scripts && npm run review:branch",
     `${production.installCommand} && npm run review:validate`,
