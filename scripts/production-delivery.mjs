@@ -998,7 +998,8 @@ async function command(program, args, options = {}) {
       ...execOptions,
     });
   } catch {
-    fail(failureCode);
+    const operation = [program, args[0]].filter(Boolean).join(" ");
+    fail(`${failureCode}: ${operation}`);
   }
 }
 
