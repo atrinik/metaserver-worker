@@ -1222,6 +1222,23 @@ async function buildPlan(
   };
 }
 
+export function currentMainGitUrl(currentMainUrl) {
+  const match = /^https:\/\/api\.github\.com\/repos\/([A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+)\/commits\/main$/u.exec(
+    currentMainUrl,
+  );
+  if (!match) fail("current-main fallback URL is invalid");
+  return `https://github.com/${match[1]}.git`;
+}
+
+export function parseCurrentMainRef(output) {
+  const lines = String(output).trim().split(/\r?\n/u).filter(Boolean);
+  if (lines.length !== 1) fail("current-main fallback returned an invalid ref");
+  const [sha, ref, ...extra] = lines[0].trim().split(/\s+/u);
+  if (extra.length || !shaPattern.test(sha) || ref !== "refs/heads/main")
+    fail("current-main fallback returned an invalid ref");
+  return sha;
+}
+
 async function currentMainSha(contract) {
   let response;
   try {
@@ -1236,10 +1253,24 @@ async function currentMainSha(contract) {
   } catch {
     fail("current-main readback request failed");
   }
-  if (!response.ok) fail(`current-main readback failed with HTTP ${response.status}`);
-  const sha = (await response.json()).sha;
-  if (!shaPattern.test(sha)) fail("current-main readback returned an invalid SHA");
-  return sha;
+  if (response.ok) {
+    const sha = (await response.json()).sha;
+    if (!shaPattern.test(sha))
+      fail("current-main readback returned an invalid SHA");
+    return sha;
+  }
+  if (response.status !== 403 && response.status !== 429)
+    fail(`current-main readback failed with HTTP ${response.status}`);
+  let output;
+  try {
+    output = await command(
+      "git",
+      ["ls-remote", currentMainGitUrl(contract.source.currentMainUrl), "refs/heads/main"],
+    );
+  } catch {
+    fail("current-main fallback readback failed");
+  }
+  return parseCurrentMainRef(output.stdout);
 }
 
 async function assertCurrentMain(contract, sourceSha) {

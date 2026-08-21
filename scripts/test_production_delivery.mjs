@@ -10,6 +10,7 @@ import {
   buildLeaseDecision,
   childEnvironment,
   controlPlaneView,
+  currentMainGitUrl,
   disabledCircuitConfiguration,
   deliveryFailureRecord,
   deliveryDecision,
@@ -18,6 +19,7 @@ import {
   orchestrateDelivery,
   materializeProtectedInputs,
   parseVersionMessage,
+  parseCurrentMainRef,
   recoverDisabledCore,
   selectBuildLeaseOwner,
   selectLiveTrigger,
@@ -109,6 +111,29 @@ function liveControlPlane(index) {
 test("accepts the checked-in production trigger and topology", () => {
   assert.doesNotThrow(() => validateContract(contract));
   assert.doesNotThrow(() => validateTopology(contract, configs));
+});
+
+test("uses a bounded git ref fallback for GitHub API rate limits", () => {
+  assert.equal(
+    currentMainGitUrl(
+      "https://api.github.com/repos/atrinik/metaserver-worker/commits/main",
+    ),
+    "https://github.com/atrinik/metaserver-worker.git",
+  );
+  assert.equal(
+    parseCurrentMainRef(
+      "9b383ce872a8eae4d7b452883482e0cd0225badf\trefs/heads/main\n",
+    ),
+    "9b383ce872a8eae4d7b452883482e0cd0225badf",
+  );
+  assert.throws(
+    () => parseCurrentMainRef("9b383ce872a8eae4d7b452883482e0cd0225badf refs/heads/dev"),
+    /invalid ref/u,
+  );
+  assert.throws(
+    () => currentMainGitUrl("https://example.invalid/commits/main"),
+    /fallback URL is invalid/u,
+  );
 });
 
 test("pins the one exact initial bootstrap predecessor", () => {
