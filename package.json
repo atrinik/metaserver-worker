@@ -88,14 +88,14 @@
     "undici": "^7.29.0"
   },
   "devDependencies": {
-    "@cloudflare/vitest-pool-workers": "^0.20.2",
-    "@types/node": "^26.1.2",
+    "@cloudflare/vitest-pool-workers": "^0.21.3",
+    "@types/node": "^26.2.0",
     "@types/tr46": "5.0.1",
-    "esbuild": "0.28.1",
-    "tsx": "^4.23.9",
+    "esbuild": "0.28.2",
+    "tsx": "^4.23.12",
     "typescript": "^7.0.2",
     "vitest": "^4.1.10",
-    "wrangler": "4.119.0"
+    "wrangler": "4.123.0"
   },
   "dependencies": {
     "tr46": "6.0.0"
