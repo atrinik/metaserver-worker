@@ -531,7 +531,11 @@ test("requires the live Workers Builds trigger to match the contract", () => {
       },
     },
   };
-  assert.doesNotThrow(() => validateBuildTrigger(contract, build, "worker-tag"));
+  for (const source of ["push_event", "push", "manual", "api"]) {
+    const accepted = structuredClone(build);
+    accepted.build_trigger_metadata.build_trigger_source = source;
+    assert.doesNotThrow(() => validateBuildTrigger(contract, accepted, "worker-tag"));
+  }
   for (const mutate of [
     (value) => { value.trigger.path_excludes = ["docs/**"]; },
     (value) => { value.trigger.branch_includes = ["production"]; },
