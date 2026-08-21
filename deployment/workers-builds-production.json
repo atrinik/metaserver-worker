@@ -7,7 +7,7 @@
   "automaticPush": true,
   "pathIncludes": ["*"],
   "pathExcludes": [],
-  "installCommand": "env -i PATH=\"$PATH\" npm_config_cache=/tmp/atrinik-npm-cache npm install --global --ignore-scripts npm@11.16.0 && env -i PATH=\"$PATH\" npm_config_cache=/tmp/atrinik-npm-cache npm ci --ignore-scripts",
+  "installCommand": "env -i HOME=/tmp/atrinik-npm-home PATH=\"$PATH\" npm_config_cache=/tmp/atrinik-npm-cache npm install --global --ignore-scripts npm@11.16.0 && env -i HOME=/tmp/atrinik-npm-home PATH=\"$PATH\" npm_config_cache=/tmp/atrinik-npm-cache npm ci --ignore-scripts",
   "validationCommand": "npm run check",
   "deployCommand": "npm run deploy:production",
   "reviewCommand": "npm run deploy:production:dry-run",
