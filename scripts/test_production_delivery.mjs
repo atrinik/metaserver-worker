@@ -513,7 +513,9 @@ test("requires the live Workers Builds trigger to match the contract", () => {
       provider_account_name: "atrinik",
       repo_name: "metaserver-worker",
       root_directory: "/",
-      environment_variables: { SKIP_DEPENDENCY_INSTALL: "1" },
+      environment_variables: {
+        SKIP_DEPENDENCY_INSTALL: { is_secret: false, value: "1" },
+      },
     },
     trigger: {
       build_command: contract.installCommand,
@@ -531,7 +533,18 @@ test("requires the live Workers Builds trigger to match the contract", () => {
       },
     },
   };
-  assert.doesNotThrow(() => validateBuildTrigger(contract, build, "worker-tag"));
+  for (const source of ["push_event", "push", "manual", "api"]) {
+    const accepted = structuredClone(build);
+    accepted.build_trigger_metadata.build_trigger_source = source;
+    assert.doesNotThrow(() => validateBuildTrigger(contract, accepted, "worker-tag"));
+  }
+  const legacyMetadata = structuredClone(build);
+  legacyMetadata.build_trigger_metadata.environment_variables = {
+    SKIP_DEPENDENCY_INSTALL: "1",
+  };
+  assert.doesNotThrow(() =>
+    validateBuildTrigger(contract, legacyMetadata, "worker-tag"),
+  );
   for (const mutate of [
     (value) => { value.trigger.path_excludes = ["docs/**"]; },
     (value) => { value.trigger.branch_includes = ["production"]; },
@@ -539,6 +552,10 @@ test("requires the live Workers Builds trigger to match the contract", () => {
     (value) => { value.trigger.repo_connection.provider_type = "gitlab"; },
     (value) => { value.trigger.repo_connection.repo_name = "other"; },
     (value) => { value.build_trigger_metadata.build_trigger_source = "pull_request"; },
+    (value) => {
+      value.build_trigger_metadata.environment_variables.SKIP_DEPENDENCY_INSTALL.value =
+        "0";
+    },
   ]) {
     const changed = structuredClone(build);
     mutate(changed);
