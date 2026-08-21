@@ -1049,13 +1049,13 @@ export function describeBranchCheckFailure(stage, error) {
   const code = Number.isInteger(error?.code) ? String(error.code) : "none";
   const signal = typeof error?.signal === "string" ? error.signal : "none";
   const stderr = typeof error?.stderr === "string" ? error.stderr : "";
-  const stderrLastLine = stderr.split(/\r?\n/u).map((line) => line.trim()).filter(Boolean).at(-1) ?? "";
-  const safeHint = stderrLastLine
+  const stderrTail = stderr.split(/\r?\n/u).map((line) => line.trim()).filter(Boolean).slice(-8).join(" | ");
+  const safeHint = stderrTail
     .replace(/(?:bearer|token|secret|password|authorization)\s*[:=]\s*\S+/giu, "$1=<redacted>")
     .replace(/\b(?:cfut|cf_[A-Za-z0-9_-]+)\b/gu, "<redacted>")
     .replace(/[^\x20-\x7e]/gu, "")
     .slice(0, 240);
-  const hint = safeHint ? ` stderrLastLine=${JSON.stringify(safeHint)}` : "";
+  const hint = safeHint ? ` stderrTail=${JSON.stringify(safeHint)}` : "";
   return `review check stage ${stage} failed: kind=${kind} code=${code} signal=${signal} stdoutBytes=${stdoutBytes} stderrBytes=${stderrBytes}${hint}`;
 }
 
