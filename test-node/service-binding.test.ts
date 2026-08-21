@@ -2,7 +2,7 @@ import { createHash } from "node:crypto";
 import { readFile } from "node:fs/promises";
 
 import { readD1Migrations } from "@cloudflare/vitest-pool-workers";
-import { Miniflare } from "miniflare";
+import { convertV4MiniflareOptions, Miniflare } from "miniflare";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 
 import classicV2Fixture from "../test/fixtures/metaserver-classic-publisher-v2.json";
@@ -26,7 +26,7 @@ beforeAll(async () => {
   const rendezvousConfiguration = await readConfiguration(
     "wrangler.rendezvous.jsonc",
   );
-  miniflare = new Miniflare({
+  miniflare = new Miniflare(convertV4MiniflareOptions({
     workers: [
       {
         name: "harness",
@@ -162,7 +162,7 @@ beforeAll(async () => {
         ratelimits: rateLimits(core),
       },
     ],
-  });
+  }));
 
   const bindings = await miniflare.getBindings<{ DB: D1Database }>("core");
   for (const migration of await readD1Migrations("migrations")) {
