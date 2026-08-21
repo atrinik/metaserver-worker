@@ -299,7 +299,7 @@ export function validateContract(contract) {
     JSON.stringify({
       node: "24.18.1",
       npm: "11.16.0",
-      wrangler: "4.119.0",
+      wrangler: "4.123.0",
       lockfile: "package-lock.json",
     })
   )
