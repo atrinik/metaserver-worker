@@ -1054,18 +1054,7 @@ export function describeBranchCheckFailure(stage, error) {
       : error?.signal ? "signal" : "exit";
   const code = Number.isInteger(error?.code) ? String(error.code) : "none";
   const signal = typeof error?.signal === "string" ? error.signal : "none";
-  const stderr = typeof error?.stderr === "string" ? error.stderr : "";
-  const stderrLines = stderr.split(/\r?\n/u).map((line) => line.trim()).filter(Boolean);
-  const diagnosticLines = stderrLines.filter((line) =>
-    /(?:error|exception|failed|no module|undefined symbol|cannot open)/iu.test(line));
-  const stderrTail = (diagnosticLines.length > 0 ? diagnosticLines.slice(-5) : stderrLines.slice(-5)).join(" | ");
-  const safeHint = stderrTail
-    .replace(/(?:bearer|token|secret|password|authorization)\s*[:=]\s*\S+/giu, "$1=<redacted>")
-    .replace(/\b(?:cfut|cf_[A-Za-z0-9_-]+)\b/gu, "<redacted>")
-    .replace(/[^\x20-\x7e]/gu, "")
-    .slice(0, 640);
-  const hint = safeHint ? ` stderrTail=${JSON.stringify(safeHint)}` : "";
-  return `review check stage ${stage} failed: kind=${kind} code=${code} signal=${signal} stdoutBytes=${stdoutBytes} stderrBytes=${stderrBytes}${hint}`;
+  return `review check stage ${stage} failed: kind=${kind} code=${code} signal=${signal} stdoutBytes=${stdoutBytes} stderrBytes=${stderrBytes}`;
 }
 
 async function loadContractInputs() {
