@@ -1390,6 +1390,12 @@ export function validateBuildTrigger(contract, build, matchTag) {
   const metadata = build.build_trigger_metadata ?? {};
   const trigger = build.trigger ?? {};
   const connection = trigger.repo_connection ?? {};
+  const metadataSkipDependencyInstall =
+    metadata.environment_variables?.SKIP_DEPENDENCY_INSTALL;
+  const skipDependencyInstall =
+    typeof metadataSkipDependencyInstall === "string"
+      ? metadataSkipDependencyInstall
+      : metadataSkipDependencyInstall?.value;
   const normalizedRoot = trigger.root_directory === "/" ? "" : trigger.root_directory;
   if (
     metadata.build_command !== contract.installCommand ||
@@ -1400,7 +1406,7 @@ export function validateBuildTrigger(contract, build, matchTag) {
     metadata.repo_name !== "metaserver-worker" ||
     (metadata.root_directory === "/" ? "" : metadata.root_directory) !==
       contract.rootDirectory ||
-    metadata.environment_variables?.SKIP_DEPENDENCY_INSTALL !== "1" ||
+    skipDependencyInstall !== "1" ||
     trigger.build_command !== contract.installCommand ||
     trigger.deploy_command !== contract.deployCommand ||
     normalizedRoot !== contract.rootDirectory ||
