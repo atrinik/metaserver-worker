@@ -982,6 +982,36 @@ export function sanitizedChildEnvironment(input) {
   return childEnvironment(input, "deployment");
 }
 
+const diagnosticExecutables = new Set([
+  "git", "node", "npm", "npx", "python3", "tsc", "vitest", "wrangler",
+]);
+
+function diagnosticExecutable(output) {
+  let executable;
+  const pattern = /^> [^\r\n]+\r?\n> ([^\r\n]+)/gmu;
+  for (const match of String(output ?? "").matchAll(pattern)) {
+    const candidate = match[1].trim().split(/\s+/u, 1)[0] ?? "";
+    const basename = candidate.split("/").at(-1);
+    if (diagnosticExecutables.has(basename)) executable = basename;
+  }
+  return executable;
+}
+
+export function describeSubprocessFailure(error) {
+  const details = [];
+  if (typeof error?.code === "number" && Number.isInteger(error.code))
+    details.push(`exit=${error.code}`);
+  else if (typeof error?.code === "string" && /^[A-Z0-9_]+$/u.test(error.code))
+    details.push(`code=${error.code}`);
+  if (typeof error?.signal === "string" && /^SIG[A-Z0-9]+$/u.test(error.signal))
+    details.push(`signal=${error.signal}`);
+  const executable = diagnosticExecutable(
+    `${typeof error?.stdout === "string" ? error.stdout : ""}\n${typeof error?.stderr === "string" ? error.stderr : ""}`,
+  );
+  if (executable) details.push(`stage=${executable}`);
+  return details.join(" ");
+}
+
 async function command(program, args, options = {}) {
   const {
     failureCode = "subprocess-execution-failed",
@@ -997,9 +1027,10 @@ async function command(program, args, options = {}) {
       env: environment,
       ...execOptions,
     });
-  } catch {
+  } catch (error) {
     const operation = [program, args[0]].filter(Boolean).join(" ");
-    fail(`${failureCode}: ${operation}`);
+    const detail = describeSubprocessFailure(error);
+    fail(`${failureCode}: ${operation}${detail ? ` (${detail})` : ""}`);
   }
 }
 

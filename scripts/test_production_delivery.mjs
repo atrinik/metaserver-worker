@@ -13,6 +13,7 @@ import {
   currentMainGitUrl,
   disabledCircuitConfiguration,
   deliveryFailureRecord,
+  describeSubprocessFailure,
   deliveryDecision,
   deployStagedWithRecoveryIntent,
   executeOrderedStages,
@@ -1301,4 +1302,19 @@ test("failure evidence never includes raw subprocess or protected input text", (
   assert.equal(record.failedRole, "active:publisher");
   assert.equal(record.recoveryOutcome, "proven");
   assert.equal(JSON.stringify(record).includes(secret), false);
+});
+
+test("subprocess diagnostics expose only bounded stage metadata", () => {
+  const secret = "private-config-secret";
+  const detail = describeSubprocessFailure({
+    code: 1,
+    stdout: `> atrinik-metaserver@1.0.0 check\n> npm run test\n> atrinik-metaserver@1.0.0 test\n> vitest run\n${secret}`,
+    stderr: `failed: ${secret}`,
+  });
+  assert.equal(detail, "exit=1 stage=vitest");
+  assert.equal(detail.includes(secret), false);
+  assert.equal(
+    describeSubprocessFailure({ code: "ENOENT", signal: "SIGTERM", stdout: secret }),
+    "code=ENOENT signal=SIGTERM",
+  );
 });
