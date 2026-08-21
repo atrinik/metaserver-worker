@@ -21,6 +21,12 @@ const branchCheckStages = [
 
 export class ReviewEnvironmentError extends Error {}
 
+const reviewSqliteBootstrap = "PYSQLITE_DIR=$(mktemp -d /tmp/atrinik-pysqlite.XXXXXX) && python3 -m pip install --disable-pip-version-check --no-cache-dir --require-hashes --only-binary=:all: --target \"$PYSQLITE_DIR\" -r deployment/review-check/requirements.txt";
+
+export function reviewBuildEntrypointCommand(production) {
+  return `${production.installCommand} && ${reviewSqliteBootstrap} && PYTHONPATH=\"$PYSQLITE_DIR\${PYTHONPATH:+:$PYTHONPATH}\" npm run review:branch`;
+}
+
 function fail(message) {
   throw new ReviewEnvironmentError(message);
 }
@@ -327,7 +333,7 @@ export function validateAutomaticReview(value) {
 
 export function validateReviewBuildEntrypoint(scripts, production) {
   exactValue(scripts?.["review:build"],
-    `${production.installCommand} && npm run review:branch`, "review build entrypoint");
+    reviewBuildEntrypointCommand(production), "review build entrypoint");
 }
 
 export function validateReviewRootEntrypoint(value) {
@@ -1020,7 +1026,7 @@ export async function runBranchCheck(environment = process.env) {
   });
   const head = await gitOutput(["rev-parse", "HEAD"]);
   if (head !== source.sha) fail("review checkout does not match source SHA");
-  const childEnvironment = Object.fromEntries(["PATH", "HOME", "TMPDIR", "LANG", "CI", "NO_COLOR"]
+  const childEnvironment = Object.fromEntries(["PATH", "HOME", "TMPDIR", "LANG", "CI", "NO_COLOR", "PYTHONPATH"]
     .filter((name) => environment[name] !== undefined).map((name) => [name, environment[name]]));
   const deadline = Date.now() + 15 * 60 * 1000;
   let outputBytes = 0;

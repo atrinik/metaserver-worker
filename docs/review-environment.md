@@ -64,6 +64,14 @@ settings are copied from the production trigger. The local Wrangler file
 under the review root is a dry-run validation asset only; setup creates no
 review Worker or bootstrap version.
 
+Workers Builds currently provides Python 3.13 without CPython's `_sqlite3`
+extension in its Ubuntu image. The review-only build installs the pinned
+`pysqlite3-binary` wheel from `deployment/review-check/requirements.txt` into
+an ephemeral `/tmp` directory and exposes it only to the Python administrative
+test subprocesses. The production install command does not install or load
+this fallback, and the wheel is hash-pinned for the supported x86_64 Python
+3.13/3.14 runtimes.
+
 The provider contract is pinned in the machine document and was reverified on
 2026-08-16 against Cloudflare's
 [Builds API reference](https://developers.cloudflare.com/workers/ci-cd/builds/api-reference/),

@@ -1,5 +1,8 @@
 import argparse
-import sqlite3
+try:
+    import sqlite3
+except ImportError:  # Cloudflare's build image omits the system SQLite runtime.
+    import pysqlite3 as sqlite3
 import unittest
 from pathlib import Path
 

@@ -15,6 +15,7 @@ import {
   validateLiveApproval,
   validateProductionIsolation,
   validateReviewBuildEntrypoint,
+  reviewBuildEntrypointCommand,
   validateReviewRootEntrypoint,
   validateSourceCoordinates,
 } from "./review-environment.mjs";
@@ -105,7 +106,7 @@ test("review trigger delegates to the exact sanitized repository entrypoint", ()
     mutate(value);
     assert.throws(() => validateReviewRootEntrypoint(value), ReviewEnvironmentError);
   }
-  const valid = { "review:build": `${production.installCommand} && npm run review:branch` };
+  const valid = { "review:build": reviewBuildEntrypointCommand(production) };
   validateReviewBuildEntrypoint(valid, production);
   assert.match(production.installCommand,
     /env -i HOME="\$HOME" PATH="\$PATH"/u);
@@ -113,6 +114,7 @@ test("review trigger delegates to the exact sanitized repository entrypoint", ()
     "npm ci --ignore-scripts && npm run review:branch",
     `${production.installCommand} && npm run review:validate`,
     `${production.installCommand.replace("env -i ", "")} && npm run review:branch`,
+    `${reviewBuildEntrypointCommand(production).replace("python3 -m pip", "python3 pip")} `,
   ]) assert.throws(() => validateReviewBuildEntrypoint({ "review:build": command }, production),
     ReviewEnvironmentError);
   const tooLong = structuredClone(review.automaticReview);
