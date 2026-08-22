@@ -937,10 +937,14 @@ export async function orchestrateDelivery({
       : "no-deployment-required";
   } catch (error) {
     if (decision === "deploy") {
+      const initialFailure = describeDeliveryFailure(error);
       try {
         await recover(error);
       } catch {
-        fail("production delivery stopped and disabled-circuit recovery was not proven");
+        fail(
+          `production delivery stopped and disabled-circuit recovery was not proven; ` +
+          `initial failure: ${initialFailure}`,
+        );
       }
     }
     throw error;
@@ -986,6 +990,9 @@ const diagnosticExecutables = new Set([
   "git", "node", "npm", "npx", "python3", "tsc", "vitest", "wrangler",
 ]);
 
+const providerErrorCodePattern =
+  /(?:\b(?:code|status(?:\s+code)?|http)\s*[:=]\s*)(\d{3,6})\b/iu;
+
 function diagnosticExecutable(output) {
   let executable;
   const pattern = /^> [^\r\n]+\r?\n> ([^\r\n]+)/gmu;
@@ -1005,11 +1012,40 @@ export function describeSubprocessFailure(error) {
     details.push(`code=${error.code}`);
   if (typeof error?.signal === "string" && /^SIG[A-Z0-9]+$/u.test(error.signal))
     details.push(`signal=${error.signal}`);
+  const message = typeof error?.message === "string" ? error.message : "";
+  const messageExit = /\b(exit=\d+)\b/u.exec(message)?.[1];
+  if (messageExit && !details.some((value) => value === messageExit))
+    details.push(messageExit);
+  const messageSignal = /\b(signal=SIG[A-Z0-9]+)\b/u.exec(message)?.[1];
+  if (messageSignal && !details.some((value) => value === messageSignal))
+    details.push(messageSignal);
+  const messageStage = /\b(stage=(?:git|node|npm|npx|python3|tsc|vitest|wrangler))\b/u.exec(message)?.[1];
+  if (messageStage && !details.some((value) => value === messageStage))
+    details.push(messageStage);
   const executable = diagnosticExecutable(
-    `${typeof error?.stdout === "string" ? error.stdout : ""}\n${typeof error?.stderr === "string" ? error.stderr : ""}`,
+    `${typeof error?.stdout === "string" ? error.stdout : ""}\n${typeof error?.stderr === "string" ? error.stderr : ""}\n${message}`,
   );
-  if (executable) details.push(`stage=${executable}`);
+  if (executable && !details.some((value) => value === `stage=${executable}`))
+    details.push(`stage=${executable}`);
+  const providerOutput = [
+    typeof error?.stdout === "string" ? error.stdout : "",
+    typeof error?.stderr === "string" ? error.stderr : "",
+    message,
+  ].join("\n");
+  const providerCode = providerErrorCodePattern.exec(providerOutput)?.[1];
+  if (providerCode) details.push(`provider-code=${providerCode}`);
   return details.join(" ");
+}
+
+function describeDeliveryFailure(error) {
+  const detail = describeSubprocessFailure(error);
+  if (detail) return detail;
+  if (error instanceof DeliveryError) {
+    const message = error.message.replace(/[\r\n\t ]+/gu, " ").trim();
+    if (message.length <= 240) return message;
+    return `${message.slice(0, 237)}...`;
+  }
+  return "unexpected-internal-error";
 }
 
 async function command(program, args, options = {}) {

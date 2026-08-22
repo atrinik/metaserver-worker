@@ -1124,6 +1124,29 @@ test("orchestrator recovers disabled circuits after every asynchronous boundary 
   }
 });
 
+test("preserves a bounded original deployment diagnostic when recovery fails", async () => {
+  await assert.rejects(
+    orchestrateDelivery({
+      workers: ["core"],
+      decision: "deploy",
+      fence: async () => {},
+      deployStaged: async () => {
+        throw new Error("wrangler deploy failed (exit=1 stage=wrangler provider-code=10090)");
+      },
+      readbackStaged: async () => {},
+      verifyStaged: async () => {},
+      deployActive: async () => {},
+      readbackActive: async () => {},
+      verifyFinal: async () => {},
+      canaries: async () => {},
+      recover: async () => {
+        throw new Error("recovery failed");
+      },
+    }),
+    /disabled-circuit recovery was not proven; initial failure: exit=1 stage=wrangler provider-code=10090/u,
+  );
+});
+
 test("exact-source retry converges and a stale retry cannot mutate", async () => {
   const workers = ["core", "publisher", "rendezvous"];
   let first = true;
@@ -1329,5 +1352,19 @@ test("subprocess diagnostics expose only bounded stage metadata", () => {
   assert.equal(
     describeSubprocessFailure({ code: "ENOENT", signal: "SIGTERM", stdout: secret }),
     "code=ENOENT signal=SIGTERM",
+  );
+  assert.equal(
+    describeSubprocessFailure({
+      code: 1,
+      stderr: "Cloudflare API request failed [code: 10090]",
+    }),
+    "exit=1 provider-code=10090",
+  );
+  assert.equal(
+    describeSubprocessFailure({
+      code: 1,
+      stderr: "HTTP status=403",
+    }),
+    "exit=1 provider-code=403",
   );
 });
