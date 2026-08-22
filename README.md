@@ -36,8 +36,9 @@ bindings, then call one named core entrypoint through a Service Binding. The
 edges derive pseudonymous aliases and reconstruct a fixed allowlisted request,
 so the raw request address and browser state never cross into the state owner;
 the core independently validates the complete route and protocol again. The
-checked-in edge configurations have no public route and all dynamic circuits
-disabled. The core exports scheduled handlers, Durable Objects, and named
+checked-in edge configurations have no public route. Classic publishing and
+Classic rendezvous are enabled; Game publishing remains disabled. The core
+exports scheduled handlers, Durable Objects, and named
 Service Binding entrypoints only; it has no default `fetch` handler.
 
 There is deliberately no TCP directory, DNS ownership proof, game-port probe,
@@ -104,7 +105,7 @@ hook, or local operator command. The machine contract is
 It validates protected production inputs, refuses migration/control-plane
 drift, resolves all bundles before mutation, returns a verified no-op for
 identical deployable input, rejects stale or competing builds, deploys directly
-and strictly through a core/publisher/rendezvous disabled-circuit cohort,
+and strictly through a core/publisher/rendezvous cohort,
 restores callers before core, reads back each exact 100% phase and the final
 coherent active topology, and runs bounded credential-free static and canonical
 dynamic-envelope canaries. The publisher probe uses the non-retirable Classic
@@ -369,8 +370,10 @@ cannot be confused with classic metadata. Private Game requests retain only
 minimal presence and delete that row. D1 also accounts for the exact canonical
 JSON bytes of every public Game row and rejects an aggregate that cannot fit
 the 262,144-byte protocol artifact. The independent
-`GAME_PUBLISH_ENABLED` breaker still ships disabled, and the publisher remains
-domainless until the static-edge contract and live canary gates land. The Go
+`GAME_PUBLISH_ENABLED` breaker still ships disabled, while Classic publishing
+and rendezvous are enabled for supported Classic clients. The publisher remains
+domainless in checked-in Wrangler configuration until the protected production
+custom-domain attachment is read back. The Go
 producer and Rust consumer foundations are released, including opaque origin
 validator handling. Classic protocol 4 is specified in
 [docs/classic-directory-v4.md](docs/classic-directory-v4.md); Classic v2

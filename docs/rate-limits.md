@@ -36,8 +36,9 @@ The domainless canonical publisher and rendezvous edge Workers have independent
 namespace IDs and only the native bindings needed by their own routes; the core
 retains the exact authenticated and D1 budgets.
 No namespace ID is reused across the three Workers because native counters are
-shared by ID. Checked-in dynamic circuits remain disabled and domainless;
-production routing is accepted only through the separately reviewed WAF,
+shared by ID. The checked-in Classic publisher and rendezvous circuits are
+enabled, while Game publishing remains disabled; all edge configurations stay
+domainless. Production routing is accepted only through the separately reviewed WAF,
 attachment, configuration-readback, and canary procedure.
 
 ## Initial ceilings
@@ -191,8 +192,9 @@ structural constants rather than runtime overrides.
 ## Circuit breakers
 
 The publisher and rendezvous edges and their core coordinators each require the
-corresponding breaker to be exactly `enabled`; both checked-in edge breakers and
-both core canonical breakers ship disabled. The public deployments have
+corresponding breaker to be exactly `enabled`; Classic publishing and Classic
+rendezvous are enabled in the checked-in production configurations, while the
+independent Game publishing breaker ships disabled. The public deployments have
 independent flags, native bindings, WAF rules, and observability, while D1 and
 Durable Object authority remains only in the core. Changing a limit requires
 reviewing all three enforcement layers, shared-NAT recovery allowance, consumer

@@ -25,8 +25,9 @@ record, not in this repository.
 All three production Wrangler configurations set both `workers_dev` and
 `preview_urls` to `false`. Do not enable either: a public `workers.dev` or
 preview hostname bypasses zone rules attached to `atrinik.org`. The canonical
-publisher/rendezvous configurations are deliberately domainless and disabled
-until their own exact-host rules pass this gate. The core alone owns D1, R2,
+publisher/rendezvous configurations are deliberately domainless; Classic
+publishing and Classic rendezvous are enabled only after their exact-host rules
+pass this gate, while Game publishing remains disabled. The core alone owns D1, R2,
 schedules, Analytics Engine, and both Durable Objects; each edge has one named
 Service Binding and distinct native rate namespace IDs. A canary must use
 separately reviewed Workers, hostname, secrets, D1 database, Durable Object

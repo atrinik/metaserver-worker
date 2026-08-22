@@ -24,10 +24,11 @@ publisher and rendezvous handlers are exposed:
 | `rendezvous.meta.atrinik.org` | `GET` WebSocket | `/v1/servers/{server-id}?role=client\|server` | no body or content headers; exactly one `role` query |
 | `rendezvous.meta.atrinik.org` | `GET` WebSocket | `/v1/classic/servers/{server-id}?role=client\|server` | no body or content headers; exactly one `role` query |
 
-The checked-in Wrangler files deliberately declare no routes or Custom Domains
-and keep both dynamic circuits disabled; production attachment and enablement
-come only from the protected production configurations validated by the
-automatic-main delivery contract. Routine delivery rejects any core domain,
+The checked-in Wrangler files deliberately declare no routes or Custom Domains.
+Classic publishing and Classic rendezvous are enabled, while Game publishing
+remains disabled; production attachment and protected configuration readback
+come only through the automatic-main delivery contract. Routine delivery
+rejects any core domain,
 wrong caller domain, alternate route, or non-Custom-Domain route and does not
 itself create DNS/WAF/domain policy. Each
 edge rejects every other host/method/path/query/body shape, derives only the

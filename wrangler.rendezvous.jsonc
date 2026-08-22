@@ -39,7 +39,7 @@
   },
   "vars": {
     "RENDEZVOUS_HOSTNAME": "rendezvous.meta.atrinik.org",
-    "RENDEZVOUS_ENABLED": "disabled",
+    "RENDEZVOUS_ENABLED": "enabled",
     "ROUTE_DISABLED_RETRY_SECONDS": "300",
     "SOURCE_TAG_KEY_CURRENT_ID": "2026-08-a",
     "SOURCE_TAG_KEY_PREVIOUS_ID": "2026-07-a"
