@@ -938,7 +938,8 @@ retain a no-more-than-five-minute owner-only
 `ATRINIK_REVIEW_RESULT_PROOF_FILE`. It binds the exact review trigger/token,
 terminal successful Cloudflare build UUID, same-repository
 `review/issue-66-*` branch and commit, provider-trusted build creation/stop
-times and the live provider's automatic `push_event` source, complete embedded
+times and the live provider's automatic `push_event` source (or Cloudflare's
+`retry` source when the supported retry action reruns that exact build), complete embedded
 trigger/command snapshot,
 and the governed private-evidence coordinate. Capture the raw results of
 `gh api repos/atrinik/metaserver-worker/commits/<review-sha>/check-runs`,

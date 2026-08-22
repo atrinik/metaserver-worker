@@ -1499,7 +1499,7 @@ export function validateBuildTrigger(contract, build, matchTag) {
   if (
     metadata.build_command !== contract.installCommand ||
     metadata.deploy_command !== contract.deployCommand ||
-    !["push_event", "push", "manual", "api"].includes(metadata.build_trigger_source) ||
+    !["push_event", "push", "retry", "manual", "api"].includes(metadata.build_trigger_source) ||
     metadata.provider_type !== "github" ||
     metadata.provider_account_name !== "atrinik" ||
     metadata.repo_name !== "metaserver-worker" ||

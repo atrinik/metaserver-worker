@@ -572,7 +572,7 @@ test("requires the live Workers Builds trigger to match the contract", () => {
       },
     },
   };
-  for (const source of ["push_event", "push", "manual", "api"]) {
+  for (const source of ["push_event", "push", "retry", "manual", "api"]) {
     const accepted = structuredClone(build);
     accepted.build_trigger_metadata.build_trigger_source = source;
     assert.doesNotThrow(() => validateBuildTrigger(contract, accepted, "worker-tag"));
