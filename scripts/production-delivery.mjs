@@ -1889,9 +1889,20 @@ export function validateLiveControlPlane(
     (!script ||
       script.compatibility_date !== config.compatibility_date ||
       !sameValues(script.compatibility_flags ?? [], config.compatibility_flags ?? []) ||
-      !sameJson(script.observability, config.observability))
+      !sameJson(normalizeLiveObservability(script.observability), config.observability))
   )
     fail(`${worker.role} live runtime or observability drift`);
+}
+
+function normalizeLiveObservability(value) {
+  if (!value || typeof value !== "object" || Array.isArray(value))
+    return value;
+  if (!Object.hasOwn(value, "head_sampling_rate")) return value;
+  if (value.head_sampling_rate !== 1)
+    return value;
+  const normalized = { ...value };
+  delete normalized.head_sampling_rate;
+  return normalized;
 }
 
 function collectMigrationNames(value, found = []) {
