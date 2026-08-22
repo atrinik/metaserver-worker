@@ -236,7 +236,7 @@ export function validateContract(contract) {
         "python3",
         "scripts/static_origin_canary.py",
         "--profile",
-        "classic-v2",
+        "classic-v1",
         "--base-url",
         "https://classic.meta.atrinik.org",
         "--allow-production",
