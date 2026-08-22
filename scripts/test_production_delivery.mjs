@@ -117,6 +117,21 @@ function liveControlPlane(index) {
 test("accepts the checked-in production trigger and topology", () => {
   assert.doesNotThrow(() => validateContract(contract));
   assert.doesNotThrow(() => validateTopology(contract, configs));
+  assert.deepEqual(
+    contract.productionCanaries.find(
+      ({ name }) => name === "classic-static-directory",
+    )?.command,
+    [
+      "python3",
+      "scripts/static_origin_canary.py",
+      "--profile",
+      "classic-v1",
+      "--base-url",
+      "https://classic.meta.atrinik.org",
+      "--allow-production",
+      "--json",
+    ],
+  );
 });
 
 test("bootstraps SQLite only when Workers Builds lacks sqlite3", () => {
