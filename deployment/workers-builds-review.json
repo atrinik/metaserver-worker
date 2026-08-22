@@ -302,9 +302,9 @@
         "workersDevPrivateSubdomain": "exact-dedicated-live-account-subdomain-readback"
       },
       "sources": [
-        { "role": "core", "path": "wrangler.jsonc", "sha256": "4e73be0b0ff51b3efc2cc15cd4bceed5036b331d3b68493b18798f23f48ef684" },
-        { "role": "publisher", "path": "wrangler.publisher.jsonc", "sha256": "3d188c96bd60fe900a2e52a74e3c19b639170e77807b12bc97991fe2eeb2c964" },
-        { "role": "rendezvous", "path": "wrangler.rendezvous.jsonc", "sha256": "c682b93600dbb25763d3d61ad9bb681d85a8a4ad68c809248e8507998dfe8624" }
+        { "role": "core", "path": "wrangler.jsonc", "sha256": "84c3331ad4ac636a0bc0a6ce28065f359bed24db9a1169c89938e9c8a7c073aa" },
+        { "role": "publisher", "path": "wrangler.publisher.jsonc", "sha256": "b847b3d35c239545ceb3ff15afa17a05e39f0de590e89a414aaf21220d56d01d" },
+        { "role": "rendezvous", "path": "wrangler.rendezvous.jsonc", "sha256": "10b32a4c9544c8153950a25db080824a72a6f5c621688e7d8accaf8b984b4e38" }
       ],
       "common": {
         "workersDev": true,

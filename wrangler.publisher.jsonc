@@ -31,7 +31,7 @@
   },
   "vars": {
     "PUBLISH_HOSTNAME": "publish.meta.atrinik.org",
-    "PUBLISH_ENABLED": "disabled",
+    "PUBLISH_ENABLED": "enabled",
     "GAME_PUBLISH_ENABLED": "disabled",
     "ROUTE_DISABLED_RETRY_SECONDS": "300",
     "SOURCE_TAG_KEY_CURRENT_ID": "2026-08-a",

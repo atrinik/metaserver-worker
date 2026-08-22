@@ -336,22 +336,22 @@ export function validateContract(contract) {
         desired: "v4-production",
       }, {
         role: "core", name: "GAME_PUBLISH_ENABLED", type: "plain_text",
-        live: "enabled", desired: "disabled",
+        live: "disabled", desired: "disabled",
       }, {
         role: "core", name: "PUBLISH_ENABLED", type: "plain_text",
-        live: "enabled", desired: "disabled",
+        live: "disabled", desired: "enabled",
       }, {
         role: "core", name: "RENDEZVOUS_ENABLED", type: "plain_text",
-        live: "enabled", desired: "disabled",
+        live: "disabled", desired: "enabled",
       }, {
         role: "publisher", name: "GAME_PUBLISH_ENABLED", type: "plain_text",
-        live: "enabled", desired: "disabled",
+        live: "disabled", desired: "disabled",
       }, {
         role: "publisher", name: "PUBLISH_ENABLED", type: "plain_text",
-        live: "enabled", desired: "disabled",
+        live: "disabled", desired: "enabled",
       }, {
         role: "rendezvous", name: "RENDEZVOUS_ENABLED", type: "plain_text",
-        live: "enabled", desired: "disabled",
+        live: "disabled", desired: "enabled",
       }],
     })
   )

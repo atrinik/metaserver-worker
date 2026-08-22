@@ -500,7 +500,7 @@ test("requires runtime-valid and coherent protected policy values", () => {
   for (const mutate of [
     (value) => { value[0].vars.LISTING_TTL_SECONDS = "garbage"; },
     (value) => { value[1].vars.PUBLISH_ENABLED = "typo"; },
-    (value) => { value[1].vars.PUBLISH_ENABLED = "enabled"; },
+    (value) => { value[1].vars.PUBLISH_ENABLED = "disabled"; },
     (value) => { value[2].vars.ROUTE_DISABLED_RETRY_SECONDS = "301"; },
     (value) => {
       value[0].vars.SOURCE_TAG_KEY_PREVIOUS_ID =

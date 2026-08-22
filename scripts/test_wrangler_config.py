@@ -41,7 +41,7 @@ class WranglerSecurityConfigurationTests(unittest.TestCase):
                 self.assertEqual(binding["simple"]["limit"], limit)
 
         self.assertEqual(
-            self.configuration["vars"]["PUBLISH_ENABLED"], "disabled"
+            self.configuration["vars"]["PUBLISH_ENABLED"], "enabled"
         )
         self.assertEqual(
             self.configuration["vars"]["GAME_PUBLISH_ENABLED"], "disabled"
@@ -527,20 +527,20 @@ class DynamicServiceBoundaryConfigurationTests(unittest.TestCase):
             {"1201", "1202"},
         )
 
-    def test_each_dynamic_edge_starts_disabled(self) -> None:
-        self.assertEqual(self.publisher["vars"]["PUBLISH_ENABLED"], "disabled")
+    def test_classic_dynamic_edges_are_enabled_game_remains_disabled(self) -> None:
+        self.assertEqual(self.publisher["vars"]["PUBLISH_ENABLED"], "enabled")
         self.assertEqual(
             self.publisher["vars"]["GAME_PUBLISH_ENABLED"], "disabled"
         )
         self.assertEqual(
             self.rendezvous["vars"]["RENDEZVOUS_ENABLED"],
-            "disabled",
+            "enabled",
         )
-        self.assertEqual(self.core["vars"]["PUBLISH_ENABLED"], "disabled")
+        self.assertEqual(self.core["vars"]["PUBLISH_ENABLED"], "enabled")
         self.assertEqual(
             self.core["vars"]["GAME_PUBLISH_ENABLED"], "disabled"
         )
-        self.assertEqual(self.core["vars"]["RENDEZVOUS_ENABLED"], "disabled")
+        self.assertEqual(self.core["vars"]["RENDEZVOUS_ENABLED"], "enabled")
 
     def test_dynamic_authorities_match_only_their_provider_boundary(self) -> None:
         self.assertEqual(

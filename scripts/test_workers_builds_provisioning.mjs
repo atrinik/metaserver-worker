@@ -5828,7 +5828,7 @@ test("materializes bounded production documents only from live private coordinat
     [{ pattern: "publish.meta.atrinik.org", custom_domain: true }]);
   assert.deepEqual(configurations[2].routes,
     [{ pattern: "rendezvous.meta.atrinik.org", custom_domain: true }]);
-  assert.equal(configurations[0].vars.PUBLISH_ENABLED, "disabled");
+  assert.equal(configurations[0].vars.PUBLISH_ENABLED, "enabled");
 
   for (const mutate of [
     (values) => values[0].subdomain.result.enabled = true,
@@ -5883,7 +5883,7 @@ test("permits only the exact absent-trigger initial production predecessor", () 
     initialBootstrapPredecessor: true,
   }), /binding inventory drift/u);
   const unexpectedChanged = structuredClone(predecessorSnapshots);
-  one(unexpectedChanged[0].settings.result.bindings, "PUBLISH_ENABLED").text = "disabled";
+  one(unexpectedChanged[0].settings.result.bindings, "PUBLISH_ENABLED").text = "enabled";
   assert.throws(() => materializeProductionConfigurations({
     contract: production, bases, snapshots: unexpectedChanged, accountId,
     initialBootstrapPredecessor: true,
