@@ -303,12 +303,17 @@ describe("classic signed publisher", () => {
     },
   );
 
-  it("ships fail closed until the staged rollout explicitly enables it", async () => {
+  it("ships Classic publication when its rollout circuit is enabled", async () => {
     const response = await callWorker(publishRequest(initialVector()));
-    expect(response.status).toBe(503);
-    expect(response.headers.get("Retry-After")).toBe("300");
-    expect(await storedPublication()).toBeNull();
-    expect(await directoryState()).toEqual({ revision: 0, outbox: [] });
+    expect(response.status).toBe(200);
+    const result = await response.json<{
+      readonly status: string;
+      readonly rendezvousToken: string;
+    }>();
+    expect(result.status).toBe("ok");
+    expect(result.rendezvousToken).toMatch(/^[0-9a-f]{64}$/);
+    expect(await storedPublication()).not.toBeNull();
+    expect(await directoryState()).toEqual({ revision: 1, outbox: [1] });
   });
 
   it("leaves replay, ownership, listing, revision, and token state unchanged when persistence fails before commit", async () => {
