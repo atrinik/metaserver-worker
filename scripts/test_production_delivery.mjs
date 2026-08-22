@@ -1368,3 +1368,18 @@ test("subprocess diagnostics expose only bounded stage metadata", () => {
     "exit=1 provider-code=403",
   );
 });
+
+test("subprocess diagnostics retain one bounded redacted provider line through a cause", () => {
+  const secret = "private-config-secret";
+  const detail = describeSubprocessFailure({
+    code: 1,
+    cause: {
+      stderr:
+        `✘ [ERROR] deployment forbidden account_id=${"a".repeat(32)} token=${secret}`,
+    },
+  });
+  assert.match(detail, /^exit=1 detail=✘ \[ERROR\] deployment forbidden/u);
+  assert.equal(detail.includes(secret), false);
+  assert.equal(detail.includes("a".repeat(32)), false);
+  assert.ok(detail.length <= 260);
+});

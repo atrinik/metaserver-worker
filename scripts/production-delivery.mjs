@@ -993,6 +993,47 @@ const diagnosticExecutables = new Set([
 const providerErrorCodePattern =
   /(?:\b(?:code|status(?:\s+code)?|http)\s*[:=]\s*)(\d{3,6})\b/iu;
 
+const diagnosticLinePattern =
+  /(?:✘|\[\s*error\s*\]|\berror\s*[:]|\bfatal\s*[:]|\b(?:unauthori[sz]ed|forbidden|permission|authentication|not found)\b|\b(?:could not|cannot|must match|requires|failed to|invalid)\b)/iu;
+
+function subprocessText(error) {
+  const values = [];
+  const seen = new Set();
+  let current = error;
+  for (let depth = 0; current && depth < 4 && !seen.has(current); depth += 1) {
+    seen.add(current);
+    for (const field of ["stdout", "stderr", "message"])
+      if (typeof current[field] === "string" && current[field])
+        values.push(current[field]);
+    current = current.cause;
+  }
+  return values.join("\n");
+}
+
+function sanitizeDiagnosticLine(value) {
+  return String(value)
+    .replace(/\u001b\[[0-?]*[ -/]*[@-~]/gu, "")
+    .replace(/Bearer\s+\S+/giu, "Bearer <redacted>")
+    .replace(
+      /((?:api[_-]?token|token|secret|password|account[_-]?id)\s*[:=]\s*)\S+/giu,
+      "$1<redacted>",
+    )
+    .replace(/\b[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\b/giu, "<id>")
+    .replace(/\b[0-9a-f]{32,64}\b/giu, "<id>")
+    .replace(/\b[A-Za-z0-9_-]{40,}\b/gu, "<redacted>")
+    .replace(/\s+/gu, " ")
+    .trim()
+    .slice(0, 240);
+}
+
+function diagnosticLine(error) {
+  const line = subprocessText(error)
+    .split(/\r?\n/u)
+    .map((value) => value.trim())
+    .find((value) => diagnosticLinePattern.test(value));
+  return line ? sanitizeDiagnosticLine(line) : "";
+}
+
 function diagnosticExecutable(output) {
   let executable;
   const pattern = /^> [^\r\n]+\r?\n> ([^\r\n]+)/gmu;
@@ -1006,13 +1047,27 @@ function diagnosticExecutable(output) {
 
 export function describeSubprocessFailure(error) {
   const details = [];
-  if (typeof error?.code === "number" && Number.isInteger(error.code))
-    details.push(`exit=${error.code}`);
-  else if (typeof error?.code === "string" && /^[A-Z0-9_]+$/u.test(error.code))
-    details.push(`code=${error.code}`);
-  if (typeof error?.signal === "string" && /^SIG[A-Z0-9]+$/u.test(error.signal))
-    details.push(`signal=${error.signal}`);
-  const message = typeof error?.message === "string" ? error.message : "";
+  const fields = [];
+  const seen = new Set();
+  let current = error;
+  for (let depth = 0; current && depth < 4 && !seen.has(current); depth += 1) {
+    seen.add(current);
+    fields.push(current);
+    current = current.cause;
+  }
+  const primary = fields[0] ?? {};
+  const code = fields.find(({ code: value }) => value !== undefined)?.code;
+  const signal = fields.find(({ signal: value }) => value !== undefined)?.signal;
+  if (typeof code === "number" && Number.isInteger(code))
+    details.push(`exit=${code}`);
+  else if (typeof code === "string" && /^[A-Z0-9_]+$/u.test(code))
+    details.push(`code=${code}`);
+  if (typeof signal === "string" && /^SIG[A-Z0-9]+$/u.test(signal))
+    details.push(`signal=${signal}`);
+  const message = fields
+    .map(({ message: value }) => typeof value === "string" ? value : "")
+    .filter(Boolean)
+    .join("\n");
   const messageExit = /\b(exit=\d+)\b/u.exec(message)?.[1];
   if (messageExit && !details.some((value) => value === messageExit))
     details.push(messageExit);
@@ -1022,18 +1077,16 @@ export function describeSubprocessFailure(error) {
   const messageStage = /\b(stage=(?:git|node|npm|npx|python3|tsc|vitest|wrangler))\b/u.exec(message)?.[1];
   if (messageStage && !details.some((value) => value === messageStage))
     details.push(messageStage);
-  const executable = diagnosticExecutable(
-    `${typeof error?.stdout === "string" ? error.stdout : ""}\n${typeof error?.stderr === "string" ? error.stderr : ""}\n${message}`,
-  );
+  const providerOutput = subprocessText(primary);
+  const executable = diagnosticExecutable(providerOutput);
   if (executable && !details.some((value) => value === `stage=${executable}`))
     details.push(`stage=${executable}`);
-  const providerOutput = [
-    typeof error?.stdout === "string" ? error.stdout : "",
-    typeof error?.stderr === "string" ? error.stderr : "",
-    message,
-  ].join("\n");
   const providerCode = providerErrorCodePattern.exec(providerOutput)?.[1];
   if (providerCode) details.push(`provider-code=${providerCode}`);
+  else {
+    const diagnostic = diagnosticLine(error);
+    if (diagnostic) details.push(`detail=${diagnostic}`);
+  }
   return details.join(" ");
 }
 
@@ -1066,7 +1119,11 @@ async function command(program, args, options = {}) {
   } catch (error) {
     const operation = [program, args[0]].filter(Boolean).join(" ");
     const detail = describeSubprocessFailure(error);
-    fail(`${failureCode}: ${operation}${detail ? ` (${detail})` : ""}`);
+    const wrapped = new DeliveryError(
+      `${failureCode}: ${operation}${detail ? ` (${detail})` : ""}`,
+    );
+    wrapped.cause = error;
+    throw wrapped;
   }
 }
 
