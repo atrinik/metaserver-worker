@@ -23,6 +23,7 @@ import {
   parseCurrentMainRef,
   recoverDisabledCore,
   selectBuildLeaseOwner,
+  selectApiHandoffRoles,
   selectLiveTrigger,
   sanitizedChildEnvironment,
   validateBuildTrigger,
@@ -34,6 +35,7 @@ import {
   validateRuntimeExports,
   validateSourceCoordinates,
   validateTopology,
+  wranglerDeployArguments,
 } from "./production-delivery.mjs";
 
 const root = resolve(import.meta.dirname, "..");
@@ -638,6 +640,63 @@ test("selects exactly one current live Workers Builds trigger", () => {
       () => selectLiveTrigger(values, "production"),
       /invalid|missing or ambiguous/u,
     );
+});
+
+test("only an exact approved SHA enables the API-managed handoff", () => {
+  const workers = [{ role: "core" }, { role: "publisher" }, { role: "rendezvous" }];
+  const live = workers.map((_, index) => ({
+    serviceEnvironment: {
+      script: { last_deployed_from: index === 0 ? "api" : "workersci" },
+    },
+  }));
+  const source = "a".repeat(40);
+  assert.deepEqual(
+    [...selectApiHandoffRoles(workers, live, source, `approved:${source}`)],
+    ["core"],
+  );
+  assert.deepEqual(
+    [...selectApiHandoffRoles(workers, live, source, "routine")],
+    [],
+  );
+  assert.deepEqual(
+    [...selectApiHandoffRoles(workers, live, "b".repeat(40), `approved:${source}`)],
+    [],
+  );
+  assert.throws(
+    () => selectApiHandoffRoles(workers.slice(0, 1), live, source, `approved:${source}`),
+    /inventory is invalid/u,
+  );
+});
+
+test("keeps strict Wrangler arguments outside the explicit API handoff", () => {
+  const input = {
+    configPath: "/tmp/production.jsonc",
+    sourceSha: "a".repeat(40),
+    message: "delivery message",
+  };
+  assert.deepEqual(wranglerDeployArguments(input), [
+    "deploy",
+    "--strict",
+    "--config",
+    input.configPath,
+    "--tag",
+    input.sourceSha,
+    "--message",
+    input.message,
+  ]);
+  assert.deepEqual(wranglerDeployArguments({ ...input, strict: false }), [
+    "deploy",
+    "--config",
+    input.configPath,
+    "--tag",
+    input.sourceSha,
+    "--message",
+    input.message,
+  ]);
+  assert.throws(
+    () => wranglerDeployArguments({ ...input, sourceSha: "not-a-sha" }),
+    /arguments are invalid/u,
+  );
 });
 
 test("requires an exact ordered remote migration ledger", () => {

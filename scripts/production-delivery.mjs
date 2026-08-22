@@ -378,6 +378,7 @@ export function validateContract(contract) {
       "controlPlanePolicy",
       "deploymentOrder",
       "deploymentMode",
+      "initialApiHandoff",
       "buildSerialization",
       "noOp",
       "recovery",
@@ -392,6 +393,8 @@ export function validateContract(contract) {
     JSON.stringify(invariants.deploymentOrder) !==
       JSON.stringify(["core", "publisher", "rendezvous"]) ||
     invariants.deploymentMode !== "direct-100-percent-strict" ||
+    invariants.initialApiHandoff !==
+      "approved-exact-sha-api-managed-source-only" ||
     invariants.buildSerialization !==
       "newest-current-main-build-owns-one-topology-entrypoint" ||
     invariants.noOp !==
@@ -1611,6 +1614,28 @@ export function selectLiveTrigger(triggers, triggerUuid) {
   return matching[0];
 }
 
+export function selectApiHandoffRoles(
+  workers,
+  liveControlPlanes,
+  sourceSha,
+  controlGate,
+) {
+  if (
+    !Array.isArray(workers) ||
+    !Array.isArray(liveControlPlanes) ||
+    workers.length !== liveControlPlanes.length
+  )
+    fail("API handoff live Worker inventory is invalid");
+  if (controlGate !== `approved:${sourceSha}`) return new Set();
+  return new Set(
+    workers.flatMap((worker, index) => {
+      const source = liveControlPlanes[index]?.serviceEnvironment?.script
+        ?.last_deployed_from;
+      return source === "api" ? [worker.role] : [];
+    }),
+  );
+}
+
 async function assertBuildLease(
   contract,
   sourceSha,
@@ -1892,24 +1917,54 @@ async function readRemoteMigrations(coreConfig) {
   return collectMigrationNames(result);
 }
 
-async function deployWorker(
-  worker,
+export function wranglerDeployArguments({
   configPath,
   sourceSha,
-  plan,
-  { phase = "active", controls = plan.controls } = {},
-) {
-  const message = `atrinik-delivery-v1 source=${sourceSha} deploy=${plan.deploy} migration=${plan.migrationDigest} horizon=${plan.migrations.length} control=${controls[worker.order - 1]} role=${worker.role} phase=${phase}`;
-  await command(resolve(root, "node_modules/.bin/wrangler"), [
+  message,
+  strict = true,
+}) {
+  if (
+    typeof configPath !== "string" ||
+    !configPath ||
+    !shaPattern.test(sourceSha) ||
+    typeof message !== "string" ||
+    !message
+  )
+    fail("Wrangler deployment arguments are invalid");
+  return [
     "deploy",
-    "--strict",
+    ...(strict ? ["--strict"] : []),
     "--config",
     configPath,
     "--tag",
     sourceSha,
     "--message",
     message,
-  ], { environmentPolicy: "deployment" });
+  ];
+}
+
+async function deployWorker(
+  worker,
+  configPath,
+  sourceSha,
+  plan,
+  {
+    phase = "active",
+    controls = plan.controls,
+    apiHandoff = false,
+  } = {},
+) {
+  const message = `atrinik-delivery-v1 source=${sourceSha} deploy=${plan.deploy} migration=${plan.migrationDigest} horizon=${plan.migrations.length} control=${controls[worker.order - 1]} role=${worker.role} phase=${phase}`;
+  await command(
+    resolve(root, "node_modules/.bin/wrangler"),
+    wranglerDeployArguments({
+      configPath,
+      sourceSha,
+      message,
+      strict: !apiHandoff,
+    }),
+    { environmentPolicy: "deployment" },
+  );
   return message;
 }
 
@@ -2040,11 +2095,13 @@ async function main() {
     plan.migrations.map(({ name }) => name),
   );
   const annotations = [];
+  const liveControlPlanes = [];
   for (const [index, worker] of contract.workers.entries()) {
     const live = await readLiveControlPlane(
       worker,
       process.env.CLOUDFLARE_ACCOUNT_ID,
     );
+    liveControlPlanes.push(live);
     validateLiveControlPlane(worker, configs[index], live, {
       exactRuntime: false,
       expectedZoneId: configs[0].vars.DIRECTORY_CACHE_ZONE_ID,
@@ -2057,6 +2114,12 @@ async function main() {
   const decision = deliveryDecision(
     annotations,
     plan,
+    sourceSha,
+    process.env[input.controlPlaneGateVariable] ?? "",
+  );
+  const apiHandoffRoles = selectApiHandoffRoles(
+    contract.workers,
+    liveControlPlanes,
     sourceSha,
     process.env[input.controlPlaneGateVariable] ?? "",
   );
@@ -2080,6 +2143,7 @@ async function main() {
           () => deployWorker(worker, stagedPaths[index], sourceSha, plan, {
             phase: "staged",
             controls: plan.stagedControls,
+            apiHandoff: apiHandoffRoles.has(worker.role),
           }),
         ),
       );
@@ -2122,7 +2186,9 @@ async function main() {
       failureEvidence.failedRole = `active:${worker.role}`;
       expectedActiveMessages.set(
         worker.role,
-        await deployWorker(worker, configPaths[index], sourceSha, plan),
+        await deployWorker(worker, configPaths[index], sourceSha, plan, {
+          apiHandoff: apiHandoffRoles.has(worker.role),
+        }),
       );
     },
     readbackActive: async (worker, index) => {
@@ -2178,7 +2244,11 @@ async function main() {
               stagedPaths[0],
               sourceSha,
               plan,
-              { phase: "staged", controls: plan.stagedControls },
+              {
+                phase: "staged",
+                controls: plan.stagedControls,
+                apiHandoff: apiHandoffRoles.has("core"),
+              },
             );
             expectedStagedMessages.set("core", message);
             return message;

@@ -256,6 +256,7 @@
     "controlPlanePolicy": "explicit-external-gate-before-upload",
     "deploymentOrder": ["core", "publisher", "rendezvous"],
     "deploymentMode": "direct-100-percent-strict",
+    "initialApiHandoff": "approved-exact-sha-api-managed-source-only",
     "buildSerialization": "newest-current-main-build-owns-one-topology-entrypoint",
     "noOp": "matching-bundles-config-migrations-and-command-contract",
     "recovery": "disabled-circuit-fix-forward-and-exact-current-main-retry"

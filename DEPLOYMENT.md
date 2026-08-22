@@ -56,7 +56,13 @@ coordinate, or raw provider response. Routine deploys inherit already
 provisioned encrypted runtime secrets by name and never read, upload, rotate,
 or delete their values.
 The first provider connection also uses this exact-SHA gate because the live
-versions do not yet carry the repository delivery annotations; restore
+versions do not yet carry the repository delivery annotations. If a live
+Worker reports `last_deployed_from=api`, that exact approved retry may perform
+the one-time API-to-Workers-Builds handoff for that Worker: it omits Wrangler's
+interactive `--strict` conflict prompt only for that approved SHA, after the
+normal live control-plane, lease, configuration, and readback preflight. It
+does not create a manual deployment path, accept a dashboard override, or
+weaken routine delivery; subsequent ordinary builds remain strict. Restore
 `routine` after all three annotated versions pass readback and canaries.
 
 The entrypoint performs this fail-closed sequence:
@@ -90,7 +96,9 @@ The entrypoint performs this fail-closed sequence:
    public circuit forced disabled.
 6. Prove the staged three-role cohort is coherent. Restore the desired caller
    configs in publisher/rendezvous order while core remains disabled, restore
-   core last, and validate every direct `wrangler deploy --strict` at 100%.
+   core last, and validate every normal direct `wrangler deploy --strict` at
+   100%. The one-time API-managed handoff above is the only separately gated
+   exception and is not a routine deployment mode.
    Thus any pre-final failure leaves or restores the core breakers disabled.
 7. Record exact source, deployable, migration digest/horizon, control-plane,
    role, and phase
