@@ -243,6 +243,17 @@ test("requires exact live routes, domains, schedules, runtime, and observability
     assert.doesNotThrow(() =>
       validateLiveControlPlane(worker, configs[index], liveControlPlane(index)),
     );
+  const providerNormalized = structuredClone(liveControlPlane(0));
+  providerNormalized.serviceEnvironment.script.observability.head_sampling_rate = 1;
+  assert.doesNotThrow(() =>
+    validateLiveControlPlane(contract.workers[0], configs[0], providerNormalized),
+  );
+  const nondefaultSampling = structuredClone(providerNormalized);
+  nondefaultSampling.serviceEnvironment.script.observability.head_sampling_rate = 0.5;
+  assert.throws(
+    () => validateLiveControlPlane(contract.workers[0], configs[0], nondefaultSampling),
+    /live .* drift/u,
+  );
   const mutations = [
     (value) => value.routes.push({ pattern: "unexpected.example/*" }),
     (value) => value.customDomains.push({ hostname: "unexpected.example" }),
