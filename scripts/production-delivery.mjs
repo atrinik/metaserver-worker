@@ -360,7 +360,7 @@ export function validateContract(contract) {
     !Array.isArray(contract.workers) ||
     contract.workers.length !== 3 ||
     sha256Json(canonicalJson(contract.workers)) !==
-      "c7d2e3c88beb26ebebcc0c043a15d7d4ac741dd0a134aee49729f772270d79fd" ||
+      "6f7c5ac09e0898c740481db5b829125b541c655f1a811ac7e0a5219f70cb72d3" ||
     JSON.stringify(contract.workers.map(({ name }) => name)) !==
       JSON.stringify(expectedWorkerNames) ||
     JSON.stringify(contract.workers.map(({ order }) => order)) !==
@@ -527,6 +527,7 @@ function validateConfigurationAuthority(worker, config) {
     DirectoryBuilder: { type: "durable-object", storage: "sqlite" },
     PublisherCoordinator: { type: "worker", cache: { enabled: false } },
     RendezvousCoordinator: { type: "worker", cache: { enabled: false } },
+    RendezvousHealth: { type: "worker", cache: { enabled: false } },
   } : {};
   if (!sameJson(config.exports ?? {}, expectedExports))
     fail(`${worker.role} exports authority drift`);

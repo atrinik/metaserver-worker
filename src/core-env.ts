@@ -37,6 +37,7 @@ export type CoreEnv =
     readonly RENDEZVOUS: DurableObjectNamespace<RendezvousRoom>;
     readonly DIRECTORY_BUILDER: DurableObjectNamespace<DirectoryBuilder>;
     readonly RENDEZVOUS_HOSTNAME: string;
+    readonly RENDEZVOUS_HEALTH_EXPORT_TOKEN: string;
     readonly PUBLISH_ENABLED?: string;
     readonly GAME_PUBLISH_ENABLED?: string;
     readonly RENDEZVOUS_ENABLED?: string;

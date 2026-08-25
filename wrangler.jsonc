@@ -70,6 +70,12 @@
       "cache": {
         "enabled": false
       }
+    },
+    "RendezvousHealth": {
+      "type": "worker",
+      "cache": {
+        "enabled": false
+      }
     }
   },
   "ratelimits": [
@@ -94,7 +100,8 @@
     "required": [
       "DIRECTORY_CACHE_PURGE_TOKEN",
       "SOURCE_TAG_KEY_CURRENT",
-      "SOURCE_TAG_KEY_PREVIOUS"
+      "SOURCE_TAG_KEY_PREVIOUS",
+      "RENDEZVOUS_HEALTH_EXPORT_TOKEN"
     ]
   },
   "vars": {

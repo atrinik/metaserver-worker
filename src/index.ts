@@ -52,6 +52,10 @@ import { handleRequestError } from "./request-errors";
 import { openRendezvous, RendezvousRoom } from "./rendezvous";
 import { consumeRendezvousPairCooldown } from "./rendezvous-cooldown";
 import {
+  recordRendezvousAuthenticatedAdmission,
+  RendezvousHealth,
+} from "./rendezvous-health";
+import {
   INTERNAL_DIRECTORY_CHANGED_HEADER,
   INTERNAL_RENDEZVOUS_PUBLISH_URL,
 } from "./rendezvous-contract";
@@ -67,7 +71,7 @@ import {
 } from "./routes";
 import type { CanonicalDynamicRoute } from "./routes";
 
-export { DirectoryBuilder, RendezvousRoom };
+export { DirectoryBuilder, RendezvousHealth, RendezvousRoom };
 
 /** Narrow internal publisher capability for the domainless publisher edge. */
 export class PublisherCoordinator extends WorkerEntrypoint<CoreEnv> {
@@ -79,7 +83,7 @@ export class PublisherCoordinator extends WorkerEntrypoint<CoreEnv> {
 /** Narrow internal rendezvous capability for the domainless WebSocket edge. */
 export class RendezvousCoordinator extends WorkerEntrypoint<CoreEnv> {
   async fetch(request: Request): Promise<Response> {
-    return handleRendezvousCoordinatorRequest(request, this.env);
+    return handleRendezvousCoordinatorRequest(request, this.env, this.ctx);
   }
 }
 
@@ -173,6 +177,7 @@ export async function handlePublisherCoordinatorRequest(
 export async function handleRendezvousCoordinatorRequest(
   request: Request,
   env: CoreEnv,
+  ctx?: ExecutionContext,
 ): Promise<Response> {
   let diagnosticRoute: DiagnosticRoute = "unclassified";
   try {
@@ -199,6 +204,7 @@ export async function handleRendezvousCoordinatorRequest(
       internal.aliases,
       control,
       Math.floor(Date.now() / 1_000),
+      ctx,
     );
   } catch (error) {
     return handleRequestError(error, diagnosticRoute, "coordinator");
@@ -221,6 +227,7 @@ async function openCanonicalRendezvous(
   aliases: RendezvousAdmissionAliases,
   control: RendezvousCoordinatorConfiguration,
   now: number,
+  ctx?: ExecutionContext,
 ): Promise<Response> {
   if (route.role === "client") {
     if (aliases.pair === null || aliases.source !== null) {
@@ -263,6 +270,13 @@ async function openCanonicalRendezvous(
         now,
         window: utcDayWindow(now),
       });
+      const observation = recordRendezvousAuthenticatedAdmission(env.DB, now)
+        .catch(() => undefined);
+      if (ctx === undefined) {
+        await observation;
+      } else {
+        ctx.waitUntil(observation);
+      }
     },
   });
 }

@@ -41,6 +41,12 @@ Classic rendezvous are enabled; Game publishing remains disabled. The core
 exports scheduled handlers, Durable Objects, and named
 Service Binding entrypoints only; it has no default `fetch` handler.
 
+The operator-safe rendezvous health source contract is the private
+`RendezvousHealth` entrypoint documented in
+[`docs/rendezvous-health.md`](docs/rendezvous-health.md). It exports only
+bounded aggregate evidence and never enumerates rooms or publishes a public
+health route.
+
 There is deliberately no TCP directory, DNS ownership proof, game-port probe,
 or game relay. A server is owned by the SHA-256 identity derived from its
 persistent QUIC certificate. Both publishers fold freshness and identity proof

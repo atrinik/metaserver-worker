@@ -67,6 +67,7 @@ class WranglerSecurityConfigurationTests(unittest.TestCase):
             set(self.configuration["secrets"]["required"]),
             {
                 "DIRECTORY_CACHE_PURGE_TOKEN",
+                "RENDEZVOUS_HEALTH_EXPORT_TOKEN",
                 "SOURCE_TAG_KEY_CURRENT",
                 "SOURCE_TAG_KEY_PREVIOUS",
             },
@@ -154,6 +155,10 @@ class WranglerSecurityConfigurationTests(unittest.TestCase):
         )
         self.assertEqual(
             self.configuration["exports"]["RendezvousCoordinator"],
+            {"type": "worker", "cache": {"enabled": False}},
+        )
+        self.assertEqual(
+            self.configuration["exports"]["RendezvousHealth"],
             {"type": "worker", "cache": {"enabled": False}},
         )
         self.assertEqual(
@@ -395,6 +400,7 @@ class DynamicServiceBoundaryConfigurationTests(unittest.TestCase):
                 "DirectoryBuilder",
                 "PublisherCoordinator",
                 "RendezvousCoordinator",
+                "RendezvousHealth",
             },
         )
         self.assertNotIn("services", self.core)
