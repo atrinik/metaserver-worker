@@ -30,6 +30,7 @@ import type {
   TicketState,
 } from "./rendezvous-attachments";
 import { writeRendezvousTerminalMetric } from "./rendezvous-metrics";
+import { recordRendezvousSessionObservation } from "./rendezvous-health";
 import {
   MAX_CLIENT_CANDIDATES,
   MAX_CLIENT_AUTHORIZATION_FRAMES,
@@ -151,6 +152,7 @@ export class RendezvousRoom extends DurableObject<CoreEnv> {
   private publicationMatcher = rendezvousPublicationMatches;
   private replayTagKeys!: SourceTagKeyRing;
   private terminalMetricWriter = writeRendezvousTerminalMetric;
+  private healthObservationWriter = recordRendezvousSessionObservation;
 
   constructor(ctx: DurableObjectState, env: CoreEnv) {
     super(ctx, env);
@@ -2272,6 +2274,14 @@ export class RendezvousRoom extends DurableObject<CoreEnv> {
       });
     } catch {
       // Metrics are best-effort and must never change rendezvous teardown.
+    }
+    try {
+      this.ctx.waitUntil(
+        this.healthObservationWriter(this.env.DB, outcome)
+          .catch(() => undefined),
+      );
+    } catch {
+      // Health aggregation is best-effort and must never change teardown.
     }
     return true;
   }

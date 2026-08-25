@@ -198,6 +198,7 @@
       "serviceBindings": [],
       "requiredSecrets": [
         "DIRECTORY_CACHE_PURGE_TOKEN",
+        "RENDEZVOUS_HEALTH_EXPORT_TOKEN",
         "SOURCE_TAG_KEY_CURRENT",
         "SOURCE_TAG_KEY_PREVIOUS"
       ]

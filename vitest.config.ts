@@ -12,6 +12,8 @@ const TEST_SOURCE_TAG_KEY_CURRENT =
   "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA";
 const TEST_SOURCE_TAG_KEY_PREVIOUS =
   "AQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQE";
+const TEST_RENDEZVOUS_HEALTH_EXPORT_TOKEN =
+  "test-rendezvous-health-export-token";
 
 // Wrangler validates required secret names while loading the config, before
 // Miniflare applies its binding overrides. These public test vectors keep that
@@ -20,6 +22,8 @@ process.env.SOURCE_TAG_KEY_CURRENT ??= TEST_SOURCE_TAG_KEY_CURRENT;
 process.env.SOURCE_TAG_KEY_PREVIOUS ??= TEST_SOURCE_TAG_KEY_PREVIOUS;
 process.env.DIRECTORY_CACHE_PURGE_TOKEN ??=
   "test-directory-cache-purge-token";
+process.env.RENDEZVOUS_HEALTH_EXPORT_TOKEN ??=
+  TEST_RENDEZVOUS_HEALTH_EXPORT_TOKEN;
 
 export default defineConfig({
   plugins: [
@@ -34,6 +38,8 @@ export default defineConfig({
           SOURCE_TAG_KEY_CURRENT: TEST_SOURCE_TAG_KEY_CURRENT,
           SOURCE_TAG_KEY_PREVIOUS: TEST_SOURCE_TAG_KEY_PREVIOUS,
           DIRECTORY_CACHE_PURGE_TOKEN: "test-directory-cache-purge-token",
+          RENDEZVOUS_HEALTH_EXPORT_TOKEN:
+            TEST_RENDEZVOUS_HEALTH_EXPORT_TOKEN,
           PUBLISH_SERVER_DAILY_LIMIT: "8",
           RENDEZVOUS_SERVER_DAILY_LIMIT: "8",
           RENDEZVOUS_CLIENT_PAIR_BURST_LIMIT: "20",

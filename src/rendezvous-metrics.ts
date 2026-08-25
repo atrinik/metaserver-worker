@@ -42,7 +42,7 @@ export function writeRendezvousTerminalMetric(
   dataset: Pick<AnalyticsEngineDataset, "writeDataPoint">,
   summary: RendezvousTerminalSummary,
 ): void {
-  const outcome = validatedOutcome(summary.outcome);
+  const outcome = normalizeRendezvousTerminalOutcome(summary.outcome);
   dataset.writeDataPoint({
     indexes: [`${RENDEZVOUS_SESSION_METRICS_SCHEMA}:${outcome}`],
     blobs: [RENDEZVOUS_SESSION_METRICS_SCHEMA, outcome],
@@ -57,11 +57,11 @@ export function writeRendezvousTerminalMetric(
   });
 }
 
-function validatedOutcome(
-  value: RendezvousTerminalOutcome,
+export function normalizeRendezvousTerminalOutcome(
+  value: unknown,
 ): RendezvousTerminalOutcome {
   return (RENDEZVOUS_TERMINAL_OUTCOMES as readonly unknown[]).includes(value)
-    ? value
+    ? value as RendezvousTerminalOutcome
     : "internal_error";
 }
 

@@ -17,7 +17,11 @@
   add candidate persistence or per-session timers.
 - `wrangler.jsonc` is the sole state-owning core configuration. It deliberately
   uses declarative `exports` for both SQLite Durable Objects and the narrow
-  publisher/rendezvous Worker entrypoints, and contains a placeholder D1 ID.
+  publisher/rendezvous and private `RendezvousHealth` Worker entrypoints, and
+  contains a placeholder D1 ID. `RendezvousHealth` is the only owner of the
+  versioned, bounded rendezvous-health aggregate; its exact private URL,
+  required token secret, canary envelope, and redacted response are documented
+  in `docs/rendezvous-health.md`. It has no public route or default fetch path.
   `wrangler.publisher.jsonc` and `wrangler.rendezvous.jsonc` are stateless,
   domainless public-edge configurations with one named service binding each;
   never add D1, R2, Durable Object, cron, or cross-service authority to them.
@@ -28,7 +32,10 @@
   across that lifecycle boundary are unsupported.
 - Production state exists. `migrations/0001_initial.sql` is applied history:
   never rewrite, reorder, or reuse it. Add every schema transition as a new,
-  ordered migration and test the complete populated-schema upgrade path.
+  ordered migration and test the complete populated-schema upgrade path. The
+  `rendezvous_health_observations` singleton is bounded rolling aggregate state;
+  it must never gain server, room, connection, ticket, candidate, credential,
+  or source-address columns.
 - `deployment/workers-builds-production.json` is the sole checked-in automatic
   production-delivery contract. Workers Builds skips implicit installation,
   selects the pinned npm, runs `npm ci`, and then `npm run deploy:production`

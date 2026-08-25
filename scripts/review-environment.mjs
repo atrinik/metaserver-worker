@@ -484,7 +484,7 @@ function validateResources(resources) {
   exactValue(resources.rendezvousClientRateLimit.simple.period, 60, "review client rate period");
   exactValue(resources.rendezvousClientRateLimit.countedWithinRateLimitNamespaceCeiling, true, "review rate ceiling accounting");
   exactKeys(resources.secrets, ["owner", "names", "epochIds", "productionValueReuse", "buildReadable"], "review secrets");
-  exactArray(resources.secrets.names, ["DIRECTORY_CACHE_PURGE_TOKEN", "SOURCE_TAG_KEY_CURRENT", "SOURCE_TAG_KEY_PREVIOUS"], "review secret bindings");
+  exactArray(resources.secrets.names, ["DIRECTORY_CACHE_PURGE_TOKEN", "RENDEZVOUS_HEALTH_EXPORT_TOKEN", "SOURCE_TAG_KEY_CURRENT", "SOURCE_TAG_KEY_PREVIOUS"], "review secret bindings");
   exactArray(resources.secrets.epochIds, ["review-canary-current", "review-canary-previous"], "review secret epochs");
   exactValue(resources.secrets.owner, "canary-cohort-only", "review secret owner");
   exactValue(resources.secrets.productionValueReuse, false, "review secret isolation");
@@ -536,7 +536,7 @@ function validateConfigurationMaterialization(value) {
       workersDevPrivateSubdomain: "exact-dedicated-live-account-subdomain-readback",
     },
     sources: [
-      { role: "core", path: "wrangler.jsonc", sha256: "84c3331ad4ac636a0bc0a6ce28065f359bed24db9a1169c89938e9c8a7c073aa" },
+      { role: "core", path: "wrangler.jsonc", sha256: "01aa72881ffe1144defc211beb9a6b0ad3bf6e32897de0e9cd3812939588de32" },
       { role: "publisher", path: "wrangler.publisher.jsonc", sha256: "b847b3d35c239545ceb3ff15afa17a05e39f0de590e89a414aaf21220d56d01d" },
       { role: "rendezvous", path: "wrangler.rendezvous.jsonc", sha256: "10b32a4c9544c8153950a25db080824a72a6f5c621688e7d8accaf8b984b4e38" },
     ],
