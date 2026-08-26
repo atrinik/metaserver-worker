@@ -260,6 +260,7 @@ test("requires exact live routes, domains, schedules, runtime, and observability
     );
   const providerNormalized = structuredClone(liveControlPlane(0));
   providerNormalized.serviceEnvironment.script.observability.head_sampling_rate = 1;
+  providerNormalized.serviceEnvironment.script.observability.redact_query_string = false;
   assert.doesNotThrow(() =>
     validateLiveControlPlane(contract.workers[0], configs[0], providerNormalized),
   );
@@ -267,6 +268,12 @@ test("requires exact live routes, domains, schedules, runtime, and observability
   nondefaultSampling.serviceEnvironment.script.observability.head_sampling_rate = 0.5;
   assert.throws(
     () => validateLiveControlPlane(contract.workers[0], configs[0], nondefaultSampling),
+    /live .* drift/u,
+  );
+  const nondefaultRedaction = structuredClone(providerNormalized);
+  nondefaultRedaction.serviceEnvironment.script.observability.redact_query_string = true;
+  assert.throws(
+    () => validateLiveControlPlane(contract.workers[0], configs[0], nondefaultRedaction),
     /live .* drift/u,
   );
   const mutations = [
