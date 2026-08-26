@@ -1898,11 +1898,14 @@ export function validateLiveControlPlane(
 function normalizeLiveObservability(value) {
   if (!value || typeof value !== "object" || Array.isArray(value))
     return value;
-  if (!Object.hasOwn(value, "head_sampling_rate")) return value;
-  if (value.head_sampling_rate !== 1)
-    return value;
   const normalized = { ...value };
-  delete normalized.head_sampling_rate;
+  if (Object.hasOwn(normalized, "head_sampling_rate")) {
+    if (normalized.head_sampling_rate !== 1)
+      return value;
+    delete normalized.head_sampling_rate;
+  }
+  if (normalized.redact_query_string === false)
+    delete normalized.redact_query_string;
   return normalized;
 }
 
