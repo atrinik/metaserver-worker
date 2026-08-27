@@ -80,6 +80,12 @@ The status values are deliberately conservative:
 - `no_usable_observation` covers an empty aggregate, malformed persisted state,
   or route-only evidence without authenticated control or recent admission.
 
+When no persisted row exists, the response uses `reason: "no_observation"`.
+When a row exists but fails semantic normalization at read time, the response
+uses the same bounded, all-zero shape with `reason: "malformed_observation"`.
+Both cases are intentionally safe `no_usable_observation` results; neither
+exports the rejected row or any private rendezvous data.
+
 The canary `type` is either `route` or `end_to_end`. A route canary records only
 reachability and can never by itself make the status healthy. An end-to-end
 canary records three separate dimensions: route reachability,

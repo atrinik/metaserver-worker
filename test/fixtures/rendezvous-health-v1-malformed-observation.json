@@ -1,0 +1,38 @@
+{
+  "schema": "rendezvous-health-v1",
+  "observation_generation": 0,
+  "source_timestamp": null,
+  "observation_window": {
+    "started_at": null,
+    "duration_seconds": 300,
+    "ended_at": null
+  },
+  "freshness": {
+    "state": "no_observation",
+    "age_seconds": null,
+    "maximum_age_seconds": 300
+  },
+  "status": "no_usable_observation",
+  "recent_authenticated_admissions": 0,
+  "recent_sessions": {
+    "total": 0,
+    "outcomes": {
+      "completed": 0,
+      "client_disconnected": 0,
+      "session_expired": 0,
+      "protocol_error": 0,
+      "server_unavailable": 0,
+      "server_replaced": 0,
+      "authorization_failed": 0,
+      "internal_error": 0
+    }
+  },
+  "canary": {
+    "type": "none",
+    "route": "not_observed",
+    "authenticated_control": "not_observed",
+    "recent_admission": "not_observed",
+    "observed_at": null
+  },
+  "reason": "malformed_observation"
+}

@@ -1,6 +1,9 @@
 import { env } from "cloudflare:workers";
 import { beforeEach, describe, expect, it } from "vitest";
 
+import malformedObservationFixture from "./fixtures/rendezvous-health-v1-malformed-observation.json";
+import noObservationFixture from "./fixtures/rendezvous-health-v1-no-observation.json";
+
 import {
   handleRendezvousHealthRequest,
   INTERNAL_RENDEZVOUS_HEALTH_URL,
@@ -21,20 +24,57 @@ beforeEach(async () => {
 
 describe("rendezvous health aggregate", () => {
   it("returns an explicit no-usable-observation result when empty", async () => {
-    await expect(readRendezvousHealthSnapshot(env.DB, NOW)).resolves.toMatchObject({
-      schema: "rendezvous-health-v1",
-      observation_generation: 0,
-      source_timestamp: null,
-      status: "no_usable_observation",
-      reason: "no_observation",
-      freshness: {
-        state: "no_observation",
-        age_seconds: null,
-      },
-      recent_authenticated_admissions: 0,
-      recent_sessions: { total: 0 },
-      canary: { type: "none", route: "not_observed" },
-    });
+    await expect(readRendezvousHealthSnapshot(env.DB, NOW)).resolves.toEqual(
+      noObservationFixture,
+    );
+  });
+
+  it("returns the malformed-observation fixture for a semantically invalid row", async () => {
+    await env.DB.prepare(
+      `INSERT INTO rendezvous_health_observations (
+        singleton,
+        observation_generation,
+        window_started_at,
+        source_timestamp,
+        authenticated_admissions,
+        session_completed,
+        session_client_disconnected,
+        session_expired,
+        session_protocol_error,
+        session_server_unavailable,
+        session_server_replaced,
+        session_authorization_failed,
+        session_internal_error,
+        canary_type,
+        canary_route,
+        canary_authenticated_control,
+        canary_recent_admission,
+        canary_observed_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)` ,
+    ).bind(
+      1,
+      1,
+      NOW,
+      NOW + RENDEZVOUS_HEALTH_FRESHNESS_SECONDS + 1,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      "none",
+      "not_observed",
+      "not_observed",
+      "not_observed",
+      0,
+    ).run();
+
+    await expect(readRendezvousHealthSnapshot(env.DB, NOW)).resolves.toEqual(
+      malformedObservationFixture,
+    );
   });
 
   it("normalizes bounded admission and terminal-session evidence", async () => {
