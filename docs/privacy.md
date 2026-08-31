@@ -32,10 +32,17 @@ learns a selected peer endpoint.
    rendezvous role is admitted without a fresh public directory row. Classic
    v2 stores only the signed `accessCodeRequired` policy boolean; it never
    stores an access code, proof, or v1 password field.
-6. Static R2 artifacts contain only the bounded public directory model plus a
-   profile, schema, generation, freshness timestamps, body sizes, and keyed-by-
-   content SHA-256 values. The D1 revision and outbox are builder-private and
-   never appear in a body, object key, HTTP metadata, or custom metadata.
+6. Activity ranking stores only profile-scoped, bounded population aggregates,
+   the latest observation timestamp, and the latest positive-observation
+   timestamp; it stores no player ID, login identity, address, ticket,
+   candidate, or per-player history. Administrator
+   pins contain only a canonical identity, bounded priority/expiry, and a
+   private bounded operator note. Pins are ordering hints and cannot make
+   private, expired, malformed, or denied state public. Static R2 artifacts
+   contain only the bounded public directory model plus a profile, schema,
+   generation, freshness timestamps, body sizes, and keyed-by-content SHA-256
+   values. The D1 revision and outbox are builder-private and never appear in
+   a body, object key, HTTP metadata, or custom metadata.
 
 Neither an unkeyed IP digest nor a raw IP is an acceptable durable actor key.
 IPv4 is enumerable, and a single cross-purpose pseudonym would unnecessarily
@@ -189,6 +196,13 @@ It never stores the certificate body, signature, source address, rendezvous
 token, candidate, or server-only runtime state. Game replay, request-budget,
 presence, room-generation, revision, and outbox state remain
 profile-qualified and cannot be consumed by classic publication.
+
+Migration `0012_directory_activity_ranking.sql` adds separate profile-scoped
+activity buckets and an independently bounded administrator-pin table. Accepted
+publications update aggregate state atomically with presence and listing state;
+private publications remove the activity state. The complete policy, retention
+horizon, and operator procedure are in
+[directory-ranking.md](directory-ranking.md).
 
 The profile-named builder Durable Object stores one version number, a
 generation high-water mark, an opaque bounded cleanup cursor, and at most one

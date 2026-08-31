@@ -35,6 +35,12 @@ LEGACY_STORAGE_REMOVAL_MIGRATION = (
 CLASSIC_ACCESS_CODE_MIGRATION = (
     REPOSITORY_ROOT / "migrations" / "0010_classic_access_code.sql"
 )
+RENDEZVOUS_HEALTH_MIGRATION = (
+    REPOSITORY_ROOT / "migrations" / "0011_rendezvous_health.sql"
+)
+DIRECTORY_ACTIVITY_MIGRATION = (
+    REPOSITORY_ROOT / "migrations" / "0012_directory_activity_ranking.sql"
+)
 
 
 class RequestControlMigrationTests(unittest.TestCase):
@@ -1952,6 +1958,155 @@ class ClassicAccessCodeMigrationTests(unittest.TestCase):
             self.database.execute("SELECT * FROM publisher_replay").fetchall(),
             before,
         )
+
+
+class DirectoryActivityRankingMigrationTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.database = sqlite3.connect(":memory:")
+        self.addCleanup(self.database.close)
+        self.database.execute("PRAGMA foreign_keys = ON")
+        for migration in (
+            INITIAL_MIGRATION,
+            REQUEST_CONTROL_MIGRATION,
+            RENDEZVOUS_GENERATION_MIGRATION,
+            SIGNED_PUBLISHER_MIGRATION,
+            DIRECTORY_STATE_MIGRATION,
+            DIRECTORY_ARTIFACTS_MIGRATION,
+            GAME_PUBLISHER_MIGRATION,
+            RENDEZVOUS_COOLDOWN_MIGRATION,
+            LEGACY_STORAGE_REMOVAL_MIGRATION,
+            CLASSIC_ACCESS_CODE_MIGRATION,
+            RENDEZVOUS_HEALTH_MIGRATION,
+        ):
+            self.database.executescript(migration.read_text(encoding="utf-8"))
+
+    def seed_presence(self, profile: str, server_id: str) -> None:
+        self.database.execute(
+            "INSERT INTO publisher_replay "
+            "(server_id, profile, last_sequence, last_nonce, commit_token, updated_at) "
+            "VALUES (?, ?, '1', ?, ?, 100)",
+            (server_id, profile, server_id[:32], server_id),
+        )
+        self.database.execute(
+            "INSERT INTO server_presence "
+            "(profile, server_id, last_seen, rendezvous_token_hash, "
+            "rendezvous_generation) VALUES (?, ?, 100, ?, ?)",
+            (profile, server_id, "a" * 64, "b" * 64),
+        )
+
+    def test_is_append_only_profile_scoped_and_cascades_activity(self) -> None:
+        server_id = "1" * 64
+        for profile in ("classic-v1", "classic-v2", "game-v1"):
+            self.seed_presence(profile, server_id)
+        self.database.executescript(
+            DIRECTORY_ACTIVITY_MIGRATION.read_text(encoding="utf-8")
+        )
+
+        for profile in ("classic-v1", "classic-v2", "game-v1"):
+            self.database.execute(
+                "INSERT INTO directory_activity_state "
+                "(profile, server_id, last_observed_at, "
+                "last_positive_observed_at, last_population, observation_count) "
+                "VALUES (?, ?, 100, 100, 4, 1)",
+                (profile, server_id),
+            )
+            self.database.execute(
+                "INSERT INTO directory_activity_buckets "
+                "(profile, server_id, bucket_start, positive_seconds, "
+                "player_minutes, max_population, positive_observations, "
+                "zero_observations) VALUES (?, ?, 0, 300, 20, 4, 1, 0)",
+                (profile, server_id),
+            )
+        self.database.execute(
+            "INSERT INTO directory_admin_pins "
+            "(profile, server_id, priority, expires_at, note, created_at, updated_at) "
+            "VALUES ('classic-v1', ?, 4, NULL, 'review', 100, 100)",
+            (server_id,),
+        )
+        self.assertEqual(
+            self.database.execute(
+                "SELECT profile, last_population FROM directory_activity_state "
+                "ORDER BY profile"
+            ).fetchall(),
+            [("classic-v1", 4), ("classic-v2", 4), ("game-v1", 4)],
+        )
+
+        self.database.execute(
+            "DELETE FROM server_presence WHERE profile = 'classic-v1' "
+            "AND server_id = ?", (server_id,)
+        )
+        self.assertEqual(
+            self.database.execute(
+                "SELECT profile FROM directory_activity_state ORDER BY profile"
+            ).fetchall(),
+            [("classic-v2",), ("game-v1",)],
+        )
+        self.assertEqual(
+            self.database.execute(
+                "SELECT profile FROM directory_activity_buckets ORDER BY profile"
+            ).fetchall(),
+            [("classic-v2",), ("game-v1",)],
+        )
+        self.assertEqual(
+            self.database.execute("SELECT count(*) FROM directory_admin_pins").fetchone(),
+            (1,),
+        )
+
+    def test_activity_schema_rejects_unbounded_values_and_pin_capacity(self) -> None:
+        activity_server_id = "5" * 64
+        self.seed_presence("classic-v1", activity_server_id)
+        self.database.executescript(
+            DIRECTORY_ACTIVITY_MIGRATION.read_text(encoding="utf-8")
+        )
+        invalid_state = (
+            "INSERT INTO directory_activity_state "
+            "(profile, server_id, last_observed_at, last_positive_observed_at, "
+            "last_population, observation_count) "
+            "VALUES ('classic-v1', ?, 0, NULL, ?, 1)"
+        )
+        with self.assertRaises(sqlite3.IntegrityError):
+            self.database.execute(invalid_state, ("2" * 64, 100001))
+        with self.assertRaises(sqlite3.IntegrityError):
+            self.database.execute(invalid_state, ("3" * 64, -1))
+        with self.assertRaises(sqlite3.IntegrityError):
+            self.database.execute(
+                "INSERT INTO directory_activity_buckets "
+                "(profile, server_id, bucket_start, positive_seconds, "
+                "player_minutes, max_population, positive_observations, "
+                "zero_observations) VALUES ('classic-v1', ?, 1, 0, 0, 0, 0, 0)",
+                ("4" * 64,),
+            )
+        for bucket_start in range(0, 8 * 86400, 86400):
+            self.database.execute(
+                "INSERT INTO directory_activity_buckets "
+                "(profile, server_id, bucket_start, positive_seconds, "
+                "player_minutes, max_population, positive_observations, "
+                "zero_observations) VALUES ('classic-v1', ?, ?, 0, 0, 0, 0, 0)",
+                (activity_server_id, bucket_start),
+            )
+        with self.assertRaisesRegex(sqlite3.IntegrityError, "bucket capacity"):
+            self.database.execute(
+                "INSERT INTO directory_activity_buckets "
+                "(profile, server_id, bucket_start, positive_seconds, "
+                "player_minutes, max_population, positive_observations, "
+                "zero_observations) VALUES ('classic-v1', ?, 691200, 0, 0, 0, 0, 0)",
+                (activity_server_id,),
+            )
+
+        for index in range(512):
+            self.database.execute(
+                "INSERT INTO directory_admin_pins "
+                "(profile, server_id, priority, expires_at, note, created_at, updated_at) "
+                "VALUES ('classic-v1', ?, 0, NULL, '', 0, 0)",
+                (f"{index:064x}",),
+            )
+        with self.assertRaisesRegex(sqlite3.IntegrityError, "pin capacity"):
+            self.database.execute(
+                "INSERT INTO directory_admin_pins "
+                "(profile, server_id, priority, expires_at, note, created_at, updated_at) "
+                "VALUES ('classic-v1', ?, 0, NULL, '', 0, 0)",
+                (f"{512:064x}",),
+            )
 
 
 if __name__ == "__main__":

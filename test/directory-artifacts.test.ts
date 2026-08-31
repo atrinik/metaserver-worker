@@ -322,7 +322,7 @@ describe("static directory artifact rendering", () => {
       gameServer(ID_B, { name: "zeta" }),
       gameServer(ID_A, { name: "alpha" }),
     ])],
-  ] as const)("sorts %s servers by raw identity without mutating input", async (_, input) => {
+  ] as const)("preserves %s ranking order without mutating input", async (_, input) => {
     const originalOrder = input.servers.map((server) => server.serverId);
     const first = await renderDirectoryArtifacts(input);
     const second = await renderDirectoryArtifacts(input);
@@ -331,11 +331,11 @@ describe("static directory artifact rendering", () => {
     expect(first.artifacts.json.body).toBe(second.artifacts.json.body);
     expect(first.artifacts.xml.body).toBe(second.artifacts.xml.body);
     expect(first.artifacts.html.body).toBe(second.artifacts.html.body);
-    expect(first.artifacts.json.body.indexOf(ID_A)).toBeLessThan(
-      first.artifacts.json.body.indexOf(ID_B),
+    expect(first.artifacts.json.body.indexOf(ID_B)).toBeLessThan(
+      first.artifacts.json.body.indexOf(ID_A),
     );
-    expect(first.artifacts.xml.body.indexOf(ID_A)).toBeLessThan(
-      first.artifacts.xml.body.indexOf(ID_B),
+    expect(first.artifacts.xml.body.indexOf(ID_B)).toBeLessThan(
+      first.artifacts.xml.body.indexOf(ID_A),
     );
   });
 

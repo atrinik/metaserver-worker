@@ -213,6 +213,15 @@ describe("canonical dynamic route grammar", () => {
     })).code).toBe("not_found");
   });
 
+  it("does not expose an administrator policy mutation route", () => {
+    expect(canonicalError(publisherInput("/v1/admin/pins")).code).toBe(
+      "not_found",
+    );
+    expect(canonicalError(rendezvousInput(
+      "/v1/admin/pins?profile=classic-v1",
+    )).code).toBe("not_found");
+  });
+
   it("requires one unencoded JSON publisher body within 4 KiB", () => {
     expect(canonicalError(publisherInput(undefined, {
       hasBody: false,

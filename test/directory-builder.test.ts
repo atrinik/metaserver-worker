@@ -35,6 +35,9 @@ beforeEach(async () => {
     env.DB.prepare("DELETE FROM directory_artifact_history"),
     env.DB.prepare("DELETE FROM directory_artifact_commits"),
     env.DB.prepare("DELETE FROM directory_expiry_commits"),
+    env.DB.prepare("DELETE FROM directory_activity_buckets"),
+    env.DB.prepare("DELETE FROM directory_activity_state"),
+    env.DB.prepare("DELETE FROM directory_admin_pins"),
     env.DB.prepare("DELETE FROM directory_entries"),
     env.DB.prepare("DELETE FROM server_presence"),
     env.DB.prepare("DELETE FROM directory_outbox"),
@@ -167,6 +170,78 @@ describe("static directory builder", () => {
       revision: 1,
     });
     expect(await aliasEtags(env.CLASSIC_DIRECTORY_PUBLIC)).toEqual(before);
+  });
+
+  it("ranks sustained activity across every representation and coalesces pins", async () => {
+    const stub = env.DIRECTORY_BUILDER.getByName("classic-v1");
+    await stub.reconcile();
+    const sustainedId = "a".repeat(64);
+    const newId = "b".repeat(64);
+    const sustained = {
+      ...publication(sustainedId, NOW - 600, "a".repeat(64)),
+      playersCount: 10,
+    };
+    const sustainedHeartbeat = {
+      ...sustained,
+      publisherSequence: "2",
+      publisherNonce: "2".repeat(32),
+      publisherNonceExpiresAt: NOW,
+      commitToken: "2".repeat(64),
+      generation: "2".repeat(64),
+      tokenHash: "2".repeat(64),
+      now: NOW - 300,
+      directoryFingerprint: "2".repeat(64),
+    };
+    const newServer = {
+      ...publication(newId, NOW - 300, "c".repeat(64)),
+      playersCount: 20,
+    };
+    await persistRendezvousPublication(env.DB, sustained);
+    await persistRendezvousPublication(env.DB, sustainedHeartbeat);
+    await persistRendezvousPublication(env.DB, newServer);
+
+    await expect(stub.reconcile()).resolves.toMatchObject({
+      outcome: "published",
+      generation: 2,
+      revision: 3,
+    });
+    await expect(directoryIds(env.CLASSIC_DIRECTORY_PUBLIC)).resolves.toEqual([
+      sustainedId,
+      newId,
+    ]);
+    for (const key of ["index.html", "index.xml"] as const) {
+      const body = await env.CLASSIC_DIRECTORY_PUBLIC.get(key);
+      expect(body).not.toBeNull();
+      const text = await body?.text();
+      expect(text?.indexOf(sustainedId)).toBeLessThan(text?.indexOf(newId) ?? -1);
+    }
+
+    await env.DB.prepare(
+      `INSERT INTO directory_admin_pins
+          (profile, server_id, priority, expires_at, note, created_at, updated_at)
+       VALUES ('classic-v1', ?, 0, NULL, 'launch partner', ?, ?)`,
+    ).bind(newId, NOW, NOW).run();
+    await expect(stub.reconcile()).resolves.toMatchObject({
+      outcome: "published",
+      generation: 3,
+      revision: 3,
+    });
+    await expect(directoryIds(env.CLASSIC_DIRECTORY_PUBLIC)).resolves.toEqual([
+      newId,
+      sustainedId,
+    ]);
+
+    await env.DB.prepare(
+      "INSERT INTO server_denials (server_id, created_at) VALUES (?, ?)",
+    ).bind(newId, NOW).run();
+    await expect(stub.reconcile()).resolves.toMatchObject({
+      outcome: "published",
+      generation: 4,
+      revision: 3,
+    });
+    await expect(directoryIds(env.CLASSIC_DIRECTORY_PUBLIC)).resolves.toEqual([
+      sustainedId,
+    ]);
   });
 
   it("keeps v5 canary aliases disjoint from live v4 aliases", async () => {
@@ -1082,6 +1157,25 @@ async function aliasEtags(bucket: R2Bucket): Promise<Record<string, string>> {
     result[key] = head.etag;
   }
   return result;
+}
+
+async function directoryIds(bucket: R2Bucket): Promise<string[]> {
+  const object = await bucket.get("index.json");
+  if (object === null) {
+    throw new Error("Expected directory JSON alias");
+  }
+  const parsed = JSON.parse(await object.text()) as {
+    servers?: Array<{ serverId?: unknown }>;
+  };
+  if (!Array.isArray(parsed.servers)) {
+    throw new Error("Directory JSON server set is invalid");
+  }
+  return parsed.servers.map((server) => {
+    if (typeof server.serverId !== "string") {
+      throw new Error("Directory JSON server identity is invalid");
+    }
+    return server.serverId;
+  });
 }
 
 function publication(

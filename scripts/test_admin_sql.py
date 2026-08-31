@@ -82,6 +82,30 @@ class AdminSqlTest(unittest.TestCase):
                        0, 64, 'online', 1, NULL, NULL, ?, 0, ?)""",
             (SERVER_ID, "b" * 64, SERVER_ID, "c" * 64),
         )
+        for server_id in (SERVER_ID, OTHER_SERVER_ID):
+            connection.execute(
+                """INSERT INTO directory_activity_state
+                       (profile, server_id, last_observed_at,
+                        last_positive_observed_at, last_population,
+                        observation_count)
+                   VALUES ('classic-v1', ?, 1, 1, 2, 1)""",
+                (server_id,),
+            )
+            connection.execute(
+                """INSERT INTO directory_activity_buckets
+                       (profile, server_id, bucket_start, positive_seconds,
+                        player_minutes, max_population, positive_observations,
+                        zero_observations)
+                   VALUES ('classic-v1', ?, 0, 1, 1, 2, 1, 0)""",
+                (server_id,),
+            )
+            connection.execute(
+                """INSERT INTO directory_admin_pins
+                       (profile, server_id, priority, expires_at, note,
+                        created_at, updated_at)
+                   VALUES ('classic-v1', ?, 1, NULL, 'reset', 1, 1)""",
+                (server_id,),
+            )
 
         sql = admin_sql.command_reset_identity(
             argparse.Namespace(server_id=SERVER_ID.upper()),
@@ -106,6 +130,9 @@ class AdminSqlTest(unittest.TestCase):
             "server_presence",
             "publisher_replay",
             "publisher_nonces",
+            "directory_activity_state",
+            "directory_activity_buckets",
+            "directory_admin_pins",
         ):
             identities = connection.execute(
                 f"SELECT server_id FROM {table} ORDER BY server_id",
@@ -165,6 +192,48 @@ class AdminSqlTest(unittest.TestCase):
         connection.executescript(remove_sql)
         self.assertEqual(
             connection.execute("SELECT COUNT(*) FROM server_denials").fetchone(),
+            (0,),
+        )
+
+    def test_pin_commands_are_profile_scoped_reviewable_and_reversible(self) -> None:
+        connection = self.database()
+        sql = admin_sql.command_pin_add(argparse.Namespace(
+            profile="classic-v1",
+            server_id=SERVER_ID.upper(),
+            priority="7",
+            expires_at="12345",
+            note="operator's canary",
+        ))
+        self.assertIn("BEGIN IMMEDIATE", sql)
+        self.assertIn("operator''s canary", sql)
+        connection.executescript(sql)
+        self.assertEqual(
+            connection.execute(
+                "SELECT profile, server_id, priority, expires_at, note "
+                "FROM directory_admin_pins"
+            ).fetchone(),
+            ("classic-v1", SERVER_ID, 7, 12345, "operator's canary"),
+        )
+
+        connection.executescript(admin_sql.command_pin_add(argparse.Namespace(
+            profile="classic-v1",
+            server_id=SERVER_ID,
+            priority=0,
+            expires_at=None,
+            note="updated",
+        )))
+        self.assertEqual(
+            connection.execute(
+                "SELECT priority, expires_at, note FROM directory_admin_pins"
+            ).fetchone(),
+            (0, None, "updated"),
+        )
+        connection.executescript(admin_sql.command_pin_remove(argparse.Namespace(
+            profile="classic-v1",
+            server_id=SERVER_ID,
+        )))
+        self.assertEqual(
+            connection.execute("SELECT count(*) FROM directory_admin_pins").fetchone(),
             (0,),
         )
 
@@ -245,6 +314,30 @@ class AdminSqlTest(unittest.TestCase):
             admin_sql.command_deny_remove(argparse.Namespace(server_id=""))
         with self.assertRaisesRegex(ValueError, "NUL"):
             admin_sql.sql_string("bad\x00value")
+        with self.assertRaisesRegex(ValueError, "profile"):
+            admin_sql.command_pin_remove(argparse.Namespace(
+                profile="unknown", server_id=SERVER_ID,
+            ))
+        with self.assertRaisesRegex(ValueError, "priority"):
+            admin_sql.command_pin_add(argparse.Namespace(
+                profile="classic-v1", server_id=SERVER_ID,
+                priority="1001", expires_at=None, note="",
+            ))
+        with self.assertRaisesRegex(ValueError, "expires_at"):
+            admin_sql.command_pin_add(argparse.Namespace(
+                profile="classic-v1", server_id=SERVER_ID,
+                priority="1", expires_at="not-a-time", note="",
+            ))
+        with self.assertRaisesRegex(ValueError, "control"):
+            admin_sql.command_pin_add(argparse.Namespace(
+                profile="classic-v1", server_id=SERVER_ID,
+                priority="1", expires_at=None, note="bad\noperator",
+            ))
+        with self.assertRaisesRegex(ValueError, "surrogate"):
+            admin_sql.command_pin_add(argparse.Namespace(
+                profile="classic-v1", server_id=SERVER_ID,
+                priority="1", expires_at=None, note="bad\ud800",
+            ))
 
 
 if __name__ == "__main__":

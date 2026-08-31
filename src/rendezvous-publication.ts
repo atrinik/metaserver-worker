@@ -1,5 +1,11 @@
 import type { DirectoryProfile } from "./directory-state";
 import { gameDirectoryServerJsonByteLength } from "./directory-artifacts";
+import {
+  DIRECTORY_ACTIVITY_BUCKET_SECONDS,
+  DIRECTORY_ACTIVITY_MAX_GAP_SECONDS,
+  DIRECTORY_ACTIVITY_MAX_POPULATION,
+  DIRECTORY_ACTIVITY_WINDOW_SECONDS,
+} from "./directory-ranking";
 import type { InternalRendezvousPublication } from "./rendezvous-contract";
 
 interface PublishedGenerationRecord {
@@ -223,10 +229,11 @@ async function persistSignedPublication(
     visibleRevisionStatement(db, publication),
     visibleOutboxStatement(db, publication),
     directoryEntryMutation(db, publication),
+    ...activityMutationStatements(db, publication),
     publicationAssertion(db, publication),
   ]);
 
-  requireBatchResults(persisted, 11);
+  requireBatchResults(persisted, 14);
   const accepted = changes(persisted, 0) === 1;
   if (!accepted) {
     if (persisted.some((_, index) => index > 0 && changes(persisted, index) !== 0)) {
@@ -237,8 +244,12 @@ async function persistSignedPublication(
   if (changes(persisted, 1) !== 1) {
     throw new Error("Signed publication did not persist required state");
   }
-  if (changes(persisted, 10) !== 0) {
+  if (changes(persisted, 13) !== 0) {
     throw new Error("Signed publication assertion produced durable state");
+  }
+  if (publication.isPublic &&
+    (changes(persisted, 11) !== 1 || changes(persisted, 12) !== 1)) {
+    throw new Error("Signed publication activity state is incomplete");
   }
   requireDirectoryMutationResults(persisted, publication, 9, 6);
   return publicationResult(persisted, 7, 8);
@@ -487,6 +498,151 @@ function directoryEntryMutation(
   );
 }
 
+/**
+ * Update aggregate activity in the same D1 batch as the authenticated
+ * publication.  The bucket statement runs before the state statement so the
+ * previous observation defines the bounded interval; a private publication
+ * removes old activity instead of leaving stale evidence rankable.
+ */
+function activityMutationStatements(
+  db: D1Database,
+  publication: InternalRendezvousPublication,
+): readonly D1PreparedStatement[] {
+  const profile = publication.directoryProfile;
+  const serverId = publication.serverId;
+  const guard = signedCommitGuard();
+  const guardBindings = signedGuardBindings(publication);
+  if (!publication.isPublic) {
+    return [
+      db.prepare(
+        `DELETE FROM directory_activity_buckets
+          WHERE profile = ? AND server_id = ? AND ${guard}`,
+      ).bind(profile, serverId, ...guardBindings),
+      db.prepare(
+        `DELETE FROM directory_activity_state
+          WHERE profile = ? AND server_id = ? AND ${guard}`,
+      ).bind(profile, serverId, ...guardBindings),
+      db.prepare("SELECT 1 WHERE 0"),
+    ];
+  }
+
+  const population = Math.min(
+    DIRECTORY_ACTIVITY_MAX_POPULATION,
+    publicationPopulation(publication),
+  );
+  const bucketStart = Math.floor(
+    publication.now / DIRECTORY_ACTIVITY_BUCKET_SECONDS,
+  ) * DIRECTORY_ACTIVITY_BUCKET_SECONDS;
+  return [
+    db.prepare(
+      `DELETE FROM directory_activity_buckets
+        WHERE profile = ? AND server_id = ?
+          AND bucket_start < ? AND ${guard}`,
+    ).bind(
+      profile,
+      serverId,
+      bucketStart - DIRECTORY_ACTIVITY_WINDOW_SECONDS,
+      ...guardBindings,
+    ),
+    db.prepare(
+      `WITH previous AS (
+             SELECT state.last_observed_at, state.last_population
+               FROM (SELECT 1 AS seed) AS seed
+               LEFT JOIN directory_activity_state AS state
+                 ON state.profile = ? AND state.server_id = ?
+           ), intervals AS (
+             SELECT CASE
+                      WHEN previous.last_observed_at IS NOT NULL
+                       AND ? > previous.last_observed_at
+                       AND ? - previous.last_observed_at <= ?
+                       AND previous.last_population > 0
+                      THEN ? - previous.last_observed_at
+                      ELSE 0
+                    END AS positive_seconds,
+                    min(coalesce(previous.last_population, 0), ?) AS prior_population
+               FROM previous
+           )
+       INSERT INTO directory_activity_buckets
+           (profile, server_id, bucket_start, positive_seconds,
+            player_minutes, max_population, positive_observations,
+            zero_observations)
+       SELECT ?, ?, ?, intervals.positive_seconds,
+              CAST(intervals.positive_seconds * intervals.prior_population / 60
+                AS INTEGER), ?,
+              CASE WHEN ? > 0 THEN 1 ELSE 0 END,
+              CASE WHEN ? = 0 THEN 1 ELSE 0 END
+         FROM intervals
+        WHERE ${guard}
+       ON CONFLICT(profile, server_id, bucket_start) DO UPDATE SET
+           positive_seconds = min(
+             604800,
+             directory_activity_buckets.positive_seconds +
+               excluded.positive_seconds
+           ),
+           player_minutes = min(
+             1008000000,
+             directory_activity_buckets.player_minutes + excluded.player_minutes
+           ),
+           max_population = max(
+             directory_activity_buckets.max_population,
+             excluded.max_population
+           ),
+           positive_observations = min(
+             1000000,
+             directory_activity_buckets.positive_observations +
+               excluded.positive_observations
+           ),
+           zero_observations = min(
+             1000000,
+             directory_activity_buckets.zero_observations +
+               excluded.zero_observations
+           )`,
+    ).bind(
+      profile,
+      serverId,
+      publication.now,
+      publication.now,
+      DIRECTORY_ACTIVITY_MAX_GAP_SECONDS,
+      publication.now,
+      DIRECTORY_ACTIVITY_MAX_POPULATION,
+      profile,
+      serverId,
+      bucketStart,
+      population,
+      population,
+      population,
+      ...guardBindings,
+    ),
+    db.prepare(
+      `INSERT INTO directory_activity_state
+          (profile, server_id, last_observed_at, last_positive_observed_at,
+           last_population, observation_count)
+       SELECT ?, ?, ?, CASE WHEN ? > 0 THEN ? ELSE NULL END, ?, 1
+        WHERE ${guard}
+       ON CONFLICT(profile, server_id) DO UPDATE SET
+         last_observed_at = excluded.last_observed_at,
+         last_positive_observed_at = CASE
+           WHEN excluded.last_population > 0
+           THEN excluded.last_observed_at
+           ELSE directory_activity_state.last_positive_observed_at
+         END,
+         last_population = excluded.last_population,
+         observation_count = min(
+           1000000,
+           directory_activity_state.observation_count + 1
+         )`,
+    ).bind(
+      profile,
+      serverId,
+      publication.now,
+      population,
+      publication.now,
+      population,
+      ...guardBindings,
+    ),
+  ];
+}
+
 function presenceMutation(
   db: D1Database,
   publication: InternalRendezvousPublication,
@@ -614,6 +770,7 @@ function publicationAssertion(
     classicUpgradePredicate(publication),
     publicationPresencePredicate(publication),
     publicationEntryPredicate(publication),
+    publicationActivityPredicate(publication),
   ];
   return db.prepare(
     `INSERT INTO directory_transaction_assertions (assertion)
@@ -798,6 +955,84 @@ function publicationEntryPredicate(
   };
 }
 
+function publicationActivityPredicate(
+  publication: InternalRendezvousPublication,
+): SqlPredicate {
+  if (!publication.isPublic) {
+    return {
+      sql: `NOT EXISTS (
+        SELECT 1 FROM directory_activity_state
+         WHERE profile = ? AND server_id = ?
+      ) AND NOT EXISTS (
+        SELECT 1 FROM directory_activity_buckets
+         WHERE profile = ? AND server_id = ?
+      )`,
+      bindings: [
+        publication.directoryProfile,
+        publication.serverId,
+        publication.directoryProfile,
+        publication.serverId,
+      ],
+    };
+  }
+  const population = Math.min(
+    DIRECTORY_ACTIVITY_MAX_POPULATION,
+    publicationPopulation(publication),
+  );
+  const hasPositivePopulation = publicationPopulation(publication) > 0;
+  const bucketStart = Math.floor(
+    publication.now / DIRECTORY_ACTIVITY_BUCKET_SECONDS,
+  ) * DIRECTORY_ACTIVITY_BUCKET_SECONDS;
+  return {
+    sql: `EXISTS (
+      SELECT 1 FROM directory_activity_state AS activity
+       WHERE activity.profile = ? AND activity.server_id = ?
+         AND activity.last_observed_at = ?
+         AND ${hasPositivePopulation
+           ? "activity.last_positive_observed_at = ?"
+           : "(activity.last_positive_observed_at IS NULL OR " +
+             "activity.last_positive_observed_at <= ?)"}
+         AND activity.last_population = ?
+         AND activity.observation_count >= 1
+    ) AND EXISTS (
+      SELECT 1 FROM directory_activity_buckets AS bucket
+       WHERE bucket.profile = ? AND bucket.server_id = ?
+         AND bucket.bucket_start = ?
+         AND bucket.max_population >= ?
+         AND bucket.positive_observations >= ?
+         AND bucket.zero_observations >= ?
+    ) AND NOT EXISTS (
+      SELECT 1 FROM directory_activity_buckets AS old
+       WHERE old.profile = ? AND old.server_id = ?
+         AND old.bucket_start < ?
+    )`,
+    bindings: [
+      publication.directoryProfile,
+      publication.serverId,
+      publication.now,
+      publication.now,
+      population,
+      publication.directoryProfile,
+      publication.serverId,
+      bucketStart,
+      population,
+      publicationPopulation(publication) > 0 ? 1 : 0,
+      publicationPopulation(publication) === 0 ? 1 : 0,
+      publication.directoryProfile,
+      publication.serverId,
+      bucketStart - DIRECTORY_ACTIVITY_WINDOW_SECONDS,
+    ],
+  };
+}
+
+function publicationPopulation(
+  publication: InternalRendezvousPublication,
+): number {
+  return publication.directoryProfile === "game-v1"
+    ? publication.playersOnline
+    : publication.playersCount;
+}
+
 function gamePublicationJsonByteLength(
   publication: Extract<
     InternalRendezvousPublication,
@@ -885,7 +1120,10 @@ export async function rendezvousPublicationMatches(
     return false;
   }
 
-  const exactState = [publicationEntryPredicate(publication)];
+  const exactState = [
+    publicationEntryPredicate(publication),
+    publicationActivityPredicate(publication),
+  ];
   const record = await db.prepare(
     `SELECT COUNT(*) AS matches
       WHERE ${exactState.map((predicate) => predicate.sql).join(" AND ")}`,

@@ -727,8 +727,8 @@ def canonical_servers(
         for index, value in enumerate(values)
     )
     identities = tuple(str(value["serverId"]) for value in canonical)
-    if identities != tuple(sorted(set(identities))):
-        fail("server identities are not strictly ordered")
+    if len(identities) != len(set(identities)):
+        fail("server identities are not unique")
     return identities, tuple(semantic_server(value) for value in canonical)
 
 
@@ -999,8 +999,8 @@ def parse_xml_artifact(
     if len(servers) > 512:
         fail("XML contains too many servers")
     identities = tuple(str(server["serverId"]) for server in servers)
-    if identities != tuple(sorted(set(identities))):
-        fail("XML server identities are not strictly ordered")
+    if len(identities) != len(set(identities)):
+        fail("XML server identities are not unique")
     return (
         canonical_generation(root.attrib.get("generation")),
         canonical_timestamp(root.attrib.get("generated-at"), "generated-at"),
@@ -1171,8 +1171,8 @@ def parse_html_artifact(
         for index, cells in enumerate(rows)
     )
     identities = tuple(str(server["serverId"]) for server in servers)
-    if identities != tuple(sorted(set(identities))):
-        fail("HTML server identities are not strictly ordered")
+    if len(identities) != len(set(identities)):
+        fail("HTML server identities are not unique")
     generation = canonical_generation(_html_value(text, "Generation"))
     generated_at = canonical_timestamp(
         _html_value(text, "Generated at"), "Generated at"

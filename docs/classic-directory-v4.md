@@ -17,9 +17,12 @@ The producer rounds expiry down to a conservative 15-minute boundary shared by
 membership expiry; the artifact never exposes an exact publisher heartbeat
 timestamp or outlives its backing presence.
 
-The canonical server ordering is ascending raw 32-byte server identity,
-represented as 64 lowercase hexadecimal characters. Duplicate identities are
-invalid. At most 512 servers are permitted.
+The canonical server ordering is the profile's private sustained-activity
+ranking policy, with deterministic administrator priority, score, current
+population, freshness, and lowercase certificate-identity tie-breakers.
+Duplicate identities are invalid. At most 512 servers are permitted. The
+policy is documented in [directory-ranking.md](directory-ranking.md); its
+score and history are never public fields.
 
 ## Server fields
 

@@ -202,21 +202,21 @@ function canonicalizeSnapshot(snapshot: DirectorySnapshot): DirectorySnapshot {
     const servers = serverInputs.map((server, index) =>
       canonicalizeClassicServer(server, index, "classic-v1")
     );
-    sortAndRejectDuplicateServers(servers);
+    preserveAndRejectDuplicateServers(servers);
     return { profile: "classic-v1", ...metadata, servers };
   }
   if (value.profile === "classic-v2") {
     const servers = serverInputs.map((server, index) =>
       canonicalizeClassicServer(server, index, "classic-v2")
     );
-    sortAndRejectDuplicateServers(servers);
+    preserveAndRejectDuplicateServers(servers);
     return { profile: "classic-v2", ...metadata, servers };
   }
   if (value.profile === "game-v1") {
     const servers = serverInputs.map((server, index) =>
       canonicalizeGameServer(server, index)
     );
-    sortAndRejectDuplicateServers(servers);
+    preserveAndRejectDuplicateServers(servers);
     return { profile: "game-v1", ...metadata, servers };
   }
   return invalidModel("profile");
@@ -837,16 +837,15 @@ function exactArray(
   }
 }
 
-function sortAndRejectDuplicateServers<T extends { readonly serverId: string }>(
+function preserveAndRejectDuplicateServers<T extends { readonly serverId: string }>(
   servers: T[],
 ): void {
-  servers.sort((left, right) =>
-    left.serverId < right.serverId ? -1 : left.serverId > right.serverId ? 1 : 0
-  );
-  for (let index = 1; index < servers.length; index += 1) {
-    if (servers[index - 1].serverId === servers[index].serverId) {
+  const identities = new Set<string>();
+  for (const server of servers) {
+    if (identities.has(server.serverId)) {
       invalidModel("duplicate server identity");
     }
+    identities.add(server.serverId);
   }
 }
 

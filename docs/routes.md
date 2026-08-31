@@ -66,10 +66,12 @@ strictly greater than the prior one and a nonce unused in the retention
 window. A stale/equal sequence or reused nonce returns `409` with
 `publish_replay` and a non-secret `minimumNextSequence`; the rejected
 request does not rotate the rendezvous token, refresh presence, or enqueue a
-directory revision. A successful unchanged heartbeat refreshes presence and
-rotates the rendezvous generation but does not advance the visible directory
-revision. A visible field change or public/private transition advances it
-exactly once.
+directory revision. A successful unchanged heartbeat refreshes presence,
+rotates the rendezvous generation, and updates only bounded private activity
+aggregates; it does not advance the visible directory revision or nudge a
+build. A visible field change or public/private transition advances it exactly
+once. The scheduled profile builder coalesces any resulting ranking-only order
+change into a new artifact generation at the same revision.
 
 An accepted uint64-maximum sequence succeeds normally. The lineage is then
 exhausted: every later attempt returns exact 409
