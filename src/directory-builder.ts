@@ -39,6 +39,21 @@ import {
 } from "./directory-origin";
 import { sha256Hex } from "./protocol";
 import { purgeDirectoryAliases } from "./directory-cache-purge";
+import {
+  DIRECTORY_ACTIVITY_BUCKET_SECONDS,
+  DIRECTORY_ACTIVITY_MAX_BUCKETS,
+  DIRECTORY_ACTIVITY_MAX_POPULATION,
+  DIRECTORY_PIN_MAX_PRIORITY,
+  DIRECTORY_RANKING_SCHEMA,
+  DIRECTORY_ACTIVITY_WINDOW_SECONDS,
+  rankDirectoryEntries,
+} from "./directory-ranking";
+import type {
+  DirectoryActivityBucket,
+  DirectoryActivityState,
+  DirectoryAdminPin,
+  DirectoryRankingInput,
+} from "./directory-ranking";
 
 const BUILDER_STATE_KEY = "directory-builder:state:v1";
 const BUILDER_NUDGE_KEY = "directory-builder:nudge:v1";
@@ -83,6 +98,34 @@ interface DirectoryEntryRecord {
   readonly password_required: number | null;
   readonly access_code_required: number | null;
   readonly last_seen: number;
+}
+
+interface RankedDirectoryEntry extends DirectoryRankingInput {
+  readonly row: DirectoryEntryRecord;
+}
+
+interface DirectoryActivityStateRecord {
+  readonly server_id: string;
+  readonly last_observed_at: number;
+  readonly last_positive_observed_at: number | null;
+  readonly last_population: number;
+  readonly observation_count: number;
+}
+
+interface DirectoryActivityBucketRecord {
+  readonly server_id: string;
+  readonly bucket_start: number;
+  readonly positive_seconds: number;
+  readonly player_minutes: number;
+  readonly max_population: number;
+  readonly positive_observations: number;
+  readonly zero_observations: number;
+}
+
+interface DirectoryAdminPinRecord {
+  readonly server_id: string;
+  readonly priority: number;
+  readonly expires_at: number | null;
 }
 
 interface PendingBuild {
@@ -286,23 +329,20 @@ export class DirectoryBuilder extends DurableObject<CoreEnv> {
       throw new Error("Directory revision regressed behind its publication");
     }
 
-    if (
-      checkpoint.generation > 0 &&
-      model.revision === checkpoint.publishedRevision &&
-      model.modelSha256 !== checkpoint.modelSha256
-    ) {
-      throw new Error("Directory model changed without a visible revision");
-    }
     await this.rememberCommittedCheckpoint(checkpoint);
 
-    const revisionChanged = model.revision > checkpoint.publishedRevision;
+    // Activity ranking is deliberately coalesced by the scheduled builder:
+    // accepted heartbeats update private evidence, while only an ordering
+    // change alters the public model and receives a new artifact generation.
+    const modelChanged = model.revision > checkpoint.publishedRevision ||
+      model.modelSha256 !== checkpoint.modelSha256;
     const refreshDue = checkpoint.generation === 0 ||
       now >= checkpoint.expiresAt - configuration.refreshLeadSeconds;
     const leaseExtended = model.expiresAt > checkpoint.expiresAt;
     const publicBucket = profile !== "game-v1"
       ? this.env.CLASSIC_DIRECTORY_PUBLIC
       : this.env.GAME_DIRECTORY_PUBLIC;
-    if (!revisionChanged && checkpoint.generation > 0 &&
+    if (!modelChanged && checkpoint.generation > 0 &&
       (!refreshDue || !leaseExtended)) {
       const aliasesCurrent = await publishedAliasesMatch(
         publicBucket,
@@ -544,18 +584,46 @@ export class DirectoryBuilder extends DurableObject<CoreEnv> {
              ON presence.profile = entries.profile
             AND presence.server_id = entries.server_id
           WHERE entries.profile = ?
+            AND NOT EXISTS (
+              SELECT 1 FROM server_denials AS denials
+               WHERE denials.server_id = entries.server_id
+            )
           ORDER BY entries.server_id`,
       ).bind(profile),
+      this.env.DB.prepare(
+        `SELECT server_id, last_observed_at, last_positive_observed_at,
+                last_population, observation_count
+           FROM directory_activity_state
+          WHERE profile = ?
+          ORDER BY server_id`,
+      ).bind(profile),
+      this.env.DB.prepare(
+        `SELECT server_id, bucket_start, positive_seconds, player_minutes,
+                max_population, positive_observations, zero_observations
+           FROM directory_activity_buckets
+          WHERE profile = ? AND bucket_start >= ?
+          ORDER BY server_id, bucket_start`,
+      ).bind(profile, generatedAt - DIRECTORY_ACTIVITY_WINDOW_SECONDS),
+      this.env.DB.prepare(
+        `SELECT server_id, priority, expires_at
+           FROM directory_admin_pins
+          WHERE profile = ? AND (expires_at IS NULL OR expires_at > ?)
+          ORDER BY priority, server_id`,
+      ).bind(profile, generatedAt),
       this.env.DB.prepare(
         `SELECT count(*) AS pending FROM directory_outbox
           WHERE profile = ?`,
       ).bind(profile),
     ]);
     if (
-      results.length !== 3 || results.some((result) => !result.success) ||
+      results.length !== 6 || results.some((result) => !result.success) ||
       results[0].results.length !== 1 ||
       results[1].results.length > MAX_DIRECTORY_ENTRIES_PER_PROFILE ||
-      results[2].results.length !== 1
+      results[2].results.length > MAX_DIRECTORY_ENTRIES_PER_PROFILE ||
+      results[3].results.length >
+        MAX_DIRECTORY_ENTRIES_PER_PROFILE * DIRECTORY_ACTIVITY_MAX_BUCKETS ||
+      results[4].results.length > MAX_DIRECTORY_ENTRIES_PER_PROFILE ||
+      results[5].results.length !== 1
     ) {
       throw new Error("Directory snapshot query returned invalid state");
     }
@@ -572,7 +640,43 @@ export class DirectoryBuilder extends DurableObject<CoreEnv> {
       throw new Error("Directory snapshot revision is invalid");
     }
     const rows = results[1].results as unknown as DirectoryEntryRecord[];
-    const pendingOutbox = (results[2].results[0] as { pending?: unknown }).pending;
+    const activityStates = new Map<string, DirectoryActivityState>();
+    for (const record of results[2].results as unknown[]) {
+      const state = exactActivityStateRecord(record);
+      activityStates.set(state.server_id, {
+        lastObservedAt: state.last_observed_at,
+        lastPositiveObservedAt: state.last_positive_observed_at,
+        lastPopulation: state.last_population,
+        observationCount: state.observation_count,
+      });
+    }
+    const activityBuckets = new Map<string, DirectoryActivityBucket[]>();
+    for (const record of results[3].results as unknown[]) {
+      const bucket = exactActivityBucketRecord(record);
+      const existing = activityBuckets.get(bucket.server_id);
+      const value = {
+        bucketStart: bucket.bucket_start,
+        positiveSeconds: bucket.positive_seconds,
+        playerMinutes: bucket.player_minutes,
+        maxPopulation: bucket.max_population,
+        positiveObservations: bucket.positive_observations,
+        zeroObservations: bucket.zero_observations,
+      } satisfies DirectoryActivityBucket;
+      if (existing === undefined) {
+        activityBuckets.set(bucket.server_id, [value]);
+      } else {
+        existing.push(value);
+      }
+    }
+    const adminPins = new Map<string, DirectoryAdminPin>();
+    for (const record of results[4].results as unknown[]) {
+      const pin = exactAdminPinRecord(record);
+      adminPins.set(pin.server_id, {
+        priority: pin.priority,
+        expiresAt: pin.expires_at,
+      });
+    }
+    const pendingOutbox = (results[5].results[0] as { pending?: unknown }).pending;
     if (!Number.isSafeInteger(pendingOutbox) || (pendingOutbox as number) < 0) {
       throw new Error("Directory outbox state is invalid");
     }
@@ -581,8 +685,32 @@ export class DirectoryBuilder extends DurableObject<CoreEnv> {
       revisionRecord.updated_at as number,
     );
     let expiresAt = modelGeneratedAt + artifactLifetimeSeconds;
+    const rankedRows = rankDirectoryEntries(
+      rows.map((row): RankedDirectoryEntry => {
+        const currentPopulation = profile === "game-v1"
+          ? row.players_online
+          : row.players_count;
+        if (
+          typeof currentPopulation !== "number" ||
+          !Number.isSafeInteger(currentPopulation) ||
+          currentPopulation < 0
+        ) {
+          throw new Error("Directory population is invalid");
+        }
+        return {
+          row,
+          serverId: row.server_id,
+          currentPopulation,
+          lastSeen: row.last_seen,
+          activityState: activityStates.get(row.server_id),
+          activityBuckets: activityBuckets.get(row.server_id) ?? [],
+          adminPin: adminPins.get(row.server_id),
+        };
+      }),
+      modelGeneratedAt,
+    );
     const servers = profile !== "game-v1"
-      ? rows.map((row) => {
+      ? rankedRows.map(({ row }) => {
         if (!Number.isSafeInteger(row.last_seen) || row.last_seen < 0) {
           throw new Error("Directory presence timestamp is invalid");
         }
@@ -612,7 +740,7 @@ export class DirectoryBuilder extends DurableObject<CoreEnv> {
           ...endpoint,
         } as ClassicDirectoryServer;
       })
-      : rows.map((row) => {
+      : rankedRows.map(({ row }) => {
         if (!Number.isSafeInteger(row.last_seen) || row.last_seen < 0) {
           throw new Error("Directory presence timestamp is invalid");
         }
@@ -661,7 +789,11 @@ export class DirectoryBuilder extends DurableObject<CoreEnv> {
     if (expiresAt <= modelGeneratedAt) {
       throw new Error("Directory snapshot contains expired presence");
     }
-    const modelSha256 = await sha256Hex(JSON.stringify({ profile, servers }));
+    const modelSha256 = await sha256Hex(JSON.stringify({
+      profile,
+      ranking: DIRECTORY_RANKING_SCHEMA,
+      servers,
+    }));
     const model = {
       revision: revisionRecord.revision as number,
       generatedAt: modelGeneratedAt,
@@ -939,6 +1071,87 @@ export class DirectoryBuilder extends DurableObject<CoreEnv> {
       // not alter alias publication, retries, or durable checkpoints.
     }
   }
+}
+
+function exactActivityStateRecord(input: unknown): DirectoryActivityStateRecord {
+  if (input === null || typeof input !== "object" || Array.isArray(input)) {
+    throw new Error("Directory activity state is invalid");
+  }
+  const record = input as Partial<DirectoryActivityStateRecord>;
+  if (
+    typeof record.server_id !== "string" ||
+    !/^[0-9a-f]{64}$/.test(record.server_id) ||
+    !Number.isSafeInteger(record.last_observed_at) ||
+    (record.last_observed_at as number) < 0 ||
+    (record.last_positive_observed_at !== null &&
+      (!Number.isSafeInteger(record.last_positive_observed_at) ||
+        (record.last_positive_observed_at as number) < 0 ||
+        (record.last_positive_observed_at as number) >
+          (record.last_observed_at as number))) ||
+    !Number.isSafeInteger(record.last_population) ||
+    (record.last_population as number) < 0 ||
+    (record.last_population as number) > DIRECTORY_ACTIVITY_MAX_POPULATION ||
+    (record.last_population as number) > 0 &&
+      record.last_positive_observed_at === null ||
+    !Number.isSafeInteger(record.observation_count) ||
+    (record.observation_count as number) < 1 ||
+    (record.observation_count as number) > 1_000_000
+  ) {
+    throw new Error("Directory activity state is invalid");
+  }
+  return record as DirectoryActivityStateRecord;
+}
+
+function exactActivityBucketRecord(input: unknown): DirectoryActivityBucketRecord {
+  if (input === null || typeof input !== "object" || Array.isArray(input)) {
+    throw new Error("Directory activity bucket is invalid");
+  }
+  const record = input as Partial<DirectoryActivityBucketRecord>;
+  if (
+    typeof record.server_id !== "string" ||
+    !/^[0-9a-f]{64}$/.test(record.server_id) ||
+    !Number.isSafeInteger(record.bucket_start) ||
+    (record.bucket_start as number) < 0 ||
+    (record.bucket_start as number) % DIRECTORY_ACTIVITY_BUCKET_SECONDS !== 0 ||
+    !Number.isSafeInteger(record.positive_seconds) ||
+    (record.positive_seconds as number) < 0 ||
+    (record.positive_seconds as number) > 604_800 ||
+    !Number.isSafeInteger(record.player_minutes) ||
+    (record.player_minutes as number) < 0 ||
+    (record.player_minutes as number) > 1_008_000_000 ||
+    !Number.isSafeInteger(record.max_population) ||
+    (record.max_population as number) < 0 ||
+    (record.max_population as number) > DIRECTORY_ACTIVITY_MAX_POPULATION ||
+    !Number.isSafeInteger(record.positive_observations) ||
+    (record.positive_observations as number) < 0 ||
+    (record.positive_observations as number) > 1_000_000 ||
+    !Number.isSafeInteger(record.zero_observations) ||
+    (record.zero_observations as number) < 0 ||
+    (record.zero_observations as number) > 1_000_000
+  ) {
+    throw new Error("Directory activity bucket is invalid");
+  }
+  return record as DirectoryActivityBucketRecord;
+}
+
+function exactAdminPinRecord(input: unknown): DirectoryAdminPinRecord {
+  if (input === null || typeof input !== "object" || Array.isArray(input)) {
+    throw new Error("Directory administrator pin is invalid");
+  }
+  const record = input as Partial<DirectoryAdminPinRecord>;
+  if (
+    typeof record.server_id !== "string" ||
+    !/^[0-9a-f]{64}$/.test(record.server_id) ||
+    !Number.isSafeInteger(record.priority) ||
+    (record.priority as number) < 0 ||
+    (record.priority as number) > DIRECTORY_PIN_MAX_PRIORITY ||
+    (record.expires_at !== null &&
+      (!Number.isSafeInteger(record.expires_at) ||
+        (record.expires_at as number) < 0))
+  ) {
+    throw new Error("Directory administrator pin is invalid");
+  }
+  return record as DirectoryAdminPinRecord;
 }
 
 function directoryProfile(value: string | undefined): DirectoryProfile {

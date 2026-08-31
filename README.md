@@ -321,7 +321,10 @@ edge-policy specification and deployment gate are in
 
 Visible directory mutations and expiry advance one profile-scoped D1 revision
 and coalesce its durable outbox to the newest unpublished revision. Accepted
-heartbeats refresh presence without changing the revision. A private,
+heartbeats refresh presence and bounded private activity aggregates without
+changing the revision. The profile-scoped sustained-activity ranking and
+operator pin procedure are documented in
+[docs/directory-ranking.md](docs/directory-ranking.md). A private,
 profile-named `DirectoryBuilder` Durable Object receives an O(1), alarm-only
 nudge after a visible commit and reconciles durable truth every five minutes
 and by alarm; a Queue is deliberately unnecessary. It
@@ -355,8 +358,10 @@ partial cohort. The static-host rollout must resolve that mismatch with the
 Game Protocol 1 atomic-alias contract before DNS attachment.
 
 Freshness rollover may create a newer artifact generation for an unchanged D1
-revision. This is required so empty and heartbeat-only directories do not
-expire; the heartbeat itself still creates no build or R2 write. Each body is
+revision. A five-minute reconciliation may also publish a newer generation at
+that revision when aggregate activity changes the deterministic order; the
+heartbeat itself still creates no build or R2 write. This is required so empty
+and heartbeat-only directories do not expire. Each body is
 valid for at most four hours and no later than the earliest backing listing
 expiry. The latest eight D1-acknowledged immutable four-object cohorts are
 retained as a bounded rollback window; a durable paginated sweep deletes at

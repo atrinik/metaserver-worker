@@ -6,9 +6,11 @@ of protocol 4. The canonical JSON constants are
 `schema="atrinik-classic-directory-v5"` and `protocol=5`; XML uses the same
 schema and `protocol="5"`.
 
-The server order and common fields remain certificate identity, name, player
-count, version, comment, certificate fingerprint, and an optional explicit DNS
-hostname/UDP port. The policy field is exactly `accessCodeRequired` in JSON and
+The server order uses the same profile-scoped sustained-activity policy as
+protocol 4; the ranking score and administrator note are private. Common
+fields remain certificate identity, name, player count, version, comment,
+certificate fingerprint, and an optional explicit DNS hostname/UDP port. The
+policy field is exactly `accessCodeRequired` in JSON and
 `AccessCodeRequired` in XML, in the corresponding protocol-4 field position.
 HTML labels it `Access code` and renders only `open` or `protected`. Protocol 5
 never emits `passwordRequired`, `PasswordRequired`, a password label, a raw

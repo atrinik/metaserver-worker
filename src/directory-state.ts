@@ -157,8 +157,7 @@ export async function commitDirectoryArtifactPublication(
              WHERE revision.profile = directory_artifact_publications.profile
                AND revision.revision = ?
           ) AND (
-          (generation < ? AND published_revision <= ? AND
-           (generation = 0 OR published_revision < ? OR model_sha256 = ?)) OR
+          (generation < ? AND published_revision <= ?) OR
           (generation = ? AND published_revision = ? AND generated_at = ? AND
            expires_at = ? AND model_sha256 = ? AND html_sha256 = ? AND
            xml_sha256 = ? AND json_sha256 = ? AND manifest_sha256 = ? AND
@@ -184,8 +183,6 @@ export async function commitDirectoryArtifactPublication(
       commit.publishedRevision,
       commit.generation,
       commit.publishedRevision,
-      commit.publishedRevision,
-      commit.modelSha256,
       commit.generation,
       commit.publishedRevision,
       commit.generatedAt,

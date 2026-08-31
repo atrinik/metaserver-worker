@@ -9,6 +9,7 @@ import {
   readDirectoryArtifactPublication,
 } from "../src/directory-state";
 import { MAX_GAME_DIRECTORY_JSON_SERVER_SET_BYTES } from "../src/directory-artifacts";
+import { DIRECTORY_ACTIVITY_MAX_GAP_SECONDS } from "../src/directory-ranking";
 import { persistRendezvousPublication } from "../src/rendezvous-publication";
 import type { InternalRendezvousPublication } from "../src/rendezvous-contract";
 
@@ -20,6 +21,9 @@ beforeEach(async () => {
     env.DB.prepare("DELETE FROM directory_artifact_history"),
     env.DB.prepare("DELETE FROM directory_artifact_commits"),
     env.DB.prepare("DELETE FROM directory_expiry_commits"),
+    env.DB.prepare("DELETE FROM directory_activity_buckets"),
+    env.DB.prepare("DELETE FROM directory_activity_state"),
+    env.DB.prepare("DELETE FROM directory_admin_pins"),
     env.DB.prepare("DELETE FROM directory_transaction_assertions"),
     env.DB.prepare("DELETE FROM directory_entries"),
     env.DB.prepare("DELETE FROM server_presence"),
@@ -52,7 +56,22 @@ beforeEach(async () => {
 
 describe("profile-scoped directory expiry", () => {
   it("advances one revision per changed profile and deletes only expired rows", async () => {
-    await seedPublic("1".repeat(64), "classic-v1", CUTOFF - 1);
+    const expiredActivityId = "1".repeat(64);
+    await seedPublic(expiredActivityId, "classic-v1", CUTOFF - 1);
+    await env.DB.batch([
+      env.DB.prepare(
+        `INSERT INTO directory_activity_state
+            (profile, server_id, last_observed_at, last_positive_observed_at,
+             last_population, observation_count)
+         VALUES ('classic-v1', ?, 100, 100, 3, 1)`,
+      ).bind(expiredActivityId),
+      env.DB.prepare(
+        `INSERT INTO directory_activity_buckets
+            (profile, server_id, bucket_start, positive_seconds, player_minutes,
+             max_population, positive_observations, zero_observations)
+         VALUES ('classic-v1', ?, 0, 60, 3, 3, 1, 0)`,
+      ).bind(expiredActivityId),
+    ]);
     await seedPublic("2".repeat(64), "classic-v1", CUTOFF);
     await seedPublic("3".repeat(64), "game-v1", CUTOFF - 2);
     await seedPrivate("6".repeat(64), "classic-v1", CUTOFF - 3);
@@ -91,6 +110,14 @@ describe("profile-scoped directory expiry", () => {
         { profile: "game-v1", revision: 1, created_at: NOW },
       ],
     });
+    expect(await env.DB.prepare(
+      `SELECT count(*) AS count FROM directory_activity_state
+        WHERE profile = 'classic-v1' AND server_id = ?`,
+    ).bind(expiredActivityId).first<number>("count")).toBe(0);
+    expect(await env.DB.prepare(
+      `SELECT count(*) AS count FROM directory_activity_buckets
+        WHERE profile = 'classic-v1' AND server_id = ?`,
+    ).bind(expiredActivityId).first<number>("count")).toBe(0);
   });
 
   it("is revision-neutral after the expired set is gone", async () => {
@@ -270,6 +297,206 @@ describe("profile-scoped directory expiry", () => {
         { profile: "classic-v2", revision: 0 },
         { profile: "game-v1", revision: 1 },
       ],
+    });
+  });
+
+  it("records bounded sustained activity and treats a zero heartbeat as a reset", async () => {
+    const serverId = "c".repeat(64);
+    const first = {
+      ...publication(serverId, "classic-v1", "Activity", "1"),
+      playersCount: 10,
+    };
+    const second = nextPublication(first, {
+      now: NOW + 300,
+      playersCount: 10,
+      directoryFingerprint: "2".repeat(64),
+    });
+    const zero = {
+      ...second,
+      publisherSequence: "3",
+      publisherNonce: "3".repeat(32),
+      publisherNonceExpiresAt: NOW + 2_700,
+      commitToken: "3".repeat(64),
+      generation: "3".repeat(64),
+      tokenHash: "3".repeat(64),
+      now: NOW + 2_100,
+      playersCount: 0,
+      directoryFingerprint: "3".repeat(64),
+    };
+
+    await expect(persistRendezvousPublication(env.DB, first)).resolves.toEqual({
+      accepted: true,
+      visibleChanged: true,
+    });
+    await expect(persistRendezvousPublication(env.DB, second)).resolves.toEqual({
+      accepted: true,
+      visibleChanged: true,
+    });
+    await expect(persistRendezvousPublication(env.DB, zero)).resolves.toEqual({
+      accepted: true,
+      visibleChanged: true,
+    });
+
+    expect(await env.DB.prepare(
+      `SELECT last_observed_at, last_positive_observed_at, last_population,
+              observation_count
+         FROM directory_activity_state
+        WHERE profile = 'classic-v1' AND server_id = ?`,
+    ).bind(serverId).first()).toEqual({
+      last_observed_at: NOW + 2_100,
+      last_positive_observed_at: NOW + 300,
+      last_population: 0,
+      observation_count: 3,
+    });
+    expect(await env.DB.prepare(
+      `SELECT positive_seconds, player_minutes, max_population,
+              positive_observations, zero_observations
+         FROM directory_activity_buckets
+        WHERE profile = 'classic-v1' AND server_id = ?`,
+    ).bind(serverId).first()).toEqual({
+      positive_seconds: 300,
+      player_minutes: 50,
+      max_population: 10,
+      positive_observations: 2,
+      zero_observations: 1,
+    });
+
+    const privatePublication = {
+      ...zero,
+      publisherSequence: "4",
+      publisherNonce: "4".repeat(32),
+      publisherNonceExpiresAt: NOW + 3_000,
+      commitToken: "4".repeat(64),
+      generation: "4".repeat(64),
+      tokenHash: "4".repeat(64),
+      now: NOW + 2_400,
+      isPublic: false,
+    };
+    await expect(persistRendezvousPublication(
+      env.DB,
+      privatePublication,
+    )).resolves.toEqual({ accepted: true, visibleChanged: true });
+    expect(await env.DB.prepare(
+      `SELECT count(*) AS count FROM directory_activity_state
+        WHERE profile = 'classic-v1' AND server_id = ?`,
+    ).bind(serverId).first<number>("count")).toBe(0);
+    expect(await env.DB.prepare(
+      `SELECT count(*) AS count FROM directory_activity_buckets
+        WHERE profile = 'classic-v1' AND server_id = ?`,
+    ).bind(serverId).first<number>("count")).toBe(0);
+  });
+
+  it("prunes activity buckets before a new bucket can exceed the eight-row bound", async () => {
+    const serverId = "d".repeat(64);
+    const base = 8 * 24 * 60 * 60 + 300;
+    const first = {
+      ...publication(serverId, "classic-v1", "Retention", "5"),
+      now: base,
+      publisherNonceExpiresAt: base + 300,
+      playersCount: 1,
+    };
+    await persistRendezvousPublication(env.DB, first);
+    await env.DB.prepare(
+      `INSERT INTO directory_activity_buckets
+          (profile, server_id, bucket_start, positive_seconds, player_minutes,
+           max_population, positive_observations, zero_observations)
+       VALUES ('classic-v1', ?, 0, 1, 1, 1, 1, 0)`,
+    ).bind(serverId).run();
+
+    const next = {
+      ...first,
+      publisherSequence: "2",
+      publisherNonce: "6".repeat(32),
+      publisherNonceExpiresAt: base + 8 * 24 * 60 * 60 + 300,
+      commitToken: "6".repeat(64),
+      generation: "6".repeat(64),
+      tokenHash: "6".repeat(64),
+      now: base + 8 * 24 * 60 * 60,
+      directoryFingerprint: "6".repeat(64),
+    };
+    await expect(persistRendezvousPublication(env.DB, next)).resolves.toEqual({
+      accepted: true,
+      visibleChanged: true,
+    });
+    expect(await env.DB.prepare(
+      `SELECT bucket_start FROM directory_activity_buckets
+        WHERE profile = 'classic-v1' AND server_id = ?
+        ORDER BY bucket_start`,
+    ).bind(serverId).all()).toMatchObject({
+      results: [{ bucket_start: 1382400 }],
+    });
+  });
+
+  it("caps repeated heartbeat aggregates and does not bridge long gaps", async () => {
+    const cappedId = "e".repeat(64);
+    const first = {
+      ...publication(cappedId, "classic-v1", "Capped", "7"),
+      playersCount: 5,
+    };
+    await persistRendezvousPublication(env.DB, first);
+    await env.DB.batch([
+      env.DB.prepare(
+        `UPDATE directory_activity_buckets
+            SET positive_seconds = 604800, player_minutes = 1008000000,
+                max_population = 100000, positive_observations = 1000000,
+                zero_observations = 1000000
+          WHERE profile = 'classic-v1' AND server_id = ?`,
+      ).bind(cappedId),
+      env.DB.prepare(
+        `UPDATE directory_activity_state
+            SET observation_count = 1000000
+          WHERE profile = 'classic-v1' AND server_id = ?`,
+      ).bind(cappedId),
+    ]);
+    const cappedHeartbeat = nextPublication(first, {
+      now: NOW + 60,
+      playersCount: 5,
+      directoryFingerprint: "8".repeat(64),
+    });
+    await expect(persistRendezvousPublication(
+      env.DB,
+      cappedHeartbeat,
+    )).resolves.toEqual({ accepted: true, visibleChanged: true });
+    expect(await env.DB.prepare(
+      `SELECT positive_seconds, player_minutes, max_population,
+              positive_observations, zero_observations
+         FROM directory_activity_buckets
+        WHERE profile = 'classic-v1' AND server_id = ?`,
+    ).bind(cappedId).first()).toEqual({
+      positive_seconds: 604800,
+      player_minutes: 1008000000,
+      max_population: 100000,
+      positive_observations: 1000000,
+      zero_observations: 1000000,
+    });
+    expect(await env.DB.prepare(
+      `SELECT observation_count FROM directory_activity_state
+        WHERE profile = 'classic-v1' AND server_id = ?`,
+    ).bind(cappedId).first<number>("observation_count")).toBe(1000000);
+
+    const gapId = "f".repeat(64);
+    const gapFirst = {
+      ...publication(gapId, "classic-v1", "Gap", "9"),
+      playersCount: 5,
+    };
+    const gapHeartbeat = nextPublication(gapFirst, {
+      now: NOW + DIRECTORY_ACTIVITY_MAX_GAP_SECONDS + 1,
+      playersCount: 5,
+      directoryFingerprint: "a".repeat(64),
+    });
+    await persistRendezvousPublication(env.DB, gapFirst);
+    await expect(persistRendezvousPublication(
+      env.DB,
+      gapHeartbeat,
+    )).resolves.toEqual({ accepted: true, visibleChanged: true });
+    expect(await env.DB.prepare(
+      `SELECT positive_seconds, player_minutes, positive_observations
+         FROM directory_activity_buckets
+        WHERE profile = 'classic-v1' AND server_id = ?`,
+    ).bind(gapId).first()).toEqual({
+      positive_seconds: 0,
+      player_minutes: 0,
+      positive_observations: 2,
     });
   });
 
@@ -551,7 +778,7 @@ describe("static artifact publication checkpoints", () => {
     ).all()).toMatchObject({ results: [{ revision: 1 }] });
   });
 
-  it("requires one public model hash after the generation-zero sentinel", async () => {
+  it("allows a newer same-revision generation when the ranked model changes", async () => {
     const initial = {
       profile: "classic-v1",
       publishedRevision: 0,
@@ -574,15 +801,14 @@ describe("static artifact publication checkpoints", () => {
       generation: 3,
       modelSha256: "7".repeat(64),
       publishedAt: 103,
-    })).rejects.toThrow();
+    })).resolves.toBeUndefined();
     expect(await readDirectoryArtifactPublication(
       env.DB,
       "classic-v1",
     )).toMatchObject({
       publishedRevision: 0,
-      generation: 2,
-      modelSha256: DIGESTS.modelSha256,
-      htmlSha256: "6".repeat(64),
+      generation: 3,
+      modelSha256: "7".repeat(64),
     });
   });
 
