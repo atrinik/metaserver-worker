@@ -299,7 +299,6 @@ export function validateContract(contract) {
     JSON.stringify({
       node: "24.18.1",
       npm: "11.16.0",
-      wrangler: "4.123.0",
       lockfile: "package-lock.json",
     })
   )
@@ -1145,22 +1144,34 @@ async function assertToolchain(contract) {
   const npm =
     /^npm\/([^ ]+)/u.exec(process.env.npm_config_user_agent ?? "")?.[1] ??
     (await command("npm", ["--version"])).stdout.trim();
+  validateToolchain(contract, {
+    packageJson,
+    packageLock,
+    wranglerPackage,
+    node,
+    npm,
+    nodeVersionFile: (await readFile(resolve(root, ".nvmrc"), "utf8")).trim(),
+  });
+}
+
+export function validateToolchain(contract, {
+  packageJson, packageLock, wranglerPackage, node, npm, nodeVersionFile,
+}) {
   const checks = {
     node: node === contract.toolchain.node,
     npm: npm === contract.toolchain.npm,
-    wrangler: wranglerPackage.version === contract.toolchain.wrangler,
+    wrangler: typeof wranglerPackage.version === "string" &&
+      wranglerPackage.version.trim().length > 0 &&
+      wranglerPackage.version === packageLock.packages?.["node_modules/wrangler"]?.version,
+    wranglerLock: typeof packageJson.devDependencies?.wrangler === "string" &&
+      packageJson.devDependencies.wrangler.trim().length > 0 &&
+      packageLock.packages?.[""]?.devDependencies?.wrangler ===
+        packageJson.devDependencies.wrangler,
     packageManager:
       packageJson.packageManager === `npm@${contract.toolchain.npm}`,
     nodeEngine: packageJson.engines.node === contract.toolchain.node,
     npmEngine: packageJson.engines.npm === contract.toolchain.npm,
-    nodeVersionFile:
-      (await readFile(resolve(root, ".nvmrc"), "utf8")).trim() ===
-      contract.toolchain.node,
-    wranglerDeclaration:
-      packageJson.devDependencies.wrangler === contract.toolchain.wrangler,
-    wranglerLock:
-      packageLock.packages[""].devDependencies.wrangler ===
-      contract.toolchain.wrangler,
+    nodeVersionFile: nodeVersionFile === contract.toolchain.node,
   };
   const failed = Object.entries(checks)
     .filter(([, valid]) => !valid)

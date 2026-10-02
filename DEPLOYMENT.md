@@ -19,7 +19,7 @@ branch `main`, every push included with no watch-path exclusion, build command
 --global --ignore-scripts npm@11.16.0 && env -i PATH="$PATH"
 npm_config_cache=/tmp/atrinik-npm-cache npm ci --ignore-scripts`, deploy command
 `npm run deploy:production`, `SKIP_DEPENDENCY_INSTALL=1`, and the pinned
-Node/npm/Wrangler versions. An accepted pull-request merge into protected
+Node/npm versions and lockfile-resolved Wrangler. An accepted pull-request merge into protected
 `main` is the routine authorization. Do not add another production branch,
 tag/release gate, GitHub environment approval, deploy hook, Actions deployment
 workflow/secret, or local Wrangler step. Semantic Release independently

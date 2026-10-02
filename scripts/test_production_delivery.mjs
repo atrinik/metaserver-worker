@@ -35,6 +35,7 @@ import {
   validateRuntimeExports,
   validateSourceCoordinates,
   validateTopology,
+  validateToolchain,
   wranglerDeployArguments,
 } from "./production-delivery.mjs";
 
@@ -132,6 +133,55 @@ test("accepts the checked-in production trigger and topology", () => {
       "--json",
     ],
   );
+});
+
+function toolchainFixture() {
+  const declaration = "^4.124.0";
+  const version = "4.125.1";
+  const manifest = structuredClone(packageJson);
+  manifest.devDependencies.wrangler = declaration;
+  return {
+    packageJson: manifest,
+    packageLock: {
+      packages: {
+        "": { devDependencies: { wrangler: declaration } },
+        "node_modules/wrangler": { version },
+      },
+    },
+    wranglerPackage: { version },
+    node: contract.toolchain.node,
+    npm: contract.toolchain.npm,
+    nodeVersionFile: contract.toolchain.node,
+  };
+}
+
+test("accepts updated compatible Wrangler declarations resolved by the lockfile", () => {
+  assert.doesNotThrow(() => validateToolchain(contract, toolchainFixture()));
+});
+
+test("rejects installed Wrangler drift from the resolved lockfile", () => {
+  const fixture = toolchainFixture();
+  fixture.wranglerPackage.version = "4.126.0";
+  assert.throws(() => validateToolchain(contract, fixture), /toolchain drift: wrangler$/u);
+});
+
+test("rejects Wrangler declaration drift between manifest and lockfile", () => {
+  const fixture = toolchainFixture();
+  fixture.packageLock.packages[""].devDependencies.wrangler = "^4.123.0";
+  assert.throws(() => validateToolchain(contract, fixture), /toolchain drift: wranglerLock$/u);
+});
+
+test("rejects missing or empty Wrangler versions and declarations", () => {
+  for (const value of [undefined, "", " ", null, 4]) {
+    const fixture = toolchainFixture();
+    fixture.wranglerPackage.version = value;
+    fixture.packageLock.packages["node_modules/wrangler"].version = value;
+    assert.throws(() => validateToolchain(contract, fixture), /toolchain drift: wrangler$/u);
+    const declarations = toolchainFixture();
+    declarations.packageJson.devDependencies.wrangler = value;
+    declarations.packageLock.packages[""].devDependencies.wrangler = value;
+    assert.throws(() => validateToolchain(contract, declarations), /toolchain drift: wranglerLock$/u);
+  }
 });
 
 test("bootstraps SQLite only when Workers Builds lacks sqlite3", () => {
