@@ -91,14 +91,14 @@
   "devDependencies": {
     "@cloudflare/vitest-pool-workers": "^0.22.0",
     "@types/node": "^26.4.0",
-    "@types/tr46": "5.0.1",
-    "esbuild": "0.28.2",
+    "@types/tr46": "^5.0.1",
+    "esbuild": "^0.28.2",
     "tsx": "^4.23.13",
     "typescript": "^7.0.2",
     "vitest": "^4.1.11",
-    "wrangler": "4.127.1"
+    "wrangler": "^4.127.1"
   },
   "dependencies": {
-    "tr46": "6.0.0"
+    "tr46": "^6.0.0"
   }
 }
