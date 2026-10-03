@@ -40,7 +40,7 @@
   production-delivery contract. Workers Builds skips implicit installation,
   selects the pinned npm, runs `npm ci`, and then `npm run deploy:production`
   for every accepted `main` push. Keep its exact
-  Node/npm/Wrangler pins, all-path trigger, protected-input names, migration
+  Node/npm pins and lockfile-resolved Wrangler, all-path trigger, protected-input names, migration
   gate, no-op digest, newest-current-main lease, strict disabled-circuit
   core/publisher/rendezvous staging, caller-before-core restoration, coherent
   phase readback, prefix-proven migration horizons, positive-allowlist child

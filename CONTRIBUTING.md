@@ -1,7 +1,9 @@
 # Contributing
 
 Use a Conventional Commits pull-request title and run `npm ci` followed by
-`npm run check`. Keep generated Worker configuration types untracked, never
+`npm run check`. External npm dependencies use compatible semver ranges;
+`package-lock.json` records the exact installed tree, including Wrangler. Keep
+the Node/npm toolchain pins and vulnerability overrides. Keep generated Worker configuration types untracked, never
 commit credentials, and preserve the deployment/binding invariants documented
 in `README.md`. Use `npm run deploy:production:dry-run` to inspect automatic
 delivery; never substitute a local Wrangler deployment from an arbitrary
