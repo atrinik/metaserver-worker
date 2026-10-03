@@ -86,7 +86,8 @@
   },
   "packageManager": "npm@11.16.0",
   "overrides": {
-    "undici": "^7.29.0"
+    "undici": "^7.30.0",
+    "sharp": "^0.35.4"
   },
   "devDependencies": {
     "@cloudflare/vitest-pool-workers": "^0.22.0",
