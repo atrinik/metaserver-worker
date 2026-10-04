@@ -3730,6 +3730,181 @@ describe("RendezvousRoom hibernation, expiry, and privacy", () => {
     closeForCleanup(oldClient, oldServer, replacement);
   });
 
+  it("reports an abnormal current control close after hibernation without peer data", async () => {
+    const stub = room("abnormal-control-diagnostic");
+    const server = await connect(stub, "server");
+    await evictDurableObject(stub);
+    const logged = vi.spyOn(console, "error").mockImplementation(() => undefined);
+    try {
+      await runInDurableObject(stub, async (instance: RendezvousRoom, state) => {
+        const control = state.getWebSockets("server")[0]!;
+        // A peer can copy a room-owned close signature. Only persisted local
+        // intent may suppress an abnormal transport diagnostic.
+        await instance.webSocketClose(control, 4004, REPLACED_CLOSE.reason, false);
+        await instance.webSocketClose(control, 4999, "private peer reason", false);
+      });
+      expect(logged.mock.calls).toEqual([[{
+        event: "unexpected_error",
+        handler: "rendezvous",
+        code: "rendezvous_control_disconnected",
+      }]]);
+    } finally {
+      logged.mockRestore();
+      closeForCleanup(server);
+    }
+  });
+
+  it("reports a control error once and keeps its text out of diagnostics", async () => {
+    const stub = room("control-error-diagnostic");
+    const server = await connect(stub, "server");
+    const closed = nextClose(server);
+    const logged = vi.spyOn(console, "error").mockImplementation(() => undefined);
+    try {
+      await runInDurableObject(stub, async (instance: RendezvousRoom, state) => {
+        const control = state.getWebSockets("server")[0]!;
+        await instance.webSocketError(control, new Error("secret token and candidate"));
+        await instance.webSocketClose(control, 1006, "private reason", false);
+      });
+      await expect(closed).resolves.toMatchObject(INTERNAL_CLOSE);
+      expect(logged.mock.calls).toEqual([[{
+        event: "unexpected_error",
+        handler: "rendezvous",
+        code: "rendezvous_control_error",
+      }]]);
+    } finally {
+      logged.mockRestore();
+      closeForCleanup(server);
+    }
+  });
+
+  it("keeps clean control closes and client transport errors silent", async () => {
+    const stub = room("routine-control-diagnostic");
+    const server = await connect(stub, "server");
+    const client = await connect(stub, "client");
+    const closed = nextClose(client);
+    const logged = vi.spyOn(console, "error").mockImplementation(() => undefined);
+    try {
+      await runInDurableObject(stub, async (instance: RendezvousRoom, state) => {
+        await instance.webSocketError(state.getWebSockets("client")[0]!, "private error");
+        await instance.webSocketClose(state.getWebSockets("server")[0]!, 1000, "private", true);
+      });
+      await expect(closed).resolves.toMatchObject(INTERNAL_CLOSE);
+      expect(logged).not.toHaveBeenCalled();
+    } finally {
+      logged.mockRestore();
+      closeForCleanup(client, server);
+    }
+  });
+
+  it("keeps durably retired control callbacks silent after hibernation", async () => {
+    const stub = room("retired-control-diagnostic");
+    const server = await connect(stub, "server");
+    await runInDurableObject(stub, async (instance: RendezvousRoom, state) => {
+      const control = state.getWebSockets("server")[0]!;
+      const close = vi.spyOn(control, "close").mockImplementation(() => {
+        throw new Error("Injected transport retirement delay");
+      });
+      try {
+        await instance.webSocketMessage(control, "invalid protocol frame");
+        expect(decodeRendezvousAttachment(control.deserializeAttachment()))
+          .toMatchObject({ role: "server", current: false });
+      } finally {
+        close.mockRestore();
+      }
+    });
+    await evictDurableObject(stub);
+    const logged = vi.spyOn(console, "error").mockImplementation(() => undefined);
+    try {
+      await runInDurableObject(stub, async (instance: RendezvousRoom, state) => {
+        const control = state.getWebSockets("server")[0]!;
+        await instance.webSocketClose(control, 1006, "private reason", false);
+        await instance.webSocketError(control, new Error("private error"));
+      });
+      expect(logged).not.toHaveBeenCalled();
+    } finally {
+      logged.mockRestore();
+      closeForCleanup(server);
+    }
+  });
+
+  it("reports caught close-handler failures without exception text", async () => {
+    const stub = room("close-handler-diagnostic");
+    const server = await connect(stub, "server");
+    const logged = vi.spyOn(console, "error").mockImplementation(() => undefined);
+    try {
+      await runInDurableObject(stub, async (instance: RendezvousRoom, state) => {
+        const original = Reflect.get(instance, "scheduleNextAlarm");
+        Reflect.set(instance, "scheduleNextAlarm", async () => {
+          throw new Error("private storage failure details");
+        });
+        try {
+          await instance.webSocketClose(state.getWebSockets("server")[0]!, 1000, "", true);
+        } finally {
+          Reflect.set(instance, "scheduleNextAlarm", original);
+        }
+      });
+      expect(logged.mock.calls).toEqual([[{
+        event: "unexpected_error",
+        handler: "rendezvous",
+        code: "rendezvous_handler_failure",
+      }]]);
+    } finally {
+      logged.mockRestore();
+      closeForCleanup(server);
+    }
+  });
+
+  it("does not report an abnormal superseded control as the current transport", async () => {
+    const stub = room("superseded-control-diagnostic");
+    const server = await connect(stub, "server");
+    await evictDurableObject(stub);
+    // The injected pair's ordinary accepted peer is owned by the fixture's
+    // DO invocation and cannot hibernate. Evict the real control first, then
+    // inject the interrupted-replacement state on the reconstructed room.
+    const newerControlId = crypto.randomUUID();
+    await injectCurrentServer(stub, newerControlId, Date.now() + 1_000);
+    const logged = vi.spyOn(console, "error").mockImplementation(() => undefined);
+    try {
+      await runInDurableObject(stub, async (instance: RendezvousRoom, state) => {
+        const controls = state.getWebSockets("server").map((socket) => ({
+          socket,
+          attachment: decodeRendezvousAttachment(socket.deserializeAttachment()),
+        }));
+        expect(controls).toHaveLength(2);
+        expect(controls.every(({ attachment }) =>
+          attachment?.role === "server" && attachment.current
+        )).toBe(true);
+        const old = controls.find(({ attachment }) =>
+          attachment?.role === "server" && attachment.controlId !== newerControlId
+        )!.socket;
+        await instance.webSocketClose(old, 1006, "private reason", false);
+      });
+      expect(logged).not.toHaveBeenCalled();
+    } finally {
+      logged.mockRestore();
+      await closeRoomServersForCleanup(stub);
+      closeForCleanup(server);
+    }
+  });
+
+  it("preserves control-error teardown when diagnostics fail", async () => {
+    const stub = room("control-diagnostic-failure");
+    const server = await connect(stub, "server");
+    const closed = nextClose(server);
+    const logged = vi.spyOn(console, "error").mockImplementation(() => {
+      throw new Error("Injected logging failure");
+    });
+    try {
+      await runInDurableObject(stub, async (instance: RendezvousRoom, state) => {
+        await instance.webSocketError(state.getWebSockets("server")[0]!, "private error");
+      });
+      await expect(closed).resolves.toMatchObject(INTERNAL_CLOSE);
+    } finally {
+      logged.mockRestore();
+      closeForCleanup(server);
+    }
+  });
+
   it("closes clients with a fixed reason when the current server disconnects", async () => {
     const stub = room("current-server-disconnect");
     const server = await connect(stub, "server");

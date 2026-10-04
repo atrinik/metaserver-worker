@@ -2,6 +2,8 @@ import { DurableObject } from "cloudflare:workers";
 
 import type { CoreEnv } from "./core-env";
 import type { DirectoryProfile } from "./directory-state";
+import { logUnexpectedError } from "./diagnostics";
+import type { UnexpectedErrorCode } from "./diagnostics";
 
 import {
   RENDEZVOUS_POLICY_MAXIMUMS,
@@ -133,6 +135,7 @@ export class RendezvousRoom extends DurableObject<CoreEnv> {
   private readonly initialized: Promise<void>;
   private readonly finalizedConnections = new Set<string>();
   private readonly inactiveControls = new Set<string>();
+  private readonly observedControlFailures = new WeakSet<WebSocket>();
   private readonly messageQueues = new WeakMap<WebSocket, MessageQueue>();
   private readonly pendingClientOutcomes = new WeakMap<
     WebSocket,
@@ -577,6 +580,7 @@ export class RendezvousRoom extends DurableObject<CoreEnv> {
     try {
       await this.handleSocketGone(socket, code, reason, wasClean);
     } catch (error) {
+      logRoomFailure("rendezvous_handler_failure");
       if (error instanceof RendezvousTeardownIntegrityError) {
         await this.rethrowTeardownFailure(error);
       }
@@ -589,6 +593,7 @@ export class RendezvousRoom extends DurableObject<CoreEnv> {
       await this.ensureInitialized();
       const attachment = this.readTaggedAttachment(socket);
       if (attachment?.role === "server") {
+        this.observeControlFailure(socket, attachment, "rendezvous_control_error");
         this.failServer(
           socket,
           attachment,
@@ -618,6 +623,7 @@ export class RendezvousRoom extends DurableObject<CoreEnv> {
       }
       await this.scheduleNextAlarm(Date.now());
     } catch (error) {
+      logRoomFailure("rendezvous_handler_failure");
       if (error instanceof RendezvousTeardownIntegrityError) {
         await this.rethrowTeardownFailure(error);
       }
@@ -2314,12 +2320,19 @@ export class RendezvousRoom extends DurableObject<CoreEnv> {
     socket: WebSocket,
     code: number,
     reason: string,
-    _wasClean: boolean,
+    wasClean: boolean,
   ): Promise<void> {
     await this.ensureInitialized();
     this.messageQueues.delete(socket);
     const attachment = this.readTaggedAttachment(socket);
     if (attachment?.role === "server") {
+      if (!wasClean) {
+        this.observeControlFailure(
+          socket,
+          attachment,
+          "rendezvous_control_disconnected",
+        );
+      }
       this.pendingServerOutcomes.delete(socket);
       const deliberatelyRetired = this.inactiveControls.delete(
         attachment.controlId,
@@ -2443,6 +2456,30 @@ export class RendezvousRoom extends DurableObject<CoreEnv> {
       }
     }
     await this.scheduleNextAlarm(Date.now());
+  }
+
+  private observeControlFailure(
+    socket: WebSocket,
+    attachment: ServerAttachment,
+    code: "rendezvous_control_disconnected" | "rendezvous_control_error",
+  ): void {
+    // Durable retirement state survives hibernation. Ephemeral guards cover
+    // an in-progress or transport-only retirement on this instance; never
+    // infer local intent from peer-controlled close codes or reasons.
+    if (
+      !attachment.current ||
+      attachment.generation !== this.currentGeneration ||
+      this.inactiveControls.has(attachment.controlId) ||
+      this.pendingServerOutcomes.has(socket) ||
+      this.observedControlFailures.has(socket) ||
+      this.currentOpenServers(socket).some((server) =>
+        compareActiveServersNewestFirst(server, { socket, attachment }) < 0
+      )
+    ) {
+      return;
+    }
+    this.observedControlFailures.add(socket);
+    logRoomFailure(code);
   }
 
   private taggedSocketRole(socket: WebSocket): "client" | "server" | null {
@@ -2613,6 +2650,14 @@ export class RendezvousRoom extends DurableObject<CoreEnv> {
       // Preserve the canonical teardown error when even retry scheduling is
       // unavailable. The session expiry remains a hard 15-second fallback.
     }
+  }
+}
+
+function logRoomFailure(code: UnexpectedErrorCode): void {
+  try {
+    logUnexpectedError("rendezvous", code);
+  } catch {
+    // Best-effort diagnostics cannot alter transport or teardown behavior.
   }
 }
 

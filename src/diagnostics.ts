@@ -22,6 +22,9 @@ export type UnexpectedErrorCode =
   | "request_control_configuration"
   | "source_tag_configuration"
   | "maintenance_failure"
+  | "rendezvous_control_disconnected"
+  | "rendezvous_control_error"
+  | "rendezvous_handler_failure"
   | "unhandled_exception";
 
 /**

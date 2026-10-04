@@ -249,6 +249,18 @@ diagnostics have closed, low-cardinality schemas:
 - `unexpected_error`: closed handler/internal code and, when applicable, the
   closed request-control dependency name.
 
+The `rendezvous` handler emits `rendezvous_control_disconnected` for an
+unclean close of the current server control and `rendezvous_control_error`
+for its transport error callback. Durable retirement state suppresses
+deliberate room teardown and superseded controls across hibernation; clean
+closes and client transport callbacks do not emit these control diagnostics.
+Error followed by close is deduplicated on the live instance. Caught close/error
+handler failures emit `rendezvous_handler_failure` while retaining the existing
+cleanup behavior. These events contain no peer close code, reason, exception
+text, identity, ticket, or candidate. They describe the callback observed by
+the room, not which network participant caused a disconnection. A transport
+failure that never delivers a room callback may produce only platform evidence.
+
 Routine success, expected `404`, rate-limit, and open-circuit traffic emits no
 custom event. This avoids recreating an invocation-sized log stream for the
 highest-volume outcomes. Every diagnostic keeps the following data out of
