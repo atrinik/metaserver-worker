@@ -33,7 +33,7 @@ describe("private access resolution boundary", () => {
     request + "{}",
     "\uFEFF" + request,
     request.slice(0, -1),
-    request.replace("}", ',"extra":"x"}'),
+    request.slice(0, -1) + ',"extra":"x"}',
     " ".repeat(513),
   ])("rejects malformed, duplicate, unknown or oversized fields", (input) => {
     expect(() => parseAccessResolveRequest(encode(input))).toThrow();
