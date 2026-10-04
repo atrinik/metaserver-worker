@@ -106,10 +106,8 @@ function rateLimitReason(error: RequestBudgetExceeded): HttpRateLimitReason {
     case "publish-server":
     case "publish-game-server":
       return burst ? "publish_burst" : "publish_daily";
-    case "rendezvous-client-source":
+    case "rendezvous-client":
       return "rendezvous_client_burst";
-    case "rendezvous-client-pair-cooldown":
-      return "rendezvous_client_pair_cooldown";
     case "rendezvous-server":
       return burst
         ? "rendezvous_server_burst"

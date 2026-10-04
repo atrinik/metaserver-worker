@@ -15,11 +15,11 @@ SERVER_ID = "0" * 64
 PUBLISH_DOCUMENT = json.loads(
     (
         Path(__file__).parent.parent
-        / "test/fixtures/metaserver-classic-publisher-v2.json"
+        / "test/fixtures/metaserver-classic-publisher-v3.json"
     )
     .read_text(encoding="utf-8")
 )
-PUBLISH_FIXTURE = PUBLISH_DOCUMENT["positive"][0]
+PUBLISH_FIXTURE = PUBLISH_DOCUMENT
 PUBLISH_PATH = PUBLISH_FIXTURE["path"]
 RENDEZVOUS_PATH = f"/v1/classic/servers/{SERVER_ID}?role=server"
 MAXIMUM_RESPONSE_BYTES = 1_024

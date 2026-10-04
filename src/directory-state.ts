@@ -1,4 +1,4 @@
-export const DIRECTORY_PROFILES = ["classic-v1", "classic-v2", "game-v1"] as const;
+export const DIRECTORY_PROFILES = ["classic-v3", "game-v2"] as const;
 export type DirectoryProfile = typeof DIRECTORY_PROFILES[number];
 
 export const MAX_DIRECTORY_ENTRIES_PER_PROFILE = 512;

@@ -50,7 +50,7 @@ export function writeDirectoryBuildMetric(
 function validatedProfile(value: DirectoryProfile): DirectoryProfile {
   return (DIRECTORY_PROFILES as readonly unknown[]).includes(value)
     ? value
-    : "classic-v1";
+    : "classic-v3";
 }
 
 function validatedOutcome(value: DirectoryBuildOutcome): DirectoryBuildOutcome {

@@ -2,8 +2,8 @@ import { HttpError } from "./http";
 
 export const PUBLISH_AUTHORITY = "publish.meta.atrinik.org";
 export const RENDEZVOUS_AUTHORITY = "rendezvous.meta.atrinik.org";
-export const CLASSIC_RENDEZVOUS_INVITE_SUBPROTOCOL =
-  "atrinik-classic-rendezvous-invite-v1";
+export const ACCESS_RENDEZVOUS_SUBPROTOCOL =
+  "atrinik-access-rendezvous-v1";
 export const PUBLISH_MAX_BODY_BYTES = 4_096;
 
 const SERVER_ID = /^[0-9a-f]{64}$/;
@@ -26,10 +26,10 @@ const CRITICAL_HEADERS = [
 ] as const;
 
 export type ProtocolGeneration = "game-protocol-1" | "classic";
-export type PublisherProfile = "classic-v1" | "classic-v2" | "game-v1";
+export type PublisherProfile = "classic-v3" | "game-v2";
 export type RendezvousRole = "client" | "server";
 export type ClassicRendezvousSubprotocol =
-  typeof CLASSIC_RENDEZVOUS_INVITE_SUBPROTOCOL;
+  typeof ACCESS_RENDEZVOUS_SUBPROTOCOL;
 
 export interface RouteInput {
   /**
@@ -225,35 +225,35 @@ function matchCanonicalServerPath(
   readonly serverId: string;
 } | null {
   const suffix = publish ? "/publish" : "";
-  const game = new RegExp(`^/v1/servers/([^/]+)${suffix}$`).exec(path);
+  const game = new RegExp(`^/${publish ? "v2" : "v1"}/servers/([^/]+)${suffix}$`).exec(path);
   if (game !== null) {
     return {
       generation: "game-protocol-1",
-      publisherProfile: "game-v1",
+      publisherProfile: "game-v2",
       serverId: validateServerId(game[1]),
     };
   }
 
   if (publish) {
     const classicV2 = new RegExp(
-      `^/v2/classic/servers/([^/]+)${suffix}$`,
+      `^/v3/classic/servers/([^/]+)${suffix}$`,
     ).exec(path);
     if (classicV2 !== null) {
       return {
         generation: "classic",
-        publisherProfile: "classic-v2",
+        publisherProfile: "classic-v3",
         serverId: validateServerId(classicV2[1]),
       };
     }
   }
 
-  const classic = new RegExp(
+  const classic = publish ? null : new RegExp(
     `^/v1/classic/servers/([^/]+)${suffix}$`,
   ).exec(path);
   if (classic !== null) {
     return {
       generation: "classic",
-      publisherProfile: "classic-v1",
+      publisherProfile: "classic-v3",
       serverId: validateServerId(classic[1]),
     };
   }
@@ -297,7 +297,7 @@ function parseRendezvousSubprotocol(
   if (value === null) {
     return null;
   }
-  if (allowClassicInvite && value === CLASSIC_RENDEZVOUS_INVITE_SUBPROTOCOL) {
+  if (allowClassicInvite && value === ACCESS_RENDEZVOUS_SUBPROTOCOL) {
     return value;
   }
   throw new HttpError("bad_request");
@@ -393,4 +393,50 @@ function rejectAmbiguousCriticalHeaders(headers: Headers): void {
       throw new HttpError("ambiguous_header");
     }
   }
+}
+
+export type AccessDynamicRoute =
+  | { readonly kind: "access-routes"; readonly profile: "classic" | "game";
+      readonly serverId: string; readonly authority: string; }
+  | { readonly kind: "access-resolve"; readonly authority: string; }
+  | { readonly kind: "access-rendezvous"; readonly profile: "classic" | "game";
+      readonly serverId: string; readonly authority: string; };
+
+/** Null means a non-access path; malformed access paths never fall back. */
+export function classifyAccessRoute(
+  input: RouteInput, authority: string, edge: "publisher" | "rendezvous",
+): AccessDynamicRoute | null {
+  rejectAmbiguousCriticalHeaders(input.headers);
+  const target = parseTarget(input.target);
+  if (target.authority !== authority) throw new HttpError("misdirected_request");
+  enforceHostHeader(input.headers, authority);
+  if (!target.path.startsWith("/v1/access/")) return null;
+  enforceNoQuery(target.query);
+  if (input.headers.has("Cookie")) throw new HttpError("bad_request");
+  if (edge === "publisher") {
+    const match = /^\/v1\/access\/servers\/(classic|game)\/([0-9a-f]{64})\/routes$/.exec(target.path);
+    if (match === null) throw new HttpError("not_found");
+    enforceMethod(input.method, "POST");
+    enforceNoUpgrade(input.headers);
+    enforcePublisherBody(input);
+    return { kind: "access-routes", profile: match[1] as "classic" | "game",
+      serverId: match[2], authority };
+  }
+  if (target.path === "/v1/access/resolve") {
+    enforceMethod(input.method, "POST");
+    enforceNoUpgrade(input.headers);
+    enforcePublisherBody(input);
+    if ((declaredContentLength(input.headers) ?? 0) > 512) throw new HttpError("payload_too_large");
+    return { kind: "access-resolve", authority };
+  }
+  const match = /^\/v1\/access\/rendezvous\/(classic|game)\/([0-9a-f]{64})$/.exec(target.path);
+  if (match === null) throw new HttpError("not_found");
+  enforceMethod(input.method, "GET");
+  enforceNoBody(input);
+  enforceWebSocketUpgrade(input.headers);
+  if (input.headers.get("Sec-WebSocket-Protocol") !== ACCESS_RENDEZVOUS_SUBPROTOCOL) {
+    throw new HttpError("bad_request");
+  }
+  return { kind: "access-rendezvous", profile: match[1] as "classic" | "game",
+    serverId: match[2], authority };
 }

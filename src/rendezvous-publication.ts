@@ -58,7 +58,7 @@ export async function readPublisherReplayState(
   profile: DirectoryProfile,
   nonce: string,
 ): Promise<PublisherReplayState | null> {
-  const classic = profile === "classic-v1" || profile === "classic-v2";
+  const classic = profile === "classic-v3";
   const record = await db.prepare(
     `SELECT replay.last_sequence,
             EXISTS (
@@ -66,19 +66,17 @@ export async function readPublisherReplayState(
                 FROM publisher_nonces AS nonces
                WHERE nonces.server_id = replay.server_id
                  AND ${classic
-                   ? "nonces.profile IN ('classic-v1', 'classic-v2')"
-                   : "nonces.profile = replay.profile"}
+                   ? "nonces.profile IN ('classic-v1', 'classic-v2', 'classic-v3')"
+                   : "nonces.profile IN ('game-v1', 'game-v2')"}
                  AND nonces.nonce = ?
             ) AS nonce_seen
        FROM publisher_replay AS replay
       WHERE replay.server_id = ? AND ${classic
-        ? "replay.profile IN ('classic-v1', 'classic-v2')"
-        : "replay.profile = ?"}
+        ? "replay.profile IN ('classic-v1', 'classic-v2', 'classic-v3')"
+        : "replay.profile IN ('game-v1', 'game-v2')"}
       ORDER BY length(replay.last_sequence) DESC, replay.last_sequence DESC
       LIMIT 1`,
-  ).bind(...(classic
-    ? [nonce, serverId]
-    : [nonce, serverId, profile])).first<PublisherReplayRecord>();
+  ).bind(nonce, serverId).first<PublisherReplayRecord>();
   if (record === null) {
     return null;
   }
@@ -86,30 +84,6 @@ export async function readPublisherReplayState(
     lastSequence: record.last_sequence,
     nonceSeen: record.nonce_seen === 1,
   };
-}
-
-export async function isClassicV1ProfileRetired(
-  db: D1Database,
-  serverId: string,
-): Promise<boolean> {
-  const retired = await db.prepare(
-    `SELECT 1 AS retired
-       FROM classic_identity_modes
-      WHERE server_id = ? AND mode = 'v2-only'`,
-  ).bind(serverId).first<number>("retired");
-  return retired === 1;
-}
-
-export async function isClassicV1GloballyRetired(
-  db: D1Database,
-): Promise<boolean> {
-  const mode = await db.prepare(
-    "SELECT mode FROM classic_receiver_mode WHERE singleton = 1",
-  ).first<string>("mode");
-  if (mode !== "classic-v1-accepting" && mode !== "classic-v1-retired") {
-    throw new Error("Classic receiver mode is invalid");
-  }
-  return mode === "classic-v1-retired";
 }
 
 export async function persistRendezvousPublication(
@@ -126,35 +100,25 @@ async function persistSignedPublication(
   const sequence = publication.publisherSequence;
   const nonce = publication.publisherNonce;
   const nonceExpiresAt = publication.publisherNonceExpiresAt;
-  const classic = publication.directoryProfile === "classic-v1" ||
-    publication.directoryProfile === "classic-v2";
+  const classic = publication.directoryProfile === "classic-v3";
   const lineageNoncePredicate = classic
-    ? "profile IN ('classic-v1', 'classic-v2')"
-    : "profile = ?";
+    ? "profile IN ('classic-v1', 'classic-v2', 'classic-v3')"
+    : "profile IN ('game-v1', 'game-v2')";
   const lineageSequencePredicate = classic
-    ? "profile IN ('classic-v1', 'classic-v2')"
-    : "profile = excluded.profile";
-  const v1RetirementGuard = publication.directoryProfile === "classic-v1"
-    ? `AND NOT EXISTS (
-         SELECT 1 FROM classic_identity_modes
-          WHERE server_id = ? AND mode = 'v2-only'
-       ) AND EXISTS (
-         SELECT 1 FROM classic_receiver_mode
-          WHERE singleton = 1 AND mode = 'classic-v1-accepting'
-       )`
-    : "";
-  const classicInsertSequenceGuard = classic
-    ? `AND NOT EXISTS (
+    ? "profile IN ('classic-v1', 'classic-v2', 'classic-v3')"
+    : "profile IN ('game-v1', 'game-v2')";
+  const insertSequenceGuard = `AND NOT EXISTS (
          SELECT 1 FROM publisher_replay AS lineage
           WHERE lineage.server_id = ?
-            AND lineage.profile IN ('classic-v1', 'classic-v2')
+            AND ${classic
+              ? "lineage.profile IN ('classic-v1', 'classic-v2', 'classic-v3')"
+              : "lineage.profile IN ('game-v1', 'game-v2')"}
             AND (
               length(lineage.last_sequence) > length(?) OR
               (length(lineage.last_sequence) = length(?) AND
                lineage.last_sequence >= ?)
             )
-       )`
-    : "";
+       )`;
 
   const persisted = await db.batch([
     db.prepare(
@@ -165,7 +129,7 @@ async function persistSignedPublication(
         WHERE NOT EXISTS (
           SELECT 1 FROM publisher_nonces
            WHERE server_id = ? AND ${lineageNoncePredicate} AND nonce = ?
-        ) ${classicInsertSequenceGuard} ${v1RetirementGuard}
+        ) ${insertSequenceGuard}
        ON CONFLICT(server_id, profile) DO UPDATE SET
          last_sequence = excluded.last_sequence,
          last_nonce = excluded.last_nonce,
@@ -201,15 +165,8 @@ async function persistSignedPublication(
       publication.commitToken,
       publication.now,
       publication.serverId,
-      ...(classic ? [] : [publication.directoryProfile]),
       nonce,
-      ...(classic
-        ? [publication.serverId, sequence, sequence, sequence]
-        : []),
-      ...(publication.directoryProfile === "classic-v1"
-        ? [publication.serverId]
-        : []),
-      ...(classic ? [] : [publication.directoryProfile]),
+      publication.serverId, sequence, sequence, sequence,
     ),
     db.prepare(
       `INSERT INTO publisher_nonces
@@ -224,7 +181,6 @@ async function persistSignedPublication(
       publication.now,
       ...signedGuardBindings(publication),
     ),
-    ...classicUpgradeStatements(db, publication),
     presenceMutation(db, publication),
     visibleRevisionStatement(db, publication),
     visibleOutboxStatement(db, publication),
@@ -233,7 +189,7 @@ async function persistSignedPublication(
     publicationAssertion(db, publication),
   ]);
 
-  requireBatchResults(persisted, 14);
+  requireBatchResults(persisted, 10);
   const accepted = changes(persisted, 0) === 1;
   if (!accepted) {
     if (persisted.some((_, index) => index > 0 && changes(persisted, index) !== 0)) {
@@ -244,57 +200,15 @@ async function persistSignedPublication(
   if (changes(persisted, 1) !== 1) {
     throw new Error("Signed publication did not persist required state");
   }
-  if (changes(persisted, 13) !== 0) {
+  if (changes(persisted, 9) !== 0) {
     throw new Error("Signed publication assertion produced durable state");
   }
   if (publication.isPublic &&
-    (changes(persisted, 11) !== 1 || changes(persisted, 12) !== 1)) {
+    (changes(persisted, 7) !== 1 || changes(persisted, 8) !== 1)) {
     throw new Error("Signed publication activity state is incomplete");
   }
-  requireDirectoryMutationResults(persisted, publication, 9, 6);
-  return publicationResult(persisted, 7, 8);
-}
-
-function classicUpgradeStatements(
-  db: D1Database,
-  publication: InternalRendezvousPublication,
-): readonly D1PreparedStatement[] {
-  if (publication.directoryProfile !== "classic-v2") {
-    return [0, 1, 2, 3].map(() => db.prepare("SELECT 1 WHERE 0"));
-  }
-  const guard = signedCommitGuard();
-  const bindings = signedGuardBindings(publication);
-  return [
-    db.prepare(
-      `UPDATE directory_revisions
-          SET revision = revision + 1, updated_at = max(updated_at, ?)
-        WHERE profile = 'classic-v1'
-          AND EXISTS (
-            SELECT 1 FROM directory_entries
-             WHERE profile = 'classic-v1' AND server_id = ?
-          ) AND ${guard}`,
-    ).bind(publication.now, publication.serverId, ...bindings),
-    db.prepare(
-      `INSERT INTO directory_outbox (profile, revision, created_at)
-       SELECT profile, revision, ? FROM directory_revisions
-        WHERE profile = 'classic-v1'
-          AND EXISTS (
-            SELECT 1 FROM directory_entries
-             WHERE profile = 'classic-v1' AND server_id = ?
-          ) AND ${guard}`,
-    ).bind(publication.now, publication.serverId, ...bindings),
-    db.prepare(
-      `DELETE FROM server_presence
-        WHERE profile = 'classic-v1' AND server_id = ?
-          AND ${guard}`,
-    ).bind(publication.serverId, ...bindings),
-    db.prepare(
-      `INSERT INTO classic_identity_modes (server_id, mode, upgraded_at)
-       SELECT ?, 'v2-only', ? WHERE ${guard}
-       ON CONFLICT(server_id) DO UPDATE SET
-         mode = 'v2-only', upgraded_at = excluded.upgraded_at`,
-    ).bind(publication.serverId, publication.now, ...bindings),
-  ];
+  requireDirectoryMutationResults(persisted, publication, 5, 2);
+  return publicationResult(persisted, 3, 4);
 }
 
 function publicationResult(
@@ -405,14 +319,14 @@ function directoryEntryMutation(
       ...publicationPresenceBindings(publication),
     );
   }
-  if (publication.directoryProfile === "game-v1") {
+  if (publication.directoryProfile === "game-v2") {
     const gameJsonBytes = gamePublicationJsonByteLength(publication);
     return db.prepare(
       `INSERT INTO directory_entries
          (profile, server_id, name, players_count, version, text_comment,
           description, region, protocol_major, protocol_minor, content_id,
           content_revision_sha256, players_online, players_capacity, status,
-          game_json_bytes, hostname, port, quic_cert_sha256, password_required,
+          game_json_bytes, hostname, port, quic_cert_sha256, access_required,
           directory_fingerprint)
        SELECT ?, ?, ?, NULL, NULL, NULL, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
         WHERE ${publicationPresenceGuard()}
@@ -434,7 +348,7 @@ function directoryEntryMutation(
          hostname = excluded.hostname,
          port = excluded.port,
          quic_cert_sha256 = excluded.quic_cert_sha256,
-         password_required = excluded.password_required,
+         access_required = excluded.access_required,
          directory_fingerprint = excluded.directory_fingerprint`,
     ).bind(
       publication.directoryProfile,
@@ -461,10 +375,9 @@ function directoryEntryMutation(
   return db.prepare(
     `INSERT INTO directory_entries
        (profile, server_id, name, players_count, version, text_comment,
-        hostname, port, quic_cert_sha256, password_required,
-        access_code_required,
+        hostname, port, quic_cert_sha256, access_required,
         directory_fingerprint)
-     SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
+     SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
       WHERE ${publicationPresenceGuard()}
      ON CONFLICT(profile, server_id) DO UPDATE SET
        name = excluded.name,
@@ -474,8 +387,7 @@ function directoryEntryMutation(
        hostname = excluded.hostname,
        port = excluded.port,
        quic_cert_sha256 = excluded.quic_cert_sha256,
-       password_required = excluded.password_required,
-       access_code_required = excluded.access_code_required,
+       access_required = excluded.access_required,
        directory_fingerprint = excluded.directory_fingerprint`,
   ).bind(
     publication.directoryProfile,
@@ -487,12 +399,7 @@ function directoryEntryMutation(
     publication.quicHost === "" ? null : publication.quicHost,
     publication.quicHost === "" ? null : publication.quicPort,
     publication.quicCertSha256,
-    publication.directoryProfile === "classic-v1"
-      ? (publication.authorizationRequired ? 1 : 0)
-      : null,
-    publication.directoryProfile === "classic-v2"
-      ? (publication.authorizationRequired ? 1 : 0)
-      : null,
+    publication.authorizationRequired ? 1 : 0,
     publication.directoryFingerprint,
     ...publicationPresenceBindings(publication),
   );
@@ -651,8 +558,9 @@ function presenceMutation(
     `INSERT INTO server_presence
        (profile, server_id, last_seen, rendezvous_token_hash,
         rendezvous_generation, publication_commit_token,
+        name, certificate, hostname, port, access_required,
         publication_base_revision, publication_visible_revision)
-     SELECT ?, ?, ?, ?, ?, ?, revisions.revision,
+     SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, revisions.revision,
             CASE
               WHEN ${visibleContentChangedPredicate()}
               THEN revisions.revision + 1
@@ -662,6 +570,9 @@ function presenceMutation(
       WHERE revisions.profile = ?
         AND ${signedCommitGuard()}
      ON CONFLICT(profile, server_id) DO UPDATE SET
+       name = excluded.name, certificate = excluded.certificate,
+       hostname = excluded.hostname, port = excluded.port,
+       access_required = excluded.access_required,
        last_seen = excluded.last_seen,
        rendezvous_token_hash = excluded.rendezvous_token_hash,
        rendezvous_generation = excluded.rendezvous_generation,
@@ -675,6 +586,10 @@ function presenceMutation(
     publication.tokenHash,
     publication.generation,
     publication.commitToken,
+    publication.name, publication.certificate,
+    publication.quicHost === "" ? null : publication.quicHost,
+    publication.quicHost === "" ? null : publication.quicPort,
+    publication.authorizationRequired ? 1 : 0,
     ...visiblePredicateBindings(publication),
     publication.directoryProfile,
     ...signedGuardBindings(publication),
@@ -767,7 +682,6 @@ function publicationAssertion(
   };
   const predicates = [
     publicationAuthenticationPredicate(publication),
-    classicUpgradePredicate(publication),
     publicationPresencePredicate(publication),
     publicationEntryPredicate(publication),
     publicationActivityPredicate(publication),
@@ -781,24 +695,6 @@ function publicationAssertion(
     ...accepted.bindings,
     ...predicates.flatMap((predicate) => predicate.bindings),
   );
-}
-
-function classicUpgradePredicate(
-  publication: InternalRendezvousPublication,
-): SqlPredicate {
-  if (publication.directoryProfile !== "classic-v2") {
-    return { sql: "1", bindings: [] };
-  }
-  return {
-    sql: `EXISTS (
-      SELECT 1 FROM classic_identity_modes
-       WHERE server_id = ? AND mode = 'v2-only'
-    ) AND NOT EXISTS (
-      SELECT 1 FROM server_presence
-       WHERE server_id = ? AND profile = 'classic-v1'
-    )`,
-    bindings: [publication.serverId, publication.serverId],
-  };
 }
 
 function publicationAuthenticationPredicate(
@@ -829,6 +725,9 @@ function publicationPresencePredicate(
         JOIN directory_revisions AS revisions
           ON revisions.profile = presence.profile
        WHERE presence.profile = ? AND presence.server_id = ?
+         AND presence.name = ? AND presence.certificate = ?
+         AND presence.hostname IS ? AND presence.port IS ?
+         AND presence.access_required = ?
          AND presence.last_seen = ?
          AND presence.rendezvous_token_hash = ?
          AND presence.rendezvous_generation = ?
@@ -858,6 +757,10 @@ function publicationPresencePredicate(
     bindings: [
       publication.directoryProfile,
       publication.serverId,
+      publication.name, publication.certificate,
+      publication.quicHost === "" ? null : publication.quicHost,
+      publication.quicHost === "" ? null : publication.quicPort,
+      publication.authorizationRequired ? 1 : 0,
       publication.now,
       publication.tokenHash,
       publication.generation,
@@ -879,7 +782,7 @@ function publicationEntryPredicate(
       bindings: [publication.directoryProfile, publication.serverId],
     };
   }
-  if (publication.directoryProfile === "game-v1") {
+  if (publication.directoryProfile === "game-v2") {
     const gameJsonBytes = gamePublicationJsonByteLength(publication);
     return {
       sql: `EXISTS (
@@ -897,7 +800,7 @@ function publicationEntryPredicate(
            AND entries.game_json_bytes = ?
            AND entries.hostname IS ? AND entries.port IS ?
            AND entries.quic_cert_sha256 = ?
-           AND entries.password_required = ?
+           AND entries.access_required = ?
            AND entries.directory_fingerprint = ?
       )`,
       bindings: [
@@ -930,8 +833,7 @@ function publicationEntryPredicate(
          AND entries.version = ? AND entries.text_comment = ?
          AND entries.hostname IS ? AND entries.port IS ?
          AND entries.quic_cert_sha256 = ?
-         AND entries.password_required IS ?
-         AND entries.access_code_required IS ?
+         AND entries.access_required IS ?
          AND entries.directory_fingerprint = ?
     )`,
     bindings: [
@@ -944,12 +846,7 @@ function publicationEntryPredicate(
       publication.quicHost === "" ? null : publication.quicHost,
       publication.quicHost === "" ? null : publication.quicPort,
       publication.quicCertSha256,
-      publication.directoryProfile === "classic-v1"
-        ? (publication.authorizationRequired ? 1 : 0)
-        : null,
-      publication.directoryProfile === "classic-v2"
-        ? (publication.authorizationRequired ? 1 : 0)
-        : null,
+      publication.authorizationRequired ? 1 : 0,
       publication.directoryFingerprint,
     ],
   };
@@ -1028,7 +925,7 @@ function publicationActivityPredicate(
 function publicationPopulation(
   publication: InternalRendezvousPublication,
 ): number {
-  return publication.directoryProfile === "game-v1"
+  return publication.directoryProfile === "game-v2"
     ? publication.playersOnline
     : publication.playersCount;
 }
@@ -1036,7 +933,7 @@ function publicationPopulation(
 function gamePublicationJsonByteLength(
   publication: Extract<
     InternalRendezvousPublication,
-    { directoryProfile: "game-v1" }
+    { directoryProfile: "game-v2" }
   >,
 ): number {
   return gameDirectoryServerJsonByteLength({
@@ -1055,7 +952,7 @@ function gamePublicationJsonByteLength(
       capacity: publication.playersCapacity,
     },
     status: publication.status,
-    passwordRequired: publication.authorizationRequired,
+    accessRequired: publication.authorizationRequired,
     ...(publication.quicHost === ""
       ? {}
       : {

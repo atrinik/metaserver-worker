@@ -6,13 +6,15 @@ learns a selected peer endpoint.
 
 ## Data classes
 
-1. For canonical publisher/rendezvous requests, a newly observed source
-   address exists only in the stateless edge while it derives the required
-   purpose-separated aliases and reconstructs a fixed allowlisted request;
-   neither the raw source address nor browser state crosses the Service Binding
-   into the state-owning core.
-2. Anonymous abuse correlation uses a purpose-separated, keyed HMAC tag with a
-   bounded retention window.
+1. The application does not extract requester IP addresses from transport or
+   forwarded headers, derive hashes or HMAC identifiers from them, or store,
+   audit, log, or include them in metrics. The public edges reconstruct a fixed
+   allowlisted request without requester metadata for the state-owning core.
+2. Anonymous ingress uses fixed-purpose shared native counters per Cloudflare
+   location. There is no per-source correlation, client identity, or IP-based
+   fairness guarantee. Retired internal source/pair alias headers are rejected;
+   there is no compatibility bridge that accepts or reconstructs them.
+
 3. QUIC candidates are transient, validated WebSocket message data. A candidate
    is forwarded only between the authenticated live server-control socket and
    the client socket bound to its single-use ticket. Candidate addresses are
@@ -20,18 +22,18 @@ learns a selected peer endpoint.
    SQLite, D1, KV, R2, Analytics Engine, or an application log.
 4. The direct-directory fallback stores only an operator-published, validated
    DNS hostname and UDP port. It is never inferred from the request source.
-5. Signed publication stores the public certificate-bound server ID, visible
-   listing fields, the last accepted unsigned-64 sequence, bounded random nonce
-   values until expiry, and non-secret commit/fingerprint/revision values. The
-   certificate is authenticated from the request body but is not persisted.
-   Signatures, signature inputs, request bodies, private key material, and
-   returned rendezvous tokens are never written to logs or durable storage;
-   only the token's SHA-256 verifier is stored in minimal profile presence,
-   separately from renderable public directory metadata. Private publication
-   retains that verifier and generation but no listing or endpoint, and neither
-   rendezvous role is admitted without a fresh public directory row. Classic
-   v2 stores only the signed `accessCodeRequired` policy boolean; it never
-   stores an access code, proof, or v1 password field.
+5. Signed Classic v3 and Game v2 publication stores the certificate-bound
+   server ID, public listing fields, unsigned-64 sequence, bounded random nonces,
+   and non-secret commit/fingerprint/revision values. Private presence retains
+   the signed certificate, name, optional operator DNS endpoint, `accessRequired`,
+   token verifier, generation, and last-seen time. Public artifacts derive only
+   from public directory rows; private presence is never projected into them.
+   Fresh private presence supports authenticated access routes and protected
+   rendezvous. Signatures, signature inputs, request bodies, private keys, and
+   raw returned rendezvous tokens are never logged or persisted. Only the token's
+   SHA-256 verifier is stored. Private route records and single-use grant replay
+   state contain no requester address or address-derived identifier.
+
 6. Activity ranking stores only profile-scoped, bounded population aggregates,
    the latest observation timestamp, and the latest positive-observation
    timestamp; it stores no player ID, login identity, address, ticket,
@@ -44,9 +46,12 @@ learns a selected peer endpoint.
    values. The D1 revision and outbox are builder-private and never appear in
    a body, object key, HTTP metadata, or custom metadata.
 
-Neither an unkeyed IP digest nor a raw IP is an acceptable durable actor key.
-IPv4 is enumerable, and a single cross-purpose pseudonym would unnecessarily
-make unrelated activity linkable.
+Neither raw IPs, unkeyed IP digests, nor keyed IP pseudonyms are acceptable
+application actor keys. This source policy does not establish platform-wide
+absence of IP processing: historical provider-managed IP WAF rules, security
+analytics, logs, recovery snapshots, and exports have not been audited by this
+source change. Live configuration is unchanged. An operator must separately
+review non-IP rule replacements and retention before claiming historical erasure.
 
 ## Build and deployment evidence
 
@@ -96,53 +101,30 @@ longer. That residual is recorded/read back, and mandatory teardown
 force-deletes both exact DO namespaces by cohort age 90 days before further
 runs, preventing unbounded retained review history.
 
-## Source tags
+## Non-IP grant and ticket replay keys
 
-The Worker requires two 32-byte base64url secrets through encrypted bindings:
+The historical binding names `SOURCE_TAG_KEY_CURRENT` and
+`SOURCE_TAG_KEY_PREVIOUS`, their `_ID` labels, and the `SourceTagKeyRing` type
+remain only for non-IP random-capability replay HMACs. Each encrypted secret is
+32-byte base64url material. Current and previous IDs and secrets must be distinct;
+malformed or duplicate material fails closed. The stateless public edges do not
+need these keys. Provision independent keys for every environment.
 
-- `SOURCE_TAG_KEY_CURRENT`
-- `SOURCE_TAG_KEY_PREVIOUS`
+Ticket aliases bind the random ticket to the canonical deployment hostname and
+opaque room ID. Grant aliases use a separate domain binding the random grant,
+client nonce, profile, server identity, and deployment hostname. Neither input
+contains a requester or forwarded address. Versioned stored aliases expose only
+the key label and HMAC-SHA-256 output. They are replay authority, not anonymous
+request correlation or a source-rate key.
 
-Their public rotation labels are `SOURCE_TAG_KEY_CURRENT_ID` and
-`SOURCE_TAG_KEY_PREVIOUS_ID`. Tag input is UTF-8 and domain separated:
-
-```text
-atrinik-metaserver\0source-tag\0v1\0<deployment-hostname>\0<purpose>\0<canonical-address>
-```
-
-The source/server-pair purpose appends the canonical 64-hex server identity.
-The configured canonical edge hostname separates production, canary, and local
-domains even if an operator accidentally reuses key material;
-operators must still provision independent secrets for every environment. The
-two canonical edge Workers receive the same reviewed overlapping key pair but
-derive in distinct authority namespaces. Current and previous key IDs and
-secrets must be distinct; malformed or duplicated material fails request
-admission closed.
-The stored tag is versioned and contains only the key label plus base64url
-HMAC-SHA-256 output; it never contains the address. Purposes are a closed set
-covering authority-separated global ingress and the distinct rendezvous actor
-dimensions.
-
-Every request checks both current and previous tags while rotation overlap is
-active. Canonical rendezvous pair admission stores one random opaque attempt ID
-under both aliases in one atomic
-batch and mirrors the exact cooldown tuple. During a rolling `A/Z` to `B/A`
-deployment, shared `A` carries the rolling attempt set and cooldown forward
-without charging twice; raw addresses and per-request network metadata are
-never persisted.
-
-Retain the previous key for at least the longest live budget window plus
-deployment propagation, rotate at a UTC budget boundary, and remove expired
-tag rows before retiring the key. The rendezvous replay ledger makes the
-overlap requirement explicit: consecutive deployed pairs must share one exact
-key for strictly more than 24 hours after every old-pair writer has stopped.
-Install alias-aware code and the overlap key before changing which key is
-current. Disjoint key sets cannot reconstruct one exact history. New
-Rendezvous rows claimed under `A/Z` collide with a replay checked under `B/A`
-through the
-shared `A` alias. Shared means the exact same key ID, secret, hostname
-namespace, purpose, and derivation contract. Initial provisioning supplies two
-independent keys so the same tested overlap path is always exercised.
+Consecutive deployed key pairs must share one exact key for strictly more than
+24 hours after every old-pair writer stops. With `A/Z` followed by `B/A`, shared
+`A` preserves collision checks across room reconstruction. Shared means the
+same ID, secret, hostname namespace, purpose, and derivation contract. Install
+alias-aware code and overlap material before changing the current key; disjoint
+pairs cannot reconstruct history and must fail deployment closed. Prune expired
+rows before retiring overlap keys. Initial provisioning uses two independent
+keys so the same tested path is exercised.
 
 ## Retired physical state
 
@@ -152,16 +134,19 @@ state. Canonical presence is parented directly to the profile-scoped signed
 publisher replay row. D1 Time Travel may retain the pre-migration database in
 Cloudflare recovery snapshots for its configured retention window; it is
 disaster-recovery history, not active application state or a supported rollback.
-Rollback may use the runtime-retirement bridge release, never a release that
-can reactivate those writers. A missing direct hostname remains NULL in
+A rollback must not reactivate retired source/pair writers or their internal
+envelope; old bridge releases are not a compatibility path for this policy. A missing direct hostname remains NULL in
 canonical state, and the HTTPS request address is never inferred.
 
-Migration `0010_classic_access_code.sql` adds Classic v2 as a disjoint
-publication shape while retaining one shared Classic v1/v2 sequence and nonce
-lineage. It also adds durable per-identity upgrade state and the one-way global
-v1 receiver mode. A v2 upgrade atomically removes v1 public/presence state but
-retains replay history; global retirement does the same for every remaining v1
-identity without changing v2 or Game state.
+Historical migration `0010_classic_access_code.sql` established the old Classic
+v1/v2 replay lineage. Migration `0013_access_token_profiles.sql` carries its
+maximum sequence and nonce history into active Classic v3, independently from
+Game v2, and stores the authenticated private presence required for access.
+Migration `0014_access_token_routing.sql` adds bounded private routes, receipts,
+grants, and identity budgets. Migration `0015_remove_ip_derived_pair_tracking.sql`
+physically drops populated pair-attempt and cooldown tables and indexes. No
+runtime fallback reads old IP-derived state. Historical migration files remain
+immutable; deletion of current tables does not erase provider recovery history.
 
 The signed replay ledger stores canonical decimal sequences as text because
 SQLite cannot represent the complete unsigned 64-bit range. Nonces are scoped
@@ -175,8 +160,9 @@ identity as a recovery shortcut.
 
 Exact canonical server-ID denial entries retain only the identity and bounded
 creation time. They have no wildcard, address, CIDR, or free-text field.
-Operational address/CIDR rules belong in Cloudflare WAF and do not cross the
-Service Binding.
+Do not transfer application policy to a new IP-based WAF rule. Historical
+provider rules and their retention require a separate operator audit; the source
+change does not remove or verify them.
 
 ## Static artifact state
 
@@ -187,15 +173,13 @@ representation sizes, and SHA-256 values; they store no listing field or actor
 identifier. The D1 outbox coalesces transactionally to at most its newest row
 per profile because old revisions cannot reconstruct historical models.
 
-Migration `0007_game_publisher.sql` rebuilds the public table as two exact,
-profile-discriminated row shapes. A Game row retains only protocol-owned public
-aggregates, certificate identity, the password-required flag, an optional
-operator-published DNS endpoint, the directory fingerprint, and the exact
-derived canonical-JSON byte count used for the transactional aggregate limit.
-It never stores the certificate body, signature, source address, rendezvous
-token, candidate, or server-only runtime state. Game replay, request-budget,
-presence, room-generation, revision, and outbox state remain
-profile-qualified and cannot be consumed by classic publication.
+Historical migration `0007_game_publisher.sql` introduced profile-discriminated
+public rows. Active Classic v3/directory v6 and Game v2/directory v2 now retain
+only their exact public shapes, including `accessRequired` and an optional
+operator DNS endpoint. Game rows retain the exact canonical-JSON byte count for
+the aggregate limit. The authenticated certificate and private presence fields
+remain separate from public directory projection. Replay, budgets, presence,
+room generation, revision, and outbox state remain profile-qualified.
 
 Migration `0012_directory_activity_ranking.sql` adds separate profile-scoped
 activity buckets and an independently bounded administrator-pin table. Accepted
@@ -216,9 +200,9 @@ used solely in an authorization header to purge the three configured public
 aliases. It is never logged or included in metrics, D1, R2, or Durable Object
 storage. The private R2 bucket uses only
 `v1/<profile>/<generation>/<fixed-name>` keys. Production public aliases are
-the fixed `index.html`, `index.xml`, and `index.json`; before human cutover v5
-uses the isolated `canary-v5/` prefix, and afterward residual v4 reconciliation
-uses `precutover-v4/`. No alias contains a password or access code.
+the fixed `index.html`, `index.xml`, and `index.json`; before configured cutover,
+Classic v6 uses `canary-v6/` and Game v2 uses `canary-v2/`. No alias contains an
+access token, grant, or private presence field.
 Custom metadata is an exact allowlist of schema, profile, format, generation,
 freshness, and model/body digest. The public strong ETag is R2-selected object
 metadata rather than a copied application digest.
@@ -240,7 +224,7 @@ heartbeat timestamp.
 
 ## Logs and metrics
 
-Automatic invocation logs are disabled. The deliberately retained custom
+The checked-in configurations disable automatic invocation logs. The deliberately retained custom
 diagnostics have closed, low-cardinality schemas:
 
 - `request_rejected`: closed route, public error code, and fixed status;
@@ -306,8 +290,8 @@ The closed outcomes are `completed`, `client_disconnected`,
 `authorization_failed`, and `internal_error`. There is no address, source tag,
 server identity, connection identity, ticket, credential, candidate, exception text, or
 free-form close reason in the schema. The at-most-one-point-per-accepted-session
-rule bounds the custom stream directly; native source shielding, exact pair
-cooldowns, and finite session work bound admitted attempts without using the
+rule bounds the custom stream directly; shared ingress ceilings, authenticated
+identity budgets, and finite session work bound attempts without using the
 metrics stream as an admission ledger. Zone `101` counts remain the authority
 for finding a missing best-effort terminal point.
 
@@ -320,7 +304,7 @@ attempts one best-effort `directory-build-v1` point:
 | --- | --- |
 | `index1` | `directory-build-v1:<profile>:<outcome>:<cleanup>` |
 | `blob1` | schema name `directory-build-v1` |
-| `blob2` | `classic-v1` or `game-v1` |
+| `blob2` | `classic-v3` or `game-v2` |
 | `blob3` | `current`, `published`, `purge-pending`, or `failed` |
 | `blob4` | retention cleanup `current` or `deferred` |
 | `double1` | invocation count, always `1` |
@@ -376,8 +360,8 @@ copied into a custom metric or log.
 
 ## Rendezvous transient state
 
-The first open client candidate or access-code-protected `auth_init` carries a
-fresh client-generated 64-hex ticket. The
+The first open client candidate or protected `access_init` carries a fresh
+client-generated 64-hex ticket. The
 room retains the raw ticket beyond the frame currently being validated or
 forwarded only in that client's compact, versioned WebSocket attachment for the
 at-most-15-second connection. The authenticated server socket's attachment
@@ -397,21 +381,22 @@ when the platform transport refuses to close. Every attachment is strictly
 decoded and remains below Cloudflare's
 [16,384-byte attachment ceiling](https://developers.cloudflare.com/durable-objects/best-practices/websockets/#websocketserializeattachment).
 
-Invite IDs, invite secrets, expiry values, challenges, proofs, and serialized
-authorization frames are processed only in the current bounded event and are
-never stored in a hibernation attachment, Durable Object table or key-value
-entry, D1, log, or metric. Attachments retain only the authorization stage and
-bounded counters. The Worker never receives the invite secret and cannot
-interpret the proof; only the authenticated current classic server control can
-authorize the exact ticket.
+Protected `access_init` also carries a short-lived single-use grant and client
+nonce. Grant redemption is bound to server identity, publication generation,
+route revision, and nonce; dispatch rechecks authorization. Raw grants may exist
+only in bounded live attachments and are scrubbed at terminal teardown. They
+never enter logs, metrics, public artifacts, or the durable replay ledger.
+Retired invitation challenge/proof frames are rejected, with no compatibility
+fallback. QUIC candidate addresses remain forward-only event data and never
+enter attachments, SQL, logs, metrics, or application history.
 
 Each successful publish creates a fresh random 64-hex, non-secret
 rendezvous generation alongside the new bearer-token hash. D1 stores both in
 profile-scoped minimal presence; the owner generation remains only a
-transaction guard. A private publish deletes its
-public directory row and retires the room while retaining the verifier promised
-by the successful response contract. The per-server
-Durable Object serializes the complete commit, checks the caller's prior D1
+transaction guard. A private publish deletes its public directory row while
+retaining authenticated private presence and the verifier for protected access.
+Every accepted publication rotates the generation and retires older controls and
+clients. The per-server Durable Object serializes the complete commit, checks the caller's prior D1
 generation, persists the next generation under the fixed
 `rendezvous:token-generation` key, retires all older controls and clients, and
 then writes the D1 transaction in one batch. A concurrent request with a stale prior
@@ -437,7 +422,7 @@ only after every socket is either durably non-routing or transport-closed.
 Each accepted client reserves one row in the per-room Durable Object SQLite
 admission ledger. Apart from its local numeric row ID, its application fields
 are `accepted_at_ms` and exactly two nullable replay-alias columns. The first
-valid open client candidate or access-code-protected `auth_init` derives and
+valid open client candidate or protected `access_init` derives and
 atomically claims both aliases; the same
 transaction rejects a collision against either column before forwarding the
 candidate. The room deletes every row whose acceptance time is at or before
@@ -446,15 +431,16 @@ exhaustion returns temporary unavailability and never a player-facing daily
 budget response.
 
 The aliases are versioned HMAC-SHA-256 values derived with the current and
-previous source-tag keys over this purpose-separated domain:
+previous non-IP replay keys over this purpose-separated domain:
 
 ```text
 atrinik-metaserver\0rendezvous-ticket-replay-tag\0v1\0<canonical-deployment-hostname>\0<opaque-durable-object-room-id>\0<client-ticket>
 ```
 
 That scope prevents the same ticket from becoming a cross-environment or
-cross-room pseudonym. Although it reuses the managed source-tag key ring, this
-purpose contains no request source address and is not an abuse-correlation tag.
+cross-room pseudonym. The historical source-tag key-ring name does not authorize
+address derivation:
+this purpose contains only a random ticket and its replay scope.
 SQLite never receives the raw ticket, its unkeyed SHA-256 routing digest, a
 connection ID, candidate address, frame counter, or credential. Testing a
 guessed ticket against an alias requires the corresponding HMAC secret. The
@@ -495,11 +481,14 @@ Service Binding capability and cannot call the other coordinator. Internal
 routing rejects caller-supplied transfer encodings at the public edge; the
 publisher coordinator consumes only Workerd's exact internal `chunked` body
 marker and removes it before canonical route and signature processing.
-Internal rendezvous alias headers are rejected on public ingress, validated as
-a strict current/previous tuple at the coordinator, and removed before server lookup or
-the room upgrade. Dynamic HTTP responses are accepted only when their status-
-specific headers and canonical JSON/text body match the fixed public contract
-within a 2,048-byte and 15-second ceiling; every accepted HTTP body is
+Internal source/pair alias headers are rejected at both ingress and coordinator;
+no previous envelope or compatibility bridge accepts them. The reconstructed
+request contains no requester or forwarded-IP metadata.
+
+Dynamic HTTP responses are accepted only when their status-specific headers and
+canonical JSON/text body match the fixed public contract. Publication responses
+are bounded to 2,048 bytes, access-route responses to 1,024 bytes, and protected
+resolve responses to 8,192 bytes, all within the 15-second deadline; every accepted HTTP body is
 reconstructed instead of streamed from the coordinator. Cloudflare's
 production Service Binding transport may attach the runtime-owned
 `CF-Worker-Status: ok` marker, and Workerd may materialize `Content-Length` for
@@ -509,45 +498,38 @@ values and every other transport-added or coordinator-supplied header fail
 closed. Runtime metadata is removed during reconstruction, including from a
 successful WebSocket response. A successful WebSocket must contain only the
 exact selected subprotocol/security headers and a live socket. This internal
-envelope contains only keyed aliases, never the source address.
+envelope contains no requester metadata or address-derived aliases.
 
 The directory never substitutes the request source for a direct endpoint.
 Signed publication may add an operator-configured, strictly
 validated optional DNS hostname/UDP port pair. That endpoint is public routing
-metadata under either retained v1 or v2 policy; it is not identity. Clients
+metadata only when the server is publicly listed; protected resolution may
+return the signed private endpoint to an authorized client. It is not identity. Clients
 still pin the QUIC certificate. Canonical `xn--` labels must round-trip through
 the protocol's strict non-transitional UTS #46 profile; Unicode U-labels and
 malformed or bidi-invalid A-labels fail before persistence. The Worker never
 resolves the hostname or stores its A/AAAA answers.
 
-The canonical room routes server candidates only to the client socket that
-originated their fresh ticket. Admission also requires a currently live server
-control authenticated with the listing's rendezvous token. That server-control
-proof is deliberately separate from player authorization. An
-access-code-protected v2 listing requires both peers to negotiate the exact
-classic invite subprotocol,
-then completes a single high-entropy invite challenge/response before the
-current authenticated server control can authorize that ticket. Unknown,
-expired, revoked, malformed, and incorrect capabilities receive the same
-generic denial from the classic server. The Worker never receives the launch
-code, rendezvous secret, post-QUIC capability, or authorization result. A
-retained v1 `PasswordRequired` listing keeps its distinct old post-QUIC
-password semantics and is never projected as v2.
-Transient QUIC candidates are therefore not exposed merely because a client
-knows a listed server identity.
+The canonical room routes server candidates only to the client socket bound to
+its fresh ticket. Admission requires a live server control authenticated with
+fresh profile presence. Protected access additionally requires the exact access
+rendezvous subprotocol and successful single-use grant redemption; open targets
+retain their open rendezvous mode. Unknown, expired, revoked, malformed, or
+incorrect access routes receive a generic denial. Resolve guesses allocate no
+persistent per-guess rows. Candidate disclosure therefore requires the selected
+mode's complete authorization, not just knowledge of a server identity.
 
 Overwriting or deleting current rows does not immediately erase recoverable
 history. D1
-[Time Travel](https://developers.cloudflare.com/d1/reference/time-travel/) is
-always enabled on the production storage backend and retains point-in-time
-history for the account's plan-specific window (currently up to 7 days on
-Workers Free and 30 days on Workers Paid). Retained Workers Logs and manual
-exports have independent lifetimes. Record when the final live value was
-sanitized, let every applicable retention window expire, and apply the same
+[Time Travel](https://developers.cloudflare.com/d1/reference/time-travel/)
+recovery retains point-in-time history for the account's plan-specific
+window. Its actual production retention and any retained Workers Logs or manual
+exports require separate operator verification. Record when the final live value
+was sanitized, let every applicable retention window expire, and apply the same
 deletion policy to exports before claiming historical raw values are gone.
-Only the three closed custom diagnostic schemas are configured to persist.
-Automatic invocation logs, traces, Workers Logpush, Tail/streaming-tail
-consumers, and OTLP destinations are explicitly disabled on every deployable;
+Only the closed custom diagnostic schemas are configured to persist.
+Checked-in deployables disable automatic invocation logs, traces, Workers Logpush,
+Tail/streaming-tail consumers, and OTLP destinations;
 account- and zone-scoped Logpush jobs remain an independent audit surface.
 
 [SQLite-backed Durable Objects have a separate 30-day point-in-time recovery

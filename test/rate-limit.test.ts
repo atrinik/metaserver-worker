@@ -1,11 +1,11 @@
 import { env } from "cloudflare:workers";
-import { beforeEach, describe, expect, it } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import {
   boundedRetryAfter,
   consumeFixedWindowBudget,
   enforceNativeBurst,
-  enforceNativeBurstAliases,
+  enforceSharedIngress,
   isD1ProgrammingOrIntegrityFailure,
   isRequestActorKey,
   REQUEST_BUDGET_SCOPES,
@@ -265,8 +265,8 @@ describe("request-control dependency failures", () => {
 });
 
 describe("request actor privacy", () => {
-  it("accepts only exact versioned tags or authenticated server identities", () => {
-    expect(isRequestActorKey(sourceActor())).toBe(true);
+  it("accepts only authenticated server identities", () => {
+    expect(isRequestActorKey(sourceActor())).toBe(false);
     expect(isRequestActorKey(SERVER_ACTOR)).toBe(true);
     expect(isRequestActorKey("192.0.2.10")).toBe(false);
     expect(isRequestActorKey("2001:db8::10")).toBe(false);
@@ -335,11 +335,11 @@ describe("request-control helpers", () => {
     };
     await enforceNativeBurst(
       accepting,
-      sourceActor("burst"),
+      SERVER_ACTOR,
       "publish-server",
     );
     expect(observedKeys).toEqual([
-      `publish-server.${sourceActor("burst")}`,
+      `publish-server.${SERVER_ACTOR}`,
     ]);
 
     const rejecting: RateLimit = {
@@ -362,40 +362,28 @@ describe("request-control helpers", () => {
     });
   });
 
-  it("checks native aliases in order with conservative partial charging", async () => {
-    const current = sourceActor("native-current");
-    const previous = sourceActor("native-previous");
-    const observedKeys: string[] = [];
-    const rejectingSecondAlias: RateLimit = {
-      async limit(options) {
-        observedKeys.push(options.key);
-        return { success: observedKeys.length === 1 };
-      },
-    };
+  it("uses fixed purpose keys without requester identifiers", async () => {
+    const limiter = {limit: vi.fn(async () => ({success:true}))};
+    for (const purpose of ["publisher", "resolve", "rendezvous-client", "rendezvous-server"] as const) {
+      await enforceSharedIngress(limiter, purpose);
+      expect(limiter.limit).toHaveBeenLastCalledWith({key:`shared-ingress-v1.${purpose}`});
+    }
+    limiter.limit.mockResolvedValueOnce({success:false});
+    await expect(enforceSharedIngress(limiter, "resolve")).rejects.toBeInstanceOf(RequestBudgetExceeded);
+  });
 
-    await expect(enforceNativeBurstAliases(
-      rejectingSecondAlias,
-      [current, previous],
-      "publish-server",
-    )).rejects.toBeInstanceOf(RequestBudgetExceeded);
-    expect(observedKeys).toEqual([
-      `publish-server.${current}`,
-      `publish-server.${previous}`,
-    ]);
-
-    const duplicateKeys: string[] = [];
-    const accepting: RateLimit = {
-      async limit(options) {
-        duplicateKeys.push(options.key);
-        return { success: true };
-      },
-    };
-    await enforceNativeBurstAliases(
-      accepting,
-      [current, current],
-      "publish-server",
-    );
-    expect(duplicateKeys).toEqual([`publish-server.${current}`]);
+  it("honors the shared circuit boundary without merging distinct purposes", async () => {
+    const ceiling = 65536;
+    const counts = new Map([["shared-ingress-v1.resolve", ceiling - 1]]);
+    const limiter = {async limit({key}:{key:string}) {
+      const count=(counts.get(key) ?? 0)+1; counts.set(key,count);
+      return {success:count<=ceiling};
+    }};
+    await enforceSharedIngress(limiter,"resolve");
+    await expect(enforceSharedIngress(limiter,"resolve")).rejects.toBeInstanceOf(RequestBudgetExceeded);
+    await enforceSharedIngress(limiter,"rendezvous-server");
+    expect(counts.get("shared-ingress-v1.resolve")).toBe(ceiling+1);
+    expect(counts.get("shared-ingress-v1.rendezvous-server")).toBe(1);
   });
 
   it("classifies native binding exceptions as temporary unavailability", async () => {
@@ -408,7 +396,7 @@ describe("request-control helpers", () => {
 
     const error = await captureRejection(enforceNativeBurst(
       unavailable,
-      sourceActor("native-failure"),
+      SERVER_ACTOR,
       "publish-server",
     ));
     expect(error).toBeInstanceOf(RequestControlUnavailable);

@@ -16,11 +16,6 @@ const rendezvousCoordinator = {
   RENDEZVOUS_HOSTNAME: "rendezvous.example.test",
   LISTING_TTL_SECONDS: "14400",
   ROUTE_DISABLED_RETRY_SECONDS: "300",
-  RENDEZVOUS_CLIENT_PAIR_BURST_LIMIT: "20",
-  RENDEZVOUS_CLIENT_PAIR_WINDOW_SECONDS: "60",
-  RENDEZVOUS_CLIENT_PAIR_INITIAL_COOLDOWN_SECONDS: "30",
-  RENDEZVOUS_CLIENT_PAIR_MAXIMUM_COOLDOWN_SECONDS: "900",
-  RENDEZVOUS_CLIENT_PAIR_RESET_SECONDS: "1800",
   RENDEZVOUS_SERVER_DAILY_LIMIT: "50",
 } as const;
 
@@ -58,11 +53,6 @@ describe("canonical configuration", () => {
       authority: "rendezvous.example.test",
       listingTtlSeconds: 14_400,
       routeDisabledRetrySeconds: 300,
-      rendezvousClientPairBurstLimit: 20,
-      rendezvousClientPairWindowSeconds: 60,
-      rendezvousClientPairInitialCooldownSeconds: 30,
-      rendezvousClientPairMaximumCooldownSeconds: 900,
-      rendezvousClientPairResetSeconds: 1_800,
       rendezvousServerDaily: 50,
     });
     expect(scheduledMaintenanceConfiguration({
@@ -77,12 +67,7 @@ describe("canonical configuration", () => {
 
   it("fails closed for missing, malformed, or raised canonical limits", () => {
     for (const [variable, value] of [
-      ["RENDEZVOUS_CLIENT_PAIR_BURST_LIMIT", undefined],
-      ["RENDEZVOUS_CLIENT_PAIR_BURST_LIMIT", "21"],
-      ["RENDEZVOUS_CLIENT_PAIR_WINDOW_SECONDS", "61"],
-      ["RENDEZVOUS_CLIENT_PAIR_INITIAL_COOLDOWN_SECONDS", "31"],
-      ["RENDEZVOUS_CLIENT_PAIR_MAXIMUM_COOLDOWN_SECONDS", "901"],
-      ["RENDEZVOUS_CLIENT_PAIR_RESET_SECONDS", "1801"],
+      ["RENDEZVOUS_SERVER_DAILY_LIMIT", undefined],
       ["RENDEZVOUS_SERVER_DAILY_LIMIT", "51"],
     ] as const) {
       expect(() => rendezvousCoordinatorConfiguration({
@@ -90,12 +75,6 @@ describe("canonical configuration", () => {
         [variable]: value,
       })).toThrowError(expect.objectContaining({ variable }));
     }
-    expect(() => rendezvousCoordinatorConfiguration({
-      ...rendezvousCoordinator,
-      RENDEZVOUS_CLIENT_PAIR_MAXIMUM_COOLDOWN_SECONDS: "29",
-    })).toThrowError(expect.objectContaining({
-      variable: "RENDEZVOUS_CLIENT_PAIR_MAXIMUM_COOLDOWN_SECONDS",
-    }));
   });
 
   it("rejects invalid authorities and retry policy", () => {
@@ -131,6 +110,7 @@ describe("rendezvous room and directory artifact configuration", () => {
       DIRECTORY_REFRESH_LEAD_SECONDS: "7200",
     })).toEqual({
       classicDirectoryCutoverMode: "v4-production",
+      gameDirectoryCutoverMode: "v1-production",
       listingTtlSeconds: 86_400,
       artifactLifetimeSeconds: 14_400,
       refreshLeadSeconds: 7_200,

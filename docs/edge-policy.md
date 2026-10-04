@@ -1,10 +1,14 @@
 # Cloudflare edge request policy
 
 In-Worker limits cannot reduce Worker invocation count because they run after
-an invocation begins. Production therefore needs a zone-level request gate and,
-where the plan supports the required fields, a WAF rate-limiting rule in front
-of each canonical dynamic edge. This document is a reviewed operator
-specification; it does not authorize an automated deployment.
+an invocation begins. Exact host/method/raw-target gates remain the
+pre-invocation boundary. This source policy does not require source-IP WAF
+characteristics: the application never extracts requester or forwarded IPs,
+derives hashes/HMAC identifiers from them, or stores, audits, logs, or metrics
+them. Historical provider-managed IP rules and log retention are unverified and
+live configuration is unchanged. An operator must separately review a non-IP
+replacement and its invocation-cost tradeoffs before changing those rules.
+This document does not authorize any deployment or provider write.
 
 The Workers Builds automatic-`main` entrypoint validates this boundary but does
 not own zone rules, DNS, Custom Domain attachment, triggers, or secret
@@ -154,24 +158,21 @@ each canary hostname:
 
 ```sh
 python3 scripts/static_origin_canary.py \
-  --profile classic-v1 \
-  --base-url https://classic-directory-canary.example.org \
+  --profile classic-v3 \
+  --base-url https://classic-v6-directory-canary.example.org \
+  --alias-prefix canary-v6 \
   --json
 python3 scripts/static_origin_canary.py \
-  --profile classic-v2 \
-  --base-url https://classic-v5-directory-canary.example.org \
-  --alias-prefix canary-v5 \
-  --json
-python3 scripts/static_origin_canary.py \
-  --profile game-v1 \
-  --base-url https://game-directory-canary.example.org \
+  --profile game-v2 \
+  --base-url https://game-v2-directory-canary.example.org \
+  --alias-prefix canary-v2 \
   --json
 ```
 
 Substitute only the exact isolated hostnames from the reviewed deployment
-record. The isolated v5 rule substitutes only `/canary-v5/` and the three
-`/canary-v5/index.*` paths for the root allowlist above; never add that prefix
-to the production hostname rule. The script has no mutation path or Cloudflare
+record. Isolated Classic v6 and Game v2 rules substitute only their respective
+`/canary-v6/` or `/canary-v2/` root and three `index.*` paths for the root
+allowlist above; never add a staging prefix to the production hostname rule. The script has no mutation path or Cloudflare
 credential input;
 resource creation, ruleset changes, and teardown remain separately authorized.
 
@@ -188,7 +189,7 @@ retirement response.
 
 ## Dedicated rendezvous hostname
 
-Install a separately named raw-target gate and rate rule on the canonical
+Review a separately named raw-target gate on the canonical
 rendezvous hostname before attaching its Custom Domain. The coarse
 raw-target envelope is:
 
@@ -196,18 +197,31 @@ raw-target envelope is:
 http.host eq "rendezvous.meta.atrinik.org" and not (
   starts_with(lower(raw.http.request.full_uri),
               "https://rendezvous.meta.atrinik.org/") and
-  http.request.method eq "GET" and (
-    (starts_with(raw.http.request.uri.path, "/v1/servers/") and
-     len(raw.http.request.uri.path) eq 76) or
-    (starts_with(raw.http.request.uri.path, "/v1/classic/servers/") and
-     len(raw.http.request.uri.path) eq 84)
+  (
+    (http.request.method eq "GET" and
+     raw.http.request.uri.query in {"role=client" "role=server"} and (
+      (starts_with(raw.http.request.uri.path, "/v1/servers/") and
+       len(raw.http.request.uri.path) eq 76) or
+      (starts_with(raw.http.request.uri.path, "/v1/classic/servers/") and
+       len(raw.http.request.uri.path) eq 84)
+    )) or
+    (raw.http.request.uri.query eq "" and
+     not (raw.http.request.uri contains "?") and (
+      (http.request.method eq "POST" and
+       raw.http.request.uri.path eq "/v1/access/resolve") or
+      (http.request.method eq "GET" and (
+        (starts_with(raw.http.request.uri.path, "/v1/access/rendezvous/classic/") and
+         len(raw.http.request.uri.path) eq 94) or
+        (starts_with(raw.http.request.uri.path, "/v1/access/rendezvous/game/") and
+         len(raw.http.request.uri.path) eq 91)
+      ))
+    ))
   ) and
   not (raw.http.request.uri.path contains "%") and
   not (raw.http.request.uri.path contains "\\") and
   not (raw.http.request.uri.path contains "//") and
   not (raw.http.request.uri.path contains "/./") and
-  not (raw.http.request.uri.path contains "/../") and
-  raw.http.request.uri.query in {"role=client" "role=server"}
+  not (raw.http.request.uri.path contains "/../")
 )
 ```
 
@@ -215,7 +229,8 @@ The HTTPS authority prefix makes plaintext part of the block-outside rule;
 never redirect a WebSocket upgrade.
 
 The Worker remains responsible for the exact route shape, 64-hex server ID,
-WebSocket headers, role, and authentication. Do not add health, directory,
+WebSocket headers, role, bounded resolve body, access subprotocol, and
+authentication. Do not add health, directory,
 challenge, or update paths to this host.
 
 The automatic delivery canary stays inside this envelope: it uses `GET` on the
@@ -224,16 +239,19 @@ but no credential. When the circuit is enabled, the fixed `404` proves the
 named core Service Binding; when disabled, the exact `503` and retry value
 prove the intended closed edge. It never requires a WAF exception.
 
-Where the plan supports the required host/method/path fields, use a source-IP
-characteristic and an initial 60 requests per 60 seconds with a 60-second
-mitigation for this dedicated dynamic host. This WAF ceiling is a coarse
-pre-invocation shield shared by clients behind one NAT, not the rendezvous
-admission authority. The Worker applies one 60/minute client-native shield
-without also charging the global bucket, then an exact eligible-pair rolling
-burst/cooldown in D1. Server-role native/daily policy is unchanged. The
-per-server Durable Object retains atomic current/previous-key replay-alias
-claims and structural work limits but no ordinary daily session quota. Canary
-and alert on all three layers independently.
+No source-IP WAF characteristic or source/server-pair cooldown is required by
+this source contract. Do not infer that historical provider rules have been
+removed: their live state, logging, and retention require a separate operator
+audit and approved non-IP replacement. Retired internal source/pair headers are
+rejected at both public ingress and the core with no old-envelope bridge.
+
+Anonymous native counters use only fixed-purpose shared keys. Publisher ingress
+is 32,768/minute/location; resolve, client rendezvous, and server rendezvous use
+separate 65,536/minute/location scopes. These approximate shared ceilings do not
+provide strict global limits, per-client isolation, or fairness. Authenticated
+identity budgets and finite per-server work remain independent; see
+[rate-limits.md](rate-limits.md) for cohort arithmetic, cadence, and grant limits.
+Only a separately reviewed pre-invocation rule can reduce Worker charges.
 
 Keep `workers.dev` and preview URLs disabled on every deployment so edge policy
 has no bypass.
@@ -255,14 +273,19 @@ http.host eq "publish.meta.atrinik.org" and not (
   not (raw.http.request.uri.path contains "/./") and
   not (raw.http.request.uri.path contains "/../") and
   not (raw.http.request.uri contains "?") and (
-    (starts_with(raw.http.request.uri.path, "/v1/servers/") and
-     len(raw.http.request.uri.path) eq 84) or
-    (starts_with(raw.http.request.uri.path, "/v1/classic/servers/") and
-     len(raw.http.request.uri.path) eq 92) or
-    (starts_with(raw.http.request.uri.path, "/v2/classic/servers/") and
-     len(raw.http.request.uri.path) eq 92)
-  ) and
-  ends_with(raw.http.request.uri.path, "/publish")
+    (ends_with(raw.http.request.uri.path, "/publish") and (
+      (starts_with(raw.http.request.uri.path, "/v2/servers/") and
+       len(raw.http.request.uri.path) eq 84) or
+      (starts_with(raw.http.request.uri.path, "/v3/classic/servers/") and
+       len(raw.http.request.uri.path) eq 92)
+    )) or
+    (ends_with(raw.http.request.uri.path, "/routes") and (
+      (starts_with(raw.http.request.uri.path, "/v1/access/servers/classic/") and
+       len(raw.http.request.uri.path) eq 98) or
+      (starts_with(raw.http.request.uri.path, "/v1/access/servers/game/") and
+       len(raw.http.request.uri.path) eq 95)
+    ))
+  )
 )
 ```
 
@@ -273,10 +296,10 @@ certificate identity, signature, sequence, and nonce. Do not add a directory,
 rendezvous, or health route to this hostname.
 
 The automatic delivery canary stays inside this envelope: it uses `POST` on
-the non-retirable 92-byte Classic v2 publish path with a bounded JSON body and
+the active 92-byte Classic v3 publish path with a bounded JSON body and
 a syntactically valid but cryptographically invalid signature. When the
 circuit is enabled, the coordinator's fixed `401` proves the named core
-Service Binding, including after global v1 retirement; when disabled, the
+Service Binding; when disabled, the
 exact `503` and retry value prove the intended closed edge. It never requires
 a WAF exception, private credential, or publication write.
 
@@ -374,22 +397,19 @@ pre-Worker enforcement: correlate all eight fixed block probes with WAF
 Security Events and Worker Metrics and require the expected Security Events
 with zero Worker invocation delta.
 
-The canonical request must reach the Worker, the two raw/extra-query requests
-must be blocked before it, and the controlled loop must be edge-mitigated after
-the configured threshold. Confirm in zone security analytics that mitigated
-requests stop increasing Worker invocations. Then verify that in-Worker `429`
-tests still stop D1/application mutation when the WAF rule is temporarily
-skipped in the isolated canary.
+Canonical requests must reach the selected Worker, while malformed raw targets
+must be blocked before invocation. Correlate the fixed negative cohort with
+aggregate Worker counts. Verify shared native counter exhaustion stops D1/room
+work in an isolated canary; use reduced reviewed canary ceilings instead of a
+large traffic loop. Metadata/header variation must not create a new counter key.
 
-For a rendezvous canary, repeat the controlled upgrade test on the isolated
-rendezvous hostname while one authenticated server-control socket is live.
-Confirm WAF mitigation stops Worker upgrades, Worker/D1 source limits stop room
-work, and the Durable Object's exact rolling limit returns its own bounded
-`429` after the configured number of accepted sessions. Repeat from a shared
-NAT test path and record which approximate source ceilings are shared; do not
-weaken the exact per-server limit to compensate.
+For rendezvous, hold one authenticated server control open and verify active
+attempt, session, replay, grant, and candidate-work bounds. There is no IP/NAT
+or pair-cooldown admission dimension. Reconstruct the room and verify that its
+non-IP replay authority survives. Audit any historical provider IP rule
+separately; a source test cannot establish its absence or its retention.
 
-With the WAF/native controls below their canary ceilings, claim one ticket,
+With shared native controls below their canary ceilings, claim one ticket,
 disconnect the server, allow the room to evict, reconnect the authenticated
 server, and replay that ticket from a new client. The room must reject it before
 candidate forwarding while a fresh ticket still succeeds. This proves the
@@ -400,8 +420,8 @@ Do not attach or move the production custom domain until all of these are true:
 
 1. the production Worker exposes no `workers.dev` or preview hostname;
 2. the enabled raw-target rule exactly matches the approved expression;
-3. the rate rule is enabled, or the plan exception and fallback risk are
-   explicitly approved;
+3. any historical IP-based provider rule and retention has a separately
+   reviewed non-IP replacement or an explicit unresolved cutover blocker;
 4. aggregate Worker/WAF alerts and scheduled-cleanup failure alerts exist;
 5. the isolated canary passes replay-after-reconstruction and HMAC-only room
    storage inspection with its distinct bindings; and

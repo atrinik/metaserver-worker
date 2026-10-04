@@ -23,6 +23,7 @@ import {
   parseVersionMessage,
   parseCurrentMainRef,
   recoverDisabledCore,
+  resolveProductionCanaryCommand,
   selectBuildLeaseOwner,
   selectApiHandoffRoles,
   selectLiveTrigger,
@@ -127,9 +128,11 @@ test("accepts the checked-in production trigger and topology", () => {
       "python3",
       "scripts/static_origin_canary.py",
       "--profile",
-      "classic-v1",
+      "classic-v3",
       "--base-url",
       "https://classic.meta.atrinik.org",
+      "--alias-prefix",
+      "$CLASSIC_DIRECTORY_ALIAS_PREFIX",
       "--allow-production",
       "--json",
     ],
@@ -1527,4 +1530,23 @@ test("subprocess diagnostics retain one bounded redacted provider line through a
   assert.equal(detail.includes(secret), false);
   assert.equal(detail.includes("a".repeat(32)), false);
   assert.ok(detail.length <= 260);
+});
+
+
+test("static canaries follow each profile's explicit alias cutover", () => {
+  const scenarioConfigs = configs.map((value) => structuredClone(value));
+  for (const [classic, game, expectedClassic, expectedGame] of [
+    ["v4-production", "v1-production", "canary-v6", "canary-v2"],
+    ["v5-production", "v1-production", "canary-v6", "canary-v2"],
+    ["v6-production", "v2-production", "", ""],
+  ]) {
+    scenarioConfigs[0].vars.CLASSIC_DIRECTORY_CUTOVER_MODE = classic;
+    scenarioConfigs[0].vars.GAME_DIRECTORY_CUTOVER_MODE = game;
+    const classicCommand = resolveProductionCanaryCommand(contract.productionCanaries[0], scenarioConfigs);
+    const gameCommand = resolveProductionCanaryCommand(contract.productionCanaries[1], scenarioConfigs);
+    assert.equal(classicCommand[classicCommand.indexOf("--alias-prefix") + 1], expectedClassic);
+    assert.equal(gameCommand[gameCommand.indexOf("--alias-prefix") + 1], expectedGame);
+  }
+  scenarioConfigs[0].vars.GAME_DIRECTORY_CUTOVER_MODE = "unknown";
+  assert.throws(() => resolveProductionCanaryCommand(contract.productionCanaries[0], scenarioConfigs), /cutover policy drift/u);
 });

@@ -1,7 +1,7 @@
 # Metaserver Worker deployment
 
-This runbook deploys the canonical-only three-Worker architecture. Classic
-v5.9.0 is the minimum supported consumer. The removed CGI/public `/v2` API has
+This runbook covers the canonical-only three-Worker architecture. The current
+source requires coordinated access-token-capable Classic and Game consumers. The removed CGI/public `/v2` API has
 no traffic-drain, fallback, redirect, application `410`, or rollback path.
 
 Production state exists. Applied D1 migrations are immutable and new schema
@@ -1192,80 +1192,66 @@ create an unreviewed intermediate version.
 5. Confirm `meta.atrinik.org` is unattached while Game rollout is disabled.
    Its eventual origin is the static Game R2 bucket, never the core Worker.
 
-## Stage Classic v2 and directory protocol 5
+## Stage access-token publisher and directory contracts
 
-This rollout is forward-only. It keeps Classic v1 and directory protocol 4
-available while protocol 5 is reviewed, then separates production alias
-cutover from the later global v1 receiver retirement.
+This source change grants no deployment, migration, activation or alias-cutover
+authority. Production state and existing open-server behavior remain unchanged
+until an operator authorizes an exact coordinated rollout.
 
-1. Disable both publisher circuits and schedules. Record a private D1 Time
-   Travel bookmark, the applied-migration ledger, schema digest, and aggregate
-   counts for both Classic profiles. Apply `0010_classic_access_code.sql` once.
-   Require `PRAGMA foreign_key_check` to be empty, all v1 and Game rows to be
-   unchanged, and the new Classic lineage/mode tables and v2 constraints to
-   match the reviewed migration proof. Do not export row values.
-2. Deploy the state-owning core at 100%, then activate only the exact
-   prevalidated publisher and rendezvous callers. Read back versions, bindings,
-   configuration, and circuits after every activation. Keep
-   `CLASSIC_DIRECTORY_CUTOVER_MODE=v4-production`; this makes v1 protocol 4 the
-   production root aliases and isolates v2 protocol 5 under `canary-v5/`.
-3. Re-enable the v2 publisher path and use released protocol vectors to prove
-   positive publication, replay rejection in both version directions, shared
-   v1/v2 sequence and nonce history, public/private transition behavior, and
-   open/protected rendezvous policy. A protected v2 publication carries only
-   `accessCodeRequired`; no access code or v1 password field may reach D1, R2,
-   rendezvous state, a response, or a log. Accepting the maximum sequence must
-   succeed once; all later lineage requests must return the fixed
-   `publish_sequence_exhausted` response without mutation.
-4. Validate the isolated protocol-5 aliases with the read-only verifier:
+The current migration horizon is `0014_access_token_routing.sql`. Apply every
+pending migration only inside the separately authorized closed-circuit rollout.
+Migration 0013 seeds Classic v3 replay from the maximum old v1/v2 lineage and
+Game v2 replay from Game v1, including the nonce union. It preserves historical
+policy rows without interpreting them as access-token policy. New directories
+start empty, and fresh signed publication is required for new public/private
+presence. Migration 0014 holds owner-private routes, receipts, grants and limits.
+The optional retirement SQL under [deployment/retirement](deployment/retirement/README.md)
+is excluded from automatic migrations and has separate proof and approval gates.
 
-   ```sh
-   python3 scripts/static_origin_canary.py \
-     --profile classic-v2 \
-     --base-url https://classic-v5-directory-canary.example.org \
-     --alias-prefix canary-v5 \
-     --json
-   ```
+Use staged aliases until the new consumers and complete artifact cohorts have
+been accepted:
 
-   Substitute only the exact isolated hostname from the reviewed deployment
-   record. Require exact v5
-   schema/protocol values, representation checksums, generation agreement,
-   expiry, open/protected rendering, private absence, and no password or raw
-   access-code material. Record bounded checksums and outcomes only.
-5. Obtain explicit human acceptance of the v5 canaries. Then make a separately
-   reviewed configuration change to `v5-production`, deploy provider first and
-   callers second, and prove root `index.*` now carries v5 while any v4
-   reconciliation is isolated under `precutover-v4/`. This gate is not driven
-   by time, traffic, or a successful publish and must never be switched back.
-6. Before global v1 retirement, exclude new v1 admission at the deployment
-   barrier and allow already admitted commits and active v1 controls to finish
-   normally. Wait strictly longer than the 15-second control/session bound plus
-   deployment propagation, and require zero remaining v1 controls. A commit
-   admitted before exclusion receives its normal committed response and
-   consumes sequence/nonce; a new excluded request receives the fixed 410
-   before its body is read and consumes nothing.
-7. Generate the one-way retirement transaction with the exact command shown
-   below, review the SQL, and apply it once. It atomically publishes the durable
-   retired marker, removes v1 presence/listing, advances v1 directory
-   revision/outbox when needed, and retains the shared replay/nonce lineage.
-   Require all v2 state to remain byte-for-byte unchanged. Reapplying is an
-   idempotent no-op; there is no command that reopens v1.
+| Configuration | New profile output |
+| --- | --- |
+| Classic `v4-production` or `v5-production` | `classic-v3` under `canary-v6/` |
+| Classic `v6-production` | `classic-v3` root aliases |
+| Game `v1-production` | `game-v2` under `canary-v2/` |
+| Game `v2-production` | `game-v2` root aliases |
 
-   ```sh
-   python3 scripts/admin_sql.py retire-classic-v1 \
-     --confirm human-accepted-v5-canaries-and-cutover
-   ```
+The historical mode names are staging selectors only. This runtime has no
+Classic v1/v2 publisher or Game v1 publisher fallback and does not rebuild old
+directory formats. Retired immutable definitions and migration files remain
+historical evidence. Old R2 aliases require their own explicit, proven retirement;
+changing a mode is not evidence that cached historical objects have disappeared.
 
-8. Reconcile and verify the v1 tombstone and production v5 aliases. Prove every
-   later v1 request receives exact non-consuming `410 profile_retired` before
-   body inspection, while v2 publication, listing, and rendezvous continue.
-   Retain only the reviewed gate decision, versions, migration/bookmark
-   metadata, aggregate counts, checksums, and fixed response outcomes.
+After separately authorized isolated provisioning, the credential-free static
+canary accepts only the new profile/schema pairs and their matching alias prefix:
 
-Failure before the v5 alias or retirement commit rolls back to the last durable
-pre-gate state. Failure after either commit rolls forward with the same mode;
-never restore protocol 4 to production, clear lineage state, remove the retired
-marker, or deploy schema-incompatible code.
+```sh
+python3 scripts/static_origin_canary.py \
+  --profile classic-v3 \
+  --base-url https://classic-v6-directory-canary.example.org \
+  --alias-prefix canary-v6 --json
+python3 scripts/static_origin_canary.py \
+  --profile game-v2 \
+  --base-url https://game-v2-directory-canary.example.org \
+  --alias-prefix canary-v2 --json
+```
+
+The automatic delivery contract derives each canary prefix from the exact core
+configuration; the same checked configuration drives builder and purge targets.
+Canaries verify canonical JSON/XML/HTML, `accessRequired` policy, fresh coherent
+cohorts, native validators, public/private separation and bounded rejection paths.
+Current publisher canaries use the protocol-owned Classic v3 signature envelope.
+They cannot authorize deployment or cutover merely by passing.
+
+`ACCESS_ROUTE_RATE_LIMITER` is core-only, namespace `1008`, 16 requests/minute.
+The isolated review cohort uses `2008` with the same ceiling and counts it in its
+six-namespace cap; namespaces or counters are never reused across environments.
+Provider-first deployment, disabled-circuit staging, pinned source and migration
+prefix proof, current-main fencing, canary acceptance and explicit operator
+cutover remain mandatory. Keep full state/configuration/identity backups and
+prove native consumers before making protected/private access available.
 
 ## Drain the replay namespace
 
@@ -1410,11 +1396,11 @@ bookmark does not authorize restoring retired APIs or active legacy state.
 
    ```sh
    python3 scripts/static_origin_canary.py \
-     --profile classic-v1 \
+     --profile classic-v3 \
      --base-url https://classic-directory-canary.example.org \
      --json
    python3 scripts/static_origin_canary.py \
-     --profile game-v1 \
+     --profile game-v2 \
      --base-url https://game-directory-canary.example.org \
      --json
    python3 scripts/edge_ingress_canary.py \
@@ -1495,8 +1481,19 @@ The identity-scoped commands are `reset-identity`, `deny-add`, and
 `retire-classic-v1` command accepts only the fixed human-gate confirmation in
 the staged rollout above and has no inverse. Wildcards, addresses, and CIDRs
 are rejected.
-Do not use administrative SQL to restore retired routes or clear ordinary
-rendezvous cooldowns.
+Identity reset requires publisher exclusion and a rendezvous room drain. It
+atomically removes presence, public entries, replay state, grants and receipts,
+and revokes active or reserved access routes. Existing route tombstones and
+request budgets remain to prevent reuse after republishing. Each affected public
+profile receives a directory invalidation; private-only state does not. Use the
+complete generated file with the pinned Wrangler D1 execute workflow: Wrangler
+strips the single `BEGIN TRANSACTION`/`COMMIT` wrapper and submits the statements
+as one D1 transaction. Do not submit individual statements or an explicit
+`BEGIN IMMEDIATE` through the D1 binding.
+Do not use administrative SQL to restore retired routes or address-derived
+tracking. Migration `0015_remove_ip_derived_pair_tracking.sql` drops the retired
+source/server-pair tables and their indexes while preserving publisher identity,
+private access routing, grant replay state, and identity-scoped request budgets.
 
 ## Roll back
 

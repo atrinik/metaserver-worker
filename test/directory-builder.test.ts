@@ -12,7 +12,6 @@ import {
   readDirectoryArtifactPublication,
 } from "../src/directory-state";
 import {
-  assertNoClassicV1ProductionRollback,
   directoryAliasPrefix,
 } from "../src/directory-builder";
 import type { DirectoryBuilder } from "../src/directory-builder";
@@ -65,8 +64,8 @@ beforeEach(async () => {
     clearBucket(env.DIRECTORY_GENERATIONS),
     clearBucket(env.CLASSIC_DIRECTORY_PUBLIC),
     clearBucket(env.GAME_DIRECTORY_PUBLIC),
-    resetBuilder("classic-v1"),
-    resetBuilder("game-v1"),
+    resetBuilder("classic-v3"),
+    resetBuilder("game-v2"),
   ]);
 });
 
@@ -77,14 +76,14 @@ describe("static directory builder", () => {
       env,
       createExecutionContext(),
     );
-    expect((await readDirectoryArtifactPublication(env.DB, "classic-v1"))
+    expect((await readDirectoryArtifactPublication(env.DB, "classic-v3"))
       .generation).toBe(1);
-    expect((await readDirectoryArtifactPublication(env.DB, "game-v1"))
+    expect((await readDirectoryArtifactPublication(env.DB, "game-v2"))
       .generation).toBe(1);
   });
 
   it("preseeds valid empty aliases for both isolated profiles", async () => {
-    for (const profile of ["classic-v1", "game-v1"] as const) {
+    for (const profile of ["classic-v3", "game-v2"] as const) {
       const result = await env.DIRECTORY_BUILDER.getByName(profile).reconcile();
       expect(result).toEqual({
         profile,
@@ -92,7 +91,7 @@ describe("static directory builder", () => {
         generation: 1,
         revision: 0,
       });
-      const bucket = profile === "classic-v1"
+      const bucket = profile === "classic-v3"
         ? env.CLASSIC_DIRECTORY_PUBLIC
         : env.GAME_DIRECTORY_PUBLIC;
       expect((await bucket.list()).objects.map((object) => object.key).sort())
@@ -128,7 +127,7 @@ describe("static directory builder", () => {
   });
 
   it("publishes one new generation for a visible change and none for a heartbeat", async () => {
-    const stub = env.DIRECTORY_BUILDER.getByName("classic-v1");
+    const stub = env.DIRECTORY_BUILDER.getByName("classic-v3");
     await stub.reconcile();
     const serverId = "1".repeat(64);
     const first = publication(serverId, NOW, "a".repeat(64));
@@ -144,7 +143,7 @@ describe("static directory builder", () => {
       .toContain(`<Id>${serverId}</Id>`);
     const checkpoint = await readDirectoryArtifactPublication(
       env.DB,
-      "classic-v1",
+      "classic-v3",
     );
     expect(checkpoint.expiresAt % 900).toBe(0);
     expect(checkpoint.expiresAt).not.toBe(first.now + 14_400);
@@ -161,7 +160,7 @@ describe("static directory builder", () => {
     })).resolves.toEqual({ accepted: true, visibleChanged: false });
     expect(await env.DB.prepare(
       `SELECT last_seen FROM server_presence
-        WHERE profile = 'classic-v1' AND server_id = ?`,
+        WHERE profile = 'classic-v3' AND server_id = ?`,
     ).bind(serverId).first<number>("last_seen")).toBe(NOW + 60);
     vi.spyOn(Date, "now").mockReturnValue((NOW + 60) * 1_000);
     await expect(stub.reconcile()).resolves.toMatchObject({
@@ -173,7 +172,7 @@ describe("static directory builder", () => {
   });
 
   it("ranks sustained activity across every representation and coalesces pins", async () => {
-    const stub = env.DIRECTORY_BUILDER.getByName("classic-v1");
+    const stub = env.DIRECTORY_BUILDER.getByName("classic-v3");
     await stub.reconcile();
     const sustainedId = "a".repeat(64);
     const newId = "b".repeat(64);
@@ -219,7 +218,7 @@ describe("static directory builder", () => {
     await env.DB.prepare(
       `INSERT INTO directory_admin_pins
           (profile, server_id, priority, expires_at, note, created_at, updated_at)
-       VALUES ('classic-v1', ?, 0, NULL, 'launch partner', ?, ?)`,
+       VALUES ('classic-v3', ?, 0, NULL, 'launch partner', ?, ?)`,
     ).bind(newId, NOW, NOW).run();
     await expect(stub.reconcile()).resolves.toMatchObject({
       outcome: "published",
@@ -244,90 +243,16 @@ describe("static directory builder", () => {
     ]);
   });
 
-  it("keeps v5 canary aliases disjoint from live v4 aliases", async () => {
-    await env.DIRECTORY_BUILDER.getByName("classic-v1").reconcile();
-    const rootV4 = await (await env.CLASSIC_DIRECTORY_PUBLIC.get(
-      "index.json",
-    ))?.text();
-    expect(rootV4).toContain('"schema":"atrinik-classic-directory-v4"');
-
-    const v5 = await env.DIRECTORY_BUILDER.getByName("classic-v2").reconcile();
-    expect(v5).toMatchObject({
-      profile: "classic-v2",
-      outcome: "published",
-      revision: 0,
-    });
-    expect(await (await env.CLASSIC_DIRECTORY_PUBLIC.get("index.json"))?.text())
-      .toBe(rootV4);
-    expect(await (await env.CLASSIC_DIRECTORY_PUBLIC.get(
-      "canary-v5/index.json",
-    ))?.text()).toContain(
-      '"schema":"atrinik-classic-directory-v5"',
-    );
-    expect((await env.CLASSIC_DIRECTORY_PUBLIC.list()).objects
-      .map(({ key }) => key).sort()).toEqual([
-        "canary-v5/index.html",
-        "canary-v5/index.json",
-        "canary-v5/index.xml",
-        "canary-v5/manifest.json",
-        "index.html",
-        "index.json",
-        "index.xml",
-        "manifest.json",
-      ]);
-  });
-
-  it("never lets a later v4 configuration overwrite a v5 production alias", async () => {
-    await env.DIRECTORY_BUILDER.getByName("classic-v1").reconcile();
-    await env.DIRECTORY_BUILDER.getByName("classic-v2").reconcile();
-    for (const key of ["index.html", "index.json", "index.xml", "manifest.json"]) {
-      const source = await env.CLASSIC_DIRECTORY_PUBLIC.get(`canary-v5/${key}`);
-      if (source === null) {
-        throw new Error(`Missing v5 canary ${key}`);
-      }
-      await env.CLASSIC_DIRECTORY_PUBLIC.put(key, await source.arrayBuffer(), {
-        httpMetadata: source.httpMetadata,
-        customMetadata: source.customMetadata,
-      });
-    }
-    const before = await Promise.all(
-      ["index.html", "index.json", "index.xml", "manifest.json"].map(async (key) =>
-        new Uint8Array(await (await env.CLASSIC_DIRECTORY_PUBLIC.get(key))!
-          .arrayBuffer())
-      ),
-    );
-    await expect(assertNoClassicV1ProductionRollback(
-      env.CLASSIC_DIRECTORY_PUBLIC,
-      "classic-v1",
-      "",
-    )).rejects.toThrow(
-      "Classic directory protocol 5 cannot roll back to protocol 4",
-    );
-    const after = await Promise.all(
-      ["index.html", "index.json", "index.xml", "manifest.json"].map(async (key) =>
-        new Uint8Array(await (await env.CLASSIC_DIRECTORY_PUBLIC.get(key))!
-          .arrayBuffer())
-      ),
-    );
-    expect(after).toEqual(before);
-    expect(new TextDecoder().decode(after[1])).toContain(
-      '"schema":"atrinik-classic-directory-v5"',
-    );
-  });
-
-  it("selects disjoint aliases on both sides of the human cutover gate", () => {
-    expect(directoryAliasPrefix("game-v1", "v4-production")).toBe("");
-    expect(directoryAliasPrefix("game-v1", "v5-production")).toBe("");
-    expect(directoryAliasPrefix("classic-v1", "v4-production")).toBe("");
-    expect(directoryAliasPrefix("classic-v2", "v4-production"))
-      .toBe("canary-v5/");
-    expect(directoryAliasPrefix("classic-v1", "v5-production"))
-      .toBe("precutover-v4/");
-    expect(directoryAliasPrefix("classic-v2", "v5-production")).toBe("");
+  it("stages both new profiles until an explicit alias cutover", () => {
+    expect(directoryAliasPrefix("classic-v3", "v4-production")).toBe("canary-v6/");
+    expect(directoryAliasPrefix("classic-v3", "v5-production")).toBe("canary-v6/");
+    expect(directoryAliasPrefix("classic-v3", "v6-production")).toBe("");
+    expect(directoryAliasPrefix("game-v2", "v6-production")).toBe("canary-v2/");
+    expect(directoryAliasPrefix("game-v2", "v6-production", "v2-production")).toBe("");
   });
 
   it("globally purges only the changed profile aliases after publication", async () => {
-    const stub = env.DIRECTORY_BUILDER.getByName("classic-v1");
+    const stub = env.DIRECTORY_BUILDER.getByName("classic-v3");
     await stub.reconcile();
     const purge = vi.mocked(globalThis.fetch);
     expect(purge).toHaveBeenCalledTimes(1);
@@ -348,7 +273,7 @@ describe("static directory builder", () => {
   });
 
   it("retains a committed generation and retries an ambiguous purge", async () => {
-    const stub = env.DIRECTORY_BUILDER.getByName("classic-v1");
+    const stub = env.DIRECTORY_BUILDER.getByName("classic-v3");
     await stub.reconcile();
     await persistRendezvousPublication(
       env.DB,
@@ -364,7 +289,7 @@ describe("static directory builder", () => {
       generation: 2,
       revision: 1,
     });
-    expect((await readDirectoryArtifactPublication(env.DB, "classic-v1")))
+    expect((await readDirectoryArtifactPublication(env.DB, "classic-v3")))
       .toMatchObject({ generation: 2, publishedRevision: 1 });
     await runInDurableObject(stub, async (_instance, state) => {
       expect(await state.storage.getAlarm()).toBe(NOW * 1_000 + 60_000);
@@ -388,7 +313,7 @@ describe("static directory builder", () => {
   });
 
   it("preserves a superseding revision while an earlier purge is retried", async () => {
-    const stub = env.DIRECTORY_BUILDER.getByName("classic-v1");
+    const stub = env.DIRECTORY_BUILDER.getByName("classic-v3");
     await stub.reconcile();
     const first = publication("3".repeat(64), NOW, "c".repeat(64));
     await persistRendezvousPublication(env.DB, first);
@@ -427,9 +352,9 @@ describe("static directory builder", () => {
       visibleChanged: true,
     });
     expect(await env.DB.prepare(
-      "SELECT revision FROM directory_revisions WHERE profile = 'classic-v1'",
+      "SELECT revision FROM directory_revisions WHERE profile = 'classic-v3'",
     ).first<number>("revision")).toBe(2);
-    expect((await readDirectoryArtifactPublication(env.DB, "classic-v1")))
+    expect((await readDirectoryArtifactPublication(env.DB, "classic-v3")))
       .toMatchObject({ publishedRevision: 1, generation: 2 });
     await expect(stub.reconcile()).resolves.toMatchObject({
       outcome: "current",
@@ -437,7 +362,7 @@ describe("static directory builder", () => {
       revision: 1,
     });
     expect(await env.DB.prepare(
-      "SELECT revision FROM directory_outbox WHERE profile = 'classic-v1'",
+      "SELECT revision FROM directory_outbox WHERE profile = 'classic-v3'",
     ).first<number>("revision")).toBe(2);
     await runInDurableObject(stub, async (_instance, state) => {
       expect(await state.storage.get(BUILDER_STATE_KEY)).toMatchObject({
@@ -447,9 +372,9 @@ describe("static directory builder", () => {
   });
 
   it("retries an accepted purge when completion was not durably cleared", async () => {
-    const stub = env.DIRECTORY_BUILDER.getByName("game-v1");
+    const stub = env.DIRECTORY_BUILDER.getByName("game-v2");
     await stub.reconcile();
-    const checkpoint = await readDirectoryArtifactPublication(env.DB, "game-v1");
+    const checkpoint = await readDirectoryArtifactPublication(env.DB, "game-v2");
     await runInDurableObject(stub, async (_instance, state) => {
       await state.storage.put(BUILDER_STATE_KEY, {
         version: 1,
@@ -474,7 +399,7 @@ describe("static directory builder", () => {
   });
 
   it("removes exact-cutoff presence and publishes the resulting empty revision", async () => {
-    const stub = env.DIRECTORY_BUILDER.getByName("classic-v1");
+    const stub = env.DIRECTORY_BUILDER.getByName("classic-v3");
     await stub.reconcile();
     const serverId = "2".repeat(64);
     await persistRendezvousPublication(
@@ -494,7 +419,7 @@ describe("static directory builder", () => {
   });
 
   it("repairs a deleted alias only under a strictly newer generation", async () => {
-    const stub = env.DIRECTORY_BUILDER.getByName("classic-v1");
+    const stub = env.DIRECTORY_BUILDER.getByName("classic-v3");
     await stub.reconcile();
     await env.CLASSIC_DIRECTORY_PUBLIC.delete("index.html");
 
@@ -516,7 +441,7 @@ describe("static directory builder", () => {
       customMetadata: { generation: "7" },
     });
 
-    await expect(env.DIRECTORY_BUILDER.getByName("classic-v1").reconcile())
+    await expect(env.DIRECTORY_BUILDER.getByName("classic-v3").reconcile())
       .resolves.toMatchObject({ outcome: "published", generation: 8 });
     expect((await bucket.head("manifest.json"))?.customMetadata)
       .toMatchObject({ generation: "8" });
@@ -524,11 +449,11 @@ describe("static directory builder", () => {
 
   it("allocates above a private-only partial generation after state loss", async () => {
     await env.DIRECTORY_GENERATIONS.put(
-      "v1/classic-v1/1/index.html",
+      "v1/classic-v3/1/index.html",
       "private partial",
     );
 
-    await expect(env.DIRECTORY_BUILDER.getByName("classic-v1").reconcile())
+    await expect(env.DIRECTORY_BUILDER.getByName("classic-v3").reconcile())
       .resolves.toMatchObject({ outcome: "published", generation: 2 });
     expect((await env.CLASSIC_DIRECTORY_PUBLIC.head("manifest.json"))
       ?.customMetadata).toMatchObject({ generation: "2" });
@@ -538,14 +463,14 @@ describe("static directory builder", () => {
     await env.CLASSIC_DIRECTORY_PUBLIC.put("index.html", "corrupt", {
       customMetadata: { generation: "not-a-generation" },
     });
-    await expect(env.DIRECTORY_BUILDER.getByName("classic-v1").reconcile())
+    await expect(env.DIRECTORY_BUILDER.getByName("classic-v3").reconcile())
       .resolves.toMatchObject({ outcome: "published", generation: 1 });
     expect((await env.CLASSIC_DIRECTORY_PUBLIC.head("index.html"))
       ?.customMetadata).toMatchObject({ generation: "1" });
   });
 
   it("rolls legacy application-ETag metadata to a new manifest generation", async () => {
-    const stub = env.DIRECTORY_BUILDER.getByName("classic-v1");
+    const stub = env.DIRECTORY_BUILDER.getByName("classic-v3");
     await stub.reconcile();
     const bucket = env.CLASSIC_DIRECTORY_PUBLIC;
     const existing = await bucket.get("index.html");
@@ -561,7 +486,7 @@ describe("static directory builder", () => {
       customMetadata: {
         ...existing.customMetadata,
         schema: "atrinik-directory-manifest-v1",
-        "strong-etag": `"atrinik-classic-directory-v4-html-sha256-${
+        "strong-etag": `"atrinik-classic-directory-v6-html-sha256-${
           existing.customMetadata!["body-sha256"]
         }"`,
       },
@@ -582,7 +507,7 @@ describe("static directory builder", () => {
   });
 
   it("repairs a body/checksum mismatch only under a newer generation", async () => {
-    const stub = env.DIRECTORY_BUILDER.getByName("classic-v1");
+    const stub = env.DIRECTORY_BUILDER.getByName("classic-v3");
     await stub.reconcile();
     const original = await env.CLASSIC_DIRECTORY_PUBLIC.head("index.json");
     expect(original).not.toBeNull();
@@ -600,7 +525,7 @@ describe("static directory builder", () => {
   });
 
   it("retries a transient immutable write without consuming its generation", async () => {
-    const stub = env.DIRECTORY_BUILDER.getByName("classic-v1");
+    const stub = env.DIRECTORY_BUILDER.getByName("classic-v3");
     const originalPut = env.DIRECTORY_GENERATIONS.put.bind(
       env.DIRECTORY_GENERATIONS,
     );
@@ -609,7 +534,7 @@ describe("static directory builder", () => {
     await expect(reconcileWithoutPlatformAlarm(stub)).rejects.toThrow(
       "Injected transient immutable failure",
     );
-    expect((await readDirectoryArtifactPublication(env.DB, "classic-v1"))
+    expect((await readDirectoryArtifactPublication(env.DB, "classic-v3"))
       .generation).toBe(0);
 
     put.mockImplementation(originalPut);
@@ -620,7 +545,7 @@ describe("static directory builder", () => {
   });
 
   it("retries a transient immutable readback without consuming its generation", async () => {
-    const stub = env.DIRECTORY_BUILDER.getByName("classic-v1");
+    const stub = env.DIRECTORY_BUILDER.getByName("classic-v3");
     const bucket = env.DIRECTORY_GENERATIONS;
     const originalGet = bucket.get.bind(bucket);
     vi.spyOn(bucket, "get")
@@ -637,7 +562,7 @@ describe("static directory builder", () => {
   });
 
   it("recovers a partial alias write without acknowledging it", async () => {
-    const stub = env.DIRECTORY_BUILDER.getByName("classic-v1");
+    const stub = env.DIRECTORY_BUILDER.getByName("classic-v3");
     const bucket = env.CLASSIC_DIRECTORY_PUBLIC;
     const originalPut = bucket.put.bind(bucket);
     const put = vi.spyOn(bucket, "put").mockImplementation(async (
@@ -656,7 +581,7 @@ describe("static directory builder", () => {
     expect((await bucket.head("index.html"))?.customMetadata)
       .toMatchObject({ generation: "1" });
     expect(await bucket.head("manifest.json")).toBeNull();
-    expect((await readDirectoryArtifactPublication(env.DB, "classic-v1"))
+    expect((await readDirectoryArtifactPublication(env.DB, "classic-v3"))
       .generation).toBe(0);
 
     put.mockImplementation(originalPut);
@@ -669,7 +594,7 @@ describe("static directory builder", () => {
   });
 
   it("abandons an alias cohort when its publication clock regresses", async () => {
-    const stub = env.DIRECTORY_BUILDER.getByName("classic-v1");
+    const stub = env.DIRECTORY_BUILDER.getByName("classic-v3");
     await stub.reconcile();
     const first = publication("d".repeat(64), NOW, "e".repeat(64));
     await persistRendezvousPublication(env.DB, first);
@@ -688,7 +613,7 @@ describe("static directory builder", () => {
     await expect(reconcileWithoutPlatformAlarm(stub)).rejects.toThrow(
       "Directory build left its alias publication interval",
     );
-    expect((await readDirectoryArtifactPublication(env.DB, "classic-v1")))
+    expect((await readDirectoryArtifactPublication(env.DB, "classic-v3")))
       .toMatchObject({ generation: 1, publishedRevision: 0 });
 
     vi.spyOn(Date, "now").mockReturnValue(NOW * 1_000);
@@ -700,7 +625,7 @@ describe("static directory builder", () => {
   });
 
   it("abandons a corrupt same-generation partial alias", async () => {
-    const stub = env.DIRECTORY_BUILDER.getByName("classic-v1");
+    const stub = env.DIRECTORY_BUILDER.getByName("classic-v3");
     const bucket = env.CLASSIC_DIRECTORY_PUBLIC;
     const originalPut = bucket.put.bind(bucket);
     const put = vi.spyOn(bucket, "put").mockImplementation(async (
@@ -733,33 +658,33 @@ describe("static directory builder", () => {
   });
 
   it("retains only the current eight immutable rollback generations", async () => {
-    const stub = env.DIRECTORY_BUILDER.getByName("classic-v1");
+    const stub = env.DIRECTORY_BUILDER.getByName("classic-v3");
     await stub.reconcile();
     for (let generation = 2; generation <= 10; generation += 1) {
       await env.CLASSIC_DIRECTORY_PUBLIC.delete("index.html");
       await expect(stub.reconcile()).resolves.toMatchObject({ generation });
     }
     const objects = await env.DIRECTORY_GENERATIONS.list({
-      prefix: "v1/classic-v1/",
+      prefix: "v1/classic-v3/",
     });
     expect(new Set(objects.objects.map((object) =>
       Number(object.key.split("/")[2])
     ))).toEqual(new Set([3, 4, 5, 6, 7, 8, 9, 10]));
     expect(objects.objects).toHaveLength(32);
-    expect(await readDirectoryArtifactHistory(env.DB, "classic-v1"))
+    expect(await readDirectoryArtifactHistory(env.DB, "classic-v3"))
       .toEqual([3, 4, 5, 6, 7, 8, 9, 10]);
 
     // Simulate lost/restored DO state. D1 remains the authoritative rollback
     // ledger, so cleanup must reconstruct all eight acknowledged cohorts.
-    await resetBuilder("classic-v1");
+    await resetBuilder("classic-v3");
 
     await env.DIRECTORY_GENERATIONS.put(
-      "v1/classic-v1/11/index.html",
+      "v1/classic-v3/11/index.html",
       "abandoned partial",
     );
     await expect(stub.reconcile()).resolves.toMatchObject({ outcome: "current" });
     expect(await env.DIRECTORY_GENERATIONS.head(
-      "v1/classic-v1/11/index.html",
+      "v1/classic-v3/11/index.html",
     )).toBeNull();
 
     for (let generation = 11; generation <= 18; generation += 1) {
@@ -770,14 +695,14 @@ describe("static directory builder", () => {
         "manifest.json",
       ]) {
         await env.DIRECTORY_GENERATIONS.put(
-          `v1/classic-v1/${generation}/${filename}`,
+          `v1/classic-v3/${generation}/${filename}`,
           "superseded but complete",
         );
       }
     }
     await expect(stub.reconcile()).resolves.toMatchObject({ outcome: "current" });
     const retained = await env.DIRECTORY_GENERATIONS.list({
-      prefix: "v1/classic-v1/",
+      prefix: "v1/classic-v3/",
     });
     expect(new Set(retained.objects.map((object) =>
       Number(object.key.split("/")[2])
@@ -785,23 +710,23 @@ describe("static directory builder", () => {
   });
 
   it("makes bounded retention progress across delete and page ceilings", async () => {
-    const stub = env.DIRECTORY_BUILDER.getByName("classic-v1");
+    const stub = env.DIRECTORY_BUILDER.getByName("classic-v3");
     await stub.reconcile();
     for (let generation = 100; generation < 165; generation += 1) {
       await env.DIRECTORY_GENERATIONS.put(
-        `v1/classic-v1/${generation}/index.html`,
+        `v1/classic-v3/${generation}/index.html`,
         "obsolete partial",
       );
     }
 
     await expect(stub.reconcile()).resolves.toMatchObject({ outcome: "current" });
     expect((await env.DIRECTORY_GENERATIONS.list({
-      prefix: "v1/classic-v1/1",
+      prefix: "v1/classic-v3/1",
     })).objects.filter((object) => object.key.includes("/index.html")))
       .toHaveLength(2);
     await expect(stub.reconcile()).resolves.toMatchObject({ outcome: "current" });
     expect((await env.DIRECTORY_GENERATIONS.list({
-      prefix: "v1/classic-v1/1",
+      prefix: "v1/classic-v3/1",
     })).objects.filter((object) => object.key.includes("/index.html")))
       .toHaveLength(1);
 
@@ -809,7 +734,7 @@ describe("static directory builder", () => {
     const originalList = bucket.list.bind(bucket);
     let pages = 0;
     vi.spyOn(bucket, "list").mockImplementation(async (options) => {
-      if (options?.prefix !== "v1/classic-v1/") {
+      if (options?.prefix !== "v1/classic-v3/") {
         return originalList(options);
       }
       const expectedCursor = pages === 0 ? undefined : `page-${pages}`;
@@ -836,10 +761,10 @@ describe("static directory builder", () => {
   });
 
   it("recovers retention after bounded R2 list and delete failures", async () => {
-    const stub = env.DIRECTORY_BUILDER.getByName("classic-v1");
+    const stub = env.DIRECTORY_BUILDER.getByName("classic-v3");
     await stub.reconcile();
     await env.DIRECTORY_GENERATIONS.put(
-      "v1/classic-v1/9/index.html",
+      "v1/classic-v3/9/index.html",
       "obsolete partial",
     );
     const bucket = env.DIRECTORY_GENERATIONS;
@@ -848,20 +773,20 @@ describe("static directory builder", () => {
       .mockRejectedValueOnce(new Error("Injected list failure"))
       .mockImplementation(originalList);
     await expect(stub.reconcile()).resolves.toMatchObject({ outcome: "current" });
-    expect(await bucket.head("v1/classic-v1/9/index.html")).not.toBeNull();
+    expect(await bucket.head("v1/classic-v3/9/index.html")).not.toBeNull();
 
     const originalDelete = bucket.delete.bind(bucket);
     vi.spyOn(bucket, "delete")
       .mockRejectedValueOnce(new Error("Injected delete failure"))
       .mockImplementation(originalDelete);
     await expect(stub.reconcile()).resolves.toMatchObject({ outcome: "current" });
-    expect(await bucket.head("v1/classic-v1/9/index.html")).not.toBeNull();
+    expect(await bucket.head("v1/classic-v3/9/index.html")).not.toBeNull();
     await expect(stub.reconcile()).resolves.toMatchObject({ outcome: "current" });
-    expect(await bucket.head("v1/classic-v1/9/index.html")).toBeNull();
+    expect(await bucket.head("v1/classic-v3/9/index.html")).toBeNull();
   });
 
   it("publishes endpoint withdrawal and private removal as isolated generations", async () => {
-    const stub = env.DIRECTORY_BUILDER.getByName("classic-v1");
+    const stub = env.DIRECTORY_BUILDER.getByName("classic-v3");
     await stub.reconcile();
     const serverId = "4".repeat(64);
     const first = {
@@ -928,7 +853,7 @@ describe("static directory builder", () => {
   });
 
   it("coalesces an advancing revision without publishing before generatedAt", async () => {
-    const stub = env.DIRECTORY_BUILDER.getByName("classic-v1");
+    const stub = env.DIRECTORY_BUILDER.getByName("classic-v3");
     await stub.reconcile();
     const serverId = "7".repeat(64);
     const first = publication(serverId, NOW, "7".repeat(64));
@@ -958,7 +883,7 @@ describe("static directory builder", () => {
     });
 
     await expect(stub.reconcile()).resolves.toEqual({
-      profile: "classic-v1",
+      profile: "classic-v3",
       outcome: "current",
       generation: 1,
       revision: 0,
@@ -972,25 +897,25 @@ describe("static directory builder", () => {
     expect(advanced).toBe(true);
     expect(await (await bucket.get("index.xml"))?.text())
       .not.toContain("<Server>");
-    expect((await readDirectoryArtifactPublication(env.DB, "classic-v1")))
+    expect((await readDirectoryArtifactPublication(env.DB, "classic-v3")))
       .toMatchObject({ generation: 4, publishedRevision: 2 });
     expect(await env.DB.prepare(
-      "SELECT revision FROM directory_outbox WHERE profile = 'classic-v1'",
+      "SELECT revision FROM directory_outbox WHERE profile = 'classic-v3'",
     ).first<number>("revision")).toBeNull();
   });
 
   it("retries an ambiguous checkpoint without changing the reserved generation", async () => {
-    const stub = env.DIRECTORY_BUILDER.getByName("classic-v1");
+    const stub = env.DIRECTORY_BUILDER.getByName("classic-v3");
     await env.DB.prepare(
       `CREATE TRIGGER directory_artifact_test_ignore_checkpoint
        BEFORE UPDATE ON directory_artifact_publications
-       WHEN NEW.profile = 'classic-v1'
+       WHEN NEW.profile = 'classic-v3'
        BEGIN SELECT RAISE(IGNORE); END`,
     ).run();
     await expect(reconcileWithoutPlatformAlarm(stub)).rejects.toThrow();
     expect((await env.CLASSIC_DIRECTORY_PUBLIC.head("manifest.json"))
       ?.customMetadata).toMatchObject({ generation: "1" });
-    expect((await readDirectoryArtifactPublication(env.DB, "classic-v1"))
+    expect((await readDirectoryArtifactPublication(env.DB, "classic-v3"))
       .generation).toBe(0);
 
     await env.DB.prepare(
@@ -1001,23 +926,23 @@ describe("static directory builder", () => {
       outcome: "published",
       generation: 1,
     });
-    expect((await readDirectoryArtifactPublication(env.DB, "classic-v1"))
+    expect((await readDirectoryArtifactPublication(env.DB, "classic-v3"))
       .generation).toBe(1);
   });
 
   it("abandons an immutable collision and recovers under a later generation", async () => {
-    const stub = env.DIRECTORY_BUILDER.getByName("classic-v1");
+    const stub = env.DIRECTORY_BUILDER.getByName("classic-v3");
     await stub.reconcile();
     await env.CLASSIC_DIRECTORY_PUBLIC.delete("index.html");
     await env.DB.prepare(
       `CREATE TRIGGER directory_artifact_test_ignore_collision_checkpoint
        BEFORE UPDATE ON directory_artifact_publications
-       WHEN NEW.profile = 'classic-v1'
+       WHEN NEW.profile = 'classic-v3'
        BEGIN SELECT RAISE(IGNORE); END`,
     ).run();
     await expect(reconcileWithoutPlatformAlarm(stub)).rejects.toThrow();
     await env.DIRECTORY_GENERATIONS.put(
-      "v1/classic-v1/2/index.html",
+      "v1/classic-v3/2/index.html",
       "tampered immutable",
     );
     await env.DB.prepare(
@@ -1033,7 +958,7 @@ describe("static directory builder", () => {
   });
 
   it("coalesces many publication nudges into one persistent alarm", async () => {
-    const stub = env.DIRECTORY_BUILDER.getByName("classic-v1");
+    const stub = env.DIRECTORY_BUILDER.getByName("classic-v3");
     await Promise.all(Array.from({ length: 100 }, () => stub.nudge()));
 
     await runInDurableObject(stub, async (_instance, state) => {
@@ -1044,10 +969,10 @@ describe("static directory builder", () => {
   });
 
   it("executes a coalesced nudge through the durable alarm", async () => {
-    const stub = env.DIRECTORY_BUILDER.getByName("classic-v1");
+    const stub = env.DIRECTORY_BUILDER.getByName("classic-v3");
     await Promise.all(Array.from({ length: 100 }, () => stub.nudge()));
     expect(await runDurableObjectAlarm(stub)).toBe(true);
-    expect((await readDirectoryArtifactPublication(env.DB, "classic-v1")))
+    expect((await readDirectoryArtifactPublication(env.DB, "classic-v3")))
       .toMatchObject({ generation: 1, publishedRevision: 0 });
     await runInDurableObject(stub, async (_instance, state) => {
       expect(await state.storage.getAlarm()).toBeGreaterThan(NOW * 1_000);
@@ -1055,11 +980,11 @@ describe("static directory builder", () => {
   });
 
   it("abandons a surviving stale pending build below a partial public generation", async () => {
-    const stub = env.DIRECTORY_BUILDER.getByName("classic-v1");
+    const stub = env.DIRECTORY_BUILDER.getByName("classic-v3");
     await env.DB.prepare(
       `CREATE TRIGGER directory_artifact_test_ignore_stale_checkpoint
        BEFORE UPDATE ON directory_artifact_publications
-       WHEN NEW.profile = 'classic-v1'
+       WHEN NEW.profile = 'classic-v3'
        BEGIN SELECT RAISE(IGNORE); END`,
     ).run();
     await expect(reconcileWithoutPlatformAlarm(stub)).rejects.toThrow();
@@ -1088,7 +1013,7 @@ describe("static directory builder", () => {
       gamePublication(serverId, NOW, "e".repeat(64)),
     );
     await expect(reconcileWithoutPlatformAlarm(
-      env.DIRECTORY_BUILDER.getByName("game-v1"),
+      env.DIRECTORY_BUILDER.getByName("game-v2"),
     )).resolves.toMatchObject({ outcome: "published", revision: 1 });
     const parsed = JSON.parse(
       await (await env.GAME_DIRECTORY_PUBLIC.get("index.json"))!.text(),
@@ -1103,10 +1028,10 @@ describe("static directory builder", () => {
       content: { id: "atrinik-main", revisionSha256: "7".repeat(64) },
       players: { online: 3, capacity: 64 },
       status: "online",
-      passwordRequired: false,
+      accessRequired: false,
       endpoint: { hostname: "play.example.org", port: 13_327 },
     }]);
-    expect((await readDirectoryArtifactPublication(env.DB, "game-v1"))
+    expect((await readDirectoryArtifactPublication(env.DB, "game-v2"))
       .generation).toBe(1);
   });
 });
@@ -1122,7 +1047,7 @@ async function clearBucket(bucket: R2Bucket): Promise<void> {
   } while (cursor !== undefined);
 }
 
-async function resetBuilder(profile: "classic-v1" | "game-v1"): Promise<void> {
+async function resetBuilder(profile: "classic-v3" | "game-v2"): Promise<void> {
   const stub = env.DIRECTORY_BUILDER.getByName(profile);
   await runInDurableObject(stub, async (_instance, state) => {
     await state.storage.deleteAll();
@@ -1185,7 +1110,8 @@ function publication(
 ): InternalRendezvousPublication {
   return {
     serverId,
-    directoryProfile: "classic-v1",
+    certificate: "AQ==",
+    directoryProfile: "classic-v3",
     publisherSequence: "1",
     publisherNonce: "1".repeat(32),
     publisherNonceExpiresAt: now + 300,
@@ -1215,7 +1141,8 @@ function gamePublication(
 ): InternalRendezvousPublication {
   return {
     serverId,
-    directoryProfile: "game-v1",
+    certificate: "AQ==",
+    directoryProfile: "game-v2",
     publisherSequence: "1",
     publisherNonce: "2".repeat(32),
     publisherNonceExpiresAt: now + 300,

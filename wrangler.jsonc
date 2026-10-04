@@ -79,6 +79,7 @@
     }
   },
   "ratelimits": [
+    {"name":"ACCESS_ROUTE_RATE_LIMITER","namespace_id":"1008","simple":{"limit":16,"period":60}},
     {
       "name": "PUBLISH_IDENTITY_RATE_LIMITER",
       "namespace_id": "1006",
@@ -109,6 +110,7 @@
     "CLASSIC_DIRECTORY_PUBLIC_ORIGIN": "https://classic.meta.atrinik.org",
     "GAME_DIRECTORY_PUBLIC_ORIGIN": "https://meta.atrinik.org",
     "CLASSIC_DIRECTORY_CUTOVER_MODE": "v4-production",
+    "GAME_DIRECTORY_CUTOVER_MODE": "v1-production",
     "PUBLISH_HOSTNAME": "publish.meta.atrinik.org",
     "RENDEZVOUS_HOSTNAME": "rendezvous.meta.atrinik.org",
     "PUBLISH_ENABLED": "enabled",
@@ -120,11 +122,6 @@
     "ROUTE_DISABLED_RETRY_SECONDS": "300",
     "PUBLISH_SERVER_DAILY_LIMIT": "48",
     "RENDEZVOUS_SERVER_DAILY_LIMIT": "50",
-    "RENDEZVOUS_CLIENT_PAIR_BURST_LIMIT": "20",
-    "RENDEZVOUS_CLIENT_PAIR_WINDOW_SECONDS": "60",
-    "RENDEZVOUS_CLIENT_PAIR_INITIAL_COOLDOWN_SECONDS": "30",
-    "RENDEZVOUS_CLIENT_PAIR_MAXIMUM_COOLDOWN_SECONDS": "900",
-    "RENDEZVOUS_CLIENT_PAIR_RESET_SECONDS": "1800",
     "RENDEZVOUS_ACTIVE_CLIENT_LIMIT": "16",
     "RENDEZVOUS_CLIENT_SESSION_SECONDS": "15",
     "DIRECTORY_REFRESH_LEAD_SECONDS": "3600"

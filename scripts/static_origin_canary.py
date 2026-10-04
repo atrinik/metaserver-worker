@@ -36,18 +36,16 @@ CONTENT_TYPES = {
     "/index.xml": "application/xml; charset=utf-8",
 }
 MAXIMUM_BYTES = {
-    "classic-v1": {path: 4 * 1024 * 1024 for path in PUBLIC_PATHS},
-    "classic-v2": {path: 4 * 1024 * 1024 for path in PUBLIC_PATHS},
-    "game-v1": {
+    "classic-v3": {path: 4 * 1024 * 1024 for path in PUBLIC_PATHS},
+    "game-v2": {
         "/index.html": 4 * 1024 * 1024,
         "/index.json": 262_144,
         "/index.xml": 4 * 1024 * 1024,
     },
 }
 SCHEMAS = {
-    "classic-v1": "atrinik-classic-directory-v4",
-    "classic-v2": "atrinik-classic-directory-v5",
-    "game-v1": "atrinik-directory-v1",
+    "classic-v3": "atrinik-classic-directory-v6",
+    "game-v2": "atrinik-game-directory-v2",
 }
 REQUIRED_CSP = (
     "default-src 'none'; style-src 'unsafe-inline'; base-uri 'none'; "
@@ -174,8 +172,8 @@ def base_origin(value: str, allow_production: bool) -> tuple[str, str]:
 def alias_prefix(profile: str, value: str) -> str:
     if value == "":
         return ""
-    if profile == "classic-v2" and value == "canary-v5":
-        return "/canary-v5"
+    if (profile, value) in (("classic-v3", "canary-v6"), ("game-v2", "canary-v2")):
+        return "/" + value
     raise ValueError("alias prefix is invalid for the selected profile")
 
 
@@ -462,16 +460,12 @@ def render_html_endpoint(endpoint: object) -> str:
 
 
 def render_html_row(profile: str, server: Mapping[str, object]) -> str:
-    classic = profile != "game-v1"
+    classic = profile != "game-v2"
     policy_key = (
-        "accessCodeRequired" if profile == "classic-v2" else "passwordRequired"
+        "accessRequired"
     )
     protected = bool(server[policy_key])
-    policy = (
-        ("protected" if protected else "open")
-        if profile == "classic-v2"
-        else ("required" if protected else "not required")
-    )
+    policy = "protected" if protected else "open"
     if classic:
         cells = (
             f"<code>{server['serverId']}</code>",
@@ -518,20 +512,20 @@ def canonical_html(
     expires_at: int,
     semantic: Sequence[str],
 ) -> str:
-    classic = profile != "game-v1"
+    classic = profile != "game-v2"
     title = "Atrinik Classic servers" if classic else "Atrinik servers"
     headings = (
         (
             "Server ID", "Name", "Version", "Players", "Comment",
             "Certificate SHA-256", "Status",
-            "Access code" if profile == "classic-v2" else "Password",
+            "Access",
             "Direct endpoint",
         )
         if classic
         else (
             "Server ID", "Certificate SHA-256", "Name", "Description",
             "Region", "Protocol", "Content ID", "Content revision SHA-256",
-            "Players", "Status", "Password", "Direct endpoint",
+            "Players", "Status", "Access", "Direct endpoint",
         )
     )
     servers = tuple(json.loads(value) for value in semantic)
@@ -569,11 +563,11 @@ def canonical_html(
 
 
 def canonical_classic_server(
-    value: object, index: int, profile: str = "classic-v1"
+    value: object, index: int, profile: str = "classic-v3"
 ) -> dict[str, object]:
     context = f"classic server {index}"
     policy_key = (
-        "accessCodeRequired" if profile == "classic-v2" else "passwordRequired"
+        "accessRequired"
     )
     server = exact_keys(
         value,
@@ -623,7 +617,7 @@ def canonical_game_server(value: object, index: int) -> dict[str, object]:
         fail(f"{context} is not an object")
     without_region = [
         "serverId", "certificateSha256", "name", "description", "protocol",
-        "content", "players", "status", "passwordRequired",
+        "content", "players", "status", "accessRequired",
     ]
     with_region = without_region[:4] + ["region"] + without_region[4:]
     expected = with_region if "region" in value else without_region
@@ -703,8 +697,8 @@ def canonical_game_server(value: object, index: int) -> dict[str, object]:
         },
         "players": {"online": online, "capacity": capacity},
         "status": status,
-        "passwordRequired": canonical_boolean(
-            value["passwordRequired"], f"{context} password requirement"
+        "accessRequired": canonical_boolean(
+            value["accessRequired"], f"{context} access requirement"
         ),
     })
     if "endpoint" in value:
@@ -722,7 +716,7 @@ def canonical_servers(
         fail("server collection is invalid")
     canonical = tuple(
         canonical_classic_server(value, index, profile)
-        if profile != "game-v1"
+        if profile != "game-v2"
         else canonical_game_server(value, index)
         for index, value in enumerate(values)
     )
@@ -762,7 +756,7 @@ def parse_json_artifact(
         fail("JSON artifact is not one complete canonical object")
     expected_keys = (
         ["schema", "protocol", "generation", "generatedAt", "expiresAt", "servers"]
-        if profile != "game-v1"
+        if profile != "game-v2"
         else ["schema", "generation", "generatedAt", "expiresAt", "servers"]
     )
     if list(value) != expected_keys:
@@ -778,9 +772,7 @@ def parse_json_artifact(
     reject_forbidden_fields(value)
     if value.get("schema") != SCHEMAS[profile]:
         fail("JSON artifact schema is invalid")
-    if profile != "game-v1" and value.get("protocol") != (
-        5 if profile == "classic-v2" else 4
-    ):
+    if profile != "game-v2" and value.get("protocol") != 6:
         fail("classic JSON protocol is invalid")
     generation = canonical_generation(value.get("generation"))
     generated_at = canonical_timestamp(value.get("generatedAt"), "generatedAt")
@@ -818,7 +810,7 @@ def xml_whitespace(value: str | None, context: str) -> None:
 def classic_xml_server(
     server: element_tree.Element,
     index: int,
-    profile: str = "classic-v1",
+    profile: str = "classic-v3",
 ) -> dict[str, object]:
     context = f"classic XML server {index}"
     if server.tag != "Server":
@@ -832,7 +824,7 @@ def classic_xml_server(
         xml_whitespace(child.tail, f"{context} layout")
     tags = [child.tag for child in children]
     policy_tag = (
-        "AccessCodeRequired" if profile == "classic-v2" else "PasswordRequired"
+        "AccessRequired"
     )
     without_endpoint = [
         "Id", "Name", "PlayersCount", "Version", "TextComment",
@@ -851,11 +843,7 @@ def classic_xml_server(
         "version": values["Version"],
         "textComment": values["TextComment"],
         "certificateSha256": values["CertificateSha256"],
-        (
-            "accessCodeRequired"
-            if profile == "classic-v2"
-            else "passwordRequired"
-        ): canonical_boolean_text(
+        "accessRequired": canonical_boolean_text(
             values[policy_tag], f"{context} access policy"
         ),
     }
@@ -877,7 +865,7 @@ def game_xml_server(
     if server.tag != "server":
         fail(f"{context} element name is invalid")
     if list(server.attrib) != [
-        "id", "certificate-sha256", "status", "password-required",
+        "id", "certificate-sha256", "status", "access-required",
     ]:
         fail(f"{context} attributes or attribute order are invalid")
     xml_whitespace(server.text, context)
@@ -938,8 +926,8 @@ def game_xml_server(
             ),
         },
         "status": server.attrib["status"],
-        "passwordRequired": canonical_boolean_text(
-            server.attrib["password-required"], f"{context} password requirement"
+        "accessRequired": canonical_boolean_text(
+            server.attrib["access-required"], f"{context} access requirement"
         ),
     })
     if "endpoint" in by_tag:
@@ -974,16 +962,14 @@ def parse_xml_artifact(
         root = element_tree.fromstring(text)
     except element_tree.ParseError as error:
         fail(f"XML artifact is invalid: {error}")
-    expected_tag = "Servers" if profile != "game-v1" else "directory"
+    expected_tag = "Servers" if profile != "game-v2" else "directory"
     if root.tag != expected_tag or root.attrib.get("schema") != SCHEMAS[profile]:
         fail("XML artifact root is invalid")
-    if profile != "game-v1" and root.attrib.get("protocol") != (
-        "5" if profile == "classic-v2" else "4"
-    ):
+    if profile != "game-v2" and root.attrib.get("protocol") != "6":
         fail("classic XML protocol is invalid")
     expected_attributes = (
         ["protocol", "schema", "generation", "generated-at", "expires-at"]
-        if profile != "game-v1"
+        if profile != "game-v2"
         else ["schema", "generation", "generated-at", "expires-at"]
     )
     if list(root.attrib) != expected_attributes:
@@ -992,7 +978,7 @@ def parse_xml_artifact(
     xml_whitespace(root.tail, "XML root")
     servers = tuple(
         classic_xml_server(server, index, profile)
-        if profile != "game-v1"
+        if profile != "game-v2"
         else game_xml_server(server, index)
         for index, server in enumerate(list(root))
     )
@@ -1046,7 +1032,7 @@ def html_endpoint(fragment: str, context: str) -> dict[str, object] | None:
 
 
 def classic_html_server(
-    cells: Sequence[str], index: int, profile: str = "classic-v1"
+    cells: Sequence[str], index: int, profile: str = "classic-v3"
 ) -> dict[str, object]:
     context = f"classic HTML server {index}"
     if len(cells) != 9:
@@ -1054,15 +1040,11 @@ def classic_html_server(
     if html_cell(cells[6], f"{context} status") != "listed":
         fail(f"{context} status is invalid")
     policy = html_cell(cells[7], f"{context} access policy")
-    allowed_policy = (
-        ("open", "protected")
-        if profile == "classic-v2"
-        else ("required", "not required")
-    )
+    allowed_policy = ("open", "protected")
     if policy not in allowed_policy:
         fail(f"{context} access policy is invalid")
     policy_key = (
-        "accessCodeRequired" if profile == "classic-v2" else "passwordRequired"
+        "accessRequired"
     )
     value: dict[str, object] = {
         "serverId": html_cell(cells[0], f"{context} identity", code=True),
@@ -1099,8 +1081,8 @@ def game_html_server(cells: Sequence[str], index: int) -> dict[str, object]:
     if protocol_match is None or players_match is None:
         fail(f"{context} protocol or players are invalid")
     password = html_cell(cells[10], f"{context} password")
-    if password not in ("required", "not required"):
-        fail(f"{context} password requirement is invalid")
+    if password not in ("protected", "open"):
+        fail(f"{context} access requirement is invalid")
     value: dict[str, object] = {
         "serverId": html_cell(cells[0], f"{context} identity", code=True),
         "certificateSha256": html_cell(
@@ -1134,7 +1116,7 @@ def game_html_server(cells: Sequence[str], index: int) -> dict[str, object]:
             ),
         },
         "status": html_cell(cells[9], f"{context} status"),
-        "passwordRequired": password == "required",
+        "accessRequired": password == "protected",
     })
     endpoint = html_endpoint(cells[11], f"{context} endpoint")
     if endpoint is not None:
@@ -1166,7 +1148,7 @@ def parse_html_artifact(
         fail("HTML contains too many servers")
     servers = tuple(
         classic_html_server(cells, index, profile)
-        if profile != "game-v1"
+        if profile != "game-v2"
         else game_html_server(cells, index)
         for index, cells in enumerate(rows)
     )

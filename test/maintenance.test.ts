@@ -10,8 +10,6 @@ const CUTOFF = 200;
 beforeEach(async () => {
   await env.DB.batch([
     env.DB.prepare("DELETE FROM request_budgets"),
-    env.DB.prepare("DELETE FROM rendezvous_pair_attempts"),
-    env.DB.prepare("DELETE FROM rendezvous_pair_cooldowns"),
     env.DB.prepare("DELETE FROM publisher_nonces"),
     env.DB.prepare("DELETE FROM publisher_replay"),
   ]);
@@ -28,40 +26,27 @@ describe("bounded canonical state maintenance", () => {
          VALUES (?, 'publish-server', ?, 1, ?)`,
       ).bind(serverId, index, timestamp).run();
       await env.DB.prepare(
-        `INSERT INTO rendezvous_pair_attempts
-           (actor_key, attempt_id, attempted_at, expires_at)
-         VALUES (?, ?, ?, ?)`,
-      ).bind(
-        `v1.pair-${index}.${"E".repeat(43)}`,
-        index.toString(16).padStart(32, "0"), timestamp - 1, timestamp,
-      ).run();
-      await env.DB.prepare(
-        `INSERT INTO rendezvous_pair_cooldowns
-           (actor_key, blocked_until, penalty_level, last_burst_at, expires_at)
-         VALUES (?, 1, 0, 0, ?)`,
-      ).bind(`v1.cool-${index}.${"I".repeat(43)}`, timestamp).run();
-      await env.DB.prepare(
         `INSERT INTO publisher_replay
            (server_id, profile, last_sequence, last_nonce, commit_token, updated_at)
-         VALUES (?, 'classic-v1', '1', ?, ?, 0)`,
+         VALUES (?, 'classic-v3', '1', ?, ?, 0)`,
       ).bind(serverId, "1".repeat(32), serverId).run();
       await env.DB.prepare(
         `INSERT INTO publisher_nonces
            (server_id, profile, nonce, expires_at, created_at)
-         VALUES (?, 'classic-v1', ?, ?, 0)`,
+         VALUES (?, 'classic-v3', ?, ?, 0)`,
       ).bind(serverId, index.toString(16).padStart(32, "1"), timestamp).run();
     }
     expect(MAINTENANCE_TARGETS).toEqual([
       "request_budgets",
-      "rendezvous_pair_attempts",
-      "rendezvous_pair_cooldowns",
       "publisher_nonces",
     ]);
     const cutoffs = {
       requestBudgetsAtOrBefore: CUTOFF,
-      rendezvousPairAtOrBefore: CUTOFF,
       publisherNoncesAtOrBefore: CUTOFF,
     };
+    expect(await env.DB.prepare(
+      "SELECT name FROM sqlite_master WHERE name LIKE 'rendezvous_pair_%'",
+    ).all()).toMatchObject({ results: [] });
     const first = await cleanupExpiredState(env.DB, cutoffs, {
       batchSize: 2,
       maximumBatches: 2,
@@ -82,12 +67,17 @@ describe("bounded canonical state maintenance", () => {
     expect(await env.DB.prepare(
       "SELECT COUNT(*) AS count FROM request_budgets",
     ).first<number>("count")).toBe(1);
+    expect(await env.DB.prepare(
+      "SELECT COUNT(*) AS count FROM publisher_nonces",
+    ).first<number>("count")).toBe(1);
+    expect(await env.DB.prepare(
+      "SELECT COUNT(*) AS count FROM publisher_replay WHERE last_sequence = '1'",
+    ).first<number>("count")).toBe(6);
   });
 
   it("rejects invalid bounds and cutoffs before work", async () => {
     const cutoffs = {
       requestBudgetsAtOrBefore: CUTOFF,
-      rendezvousPairAtOrBefore: CUTOFF,
       publisherNoncesAtOrBefore: CUTOFF,
     };
     for (const options of [

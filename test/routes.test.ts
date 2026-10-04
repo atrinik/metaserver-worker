@@ -3,7 +3,7 @@ import { describe, expect, it } from "vitest";
 import { HttpError } from "../src/http";
 import {
   classifyCanonicalRoute,
-  CLASSIC_RENDEZVOUS_INVITE_SUBPROTOCOL,
+  ACCESS_RENDEZVOUS_SUBPROTOCOL,
   PUBLISH_AUTHORITY,
   PUBLISH_MAX_BODY_BYTES,
   RENDEZVOUS_AUTHORITY,
@@ -13,7 +13,7 @@ import type { RouteInput } from "../src/routes";
 const SERVER_ID = "1".repeat(64);
 
 function publisherInput(
-  path = `/v1/servers/${SERVER_ID}/publish`,
+  path = `/v2/servers/${SERVER_ID}/publish`,
   overrides: Partial<RouteInput> = {},
 ): RouteInput {
   return {
@@ -60,30 +60,30 @@ describe("canonical dynamic route grammar", () => {
     expect(classifyCanonicalRoute(publisherInput())).toEqual({
       kind: "publish",
       generation: "game-protocol-1",
-      publisherProfile: "game-v1",
+      publisherProfile: "game-v2",
       serverId: SERVER_ID,
       authority: PUBLISH_AUTHORITY,
       maximumBodyBytes: 4_096,
     });
     expect(classifyCanonicalRoute(publisherInput(
-      `/v1/classic/servers/${SERVER_ID}/publish`,
+      `/v3/classic/servers/${SERVER_ID}/publish`,
       {
-        target: `https://PUBLISH.META.ATRINIK.ORG/v1/classic/servers/${SERVER_ID}/publish`,
+        target: `https://PUBLISH.META.ATRINIK.ORG/v3/classic/servers/${SERVER_ID}/publish`,
       },
     ))).toEqual({
       kind: "publish",
       generation: "classic",
-      publisherProfile: "classic-v1",
+      publisherProfile: "classic-v3",
       serverId: SERVER_ID,
       authority: PUBLISH_AUTHORITY,
       maximumBodyBytes: PUBLISH_MAX_BODY_BYTES,
     });
     expect(classifyCanonicalRoute(publisherInput(
-      `/v2/classic/servers/${SERVER_ID}/publish`,
+      `/v3/classic/servers/${SERVER_ID}/publish`,
     ))).toEqual({
       kind: "publish",
       generation: "classic",
-      publisherProfile: "classic-v2",
+      publisherProfile: "classic-v3",
       serverId: SERVER_ID,
       authority: PUBLISH_AUTHORITY,
       maximumBodyBytes: PUBLISH_MAX_BODY_BYTES,
@@ -105,7 +105,7 @@ describe("canonical dynamic route grammar", () => {
         headers: new Headers({
           Upgrade: "websocket",
           "Sec-WebSocket-Protocol":
-            CLASSIC_RENDEZVOUS_INVITE_SUBPROTOCOL,
+            ACCESS_RENDEZVOUS_SUBPROTOCOL,
         }),
       },
     ))).toEqual({
@@ -113,16 +113,16 @@ describe("canonical dynamic route grammar", () => {
       generation: "classic",
       serverId: SERVER_ID,
       role: "server",
-      subprotocol: CLASSIC_RENDEZVOUS_INVITE_SUBPROTOCOL,
+      subprotocol: ACCESS_RENDEZVOUS_SUBPROTOCOL,
       authority: RENDEZVOUS_AUTHORITY,
     });
   });
 
   it("rejects alternate authorities, explicit ports, and non-HTTPS targets", () => {
     for (const target of [
-      `https://meta.atrinik.org/v1/servers/${SERVER_ID}/publish`,
-      `https://classic.meta.atrinik.org/v1/servers/${SERVER_ID}/publish`,
-      `https://example.net/v1/servers/${SERVER_ID}/publish`,
+      `https://meta.atrinik.org/v2/servers/${SERVER_ID}/publish`,
+      `https://classic.meta.atrinik.org/v2/servers/${SERVER_ID}/publish`,
+      `https://example.net/v2/servers/${SERVER_ID}/publish`,
     ]) {
       expect(canonicalError(publisherInput(undefined, { target })).code).toBe(
         "misdirected_request",
@@ -130,10 +130,10 @@ describe("canonical dynamic route grammar", () => {
     }
 
     for (const target of [
-      `http://${PUBLISH_AUTHORITY}/v1/servers/${SERVER_ID}/publish`,
-      `https://${PUBLISH_AUTHORITY}:443/v1/servers/${SERVER_ID}/publish`,
-      `https://user@${PUBLISH_AUTHORITY}/v1/servers/${SERVER_ID}/publish`,
-      `https://${PUBLISH_AUTHORITY}/v1/servers/${SERVER_ID}/publish#fragment`,
+      `http://${PUBLISH_AUTHORITY}/v2/servers/${SERVER_ID}/publish`,
+      `https://${PUBLISH_AUTHORITY}:443/v2/servers/${SERVER_ID}/publish`,
+      `https://user@${PUBLISH_AUTHORITY}/v2/servers/${SERVER_ID}/publish`,
+      `https://${PUBLISH_AUTHORITY}/v2/servers/${SERVER_ID}/publish#fragment`,
     ]) {
       expect(canonicalError(publisherInput(undefined, { target })).code).toBe(
         "invalid_target",
@@ -143,7 +143,7 @@ describe("canonical dynamic route grammar", () => {
 
   it("rejects ambiguous, encoded, normalized, and non-exact paths", () => {
     for (const path of [
-      `/v1/servers/${SERVER_ID}/publish/`,
+      `/v2/servers/${SERVER_ID}/publish/`,
       `/v1//servers/${SERVER_ID}/publish`,
       `/v1/./servers/${SERVER_ID}/publish`,
       `/v1/other/../servers/${SERVER_ID}/publish`,
@@ -171,7 +171,7 @@ describe("canonical dynamic route grammar", () => {
       "z".repeat(64),
     ]) {
       expect(canonicalError(publisherInput(
-        `/v1/servers/${id}/publish`,
+        `/v2/servers/${id}/publish`,
       )).code).toBe("invalid_server_id");
       expect(canonicalError(rendezvousInput(
         `/v1/servers/${id}?role=client`,
@@ -179,12 +179,12 @@ describe("canonical dynamic route grammar", () => {
     }
   });
 
-  it("keeps the Classic v2 route exact and rejects aliases", () => {
+  it("keeps the Classic v3 route exact and rejects aliases", () => {
     for (const path of [
-      `/v2/classic/servers/${SERVER_ID}/publish/`,
+      `/v3/classic/servers/${SERVER_ID}/publish/`,
       `/v2/classics/servers/${SERVER_ID}/publish`,
-      `/v2/classic/server/${SERVER_ID}/publish`,
-      `/v2/servers/${SERVER_ID}/publish`,
+      `/v3/classic/server/${SERVER_ID}/publish`,
+      `/v3/servers/${SERVER_ID}/publish`,
       `/v1/classic-v2/servers/${SERVER_ID}/publish`,
     ]) {
       expect(canonicalError(publisherInput(path)).code).toBe("not_found");
@@ -202,14 +202,14 @@ describe("canonical dynamic route grammar", () => {
     }
     for (const suffix of ["?", "?role=server", "?x=1", "?x=1&x=1"]) {
       expect(canonicalError(publisherInput(
-        `/v1/servers/${SERVER_ID}/publish${suffix}`,
+        `/v2/servers/${SERVER_ID}/publish${suffix}`,
       )).code).toBe("unexpected_query");
     }
     expect(canonicalError(publisherInput(
       `/v1/servers/${SERVER_ID}`,
     )).code).toBe("not_found");
     expect(canonicalError(publisherInput(undefined, {
-      target: `https://${RENDEZVOUS_AUTHORITY}/v1/servers/${SERVER_ID}/publish`,
+      target: `https://${RENDEZVOUS_AUTHORITY}/v2/servers/${SERVER_ID}/publish`,
     })).code).toBe("not_found");
   });
 
@@ -392,7 +392,7 @@ describe("canonical dynamic route grammar", () => {
     expect(canonicalError(rendezvousInput(undefined, {
       headers: new Headers({
         Upgrade: "websocket",
-        "Sec-WebSocket-Protocol": CLASSIC_RENDEZVOUS_INVITE_SUBPROTOCOL,
+        "Sec-WebSocket-Protocol": ACCESS_RENDEZVOUS_SUBPROTOCOL,
       }),
     })).code).toBe("bad_request");
     expect(canonicalError(rendezvousInput(undefined, {

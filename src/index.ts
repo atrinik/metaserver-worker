@@ -1,3 +1,7 @@
+import { classifyAccessRoute, ACCESS_RENDEZVOUS_SUBPROTOCOL } from "./routes";
+import { handleAccessRouteMutation, handleAccessResolve } from "./access-controller";
+import { consumeAccessResolveCoordinatorRequest } from "./internal-service";
+import { cleanupAccessState } from "./access-route-state";
 import { WorkerEntrypoint } from "cloudflare:workers";
 
 import type { CoreEnv } from "./core-env";
@@ -26,10 +30,9 @@ import { logBlacklistMatch, logUnexpectedError } from "./diagnostics";
 import type { BlacklistRoute, DiagnosticRoute } from "./diagnostics";
 import {
   consumePublisherCoordinatorRequest,
-  consumeRendezvousAdmissionAliases,
+  consumeRendezvousCoordinatorRequest,
   validatePublisherCoordinatorRequest,
 } from "./internal-service";
-import type { RendezvousAdmissionAliases } from "./internal-service";
 import { cleanupExpiredState } from "./maintenance";
 import {
   randomToken,
@@ -38,7 +41,6 @@ import {
 } from "./protocol";
 import {
   authenticateClassicPublish,
-  authenticateClassicV2Publish,
   authenticateGamePublish,
   isValidPublisherSequence,
   readBoundedPublishBody,
@@ -50,7 +52,6 @@ import {
 } from "./rate-limit";
 import { handleRequestError } from "./request-errors";
 import { openRendezvous, RendezvousRoom } from "./rendezvous";
-import { consumeRendezvousPairCooldown } from "./rendezvous-cooldown";
 import {
   recordRendezvousAuthenticatedAdmission,
   RendezvousHealth,
@@ -61,7 +62,6 @@ import {
 } from "./rendezvous-contract";
 import type { InternalRendezvousPublication } from "./rendezvous-contract";
 import {
-  isClassicV1GloballyRetired,
   readPublishedGeneration,
 } from "./rendezvous-publication";
 import {
@@ -107,13 +107,13 @@ export default {
         }
         return;
       }
+      await cleanupAccessState(env.DB, now);
       const listingCutoff = now - control.listingTtlSeconds;
       for (const profile of DIRECTORY_PROFILES) {
         await expireDirectoryEntries(env.DB, profile, listingCutoff, now);
       }
       const cleanup = await cleanupExpiredState(env.DB, {
         requestBudgetsAtOrBefore: now,
-        rendezvousPairAtOrBefore: now,
         publisherNoncesAtOrBefore: now,
       }, {
         batchSize: 1_000,
@@ -142,6 +142,15 @@ export async function handlePublisherCoordinatorRequest(
     const control = publisherCoordinatorConfiguration(env);
     const publisherHeaders = new Headers(request.headers);
     publisherHeaders.delete("Transfer-Encoding");
+    const access = classifyAccessRoute({ target: request.url, method: request.method,
+      headers: publisherHeaders, hasBody: request.body !== null }, control.authority, "publisher");
+    if (access?.kind === "access-routes") {
+      diagnosticRoute = access.profile === "classic" ? "publish-classic" : "publish-game";
+      enforceCircuitBreaker(access.profile === "classic" ? env.PUBLISH_ENABLED : env.GAME_PUBLISH_ENABLED,
+        control.routeDisabledRetrySeconds);
+      return await handleAccessRouteMutation(consumePublisherCoordinatorRequest(request), env,
+        access.profile, access.serverId, control.authority, Math.floor(Date.now() / 1000), control.listingTtlSeconds);
+    }
     const route = classifyCanonicalPublisherRoute(
       {
         target: request.url,
@@ -158,12 +167,6 @@ export async function handlePublisherCoordinatorRequest(
         : env.GAME_PUBLISH_ENABLED,
       control.routeDisabledRetrySeconds,
     );
-    if (
-      route.publisherProfile === "classic-v1" &&
-      await isClassicV1GloballyRetired(env.DB)
-    ) {
-      return profileRetiredResponse();
-    }
     const internal = consumePublisherCoordinatorRequest(request);
     const now = Math.floor(Date.now() / 1_000);
     return route.generation === "classic"
@@ -182,6 +185,23 @@ export async function handleRendezvousCoordinatorRequest(
   let diagnosticRoute: DiagnosticRoute = "unclassified";
   try {
     const control = rendezvousCoordinatorConfiguration(env);
+    const accessHeaders = new Headers(request.headers);
+    accessHeaders.delete("Transfer-Encoding");
+    const access = classifyAccessRoute({ target: request.url, method: request.method,
+      headers: accessHeaders, hasBody: request.body !== null }, control.authority, "rendezvous");
+    if (access !== null) {
+      diagnosticRoute = "rendezvous-client";
+      enforceCircuitBreaker(env.RENDEZVOUS_ENABLED, control.routeDisabledRetrySeconds);
+      if (access.kind === "access-resolve") return await handleAccessResolve(
+        consumeAccessResolveCoordinatorRequest(request), env, Math.floor(Date.now() / 1000), control.listingTtlSeconds);
+      if (access.kind !== "access-rendezvous" || access.profile !== "classic") throw new HttpError("service_disabled");
+      rendezvousPolicyConfiguration(env);
+      const internal = consumeRendezvousCoordinatorRequest(request, "client");
+      return await openCanonicalRendezvous(internal, env, {
+        kind: "rendezvous", generation: "classic", serverId: access.serverId,
+        role: "client", subprotocol: ACCESS_RENDEZVOUS_SUBPROTOCOL, authority: control.authority,
+      }, control, Math.floor(Date.now() / 1000), ctx);
+    }
     const route = classifyCanonicalRendezvousRoute(
       routeInputFromRequest(request),
       control.authority,
@@ -196,12 +216,11 @@ export async function handleRendezvousCoordinatorRequest(
     );
     // The room independently parses this same policy across rolling deploys.
     rendezvousPolicyConfiguration(env);
-    const internal = consumeRendezvousAdmissionAliases(request, route.role);
+    const internal = consumeRendezvousCoordinatorRequest(request, route.role);
     return await openCanonicalRendezvous(
-      internal.request,
+      internal,
       env,
       route,
-      internal.aliases,
       control,
       Math.floor(Date.now() / 1_000),
       ctx,
@@ -224,39 +243,12 @@ async function openCanonicalRendezvous(
   request: Request,
   env: CoreEnv,
   route: Extract<CanonicalDynamicRoute, { kind: "rendezvous" }>,
-  aliases: RendezvousAdmissionAliases,
   control: RendezvousCoordinatorConfiguration,
   now: number,
   ctx?: ExecutionContext,
 ): Promise<Response> {
-  if (route.role === "client") {
-    if (aliases.pair === null || aliases.source !== null) {
-      throw new Error("Client rendezvous omitted pair admission aliases");
-    }
-  } else {
-    if (aliases.pair !== null || aliases.source !== null) {
-      throw new Error("Server rendezvous included pair admission aliases");
-    }
-  }
-
   return openRendezvous(request, env, route.serverId, route.role, {
     listingTtlSeconds: control.listingTtlSeconds,
-    async clientEligible(): Promise<void> {
-      if (aliases.pair === null) {
-        throw new Error("Client rendezvous omitted pair admission aliases");
-      }
-      await consumeRendezvousPairCooldown(env.DB, {
-        actorKeys: aliases.pair,
-        now,
-        burstLimit: control.rendezvousClientPairBurstLimit,
-        windowSeconds: control.rendezvousClientPairWindowSeconds,
-        initialCooldownSeconds:
-          control.rendezvousClientPairInitialCooldownSeconds,
-        maximumCooldownSeconds:
-          control.rendezvousClientPairMaximumCooldownSeconds,
-        resetSeconds: control.rendezvousClientPairResetSeconds,
-      });
-    },
     async serverAuthenticated(): Promise<void> {
       await enforceNativeBurst(
         env.RENDEZVOUS_SERVER_RATE_LIMITER,
@@ -290,27 +282,8 @@ async function publishClassicServer(
   ctx: ExecutionContext,
 ): Promise<Response> {
   const body = await readBoundedPublishBody(request, route.maximumBodyBytes);
-  if (
-    route.publisherProfile !== "classic-v1" &&
-    route.publisherProfile !== "classic-v2"
-  ) {
-    throw new Error("Classic route carried a non-Classic profile");
-  }
-  const authenticated = route.publisherProfile === "classic-v2"
-    ? await authenticateClassicV2Publish(
-      request,
-      body,
-      route.serverId,
-      route.authority,
-      now,
-    )
-    : await authenticateClassicPublish(
-      request,
-      body,
-      route.serverId,
-      route.authority,
-      now,
-    );
+  if (route.publisherProfile !== "classic-v3") throw new Error("Wrong Classic publisher profile");
+  const authenticated = await authenticateClassicPublish(request, body, route.serverId, route.authority, now);
 
   await enforceAuthenticatedPublishBudget(
     env,
@@ -326,9 +299,7 @@ async function publishClassicServer(
   );
 
   const payload = authenticated.payload;
-  const authorizationRequired = "accessCodeRequired" in payload
-    ? payload.accessCodeRequired
-    : payload.passwordRequired;
+  const authorizationRequired = payload.accessRequired;
   const rendezvousToken = randomToken();
   const publication = {
     serverId: route.serverId,
@@ -346,6 +317,7 @@ async function publishClassicServer(
     tokenHash: await sha256Hex(rendezvousToken),
     now,
     visibilityCutoff: now - control.listingTtlSeconds,
+    certificate: payload.certificate,
     name: payload.name,
     playersCount: payload.playersCount,
     version: payload.version,
@@ -428,7 +400,7 @@ async function publishGameServer(
     route.serverId,
     control.publishServerDaily,
     now,
-    "game-v1",
+    "game-v2",
   );
   await enforceServerIdentityDenial(env, route.serverId, "publish-game");
 
@@ -436,20 +408,21 @@ async function publishGameServer(
   const rendezvousToken = randomToken();
   const publication = {
     serverId: route.serverId,
-    directoryProfile: "game-v1",
+    directoryProfile: "game-v2",
     publisherSequence: authenticated.sequence,
     publisherNonce: authenticated.nonce,
     publisherNonceExpiresAt: authenticated.nonceExpiresAt,
     commitToken: randomToken(),
     expectedGeneration: await readPublishedGeneration(
       env.DB,
-      "game-v1",
+      "game-v2",
       route.serverId,
     ),
     generation: randomToken(),
     tokenHash: await sha256Hex(rendezvousToken),
     now,
     visibilityCutoff: now - control.listingTtlSeconds,
+    certificate: payload.certificate,
     name: payload.name,
     description: payload.description,
     region: payload.region ?? null,
@@ -464,7 +437,7 @@ async function publishGameServer(
     quicHost: payload.endpoint?.hostname ?? "",
     quicPort: payload.endpoint?.port ?? 1,
     quicCertSha256: route.serverId,
-    authorizationRequired: payload.passwordRequired,
+    authorizationRequired: payload.accessRequired,
     directoryFingerprint: await gameDirectoryFingerprint({
       serverId: route.serverId,
       name: payload.name,
@@ -478,7 +451,7 @@ async function publishGameServer(
       status: payload.status,
       quicHost: payload.endpoint?.hostname ?? "",
       quicPort: payload.endpoint?.port ?? 1,
-      passwordRequired: payload.passwordRequired,
+      accessRequired: payload.accessRequired,
     }),
   } satisfies InternalRendezvousPublication;
   const committed = await commitRendezvousPublication(env, publication);
@@ -502,7 +475,7 @@ async function publishGameServer(
     await committed.body?.cancel();
     throw new Error("Game publication did not commit");
   }
-  scheduleDirectoryReconciliation(env, ctx, committed, "game-v1");
+  scheduleDirectoryReconciliation(env, ctx, committed, "game-v2");
   return Response.json(
     { status: "ok", rendezvousToken },
     {
@@ -520,7 +493,7 @@ async function commitRendezvousPublication(
 ): Promise<Response> {
   const roomName = publication.directoryProfile.startsWith("classic-")
     ? publication.serverId
-    : `game-v1:${publication.serverId}`;
+    : `game-v2:${publication.serverId}`;
   return env.RENDEZVOUS.getByName(roomName).fetch(
     new Request(INTERNAL_RENDEZVOUS_PUBLISH_URL, {
       method: "POST",
@@ -636,15 +609,15 @@ interface GameDirectoryFingerprintInput {
   readonly status: "online" | "full" | "maintenance";
   readonly quicHost: string;
   readonly quicPort: number;
-  readonly passwordRequired: boolean;
+  readonly accessRequired: boolean;
 }
 
 async function classicDirectoryFingerprint(
-  profile: "classic-v1" | "classic-v2",
+  profile: "classic-v3" | "classic-v3",
   input: ClassicDirectoryFingerprintInput,
 ): Promise<string> {
   return sha256Hex(JSON.stringify({
-    schema: profile === "classic-v2"
+    schema: profile === "classic-v3"
       ? "atrinik-classic-directory-entry-v2"
       : "atrinik-classic-directory-entry-v1",
     serverId: input.serverId,
@@ -652,9 +625,9 @@ async function classicDirectoryFingerprint(
     playersCount: input.playersCount,
     version: input.version,
     textComment: input.textComment,
-    ...(profile === "classic-v2"
-      ? { accessCodeRequired: input.authorizationRequired }
-      : { passwordRequired: input.authorizationRequired }),
+    ...(profile === "classic-v3"
+      ? { accessRequired: input.authorizationRequired }
+      : { accessRequired: input.authorizationRequired }),
     certificateSha256: input.quicCertSha256,
     ...(input.quicHost === ""
       ? {}
@@ -682,7 +655,7 @@ async function gameDirectoryFingerprint(
       capacity: input.playersCapacity,
     },
     status: input.status,
-    passwordRequired: input.passwordRequired,
+    accessRequired: input.accessRequired,
     ...(input.quicHost === ""
       ? {}
       : { endpoint: { hostname: input.quicHost, port: input.quicPort } }),
@@ -694,7 +667,7 @@ async function enforceAuthenticatedPublishBudget(
   serverId: string,
   dailyLimit: number,
   now: number,
-  profile: "classic-v1" | "classic-v2" | "game-v1",
+  profile: "classic-v3" | "classic-v3" | "game-v2",
 ): Promise<void> {
   const scope = profile.startsWith("classic-")
     ? "publish-server"

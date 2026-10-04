@@ -18,7 +18,7 @@
       "name": "GLOBAL_RATE_LIMITER",
       "namespace_id": "1201",
       "simple": {
-        "limit": 10,
+        "limit": 65536,
         "period": 60
       }
     },
@@ -26,7 +26,7 @@
       "name": "RENDEZVOUS_CLIENT_RATE_LIMITER",
       "namespace_id": "1202",
       "simple": {
-        "limit": 60,
+        "limit": 65536,
         "period": 60
       }
     }

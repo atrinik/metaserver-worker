@@ -6,13 +6,13 @@
 - Use the `.nvmrc` Node 24.18.1 and `packageManager` npm 11.16.0 pins with the
   lockfile. Run `npm ci` for a clean dependency tree and `npm run check` before
   submitting.
-- Preserve strict request-size, identity, address, ticket, certificate-hash,
+- Preserve strict request-size, identity, candidate-address, ticket, certificate-hash,
   rate-limit, and expiry validation. Keep rendezvous state deterministic and
   bounded; test malformed and replayed input at the boundary.
 - Keep the Worker-to-rendezvous-room upgrade contract explicitly versioned and
   fail closed across deployment skew. Use hibernation attachments only for
-  bounded live-session routing and terminal-teardown state, D1 for the exact
-  eligible source/server rolling-burst cooldown, the room's SQLite ledger only
+  bounded live-session routing and terminal-teardown state, D1 for authenticated
+  identity budgets and private access state, the room's SQLite ledger only
   for bounded purpose-separated replay tags, and one alarm for expiry; never
   add candidate persistence or per-session timers.
 - `wrangler.jsonc` is the sole state-owning core configuration. It deliberately
@@ -52,16 +52,34 @@
   former control-plane-ready secret is optional, inert transition state and
   must never influence a delivery decision.
 - Treat `server_presence` plus the profile-discriminated `directory_entries`
-  as authoritative, profile-scoped publication state. Presence retains only
-  the accepted rendezvous verifier, generation, and last-seen time for both public and
-  private publishers; `directory_entries` alone is public. Classic v1 and v2
-  share one replay lineage but have disjoint password/access-code policy rows;
-  Game remains independent. Never use sentinel fields to imitate another
-  profile. Game rows additionally retain the exact derived
+  as authoritative, profile-scoped publication state. Active profiles are Classic
+  publisher v3/directory v6 and Game publisher v2/directory v2. Private presence
+  retains the signed certificate, name, endpoint, access policy, rendezvous verifier,
+  generation and last-seen time; `directory_entries` alone is public. Historic
+  publisher profiles retain replay lineage only and have no runtime fallback.
+  Never use sentinel fields to imitate another profile. Game rows additionally retain the exact derived
   canonical-JSON byte count so D1 can reject an over-limit aggregate before it
   becomes authoritative. Visible expiry must
   advance `directory_revisions` and `directory_outbox` atomically before
   removing expired entries; stale private presence is revision-neutral.
+- Access tokens use authenticated POST route CRUD on the publisher authority and
+  bounded POST resolve plus the access rendezvous subprotocol on the rendezvous
+  authority. No secret belongs in a URL, log, public artifact or cache. Require
+  an existing publisher identity before CRUD allocation; reserve additionally
+  requires fresh signed presence. Share publisher sequence/nonce replay fences.
+  Keep reserve/activate CAS, terminal revocation, global index collision checks,
+  receipts and reserved revocation capacity in one D1 transaction. Retained
+  receipts plus nonterminal routes cannot exceed 4096 per identity or 65536
+  globally; existing-record revocation must work at capacity.
+  Grants are single-use, fifteen seconds, purpose-HMAC tagged in D1, and bound to
+  identity, generation, token revision and client nonce. Admit them only through
+  the versioned v4 room boundary and recheck denial before candidate dispatch.
+  Raw grants may exist only in bounded live attachments and must be scrubbed at
+  terminal teardown. The retired invitation challenge/proof frames are rejected.
+  Source migrations 0013/0014 preserve populated history; 0015 physically removes
+  the obsolete IP-derived pair tables without changing replay or access state. The separately gated
+  `deployment/retirement/retire-legacy-profiles.sql` is never auto-discovered or
+  applied without the complete proof described alongside it.
 - Treat D1 revision/outbox as the static-directory authority and the
   profile-named `DirectoryBuilder` only as a serialized, retryable publisher.
   Persist pending intent before R2 awaits, publish immutable objects before
@@ -86,9 +104,17 @@
 - Route every direct-hostname write through `isCanonicalHostname()` before D1.
   SQLite independently enforces the bounded ASCII representation but has no
   Unicode/IDNA tables; direct administrative hostname writes are unsupported.
-- Treat request addresses as request-scoped data. Persist only authenticated
-  identities or purpose-separated, rotating HMAC tags with bounded retention;
-  never log raw addresses, tags, credentials, tokens, or rendezvous candidates.
+- Never extract requester or forwarded IP addresses, derive hashes/HMACs from
+  them, or store, audit, log, or metric them. Reject retired internal source/pair
+  headers without an old-envelope bridge. Anonymous edge counters use fixed
+  purpose keys per location, not requester metadata or a fairness identity.
+  Historical `SOURCE_TAG_KEY_*` names and key-ring classes serve only random
+  grant/ticket replay HMACs; preserve their exact domain separation and strictly
+  more than 24-hour overlapping-key retirement window. Preserve authenticated
+  identity budgets. Candidate addresses are transient validated forwarding data,
+  never attachment/SQL/log/history state; operator DNS endpoints are signed
+  routing metadata. Provider-managed historical IP rules and retention remain
+  separately audited operator concerns; source changes cannot prove their removal.
 - Declare required secret names in Wrangler configuration, keep their values in
   Cloudflare secrets or ignored local development files, and fail closed when
   key material or a route circuit breaker is invalid.

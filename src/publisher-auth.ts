@@ -2,14 +2,11 @@ import { isDirectoryText, isGameDirectoryText } from "./directory-state";
 import { isCanonicalHostname } from "./hostname";
 import { HttpError } from "./http";
 
-export const CLASSIC_PUBLISH_SCHEMA = "atrinik-classic-publish-v1";
-export const CLASSIC_V2_PUBLISH_SCHEMA = "atrinik-classic-publish-v2";
-export const GAME_PUBLISH_SCHEMA = "atrinik-game-publish-v1";
+export const CLASSIC_PUBLISH_SCHEMA = "atrinik-classic-publish-v3";
+export const GAME_PUBLISH_SCHEMA = "atrinik-game-publish-v2";
 export const CLASSIC_PUBLISH_SIGNATURE_TAG =
-  "atrinik-classic-publish-v1";
-export const CLASSIC_V2_PUBLISH_SIGNATURE_TAG =
-  "atrinik-classic-publish-v2";
-export const GAME_PUBLISH_SIGNATURE_TAG = "atrinik-game-publish-v1";
+  "atrinik-classic-publish-v3";
+export const GAME_PUBLISH_SIGNATURE_TAG = "atrinik-game-publish-v2";
 export const PUBLISH_CONTENT_TYPE = "application/json";
 export const PUBLISH_SIGNATURE_LABEL = "atrinik";
 export const PUBLISH_SIGNATURE_ALGORITHM = "ecdsa-p256-sha256";
@@ -46,35 +43,13 @@ export interface ClassicPublishPayload {
   readonly version: string;
   readonly textComment: string;
   readonly public: boolean;
-  readonly passwordRequired: boolean;
+  readonly accessRequired: boolean;
   readonly hostname?: string;
   readonly port?: number;
 }
 
 export interface AuthenticatedClassicPublish {
   readonly payload: ClassicPublishPayload;
-  readonly sequence: string;
-  readonly nonce: string;
-  readonly nonceExpiresAt: number;
-  readonly certificateDer: Uint8Array;
-}
-
-export interface ClassicV2PublishPayload {
-  readonly schema: typeof CLASSIC_V2_PUBLISH_SCHEMA;
-  readonly serverId: string;
-  readonly certificate: string;
-  readonly name: string;
-  readonly playersCount: number;
-  readonly version: string;
-  readonly textComment: string;
-  readonly public: boolean;
-  readonly accessCodeRequired: boolean;
-  readonly hostname?: string;
-  readonly port?: number;
-}
-
-export interface AuthenticatedClassicV2Publish {
-  readonly payload: ClassicV2PublishPayload;
   readonly sequence: string;
   readonly nonce: string;
   readonly nonceExpiresAt: number;
@@ -102,7 +77,7 @@ export interface GamePublishPayload {
   };
   readonly status: "online" | "full" | "maintenance";
   readonly public: boolean;
-  readonly passwordRequired: boolean;
+  readonly accessRequired: boolean;
   readonly endpoint?: {
     readonly hostname: string;
     readonly port: number;
@@ -132,27 +107,7 @@ export async function authenticateClassicPublish(
     authority,
     now,
     CLASSIC_PUBLISH_SIGNATURE_TAG,
-    `/v1/classic/servers/${serverId}/publish`,
-    payload,
-  );
-}
-
-export async function authenticateClassicV2Publish(
-  request: Request,
-  body: Uint8Array,
-  serverId: string,
-  authority: string,
-  now: number,
-): Promise<AuthenticatedClassicV2Publish> {
-  const payload = parseClassicV2PublishPayload(body);
-  return authenticateSignedPublish(
-    request,
-    body,
-    serverId,
-    authority,
-    now,
-    CLASSIC_V2_PUBLISH_SIGNATURE_TAG,
-    `/v2/classic/servers/${serverId}/publish`,
+    `/v3/classic/servers/${serverId}/publish`,
     payload,
   );
 }
@@ -172,12 +127,12 @@ export async function authenticateGamePublish(
     authority,
     now,
     GAME_PUBLISH_SIGNATURE_TAG,
-    `/v1/servers/${serverId}/publish`,
+    `/v2/servers/${serverId}/publish`,
     payload,
   );
 }
 
-async function authenticateSignedPublish<Payload extends {
+export async function authenticateSignedPublish<Payload extends {
   readonly serverId: string;
   readonly certificate: string;
 }>(
@@ -400,25 +355,15 @@ function parseClassicPublishPayload(body: Uint8Array): ClassicPublishPayload {
   return parseClassicPayload(
     body,
     CLASSIC_PUBLISH_SCHEMA,
-    "passwordRequired",
+    "accessRequired",
   ) as ClassicPublishPayload;
-}
-
-function parseClassicV2PublishPayload(
-  body: Uint8Array,
-): ClassicV2PublishPayload {
-  return parseClassicPayload(
-    body,
-    CLASSIC_V2_PUBLISH_SCHEMA,
-    "accessCodeRequired",
-  ) as ClassicV2PublishPayload;
 }
 
 function parseClassicPayload(
   body: Uint8Array,
-  schema: typeof CLASSIC_PUBLISH_SCHEMA | typeof CLASSIC_V2_PUBLISH_SCHEMA,
-  policyKey: "passwordRequired" | "accessCodeRequired",
-): ClassicPublishPayload | ClassicV2PublishPayload {
+  schema: typeof CLASSIC_PUBLISH_SCHEMA,
+  policyKey: "accessRequired",
+): ClassicPublishPayload {
   let raw: string;
   let parsed: unknown;
   try {
@@ -476,24 +421,10 @@ function parseClassicPayload(
     textComment: parsed.textComment,
     public: parsed.public,
   } as const;
-  if (policyKey === "passwordRequired") {
-    const payload: ClassicPublishPayload = {
-      schema: CLASSIC_PUBLISH_SCHEMA,
-      ...common,
-      passwordRequired: parsed.passwordRequired as boolean,
-      ...(hasHostname
-        ? { hostname: parsed.hostname as string, port: parsed.port as number }
-        : {}),
-    };
-    if (JSON.stringify(payload) !== raw) {
-      throw new HttpError("bad_request");
-    }
-    return Object.freeze(payload);
-  }
-  const payload: ClassicV2PublishPayload = {
-    schema: CLASSIC_V2_PUBLISH_SCHEMA,
+  const payload: ClassicPublishPayload = {
+    schema: CLASSIC_PUBLISH_SCHEMA,
     ...common,
-    accessCodeRequired: parsed.accessCodeRequired as boolean,
+    accessRequired: parsed.accessRequired as boolean,
     ...(hasHostname
       ? { hostname: parsed.hostname as string, port: parsed.port as number }
       : {}),
@@ -530,7 +461,7 @@ function parseGamePublishPayload(body: Uint8Array): GamePublishPayload {
     "players",
     "status",
     "public",
-    "passwordRequired",
+    "accessRequired",
     ...(hasEndpoint ? ["endpoint"] : []),
   ];
   if (
@@ -568,7 +499,7 @@ function parseGamePublishPayload(body: Uint8Array): GamePublishPayload {
       parsed.players.online !== parsed.players.capacity) ||
     (parsed.status === "maintenance" && parsed.players.online !== 0) ||
     typeof parsed.public !== "boolean" ||
-    typeof parsed.passwordRequired !== "boolean" ||
+    typeof parsed.accessRequired !== "boolean" ||
     (hasEndpoint &&
       (!isRecord(parsed.endpoint) ||
         Object.keys(parsed.endpoint).join(",") !== "hostname,port" ||
@@ -599,7 +530,7 @@ function parseGamePublishPayload(body: Uint8Array): GamePublishPayload {
     },
     status: parsed.status,
     public: parsed.public,
-    passwordRequired: parsed.passwordRequired,
+    accessRequired: parsed.accessRequired,
     ...(hasEndpoint
       ? {
           endpoint: {
