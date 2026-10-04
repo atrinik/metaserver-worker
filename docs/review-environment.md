@@ -194,7 +194,7 @@ their results; the account boundary is the hard production isolation.
 | Host/TLS/Access | Three stable review `workers.dev` hosts, provider TLS, one account-scoped `all_workers` Access application; no Custom Domain, zone WAF, cache rule, route, or preview URL |
 | Data | No production/live-request copies; fresh ephemeral nonproduction signing keys and certificates per run; no real identity or rendezvous state |
 | Schedules/logs | No cron; private Worker logs with repository redaction and no external destination |
-| Retention/cost | One cohort: 3 Workers, 2 D1 databases, 2 DO namespaces, 3 R2 buckets, 2 datasets, 5 rate namespaces, 0 custom hosts, 1 Access app; 20-minute supervised run, at most 15 mutation minutes and a five-minute live window, seven-day evidence; replay admission is invalid after 24 hours but its physical DO row is a recorded provider residual until alarm pruning or mandatory 90-day namespace teardown, Analytics Engine may retain synthetic rows for 90 days, and native rate counters expire on provider cadence |
+| Retention/cost | One cohort: 3 Workers, 2 D1 databases, 2 DO namespaces, 3 R2 buckets, 2 datasets, 6 rate namespaces, 0 custom hosts, 1 Access app; 20-minute supervised run, at most 15 mutation minutes and a five-minute live window, seven-day evidence; replay admission is invalid after 24 hours but its physical DO row is a recorded provider residual until alarm pruning or mandatory 90-day namespace teardown, Analytics Engine may retain synthetic rows for 90 days, and native rate counters expire on provider cadence |
 
 The protocol identity is the fresh certificate hash; it is not forced into a
 text prefix. The fixture record separately carries the

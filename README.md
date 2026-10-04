@@ -8,14 +8,13 @@ connection candidates; they never proxy game traffic.
 
 ## Supported services
 
-Classic v5.9.0 is the minimum supported metaserver consumer. The public API is
-canonical-only:
+The current contracts require coordinated access-token-capable consumers.
+Historical publisher and directory versions are not accepted by this runtime.
+The public API is canonical-only:
 
 - static Classic snapshots at `classic.meta.atrinik.org/index.{html,json,xml}`;
-- signed Classic v1 publication at
-  `publish.meta.atrinik.org/v1/classic/servers/{server-id}/publish` during the
-  migration window, and fail-closed Classic v2 publication at
-  `publish.meta.atrinik.org/v2/classic/servers/{server-id}/publish`;
+- signed Classic v3 publication at
+  `publish.meta.atrinik.org/v3/classic/servers/{server-id}/publish`;
 - Classic rendezvous at
   `rendezvous.meta.atrinik.org/v1/classic/servers/{server-id}`; and
 - the independently versioned Game Protocol 1 publisher, rendezvous, and
@@ -53,37 +52,27 @@ persistent QUIC certificate. Both publishers fold freshness and identity proof
 into one replay-safe signed request. Rendezvous server peers authenticate
 separately.
 
-Rendezvous is one short, bounded signaling attempt, not a room-wide message
-bus. A client is admitted only while one authenticated server-control socket is
-live. An open client's first and only `client_candidate` supplies a fresh
-client-generated ticket; an access-code-protected client supplies it in
-`auth_init`.
-The room binds the ticket to that socket and makes it single-use for the rolling
-24-hour replay window. Only that socket receives matching server messages.
-An access-code-protected attempt first relays exactly one `auth_init`, `auth_challenge`,
-`auth_proof`, and `auth_result`; the authenticated current server control is
-the only authority that may return `authorized: true`. No candidate is accepted
-before that result. A session lasts at most 15 seconds and can forward at most
-two client authorization frames, two server authorization frames, one client
-candidate, 12 server candidates, and one completion. Every frame is at most 512
-bytes and the complete accepted exchange is at most 9,216 bytes. Candidate endpoints are
-never cached or persisted. A terminal transition immediately removes the raw
-ticket and routing digest from the client attachment. If the transport close
-itself fails, the already non-signaling socket normally receives at most four
-explicit teardown retries over a fixed seven-second horizon. If persisting a
-retry counter and closing both fail, the alarm fails into Cloudflare's bounded
-platform retry policy instead of installing another alarm; neither path can
-create a self-sustaining loop.
+Rendezvous is one short, bounded signaling attempt. A client is admitted only
+while an authenticated server-control socket is live. Open public connections
+retain the bounded ticket/candidate flow. Protected access first resolves a
+route capability over HTTPS, then opens the access rendezvous route and sends
+one `access_init` frame with a fresh grant and client nonce. No access code,
+route capability or grant appears in a URL or WebSocket subprotocol.
 
-Retained v1 password-protected listings accept clients only when both peers negotiate the
-exact `atrinik-classic-rendezvous-invite-v1` WebSocket subprotocol. The Worker
-relays a challenge/response for a random, expiring invite capability but never
-receives the invite secret and never interprets the proof. The classic server
-verifies the proof in constant time and returns only a generic authorization
-result. The independent v1 in-game join password remains mandatory after QUIC.
-A v2 listing instead publishes only `accessCodeRequired`; the retained
-invite-v1 wire exchange is internal access-code plumbing, and the Worker never
-receives the launch code, rendezvous secret, or post-QUIC result.
+The grant expires within 15 seconds and is redeemed once through the current
+D1 route authority before room admission. Revocation and redemption serialize
+there; revocation also closes pending room routing. Independent encrypted game
+admission verifies the access code. Directory presence stores the authenticated
+certificate, name, optional endpoint and configured `accessRequired` policy
+privately for resolution. Public builders consume only current public entries,
+never private presence or token metadata. Open/private policy is independent of
+the number or validity of tokens.
+
+Existing candidate, frame, byte, replay, expiry and terminal-teardown bounds
+remain enforced. Candidate endpoints are not persisted. The authenticated
+control channel uses `atrinik-access-rendezvous-v1`; retired invitation and
+password protocols are not fallback paths. See the normative access-token
+contract in the protocol repository and the separately gated deployment plan.
 
 ## Development
 
@@ -206,13 +195,14 @@ credential-free verifier:
 
 ```sh
 python3 scripts/static_origin_canary.py \
-  --profile game-v1 \
+  --profile game-v2 \
   --base-url https://game-directory-canary.example.org \
+  --alias-prefix canary-v2 \
   --json
 python3 scripts/static_origin_canary.py \
-  --profile classic-v2 \
-  --base-url https://classic-v5-directory-canary.example.org \
-  --alias-prefix canary-v5 \
+  --profile classic-v3 \
+  --base-url https://classic-v6-directory-canary.example.org \
+  --alias-prefix canary-v6 \
   --json
 ```
 
@@ -390,14 +380,17 @@ and rendezvous are enabled for supported Classic clients. The publisher remains
 domainless in checked-in Wrangler configuration until the protected production
 custom-domain attachment is read back. The Go
 producer and Rust consumer foundations are released, including opaque origin
-validator handling. Classic protocol 4 is specified in
-[docs/classic-directory-v4.md](docs/classic-directory-v4.md); Classic v2
-protocol 5 is specified in
-[docs/classic-directory-v5.md](docs/classic-directory-v5.md). With
-`CLASSIC_DIRECTORY_CUTOVER_MODE=v4-production`, v5 writes only below the
-non-production `canary-v5/` prefix and cannot replace v4 aliases. The one-way
-`v5-production` setting reverses the active and pre-cutover namespaces only
-after explicit human canary acceptance. Static authority
+validator handling. Current Classic directories use schema
+`atrinik-classic-directory-v6` / protocol 6; Game uses
+`atrinik-game-directory-v2`. Both publish only `accessRequired` policy.
+Historical [Classic v4](docs/classic-directory-v4.md) and
+[v5](docs/classic-directory-v5.md) documents remain migration evidence.
+`CLASSIC_DIRECTORY_CUTOVER_MODE=v4-production` or `v5-production` stages the new
+Classic output under `canary-v6/`; only `v6-production` selects root aliases.
+`GAME_DIRECTORY_CUTOVER_MODE=v1-production` stages Game under `canary-v2/`;
+only `v2-production` selects root aliases. These staging defaults do not serve
+historical formats. Any actual production cutover requires a separately reviewed
+operator action. Static authority
 attachment, cache rules, headers, CORS, CSP, custom-domain isolation, and
 consumer cutover remain explicit service-split gates. R2's opaque strong ETag and alias upload
 time satisfy the released validator/`Last-Modified` model only after the live

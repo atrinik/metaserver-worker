@@ -377,9 +377,8 @@ function validateResources(resources) {
   exactValue(resources.d1.migrationLedger, "independent-exact-checked-in-ledger", "review migration ledger");
   exactValue(resources.d1.reset, "fresh-d1-or-reviewed-expiry-only-no-bulk-production-copy", "review reset plan");
   exactArray(resources.d1.referenceVectorSources, [
-    "test/fixtures/metaserver-publisher-v1.json",
-    "test/fixtures/metaserver-classic-publisher-v2.json",
-    "test/fixtures/metaserver-game-publisher-v1.json",
+    "test/fixtures/metaserver-classic-publisher-v3.json",
+    "test/fixtures/metaserver-game-publisher-v2.json",
   ], "review fixture sources");
   exactKeys(resources.coordinationD1, [
     "owner", "name", "schema", "schemaPath", "schemaSha256", "operationsPath", "operationsSha256",
@@ -458,19 +457,19 @@ function validateResources(resources) {
   for (const item of resources.rateLimits)
     exactKeys(item, ["owner", "binding", "namespaceId", "simple", "productionNamespaceReuse"], "review rate limit");
   exactArray(resources.rateLimits.map(({ namespaceId }) => namespaceId), [
-    "2006", "2007", "2101", "2201",
+    "2008", "2006", "2007", "2101", "2201",
   ], "review rate namespaces");
   exactArray(resources.rateLimits.map(({ owner }) => owner), [
-    "core", "core", "publisher", "rendezvous",
+    "core", "core", "core", "publisher", "rendezvous",
   ], "review rate owners");
   exactArray(resources.rateLimits.map(({ binding }) => binding), [
-    "PUBLISH_IDENTITY_RATE_LIMITER", "RENDEZVOUS_SERVER_RATE_LIMITER",
+    "ACCESS_ROUTE_RATE_LIMITER", "PUBLISH_IDENTITY_RATE_LIMITER", "RENDEZVOUS_SERVER_RATE_LIMITER",
     "GLOBAL_RATE_LIMITER", "GLOBAL_RATE_LIMITER",
   ], "review rate bindings");
   for (const rate of [...resources.rateLimits, resources.rendezvousClientRateLimit])
     exactValue(rate.productionNamespaceReuse, false, "review rate namespace isolation");
   exactArray(resources.rateLimits.map(({ simple }) => simple), [
-    { limit: 2, period: 60 }, { limit: 3, period: 60 },
+    { limit: 16, period: 60 }, { limit: 2, period: 60 }, { limit: 3, period: 60 },
     { limit: 10, period: 60 }, { limit: 10, period: 60 },
   ], "review rate policies");
   exactKeys(resources.rendezvousClientRateLimit, [
@@ -536,7 +535,7 @@ function validateConfigurationMaterialization(value) {
       workersDevPrivateSubdomain: "exact-dedicated-live-account-subdomain-readback",
     },
     sources: [
-      { role: "core", path: "wrangler.jsonc", sha256: "01aa72881ffe1144defc211beb9a6b0ad3bf6e32897de0e9cd3812939588de32" },
+      { role: "core", path: "wrangler.jsonc", sha256: "ad32c2b69de90e76f241e00a4003d497c8078e50e87ddafdbbd22e0c26e94346" },
       { role: "publisher", path: "wrangler.publisher.jsonc", sha256: "b847b3d35c239545ceb3ff15afa17a05e39f0de590e89a414aaf21220d56d01d" },
       { role: "rendezvous", path: "wrangler.rendezvous.jsonc", sha256: "10b32a4c9544c8153950a25db080824a72a6f5c621688e7d8accaf8b984b4e38" },
     ],
@@ -550,7 +549,7 @@ function validateConfigurationMaterialization(value) {
       d1DatabaseId: "<provider-issued-review-d1-uuid>",
       r2BucketNames: ["atrinik-metaserver-review-canary-generations", "atrinik-metaserver-review-canary-classic", "atrinik-metaserver-review-canary-game"],
       analyticsDatasets: ["atrinik_metaserver_rendezvous_review_canary", "atrinik_metaserver_directory_review_canary"],
-      rateNamespaceIds: ["2006", "2007"], directoryCacheZoneId: "00000000000000000000000000000000",
+      rateNamespaceIds: ["2008", "2006", "2007"], directoryCacheZoneId: "00000000000000000000000000000000",
       classicDirectoryPublicOrigin: "https://classic.review.invalid",
       gameDirectoryPublicOrigin: "https://game.review.invalid",
       publishHostname: "atrinik-metaserver-publisher-review-canary.<private-subdomain>.workers.dev",
@@ -602,7 +601,7 @@ export function materializeReviewConfiguration(source, role, materialization, li
   config.name = override.name;
   if (role === "core") {
     if (config.d1_databases?.length !== 1 || config.r2_buckets?.length !== 3 ||
-        config.analytics_engine_datasets?.length !== 2 || config.ratelimits?.length !== 2)
+        config.analytics_engine_datasets?.length !== 2 || config.ratelimits?.length !== 3)
       fail("review core source resource shape drift");
     config.d1_databases[0].database_name = override.d1DatabaseName;
     config.d1_databases[0].database_id = override.d1DatabaseId;
@@ -790,7 +789,7 @@ export function validateLiveCanary(value) {
     "rateLimitNamespaces", "customHostnames", "accessApplications", "cohortLifetime", "quarterlyReprovisionRequired",
   ], "review resource ceilings");
   const expectedCeilings = { workers: 3, d1Databases: 2, durableObjectNamespaces: 2, r2Buckets: 3,
-    analyticsDatasets: 2, rateLimitNamespaces: 5, customHostnames: 0, accessApplications: 1 };
+    analyticsDatasets: 2, rateLimitNamespaces: 6, customHostnames: 0, accessApplications: 1 };
   for (const [key, expected] of Object.entries(expectedCeilings)) exactValue(ceilings[key], expected, `review ${key} ceiling`);
   exactValue(ceilings.cohortLifetime, "long-lived-singleton", "review cohort lifetime");
   exactValue(ceilings.quarterlyReprovisionRequired, true, "review reprovision policy");

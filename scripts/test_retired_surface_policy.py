@@ -4,6 +4,8 @@ from pathlib import Path
 
 
 ROOT = Path(__file__).resolve().parents[1]
+# Game publisher v2 reuses only the exact signed /servers/<identity>/publish
+# shape; the retired unsigned collection and rendezvous APIs remain forbidden.
 PATTERN = re.compile(
     r"COMPAT_[A-Z0-9_]+|compat-key-v1|"
     r"server_owners|server_blacklist|one_time_tokens|\brate_limits\b|"
@@ -13,7 +15,8 @@ PATTERN = re.compile(
     r"\b(?:FROM|INTO|UPDATE|TABLE|JOIN)\s+servers\b|"
     r"compat-(?:status|directory|otp|update(?:-source|-server)?|"
     r"rendezvous(?:-[a-z-]+)?)|"
-    r"/index\.wsgi/(?:otp|update)|/v2/(?:servers|rendezvous)"
+    r"/index\.wsgi/(?:otp|update)|/v2/(?:servers(?!/"
+    r"(?:[0-9a-f]{64}|\$\{serverId\}|\{server-id\})/publish)|rendezvous)"
 )
 
 RETIRED_DOCUMENTATION_PATTERN = re.compile(
@@ -48,6 +51,13 @@ NEGATIVE_FIXTURES = {
 
 
 class RetiredSurfaceSourcePolicyTests(unittest.TestCase):
+    def test_game_v2_exception_does_not_admit_retired_collection_routes(self):
+        for path in ("/v2/servers", "/v2/servers/unknown/publish", "/v2/rendezvous",
+                     "/v2/servers/" + "a" * 64 + "/update"):
+            with self.subTest(path=path):
+                self.assertIsNotNone(PATTERN.search(path))
+        self.assertIsNone(PATTERN.search("/v2/servers/" + "a" * 64 + "/publish"))
+
     def test_storage_removal_requires_noncanonical_deny_disposition(self) -> None:
         deployment = (ROOT / "DEPLOYMENT.md").read_text(encoding="utf-8")
         migration = (

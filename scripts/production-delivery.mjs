@@ -236,9 +236,11 @@ export function validateContract(contract) {
         "python3",
         "scripts/static_origin_canary.py",
         "--profile",
-        "classic-v1",
+        "classic-v3",
         "--base-url",
         "https://classic.meta.atrinik.org",
+        "--alias-prefix",
+        "$CLASSIC_DIRECTORY_ALIAS_PREFIX",
         "--allow-production",
         "--json",
       ],
@@ -249,9 +251,11 @@ export function validateContract(contract) {
         "python3",
         "scripts/static_origin_canary.py",
         "--profile",
-        "game-v1",
+        "game-v2",
         "--base-url",
         "https://meta.atrinik.org",
+        "--alias-prefix",
+        "$GAME_DIRECTORY_ALIAS_PREFIX",
         "--allow-production",
         "--json",
       ],
@@ -358,7 +362,7 @@ export function validateContract(contract) {
     !Array.isArray(contract.workers) ||
     contract.workers.length !== 3 ||
     sha256Json(canonicalJson(contract.workers)) !==
-      "6f7c5ac09e0898c740481db5b829125b541c655f1a811ac7e0a5219f70cb72d3" ||
+      "d7008f189964d8d8a9f51ea4935aac2c3ed5ca811acc28238246707484105ae3" ||
     JSON.stringify(contract.workers.map(({ name }) => name)) !==
       JSON.stringify(expectedWorkerNames) ||
     JSON.stringify(contract.workers.map(({ order }) => order)) !==
@@ -656,9 +660,11 @@ export function validateTopology(contract, configs, { production = false } = {})
     1,
     Math.min(7_200, 14_399, listingTtl - 900),
   );
-  if (!["v4-production", "v5-production"].includes(
+  if (!["v4-production", "v5-production", "v6-production"].includes(
     core.vars?.CLASSIC_DIRECTORY_CUTOVER_MODE,
   )) fail("Classic directory cutover policy drift");
+  if (!["v1-production", "v2-production"].includes(core.vars?.GAME_DIRECTORY_CUTOVER_MODE))
+    fail("Game directory cutover policy drift");
   if (
     production &&
     (!/^[0-9a-f]{32}$/u.test(core.vars?.DIRECTORY_CACHE_ZONE_ID ?? "") ||
@@ -705,6 +711,7 @@ export function validateTopology(contract, configs, { production = false } = {})
       ["RENDEZVOUS", "DIRECTORY_BUILDER"],
     ) ||
     !sameValues(names(core, "ratelimits", "name"), [
+      "ACCESS_ROUTE_RATE_LIMITER",
       "PUBLISH_IDENTITY_RATE_LIMITER",
       "RENDEZVOUS_SERVER_RATE_LIMITER",
     ]) ||
@@ -2005,21 +2012,32 @@ async function deployWorker(
   return message;
 }
 
+export function resolveProductionCanaryCommand(canary, configs) {
+  const roleIndex = {
+    "publisher-service-binding": 1,
+    "rendezvous-service-binding": 2,
+  }[canary.name];
+  const variables = roleIndex === undefined ? {} : configs[roleIndex].vars;
+  const classicMode = configs[0].vars?.CLASSIC_DIRECTORY_CUTOVER_MODE;
+  const gameMode = configs[0].vars?.GAME_DIRECTORY_CUTOVER_MODE;
+  if (!["v4-production", "v5-production", "v6-production"].includes(classicMode) ||
+      !["v1-production", "v2-production"].includes(gameMode))
+    fail("directory canary cutover policy drift");
+  const resolved = canary.command.map((value) => ({
+    "$PUBLISH_ENABLED": variables.PUBLISH_ENABLED,
+    "$RENDEZVOUS_ENABLED": variables.RENDEZVOUS_ENABLED,
+    "$ROUTE_DISABLED_RETRY_SECONDS": variables.ROUTE_DISABLED_RETRY_SECONDS,
+    "$CLASSIC_DIRECTORY_ALIAS_PREFIX": classicMode === "v6-production" ? "" : "canary-v6",
+    "$GAME_DIRECTORY_ALIAS_PREFIX": gameMode === "v2-production" ? "" : "canary-v2",
+  })[value] ?? value);
+  if (resolved.some((value) => value.startsWith("$")))
+    fail(`${canary.name} has an unresolved canary input`);
+  return resolved;
+}
+
 async function runProductionCanaries(contract, configs) {
   for (const canary of contract.productionCanaries) {
-    const roleIndex = {
-      "publisher-service-binding": 1,
-      "rendezvous-service-binding": 2,
-    }[canary.name];
-    const variables = roleIndex === undefined ? {} : configs[roleIndex].vars;
-    const resolved = canary.command.map((value) => ({
-      "$PUBLISH_ENABLED": variables.PUBLISH_ENABLED,
-      "$RENDEZVOUS_ENABLED": variables.RENDEZVOUS_ENABLED,
-      "$ROUTE_DISABLED_RETRY_SECONDS": variables.ROUTE_DISABLED_RETRY_SECONDS,
-    })[value] ?? value);
-    if (resolved.some((value) => value.startsWith("$")))
-      fail(`${canary.name} has an unresolved canary input`);
-    const [program, ...args] = resolved;
+    const [program, ...args] = resolveProductionCanaryCommand(canary, configs);
     await command(program, args, { timeout: 120_000 });
   }
 }
