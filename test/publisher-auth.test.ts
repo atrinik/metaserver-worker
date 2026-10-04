@@ -139,6 +139,21 @@ describe("signed publisher authentication", () => {
     expect(authenticated.certificateDer.byteLength).toBeGreaterThan(0);
   });
 
+  it.each(["open", "heartbeat", "changed", "stale", "reused_nonce", "private"] as const)(
+    "authenticates the protocol-owned %s signature before replay decisions", async (name) => {
+      const vector = publisherFixture[name];
+      const request = fixtureRequest({body:vector.body,headers:{
+        "Atrinik-Publish-Sequence": vector.sequence,
+        "Content-Digest": vector.content_digest,
+        Signature: vector.signature_header,
+        "Signature-Input": vector.signature_input,
+      }});
+      await expect(authenticate(request)).resolves.toMatchObject({
+        sequence:vector.sequence,nonce:vector.nonce,payload:JSON.parse(vector.body),
+      });
+    },
+  );
+
   it("rejects signed component and identity mutations", async () => {
     const changedBody = publisherFixture.changed.body;
     const cases = [
