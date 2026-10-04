@@ -34,8 +34,12 @@ ATRINIK_PRODUCTION_PUBLISHER_CONFIG
 ATRINIK_PRODUCTION_RENDEZVOUS_CONFIG
 ATRINIK_WORKERS_BUILDS_API_TOKEN
 CLOUDFLARE_ACCOUNT_ID
-ATRINIK_PRODUCTION_CONTROL_PLANE_READY
 ```
+
+`ATRINIK_PRODUCTION_CONTROL_PLANE_READY` may remain temporarily as an encrypted
+legacy build variable while the provider configuration converges. The build
+accepts only its hidden secret classification and ignores its value; it is not
+part of the current contract and may be deleted after this source is live.
 
 The entrypoint materializes the configurations as owner-only temporary files
 outside the checkout, resolves only repository-contained entrypoints, and
@@ -47,23 +51,22 @@ Worker mutation. It also reconciles the live GitHub repository, root, core
 project tag, branch/watch filters, build/deploy commands, and exact protected
 environment inventory/classification with the checked-in contract. Every fence
 fetches the current trigger rather than trusting the build-start snapshot. Use
-`routine` only while the live
-control-plane digest is unchanged. After separately authorized
-migration/DNS/WAF/domain/route/trigger, secret-rotation, resource, or ownership
-work, use `approved:<exact-current-main-SHA>` for that retry only, then restore
-`routine`. Never print a protected file, identifier, secret value, recovery
+the accepted `main` source plus the live preflights as the delivery authority;
+no variable carries a second approval. Separately authorized
+DNS/WAF/domain/route/trigger, secret-rotation, resource, or ownership work still
+requires its own reviewed operation before the source delivery observes it.
+Never print a protected file, identifier, secret value, recovery
 coordinate, or raw provider response. Routine deploys inherit already
 provisioned encrypted runtime secrets by name and never read, upload, rotate,
 or delete their values.
-The first provider connection also uses this exact-SHA gate because the live
-versions do not yet carry the repository delivery annotations. If a live
-Worker reports `last_deployed_from=api`, that exact approved retry may perform
-the one-time API-to-Workers-Builds handoff for that Worker: it omits Wrangler's
-interactive `--strict` conflict prompt only for that approved SHA, after the
-normal live control-plane, lease, configuration, and readback preflight. It
-does not create a manual deployment path, accept a dashboard override, or
-weaken routine delivery; subsequent ordinary builds remain strict. Restore
-`routine` after all three annotated versions pass readback and canaries.
+For the first provider connection, a Worker that reports
+`last_deployed_from=api` and has no valid repository delivery annotation may
+perform the one-time API-to-Workers-Builds handoff automatically. It omits
+Wrangler's interactive `--strict` conflict prompt only for that unannotated
+Worker, after the normal live control-plane, lease, configuration, migration
+ledger, and readback preflights. Dashboard-managed or already annotated
+Workers remain strict, and malformed Atrinik delivery annotations stop the
+build. Subsequent ordinary builds remain strict.
 
 The entrypoint performs this fail-closed sequence:
 
@@ -97,8 +100,8 @@ The entrypoint performs this fail-closed sequence:
 6. Prove the staged three-role cohort is coherent. Restore the desired caller
    configs in publisher/rendezvous order while core remains disabled, restore
    core last, and validate every normal direct `wrangler deploy --strict` at
-   100%. The one-time API-managed handoff above is the only separately gated
-   exception and is not a routine deployment mode.
+   100%. The one-time unannotated API-managed handoff above is selected from
+   live provenance and is not a general deployment mode.
    Thus any pre-final failure leaves or restores the core breakers disabled.
 7. Record exact source, deployable, migration digest/horizon, control-plane,
    role, and phase
@@ -194,12 +197,13 @@ per-trigger tokens, commands, and environments. Equality,
 proof/selector swaps, fixed names, a second connected Worker, and fallback to
 an unreviewed request all fail before setup mutation.
 
-The production activation initially retains the `routine` control-plane gate.
-Its first automatic `main` build must therefore fail closed if the existing
-versions still lack delivery annotations. Once that exact merge SHA is known,
-the separately authorized operator may set `approved:<exact-current-main-SHA>`
-and retry that same provider entrypoint; an older SHA cannot be substituted.
-Restore `routine` only after coherent final readback and canaries.
+The production activation enables the accepted-`main` trigger only after the
+existing review, sentinel, and production readback preconditions pass. Its
+first automatic build then performs the same live trigger, environment,
+control-plane, migration-ledger, lease, and source checks as later builds.
+Unannotated Workers whose live provenance is `api` use the bounded automatic
+handoff described above; dashboard provenance, malformed owned annotations,
+and divergent migration history fail closed.
 
 Provider readback uses a dedicated user-scoped token with the provider's
 Workers Builds Configuration Edit and Workers Scripts Read permissions (the
@@ -1105,8 +1109,8 @@ through to the production command or blocks unrelated GitHub validation.
 
 ### Pauses, retries, outages, and manual escape
 
-A pending/divergent migration, changed control plane, placeholder/missing
-input, wrong account, route/binding/secret drift, stale SHA, or failed
+A pending/divergent migration, unmet external control-plane prerequisite,
+placeholder/missing input, wrong account, route/binding/secret drift, stale SHA, or failed
 validation/upload/readback/canary stops the build. The command never applies a
 migration or changes external control-plane state incidentally. Preserve the
 safest circuit state and private recovery evidence, perform only the separately
@@ -1114,10 +1118,11 @@ authorized prerequisite from the same revision, verify it, and manually retry
 that exact SHA through Workers Builds. The retry must still be current `main`;
 never create an empty commit or deploy from a local checkout.
 
-An authorized append-only migration retry is accepted only when the active
-annotation's prior horizon hashes to an exact prefix of the new checked-in
-ledger and the remote name ledger already equals the new ledger. Rewriting,
-reordering, deleting, or inserting into the prior horizon remains divergent.
+After separately authorized SQL application, an append-only migration source
+change proceeds automatically only when the active annotation's prior horizon
+hashes to an exact prefix of the new checked-in ledger and the remote name
+ledger already equals the new ledger. Rewriting, reordering, deleting, or
+inserting into the prior horizon remains divergent; the build never applies SQL.
 An interrupted staged cohort is internal recovery state, not external control
 drift, so the newest routine build can safely finish it. Failure evidence keeps
 the original phase/role and separately records disabled-core recovery as

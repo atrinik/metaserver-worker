@@ -29,6 +29,7 @@ import {
   credentialedProvisioningModes,
   createPrivateDirectory,
   initialBootstrapPredecessorConfiguration,
+  historicalSetupPlanSha256,
   issueDisposableReviewAuthority,
   issueReviewActivationAuthority,
   issueReviewMembershipRepairAuthority,
@@ -6148,7 +6149,7 @@ test("proves a fresh setup has no competing trigger, Deploy Hook, or active buil
   }), /competing Workers Builds trigger/u);
 });
 
-test("plans inert setup, separately gated activation, and ordered rollback", () => {
+test("plans inert setup, automatic accepted-main delivery, and ordered rollback", () => {
   const plan = provisioningSetupPlan(production, review);
   assert.deepEqual(provisioningDryRunSummary(production, review).gates, plan.gates);
   assert.equal(plan.mutation, false);
@@ -6428,7 +6429,7 @@ test("plans inert setup, separately gated activation, and ordered rollback", () 
     "sentinel-recheck-before-production-activation.proof_digest");
   assert.equal(plan.productionActivation.precondition.productionProof.resultReference,
     "production-activation-readback.proof_digest");
-  assert.match(plan.productionActivation.initialGate, /fails-closed/u);
+  assert.match(plan.productionActivation.initialGate, /accepted-main-build/u);
   assert.deepEqual(plan.credentialAuthority.productionLeaseToken.accountPermissions,
     ["Workers Builds Configuration:Edit"]);
   assert.deepEqual(plan.credentialAuthority.controlPlaneOperator.providerAccountPermissions,
@@ -6505,6 +6506,24 @@ test("plans inert setup, separately gated activation, and ordered rollback", () 
   assert.ok(plan.setupOperations.filter(({ mutation }) => mutation)
     .every(({ actor, action }) => actor && action));
   assert.equal(validateSetupPlan(plan), plan);
+  const historicalPlan = structuredClone(plan);
+  historicalPlan.setupOperations.find(({ id }) => id === "production-environment")
+    .request.body.ATRINIK_PRODUCTION_CONTROL_PLANE_READY = {
+      is_secret: true,
+      valueSource: { literal: "routine" },
+    };
+  historicalPlan.productionActivation.initialGate =
+    "routine-fails-closed-until-exact-main-sha-is-known-and-separately-approved";
+  historicalPlan.productionActivation.proof =
+    "automatic-main-build-then-exact-sha-provider-retry-if-first-annotation-gate-stops";
+  assert.equal(
+    createHash("sha256").update(JSON.stringify(historicalPlan)).digest("hex"),
+    historicalSetupPlanSha256,
+  );
+  assert.throws(
+    () => validateSetupPlan(historicalPlan),
+    /complete setup plan schema drift/u,
+  );
   const missingSuccessor = structuredClone(plan);
   delete missingSuccessor.reviewMembershipRepair.successorRotation;
   assert.throws(() => validateSetupPlan(missingSuccessor), /repair plan drift/u);

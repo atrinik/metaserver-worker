@@ -108,8 +108,8 @@ checked-in `npm run deploy:production` entrypoint; it does not wait for
 a tag, release, second branch, GitHub environment, workflow dispatch, deploy
 hook, or local operator command. The machine contract is
 [`deployment/workers-builds-production.json`](deployment/workers-builds-production.json).
-It validates protected production inputs, refuses migration/control-plane
-drift, resolves all bundles before mutation, returns a verified no-op for
+It validates protected production inputs and live control-plane state, refuses
+migration divergence, resolves all bundles before mutation, returns a verified no-op for
 identical deployable input, rejects stale or competing builds, deploys directly
 and strictly through a core/publisher/rendezvous cohort,
 restores callers before core, reads back each exact 100% phase and the final
@@ -120,8 +120,8 @@ fixed closed coordinator rejection; disabled probes prove the exact circuit
 response without adding a health route or WAF exception. Newer
 eligible builds always supersede older ones, and child
 processes receive only a positive allowlist plus the credentials required for
-their role. Append-only migration evolution is prefix-proven and exact-SHA
-approved; staged partial cohorts remain routine fix-forward state.
+their role. Append-only migration evolution is prefix-proven after exact remote
+ledger readback; staged partial cohorts remain automatic fix-forward state.
 
 Production identifiers stay in bounded Cloudflare-owned secret configuration
 documents, never in Git or logs. Runtime secret values remain provisioned in

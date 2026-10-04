@@ -27,7 +27,10 @@ const maximumProviderPages = 100;
 const stagingBranchPattern = /^review-build-only-sentinel-[0-9a-f]{32}$/u;
 const reviewStagingRootPattern = /^\/review-build-only-staging-[0-9a-f]{32}$/u;
 const gitShaPattern = /^[0-9a-f]{40}$/u;
-const expectedSetupPlanSha256 = "9c3067322a0bedb10f376d40fea97f320eea3dddb75a6e3c2ccb6059f42312ba";
+export const historicalSetupPlanSha256 =
+  "9c3067322a0bedb10f376d40fea97f320eea3dddb75a6e3c2ccb6059f42312ba";
+const expectedCurrentSetupPlanSha256 =
+  "19dbd5db8099d43caa79094e308eb8c9a6b8d7022f80115fcc5a5d8dc5a0fa41";
 const currentMainProofSource = "authenticated-gh-api-current-main-readback";
 const currentMainProofEndpoint = "repos/atrinik/metaserver-worker/git/ref/heads/main";
 const currentMainRef = "refs/heads/main";
@@ -5517,7 +5520,6 @@ function productionEnvironmentPlan(contract) {
       "ATRINIK_PRODUCTION_RENDEZVOUS_CONFIG_FILE"),
     [contract.protectedInputs.buildsApiTokenVariable]: privateFileReference(
       "ATRINIK_PRODUCTION_LEASE_TOKEN_FILE"),
-    [contract.protectedInputs.controlPlaneGateVariable]: { literal: "routine" },
   };
   return Object.fromEntries([
     ["SKIP_DEPENDENCY_INSTALL", { is_secret: false, valueSource: { literal: "1" } }],
@@ -6617,8 +6619,8 @@ export function provisioningSetupPlan(production, review) {
         path: apiPathReference("/builds/triggers/{trigger_uuid}",
           "production-trigger-staged", "trigger_uuid"),
         body: triggerPlanSpec(productionFinal, "production-script", "production-build-token") },
-      initialGate: "routine-fails-closed-until-exact-main-sha-is-known-and-separately-approved",
-      proof: "automatic-main-build-then-exact-sha-provider-retry-if-first-annotation-gate-stops",
+      initialGate: "accepted-main-build-proceeds-after-live-preflights-and-lease-fences",
+      proof: "automatic-main-build-with-unannotated-api-source-handoff-only",
     },
     partialFailure: {
       journal: "owner-only-append-after-each-mutation-with-operation-request-digest-resource-uuid-and-readback-digest",
@@ -7157,7 +7159,7 @@ export function validateSetupPlan(plan) {
     available.set(operation.id, new Set(Object.keys(operation.produces ?? {})));
   }
   const actualDigest = digestJson(plan);
-  if (actualDigest !== expectedSetupPlanSha256)
+  if (actualDigest !== expectedCurrentSetupPlanSha256)
     fail(`complete setup plan schema drift (${actualDigest})`);
   return plan;
 }

@@ -319,7 +319,6 @@ export function validateContract(contract) {
       publisherConfigVariable: "ATRINIK_PRODUCTION_PUBLISHER_CONFIG",
       rendezvousConfigVariable: "ATRINIK_PRODUCTION_RENDEZVOUS_CONFIG",
       buildsApiTokenVariable: "ATRINIK_WORKERS_BUILDS_API_TOKEN",
-      controlPlaneGateVariable: "ATRINIK_PRODUCTION_CONTROL_PLANE_READY",
     })
   )
     fail("protected production input contract drift");
@@ -388,12 +387,12 @@ export function validateContract(contract) {
     invariants.productionWorkersDev !== false ||
     invariants.productionPreviewUrls !== false ||
     invariants.migrationPolicy !== "exact-ledger-no-automatic-apply" ||
-    invariants.controlPlanePolicy !== "explicit-external-gate-before-upload" ||
+    invariants.controlPlanePolicy !== "automatic-after-live-preflight" ||
     JSON.stringify(invariants.deploymentOrder) !==
       JSON.stringify(["core", "publisher", "rendezvous"]) ||
     invariants.deploymentMode !== "direct-100-percent-strict" ||
     invariants.initialApiHandoff !==
-      "approved-exact-sha-api-managed-source-only" ||
+      "automatic-unannotated-api-managed-source-only" ||
     invariants.buildSerialization !==
       "newest-current-main-build-owns-one-topology-entrypoint" ||
     invariants.noOp !==
@@ -746,6 +745,16 @@ export function parseVersionMessage(message) {
     : null;
 }
 
+export function parseLiveVersionMessage(message, role) {
+  const parsed = parseVersionMessage(message);
+  if (
+    typeof message === "string" &&
+    message.startsWith("atrinik-delivery") &&
+    parsed === null
+  ) fail(`${role} version annotation is malformed`);
+  return parsed;
+}
+
 export function activeVersionId(deployment) {
   if (!deployment || !Array.isArray(deployment.versions))
     fail("invalid active deployment readback");
@@ -784,8 +793,7 @@ export function validateRemoteMigrations(actual, expected) {
     fail("production D1 migration ledger is pending, missing, or divergent");
 }
 
-export function deliveryDecision(annotations, plan, sourceSha, controlGate) {
-  const approved = controlGate === `approved:${sourceSha}`;
+export function deliveryDecision(annotations, plan) {
   for (const value of annotations) {
     if (!value) continue;
     if (
@@ -798,8 +806,8 @@ export function deliveryDecision(annotations, plan, sourceSha, controlGate) {
       horizon > 0 &&
       horizon < plan.migrations.length &&
       value.migration === sha256Json(plan.migrations.slice(0, horizon));
-    if (!appendOnly || !approved)
-      fail("production migration content is divergent or not authorized");
+    if (!appendOnly)
+      fail("production migration content is divergent");
   }
   const coherentNoOp = annotations.every(
     (value, index) =>
@@ -811,17 +819,7 @@ export function deliveryDecision(annotations, plan, sourceSha, controlGate) {
       value.phase === "active",
   );
   const activeSources = new Set(annotations.map((value) => value?.source));
-  if (coherentNoOp && activeSources.size === 1 && controlGate === "routine")
-    return "no-op";
-  const controlChanged = annotations.some((value, index) =>
-    !value || ![
-      plan.controls[index],
-      plan.stagedControls?.[index],
-    ].includes(value.control));
-  if (controlChanged && !approved)
-    fail("separately authorized control-plane prerequisite is not verified");
-  if (!controlChanged && controlGate !== "routine" && !approved)
-    fail("routine production gate is missing or ambiguous");
+  if (coherentNoOp && activeSources.size === 1) return "no-op";
   return "deploy";
 }
 
@@ -1593,18 +1591,24 @@ export function validateBuildTrigger(contract, build, matchTag) {
 }
 
 export function validateBuildEnvironment(contract, environment) {
+  const legacyControlPlaneGate = "ATRINIK_PRODUCTION_CONTROL_PLANE_READY";
   const protectedNames = [
     contract.protectedInputs.accountVariable,
     contract.protectedInputs.coreConfigVariable,
     contract.protectedInputs.publisherConfigVariable,
     contract.protectedInputs.rendezvousConfigVariable,
     contract.protectedInputs.buildsApiTokenVariable,
-    contract.protectedInputs.controlPlaneGateVariable,
   ];
-  if (!sameValues(Object.keys(environment), [
+  const expectedNames = [
     ...Object.keys(contract.buildEnvironment),
     ...protectedNames,
-  ])) fail("live Workers Builds environment inventory drift");
+  ];
+  const actualNames = Object.keys(environment);
+  const acceptedNames = environment[legacyControlPlaneGate] === undefined
+    ? expectedNames
+    : [...expectedNames, legacyControlPlaneGate];
+  if (!sameValues(actualNames, acceptedNames))
+    fail("live Workers Builds environment inventory drift");
   if (
     environment.SKIP_DEPENDENCY_INSTALL?.is_secret !== false ||
     environment.SKIP_DEPENDENCY_INSTALL?.value !== "1"
@@ -1613,6 +1617,11 @@ export function validateBuildEnvironment(contract, environment) {
     if (environment[name]?.is_secret !== true || environment[name]?.value != null)
       fail("protected Workers Builds environment classification drift");
   }
+  if (
+    environment[legacyControlPlaneGate] !== undefined &&
+    (environment[legacyControlPlaneGate]?.is_secret !== true ||
+      environment[legacyControlPlaneGate]?.value != null)
+  ) fail("legacy Workers Builds environment classification drift");
 }
 
 export function selectLiveTrigger(triggers, triggerUuid) {
@@ -1629,21 +1638,23 @@ export function selectLiveTrigger(triggers, triggerUuid) {
 export function selectApiHandoffRoles(
   workers,
   liveControlPlanes,
-  sourceSha,
-  controlGate,
+  annotations,
 ) {
   if (
     !Array.isArray(workers) ||
     !Array.isArray(liveControlPlanes) ||
-    workers.length !== liveControlPlanes.length
+    !Array.isArray(annotations) ||
+    workers.length !== liveControlPlanes.length ||
+    workers.length !== annotations.length
   )
     fail("API handoff live Worker inventory is invalid");
-  if (controlGate !== `approved:${sourceSha}`) return new Set();
   return new Set(
     workers.flatMap((worker, index) => {
       const source = liveControlPlanes[index]?.serviceEnvironment?.script
         ?.last_deployed_from;
-      return source === "api" ? [worker.role] : [];
+      return source === "api" && annotations[index] === null
+        ? [worker.role]
+        : [];
     }),
   );
 }
@@ -1835,7 +1846,7 @@ function validateReadback(
   { exact = true } = {},
 ) {
   const message = active.version.annotations?.["workers/message"];
-  const parsed = parseVersionMessage(message);
+  const parsed = parseLiveVersionMessage(message, worker.role);
   if (expectedMessage && message !== expectedMessage)
     fail(`${worker.role} version annotation does not match this deployment`);
   if (
@@ -2137,17 +2148,11 @@ async function main() {
       validateReadback(worker, configs[index], value, null, { exact: false }),
     );
   }
-  const decision = deliveryDecision(
-    annotations,
-    plan,
-    sourceSha,
-    process.env[input.controlPlaneGateVariable] ?? "",
-  );
+  const decision = deliveryDecision(annotations, plan);
   const apiHandoffRoles = selectApiHandoffRoles(
     contract.workers,
     liveControlPlanes,
-    sourceSha,
-    process.env[input.controlPlaneGateVariable] ?? "",
+    annotations,
   );
   const expectedStagedMessages = new Map();
   const expectedActiveMessages = new Map();

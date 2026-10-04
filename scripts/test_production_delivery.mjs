@@ -19,6 +19,7 @@ import {
   executeOrderedStages,
   orchestrateDelivery,
   materializeProtectedInputs,
+  parseLiveVersionMessage,
   parseVersionMessage,
   parseCurrentMainRef,
   recoverDisabledCore,
@@ -252,7 +253,7 @@ test("requires every main push to use the one repository entrypoint", () => {
     assert.throws(() => validateContract(changed), /trigger drift|command contract/u);
 });
 
-test("rejects second approval, rollout, and unordered topology drift", () => {
+test("rejects gradual rollout and unordered topology drift", () => {
   for (const changed of [
     changedContract((value) => {
       value.invariants.deploymentMode = "gradual";
@@ -431,6 +432,15 @@ test("version annotations bind source, deployable input, control plane, and role
       `atrinik-delivery-v1 source=${source} deploy=${deploy} migration=${migration} horizon=10 control=${control} role=unknown phase=active`,
     ),
     null,
+  );
+  assert.equal(parseLiveVersionMessage("legacy dashboard deployment", "core"), null);
+  assert.throws(
+    () => parseLiveVersionMessage("atrinik-delivery-v1 malformed", "core"),
+    /annotation is malformed/u,
+  );
+  assert.throws(
+    () => parseLiveVersionMessage("atrinik-delivery v1 malformed", "core"),
+    /annotation is malformed/u,
   );
 });
 
@@ -690,21 +700,37 @@ test("requires the live Workers Builds trigger to match the contract", () => {
   }
 });
 
-test("requires the exact protected Workers Builds environment", () => {
+test("requires the exact protected Workers Builds environment with an inert legacy gate", () => {
   const environment = Object.fromEntries([
     contract.protectedInputs.accountVariable,
     contract.protectedInputs.coreConfigVariable,
     contract.protectedInputs.publisherConfigVariable,
     contract.protectedInputs.rendezvousConfigVariable,
     contract.protectedInputs.buildsApiTokenVariable,
-    contract.protectedInputs.controlPlaneGateVariable,
   ].map((name) => [name, { is_secret: true, value: null }]));
   environment.SKIP_DEPENDENCY_INSTALL = { is_secret: false, value: "1" };
   assert.doesNotThrow(() => validateBuildEnvironment(contract, environment));
+  const legacy = {
+    ...environment,
+    ATRINIK_PRODUCTION_CONTROL_PLANE_READY: { is_secret: true, value: null },
+  };
+  assert.doesNotThrow(() => validateBuildEnvironment(contract, legacy));
   for (const mutate of [
     (value) => { value.SKIP_DEPENDENCY_INSTALL.value = "0"; },
     (value) => { value[contract.protectedInputs.coreConfigVariable].is_secret = false; },
     (value) => { value.UNREVIEWED = { is_secret: true, value: null }; },
+    (value) => {
+      value.ATRINIK_PRODUCTION_CONTROL_PLANE_READY = {
+        is_secret: false,
+        value: "approved:stale",
+      };
+    },
+    (value) => {
+      value.ATRINIK_PRODUCTION_CONTROL_PLANE_READY = {
+        is_secret: true,
+        value: "routine",
+      };
+    },
   ]) {
     const changed = structuredClone(environment);
     mutate(changed);
@@ -725,28 +751,30 @@ test("selects exactly one current live Workers Builds trigger", () => {
     );
 });
 
-test("only an exact approved SHA enables the API-managed handoff", () => {
+test("only an unannotated API-managed Worker enables the automatic handoff", () => {
   const workers = [{ role: "core" }, { role: "publisher" }, { role: "rendezvous" }];
   const live = workers.map((_, index) => ({
     serviceEnvironment: {
-      script: { last_deployed_from: index === 0 ? "api" : "workersci" },
+      script: { last_deployed_from: index < 2 ? "api" : "workersci" },
     },
   }));
   const source = "a".repeat(40);
   assert.deepEqual(
-    [...selectApiHandoffRoles(workers, live, source, `approved:${source}`)],
-    ["core"],
+    [...selectApiHandoffRoles(workers, live, [null, null, null])],
+    ["core", "publisher"],
   );
   assert.deepEqual(
-    [...selectApiHandoffRoles(workers, live, source, "routine")],
-    [],
+    [...selectApiHandoffRoles(workers, live, [{ source }, null, null])],
+    ["publisher"],
   );
+  const dashboard = structuredClone(live);
+  dashboard[0].serviceEnvironment.script.last_deployed_from = "dash";
   assert.deepEqual(
-    [...selectApiHandoffRoles(workers, live, "b".repeat(40), `approved:${source}`)],
-    [],
+    [...selectApiHandoffRoles(workers, dashboard, [null, null, null])],
+    ["publisher"],
   );
   assert.throws(
-    () => selectApiHandoffRoles(workers.slice(0, 1), live, source, `approved:${source}`),
+    () => selectApiHandoffRoles(workers.slice(0, 1), live, [null]),
     /inventory is invalid/u,
   );
 });
@@ -961,7 +989,7 @@ test("lease arbitration converges after cancellation and detects main advance", 
   assert.deepEqual(changingCancelled, ["old"]);
 });
 
-test("every protected configuration field is exact-SHA gated", () => {
+test("accepted main automatically deploys protected configuration changes", () => {
   const source = "a".repeat(40);
   const digest = (value) => createHash("sha256")
     .update(JSON.stringify(value)).digest("hex");
@@ -989,17 +1017,10 @@ test("every protected configuration field is exact-SHA gated", () => {
     role: worker.role,
     phase: "active",
   }));
-  assert.throws(
-    () => deliveryDecision(annotations, plan, source, "routine"),
-    /control-plane prerequisite is not verified/u,
-  );
-  assert.equal(
-    deliveryDecision(annotations, plan, source, `approved:${source}`),
-    "deploy",
-  );
+  assert.equal(deliveryDecision(annotations, plan), "deploy");
 });
 
-test("no-op requires one coherent active topology and control drift needs exact approval", () => {
+test("no-op requires one coherent active topology", () => {
   const source = "a".repeat(40);
   const plan = {
     deploy: "d".repeat(64),
@@ -1019,18 +1040,12 @@ test("no-op requires one coherent active topology and control drift needs exact 
       phase: "active",
     }),
   );
-  assert.equal(deliveryDecision(annotations, plan, source, "routine"), "no-op");
+  assert.equal(deliveryDecision(annotations, plan), "no-op");
   assert.equal(
     deliveryDecision(
       annotations,
       { ...plan, deploy: "9".repeat(64) },
-      source,
-      "routine",
     ),
-    "deploy",
-  );
-  assert.equal(
-    deliveryDecision(annotations, plan, source, `approved:${source}`),
     "deploy",
   );
   assert.throws(
@@ -1040,8 +1055,6 @@ test("no-op requires one coherent active topology and control drift needs exact 
           index === 0 ? { ...value, migration: "f".repeat(64) } : value,
         ),
         plan,
-        source,
-        `approved:${source}`,
       ),
     /migration content is divergent/u,
   );
@@ -1063,25 +1076,16 @@ test("no-op requires one coherent active topology and control drift needs exact 
         index === 2 ? { ...value, source: "b".repeat(40) } : value,
       ),
       plan,
-      source,
-      "routine",
     ),
     "deploy",
   );
   const changedControl = annotations.map((value, index) =>
     index === 0 ? { ...value, control: "f".repeat(64) } : value,
   );
-  assert.throws(
-    () => deliveryDecision(changedControl, plan, source, "routine"),
-    /control-plane prerequisite/u,
-  );
-  assert.equal(
-    deliveryDecision(changedControl, plan, source, `approved:${source}`),
-    "deploy",
-  );
+  assert.equal(deliveryDecision(changedControl, plan), "deploy");
 });
 
-test("only an approved append-only migration horizon can advance", () => {
+test("only a proven append-only migration horizon can advance", () => {
   const source = "a".repeat(40);
   const previous = [{ name: "0001_initial.sql", sha256: "1".repeat(64) }];
   const migrations = [
@@ -1106,14 +1110,7 @@ test("only an approved append-only migration horizon can advance", () => {
     role,
     phase: "active",
   }));
-  assert.throws(
-    () => deliveryDecision(prior, plan, source, "routine"),
-    /not authorized/u,
-  );
-  assert.equal(
-    deliveryDecision(prior, plan, source, `approved:${source}`),
-    "deploy",
-  );
+  assert.equal(deliveryDecision(prior, plan), "deploy");
   const partial = prior.map((value, index) => index === 0 ? {
     ...value,
     source,
@@ -1124,17 +1121,23 @@ test("only an approved append-only migration horizon can advance", () => {
     phase: "staged",
   } : value);
   assert.equal(
-    deliveryDecision(partial, plan, source, `approved:${source}`),
+    deliveryDecision(partial, plan),
     "deploy",
   );
   const rewritten = prior.map((value) => ({ ...value, migration: "f".repeat(64) }));
   assert.throws(
-    () => deliveryDecision(rewritten, plan, source, `approved:${source}`),
+    () => deliveryDecision(rewritten, plan),
     /divergent/u,
   );
+  const shrunk = prior.map((value) => ({
+    ...value,
+    migration: plan.migrationDigest,
+    migrationHorizon: 0,
+  }));
+  assert.throws(() => deliveryDecision(shrunk, plan), /divergent/u);
 });
 
-test("internally staged controls resume under the routine gate", () => {
+test("internally staged controls resume automatically", () => {
   const source = "a".repeat(40);
   const migrations = [{ name: "0001_initial.sql", sha256: "1".repeat(64) }];
   const plan = {
@@ -1153,7 +1156,7 @@ test("internally staged controls resume under the routine gate", () => {
     role,
     phase: index < 2 ? "staged" : "active",
   }));
-  assert.equal(deliveryDecision(partial, plan, source, "routine"), "deploy");
+  assert.equal(deliveryDecision(partial, plan), "deploy");
 });
 
 test("every failed deployment stage stops all later stages", async () => {
