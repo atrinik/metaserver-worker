@@ -1,12 +1,11 @@
-import publisherFixture from "./fixtures/metaserver-publisher-v1.json";
-import gamePublisherFixture from "./fixtures/metaserver-game-publisher-v1.json";
+import publisherFixture from "./fixtures/metaserver-classic-publisher-v3.json";
+import gamePublisherFixture from "./fixtures/metaserver-game-publisher-v2.json";
 import classicV2Fixture from "./fixtures/metaserver-classic-publisher-v2.json";
 import { describe, expect, it } from "vitest";
 
 import { HttpError } from "../src/http";
 import {
   authenticateClassicPublish,
-  authenticateClassicV2Publish,
   authenticateGamePublish,
   PUBLISH_MAXIMUM_BODY_BYTES,
   readBoundedPublishBody,
@@ -76,7 +75,7 @@ function requestFromSignatureBase(vector: {
 }
 
 async function authenticateClassicV2(request: Request, now: number) {
-  return authenticateClassicV2Publish(
+  return authenticateClassicPublish(
     request,
     await readBoundedPublishBody(request.clone()),
     classicV2Fixture.server_id,
@@ -285,71 +284,12 @@ describe("signed publisher authentication", () => {
   });
 });
 
-describe("Classic v2 protocol-owned publisher vectors", () => {
-  it("accepts every signed v2 policy and endpoint combination", async () => {
+describe("retired publisher contracts", () => {
+  it("rejects historical Classic v2 bodies and signatures", async () => {
     for (const vector of classicV2Fixture.positive) {
-      const authenticated = await authenticateClassicV2(
-        classicV2Request(vector),
-        vector.created,
-      );
-      expect(authenticated).toMatchObject({
-        sequence: vector.sequence,
-        nonce: vector.nonce,
-        payload: JSON.parse(vector.body),
-      });
+      await expect(authenticateClassicV2(classicV2Request(vector), vector.created))
+        .rejects.toBeInstanceOf(HttpError);
     }
-  });
-
-  it("rejects every language-neutral v2 body negative", async () => {
-    const positive = classicV2Fixture.positive[0];
-    if (positive === undefined) {
-      throw new Error("Protocol fixture omits a positive vector");
-    }
-    for (const vector of classicV2Fixture.negative) {
-      const request = classicV2Request({ ...positive, body: vector.body });
-      await expect(authenticateClassicV2(request, positive.created)).rejects
-        .toBeInstanceOf(HttpError);
-    }
-  });
-
-  it("rejects every cryptographic, identity, and route-domain negative", async () => {
-    for (const vector of classicV2Fixture.signature_negative) {
-      await expect(authenticateClassicV2(
-        requestFromSignatureBase(vector),
-        classicV2Fixture.positive[0]?.created ?? 0,
-      )).rejects.toBeInstanceOf(HttpError);
-    }
-  });
-
-  it("rejects both frozen cross-version replay directions", async () => {
-    const v1AtV2 = classicV2Fixture.cross_profile_replay.find(
-      (vector) => vector.name === "v1-at-v2",
-    );
-    const v2AtV1 = classicV2Fixture.cross_profile_replay.find(
-      (vector) => vector.name === "v2-at-v1",
-    );
-    expect(v1AtV2).toBeDefined();
-    expect(v2AtV1).toBeDefined();
-    await expect(authenticateClassicV2(
-      requestFromSignatureBase({
-        body: v1AtV2!.body,
-        signature_base: v1AtV2!.target_signature_base,
-        signature_base64: v1AtV2!.signature_base64,
-      }),
-      classicV2Fixture.positive[0]?.created ?? 0,
-    )).rejects.toBeInstanceOf(HttpError);
-    const request = requestFromSignatureBase({
-      body: v2AtV1!.body,
-      signature_base: v2AtV1!.target_signature_base,
-      signature_base64: v2AtV1!.signature_base64,
-    });
-    await expect(authenticateClassicPublish(
-      request,
-      await readBoundedPublishBody(request.clone()),
-      classicV2Fixture.server_id,
-      classicV2Fixture.authority,
-      classicV2Fixture.positive[0]?.created ?? 0,
-    )).rejects.toBeInstanceOf(HttpError);
   });
 });
 

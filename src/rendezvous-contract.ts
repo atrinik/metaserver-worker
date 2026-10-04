@@ -40,7 +40,7 @@ const LEGACY_INTERNAL_RENDEZVOUS_V2_HEADERS = Object.freeze([
 // Public update fields can contain control characters which JSON.stringify()
 // expands to six-byte escapes. The strict field maxima fit below this fixed
 // private envelope even in that worst case.
-const MAX_INTERNAL_PUBLICATION_BYTES = 4_096;
+const MAX_INTERNAL_PUBLICATION_BYTES = 8_192;
 
 export const MAX_SIGNAL_BYTES = 512;
 export const MAX_CLIENT_CANDIDATES = 1;
@@ -242,6 +242,7 @@ export interface InternalRendezvousUpgrade {
 }
 
 interface InternalPublicationBase {
+  readonly certificate: string;
   readonly serverId: string;
   readonly publisherSequence: string;
   readonly publisherNonce: string;
@@ -262,21 +263,14 @@ interface InternalPublicationBase {
 }
 
 export interface InternalClassicPublication extends InternalPublicationBase {
-  readonly directoryProfile: "classic-v1";
-  readonly playersCount: number;
-  readonly version: string;
-  readonly textComment: string;
-}
-
-export interface InternalClassicV2Publication extends InternalPublicationBase {
-  readonly directoryProfile: "classic-v2";
+  readonly directoryProfile: "classic-v3";
   readonly playersCount: number;
   readonly version: string;
   readonly textComment: string;
 }
 
 export interface InternalGamePublication extends InternalPublicationBase {
-  readonly directoryProfile: "game-v1";
+  readonly directoryProfile: "game-v2";
   readonly description: string;
   readonly region: string | null;
   readonly protocolMajor: 1;
@@ -290,10 +284,10 @@ export interface InternalGamePublication extends InternalPublicationBase {
 
 export type InternalRendezvousPublication =
   | InternalClassicPublication
-  | InternalClassicV2Publication
   | InternalGamePublication;
 
 const INTERNAL_PUBLICATION_BASE_KEYS = [
+  "certificate",
   "serverId",
   "directoryProfile",
   "publisherSequence",
@@ -434,9 +428,9 @@ export async function validateInternalRendezvousPublication(
     !isJsonObject(parsed) ||
     typeof parsed.serverId !== "string" ||
     !HEX_64.test(parsed.serverId) ||
-    (parsed.directoryProfile !== "classic-v1" &&
-      parsed.directoryProfile !== "classic-v2" &&
-      parsed.directoryProfile !== "game-v1") ||
+    (parsed.directoryProfile !== "classic-v3" &&
+      parsed.directoryProfile !== "game-v2") ||
+    !isPublicationCertificate(parsed.certificate) ||
     !isPublisherReplayMetadata(parsed) ||
     typeof parsed.commitToken !== "string" ||
     !HEX_64.test(parsed.commitToken) ||
@@ -463,6 +457,7 @@ export async function validateInternalRendezvousPublication(
   }
 
   const common = {
+    certificate: parsed.certificate,
     serverId: parsed.serverId,
     publisherSequence: parsed.publisherSequence,
     publisherNonce: parsed.publisherNonce,
@@ -483,8 +478,7 @@ export async function validateInternalRendezvousPublication(
   } as const;
 
   if (
-    parsed.directoryProfile === "classic-v1" ||
-    parsed.directoryProfile === "classic-v2"
+    parsed.directoryProfile === "classic-v3"
   ) {
     if (
       !hasExactKeys(parsed, INTERNAL_CLASSIC_PUBLICATION_KEYS) ||
@@ -531,7 +525,7 @@ export async function validateInternalRendezvousPublication(
 
   return {
     ...common,
-    directoryProfile: "game-v1",
+    directoryProfile: "game-v2",
     description: parsed.description,
     region: parsed.region,
     protocolMajor: 1,
@@ -542,6 +536,18 @@ export async function validateInternalRendezvousPublication(
     playersCapacity: parsed.playersCapacity,
     status: parsed.status,
   };
+}
+
+function isPublicationCertificate(value: unknown): value is string {
+  if (typeof value !== "string" || value.length === 0 || value.length > 2_732) {
+    return false;
+  }
+  try {
+    const bytes = atob(value);
+    return bytes.length > 0 && bytes.length <= 2_048 && btoa(bytes) === value;
+  } catch {
+    return false;
+  }
 }
 
 /**

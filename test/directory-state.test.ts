@@ -33,7 +33,7 @@ beforeEach(async () => {
     env.DB.prepare("DELETE FROM classic_identity_modes"),
     env.DB.prepare(
       `UPDATE classic_receiver_mode
-          SET mode = 'classic-v1-accepting', activated_at = NULL
+          SET mode = 'classic-v3-accepting', activated_at = NULL
         WHERE singleton = 1`,
     ),
     env.DB.prepare(
@@ -57,26 +57,26 @@ beforeEach(async () => {
 describe("profile-scoped directory expiry", () => {
   it("advances one revision per changed profile and deletes only expired rows", async () => {
     const expiredActivityId = "1".repeat(64);
-    await seedPublic(expiredActivityId, "classic-v1", CUTOFF - 1);
+    await seedPublic(expiredActivityId, "classic-v3", CUTOFF - 1);
     await env.DB.batch([
       env.DB.prepare(
         `INSERT INTO directory_activity_state
             (profile, server_id, last_observed_at, last_positive_observed_at,
              last_population, observation_count)
-         VALUES ('classic-v1', ?, 100, 100, 3, 1)`,
+         VALUES ('classic-v3', ?, 100, 100, 3, 1)`,
       ).bind(expiredActivityId),
       env.DB.prepare(
         `INSERT INTO directory_activity_buckets
             (profile, server_id, bucket_start, positive_seconds, player_minutes,
              max_population, positive_observations, zero_observations)
-         VALUES ('classic-v1', ?, 0, 60, 3, 3, 1, 0)`,
+         VALUES ('classic-v3', ?, 0, 60, 3, 3, 1, 0)`,
       ).bind(expiredActivityId),
     ]);
-    await seedPublic("2".repeat(64), "classic-v1", CUTOFF);
-    await seedPublic("3".repeat(64), "game-v1", CUTOFF - 2);
-    await seedPrivate("6".repeat(64), "classic-v1", CUTOFF - 3);
-    await seedPrivate("7".repeat(64), "classic-v1", CUTOFF);
-    await seedPrivate("8".repeat(64), "game-v1", CUTOFF - 4);
+    await seedPublic("2".repeat(64), "classic-v3", CUTOFF);
+    await seedPublic("3".repeat(64), "game-v2", CUTOFF - 2);
+    await seedPrivate("6".repeat(64), "classic-v3", CUTOFF - 3);
+    await seedPrivate("7".repeat(64), "classic-v3", CUTOFF);
+    await seedPrivate("8".repeat(64), "game-v2", CUTOFF - 4);
 
     const results = [];
     for (const profile of DIRECTORY_PROFILES) {
@@ -96,9 +96,9 @@ describe("profile-scoped directory expiry", () => {
          FROM directory_revisions ORDER BY profile`,
     ).all()).toMatchObject({
       results: [
-        { profile: "classic-v1", revision: 1, updated_at: NOW },
-        { profile: "classic-v2", revision: 0, updated_at: 0 },
-        { profile: "game-v1", revision: 1, updated_at: NOW },
+        { profile: "classic-v3", revision: 1, updated_at: NOW },
+        { profile: "classic-v3", revision: 0, updated_at: 0 },
+        { profile: "game-v2", revision: 1, updated_at: NOW },
       ],
     });
     expect(await env.DB.prepare(
@@ -106,71 +106,71 @@ describe("profile-scoped directory expiry", () => {
          FROM directory_outbox ORDER BY profile, revision`,
     ).all()).toMatchObject({
       results: [
-        { profile: "classic-v1", revision: 1, created_at: NOW },
-        { profile: "game-v1", revision: 1, created_at: NOW },
+        { profile: "classic-v3", revision: 1, created_at: NOW },
+        { profile: "game-v2", revision: 1, created_at: NOW },
       ],
     });
     expect(await env.DB.prepare(
       `SELECT count(*) AS count FROM directory_activity_state
-        WHERE profile = 'classic-v1' AND server_id = ?`,
+        WHERE profile = 'classic-v3' AND server_id = ?`,
     ).bind(expiredActivityId).first<number>("count")).toBe(0);
     expect(await env.DB.prepare(
       `SELECT count(*) AS count FROM directory_activity_buckets
-        WHERE profile = 'classic-v1' AND server_id = ?`,
+        WHERE profile = 'classic-v3' AND server_id = ?`,
     ).bind(expiredActivityId).first<number>("count")).toBe(0);
   });
 
   it("is revision-neutral after the expired set is gone", async () => {
-    await seedPublic("4".repeat(64), "classic-v1", CUTOFF - 1);
+    await seedPublic("4".repeat(64), "classic-v3", CUTOFF - 1);
     expect(await expireDirectoryEntries(
       env.DB,
-      "classic-v1",
+      "classic-v3",
       CUTOFF,
       NOW,
     )).toEqual({ expiredEntries: 1, visibleChanged: true });
     expect(await expireDirectoryEntries(
       env.DB,
-      "classic-v1",
+      "classic-v3",
       CUTOFF,
       NOW + 1,
     )).toEqual({ expiredEntries: 0, visibleChanged: false });
     expect(await env.DB.prepare(
-      "SELECT revision FROM directory_revisions WHERE profile = 'classic-v1'",
+      "SELECT revision FROM directory_revisions WHERE profile = 'classic-v3'",
     ).first<number>("revision")).toBe(1);
   });
 
   it("never moves a visible revision timestamp backward", async () => {
-    await seedPublic("b".repeat(64), "classic-v1", CUTOFF - 1);
+    await seedPublic("b".repeat(64), "classic-v3", CUTOFF - 1);
     await env.DB.prepare(
       `UPDATE directory_revisions SET updated_at = 500
-        WHERE profile = 'classic-v1'`,
+        WHERE profile = 'classic-v3'`,
     ).run();
     await expect(expireDirectoryEntries(
       env.DB,
-      "classic-v1",
+      "classic-v3",
       CUTOFF,
       NOW,
     )).resolves.toEqual({ expiredEntries: 1, visibleChanged: true });
     expect(await env.DB.prepare(
       `SELECT revision, updated_at FROM directory_revisions
-        WHERE profile = 'classic-v1'`,
+        WHERE profile = 'classic-v3'`,
     ).first()).toEqual({ revision: 1, updated_at: 500 });
   });
 
   it("rolls back expiry when its required outbox write is ignored", async () => {
-    await seedPublic("a".repeat(64), "classic-v1", CUTOFF - 1);
+    await seedPublic("a".repeat(64), "classic-v3", CUTOFF - 1);
     const before = await snapshotDirectoryState();
     await env.DB.prepare(
       `CREATE TRIGGER directory_outbox_test_ignore_expiry
        BEFORE INSERT ON directory_outbox
-       WHEN NEW.profile = 'classic-v1'
+       WHEN NEW.profile = 'classic-v3'
        BEGIN
          SELECT RAISE(IGNORE);
        END`,
     ).run();
     await expect(expireDirectoryEntries(
       env.DB,
-      "classic-v1",
+      "classic-v3",
       CUTOFF,
       NOW,
     )).rejects.toThrow();
@@ -179,34 +179,34 @@ describe("profile-scoped directory expiry", () => {
 
     await expect(expireDirectoryEntries(
       env.DB,
-      "classic-v1",
+      "classic-v3",
       CUTOFF,
       NOW,
     )).resolves.toEqual({ expiredEntries: 1, visibleChanged: true });
   });
 
   it("rolls back expiry when outbox coalescing is ignored", async () => {
-    await seedPublic("8".repeat(64), "classic-v1", CUTOFF - 1);
+    await seedPublic("8".repeat(64), "classic-v3", CUTOFF - 1);
     await env.DB.batch([
       env.DB.prepare(
         `UPDATE directory_revisions SET revision = 1, updated_at = 1
-          WHERE profile = 'classic-v1'`,
+          WHERE profile = 'classic-v3'`,
       ),
       env.DB.prepare(
         `INSERT INTO directory_outbox (profile, revision, created_at)
-         VALUES ('classic-v1', 1, 1)`,
+         VALUES ('classic-v3', 1, 1)`,
       ),
       env.DB.prepare(
         `CREATE TRIGGER directory_outbox_test_ignore_expiry_coalesce
          BEFORE DELETE ON directory_outbox
-         WHEN OLD.profile = 'classic-v1' AND OLD.revision = 1
+         WHEN OLD.profile = 'classic-v3' AND OLD.revision = 1
          BEGIN SELECT RAISE(IGNORE); END`,
       ),
     ]);
     const before = await snapshotDirectoryState();
     await expect(expireDirectoryEntries(
       env.DB,
-      "classic-v1",
+      "classic-v3",
       CUTOFF,
       NOW,
     )).rejects.toThrow();
@@ -218,23 +218,23 @@ describe("profile-scoped directory expiry", () => {
 
   it("expires private presence without a visible revision or outbox row", async () => {
     const serverId = "9".repeat(64);
-    await seedPrivate(serverId, "classic-v1", CUTOFF - 1);
+    await seedPrivate(serverId, "classic-v3", CUTOFF - 1);
 
     await expect(expireDirectoryEntries(
       env.DB,
-      "classic-v1",
+      "classic-v3",
       CUTOFF,
       NOW,
     )).resolves.toEqual({ expiredEntries: 0, visibleChanged: false });
     expect(await env.DB.prepare(
       `SELECT COUNT(*) AS count
          FROM server_presence
-        WHERE profile = 'classic-v1' AND server_id = ?`,
+        WHERE profile = 'classic-v3' AND server_id = ?`,
     ).bind(serverId).first<number>("count")).toBe(0);
     expect(await env.DB.prepare(
       `SELECT revision, updated_at
          FROM directory_revisions
-        WHERE profile = 'classic-v1'`,
+        WHERE profile = 'classic-v3'`,
     ).first()).toEqual({ revision: 0, updated_at: 0 });
     expect(await env.DB.prepare(
       "SELECT COUNT(*) AS count FROM directory_outbox",
@@ -251,7 +251,7 @@ describe("profile-scoped directory expiry", () => {
     ] as const) {
       await expect(expireDirectoryEntries(
         env.DB,
-        "classic-v1",
+        "classic-v3",
         cutoff,
         now,
       )).rejects.toBeInstanceOf(RangeError);
@@ -260,8 +260,8 @@ describe("profile-scoped directory expiry", () => {
 
   it("keeps the same certificate identity isolated across profiles", async () => {
     const serverId = "5".repeat(64);
-    const classic = publication(serverId, "classic-v1", "Classic", "1");
-    const game = publication(serverId, "game-v1", "Game", "2");
+    const classic = publication(serverId, "classic-v3", "Classic", "1");
+    const game = publication(serverId, "game-v2", "Game", "2");
 
     await expect(persistRendezvousPublication(env.DB, classic)).resolves.toEqual({
       accepted: true,
@@ -277,25 +277,25 @@ describe("profile-scoped directory expiry", () => {
          FROM server_presence ORDER BY profile`,
     ).all()).toMatchObject({
       results: [
-        { profile: "classic-v1", rendezvous_generation: classic.generation },
-        { profile: "game-v1", rendezvous_generation: game.generation },
+        { profile: "classic-v3", rendezvous_generation: classic.generation },
+        { profile: "game-v2", rendezvous_generation: game.generation },
       ],
     });
     expect(await env.DB.prepare(
       `SELECT profile, name FROM directory_entries ORDER BY profile`,
     ).all()).toMatchObject({
       results: [
-        { profile: "classic-v1", name: "Classic" },
-        { profile: "game-v1", name: "Game" },
+        { profile: "classic-v3", name: "Classic" },
+        { profile: "game-v2", name: "Game" },
       ],
     });
     expect(await env.DB.prepare(
       `SELECT profile, revision FROM directory_revisions ORDER BY profile`,
     ).all()).toMatchObject({
       results: [
-        { profile: "classic-v1", revision: 1 },
-        { profile: "classic-v2", revision: 0 },
-        { profile: "game-v1", revision: 1 },
+        { profile: "classic-v3", revision: 1 },
+        { profile: "classic-v3", revision: 0 },
+        { profile: "game-v2", revision: 1 },
       ],
     });
   });
@@ -303,7 +303,7 @@ describe("profile-scoped directory expiry", () => {
   it("records bounded sustained activity and treats a zero heartbeat as a reset", async () => {
     const serverId = "c".repeat(64);
     const first = {
-      ...publication(serverId, "classic-v1", "Activity", "1"),
+      ...publication(serverId, "classic-v3", "Activity", "1"),
       playersCount: 10,
     };
     const second = nextPublication(first, {
@@ -341,7 +341,7 @@ describe("profile-scoped directory expiry", () => {
       `SELECT last_observed_at, last_positive_observed_at, last_population,
               observation_count
          FROM directory_activity_state
-        WHERE profile = 'classic-v1' AND server_id = ?`,
+        WHERE profile = 'classic-v3' AND server_id = ?`,
     ).bind(serverId).first()).toEqual({
       last_observed_at: NOW + 2_100,
       last_positive_observed_at: NOW + 300,
@@ -352,7 +352,7 @@ describe("profile-scoped directory expiry", () => {
       `SELECT positive_seconds, player_minutes, max_population,
               positive_observations, zero_observations
          FROM directory_activity_buckets
-        WHERE profile = 'classic-v1' AND server_id = ?`,
+        WHERE profile = 'classic-v3' AND server_id = ?`,
     ).bind(serverId).first()).toEqual({
       positive_seconds: 300,
       player_minutes: 50,
@@ -378,11 +378,11 @@ describe("profile-scoped directory expiry", () => {
     )).resolves.toEqual({ accepted: true, visibleChanged: true });
     expect(await env.DB.prepare(
       `SELECT count(*) AS count FROM directory_activity_state
-        WHERE profile = 'classic-v1' AND server_id = ?`,
+        WHERE profile = 'classic-v3' AND server_id = ?`,
     ).bind(serverId).first<number>("count")).toBe(0);
     expect(await env.DB.prepare(
       `SELECT count(*) AS count FROM directory_activity_buckets
-        WHERE profile = 'classic-v1' AND server_id = ?`,
+        WHERE profile = 'classic-v3' AND server_id = ?`,
     ).bind(serverId).first<number>("count")).toBe(0);
   });
 
@@ -390,7 +390,7 @@ describe("profile-scoped directory expiry", () => {
     const serverId = "d".repeat(64);
     const base = 8 * 24 * 60 * 60 + 300;
     const first = {
-      ...publication(serverId, "classic-v1", "Retention", "5"),
+      ...publication(serverId, "classic-v3", "Retention", "5"),
       now: base,
       publisherNonceExpiresAt: base + 300,
       playersCount: 1,
@@ -400,7 +400,7 @@ describe("profile-scoped directory expiry", () => {
       `INSERT INTO directory_activity_buckets
           (profile, server_id, bucket_start, positive_seconds, player_minutes,
            max_population, positive_observations, zero_observations)
-       VALUES ('classic-v1', ?, 0, 1, 1, 1, 1, 0)`,
+       VALUES ('classic-v3', ?, 0, 1, 1, 1, 1, 0)`,
     ).bind(serverId).run();
 
     const next = {
@@ -420,7 +420,7 @@ describe("profile-scoped directory expiry", () => {
     });
     expect(await env.DB.prepare(
       `SELECT bucket_start FROM directory_activity_buckets
-        WHERE profile = 'classic-v1' AND server_id = ?
+        WHERE profile = 'classic-v3' AND server_id = ?
         ORDER BY bucket_start`,
     ).bind(serverId).all()).toMatchObject({
       results: [{ bucket_start: 1382400 }],
@@ -430,7 +430,7 @@ describe("profile-scoped directory expiry", () => {
   it("caps repeated heartbeat aggregates and does not bridge long gaps", async () => {
     const cappedId = "e".repeat(64);
     const first = {
-      ...publication(cappedId, "classic-v1", "Capped", "7"),
+      ...publication(cappedId, "classic-v3", "Capped", "7"),
       playersCount: 5,
     };
     await persistRendezvousPublication(env.DB, first);
@@ -440,12 +440,12 @@ describe("profile-scoped directory expiry", () => {
             SET positive_seconds = 604800, player_minutes = 1008000000,
                 max_population = 100000, positive_observations = 1000000,
                 zero_observations = 1000000
-          WHERE profile = 'classic-v1' AND server_id = ?`,
+          WHERE profile = 'classic-v3' AND server_id = ?`,
       ).bind(cappedId),
       env.DB.prepare(
         `UPDATE directory_activity_state
             SET observation_count = 1000000
-          WHERE profile = 'classic-v1' AND server_id = ?`,
+          WHERE profile = 'classic-v3' AND server_id = ?`,
       ).bind(cappedId),
     ]);
     const cappedHeartbeat = nextPublication(first, {
@@ -461,7 +461,7 @@ describe("profile-scoped directory expiry", () => {
       `SELECT positive_seconds, player_minutes, max_population,
               positive_observations, zero_observations
          FROM directory_activity_buckets
-        WHERE profile = 'classic-v1' AND server_id = ?`,
+        WHERE profile = 'classic-v3' AND server_id = ?`,
     ).bind(cappedId).first()).toEqual({
       positive_seconds: 604800,
       player_minutes: 1008000000,
@@ -471,12 +471,12 @@ describe("profile-scoped directory expiry", () => {
     });
     expect(await env.DB.prepare(
       `SELECT observation_count FROM directory_activity_state
-        WHERE profile = 'classic-v1' AND server_id = ?`,
+        WHERE profile = 'classic-v3' AND server_id = ?`,
     ).bind(cappedId).first<number>("observation_count")).toBe(1000000);
 
     const gapId = "f".repeat(64);
     const gapFirst = {
-      ...publication(gapId, "classic-v1", "Gap", "9"),
+      ...publication(gapId, "classic-v3", "Gap", "9"),
       playersCount: 5,
     };
     const gapHeartbeat = nextPublication(gapFirst, {
@@ -492,7 +492,7 @@ describe("profile-scoped directory expiry", () => {
     expect(await env.DB.prepare(
       `SELECT positive_seconds, player_minutes, positive_observations
          FROM directory_activity_buckets
-        WHERE profile = 'classic-v1' AND server_id = ?`,
+        WHERE profile = 'classic-v3' AND server_id = ?`,
     ).bind(gapId).first()).toEqual({
       positive_seconds: 0,
       player_minutes: 0,
@@ -500,48 +500,58 @@ describe("profile-scoped directory expiry", () => {
     });
   });
 
-  it("rejects a first v2 row that does not exceed the retained v1 high-water", async () => {
+  it("commits private resolve presence without a public projection", async () => {
+    const input = {
+      ...publication("a".repeat(64), "classic-v3", "Private protected", "1"),
+      isPublic: false, authorizationRequired: true,
+      quicHost: "private.example.org", quicPort: 13327,
+    };
+    await expect(persistRendezvousPublication(env.DB,input))
+      .resolves.toEqual({accepted:true,visibleChanged:false});
+    expect(await env.DB.prepare(`SELECT name,certificate,hostname,port,access_required
+      FROM server_presence WHERE profile='classic-v3' AND server_id=?`)
+      .bind(input.serverId).first()).toEqual({name:input.name,certificate:input.certificate,
+        hostname:input.quicHost,port:input.quicPort,access_required:1});
+    expect(await env.DB.prepare("SELECT count(*) AS n FROM directory_entries").first("n")).toBe(0);
+    expect(await env.DB.prepare("SELECT count(*) AS n FROM directory_outbox").first("n")).toBe(0);
+  });
+
+  it.each([
+    ["classic-v1", "classic-v3"], ["classic-v2", "classic-v3"],
+    ["game-v1", "game-v2"],
+  ] as const)("preserves %s sequence and nonce lineage into %s", async (oldProfile, profile) => {
     const serverId = "a".repeat(64);
-    const v1Base = publication(serverId, "classic-v1", "Retained v1", "1");
-    if (v1Base.directoryProfile !== "classic-v1") {
-      throw new Error("Classic v1 test publication has the wrong profile");
-    }
-    const v1 = {
-      ...v1Base,
-      publisherSequence: "10",
-    };
-    await expect(persistRendezvousPublication(env.DB, v1)).resolves
-      .toEqual({ accepted: true, visibleChanged: true });
+    await env.DB.batch([
+      env.DB.prepare(`INSERT INTO publisher_replay
+        (server_id,profile,last_sequence,last_nonce,commit_token,updated_at)
+        VALUES (?,?,'10',?,?,?)`).bind(serverId, oldProfile, "1".repeat(32), "1".repeat(64), NOW),
+      env.DB.prepare(`INSERT INTO publisher_nonces
+        (server_id,profile,nonce,expires_at,created_at) VALUES (?,?,?,?,?)`)
+        .bind(serverId,oldProfile,"1".repeat(32),NOW+86400,NOW),
+    ]);
+    const initial = publication(serverId, profile, "New profile", "2");
     const before = await snapshotDirectoryState();
-    const staleV2: InternalRendezvousPublication = {
-      ...v1,
-      directoryProfile: "classic-v2",
-      publisherSequence: "9",
-      publisherNonce: "2".repeat(32),
-      commitToken: "2".repeat(64),
-      expectedGeneration: v1.generation,
-      generation: "2".repeat(64),
-      tokenHash: "2".repeat(64),
-      directoryFingerprint: "2".repeat(64),
-      authorizationRequired: true,
-    };
-    await expect(persistRendezvousPublication(env.DB, staleV2)).resolves
-      .toEqual({ accepted: false, visibleChanged: false });
+    await expect(persistRendezvousPublication(env.DB, {...initial,publisherSequence:"10"}))
+      .resolves.toEqual({accepted:false,visibleChanged:false});
+    await expect(persistRendezvousPublication(env.DB, {...initial,publisherSequence:"11",publisherNonce:"1".repeat(32)}))
+      .resolves.toEqual({accepted:false,visibleChanged:false});
     expect(await snapshotDirectoryState()).toEqual(before);
+    await expect(persistRendezvousPublication(env.DB, {...initial,publisherSequence:"11"}))
+      .resolves.toEqual({accepted:true,visibleChanged:true});
   });
 
   it("rolls back every Game publication mutation at the JSON aggregate ceiling", async () => {
     const existingId = "6".repeat(64);
-    await seedPublic(existingId, "game-v1", NOW);
+    await seedPublic(existingId, "game-v2", NOW);
     await env.DB.prepare(
       `UPDATE directory_entries SET game_json_bytes = ?
-        WHERE profile = 'game-v1' AND server_id = ?`,
+        WHERE profile = 'game-v2' AND server_id = ?`,
     ).bind(MAX_GAME_DIRECTORY_JSON_SERVER_SET_BYTES, existingId).run();
     const before = await snapshotDirectoryState();
 
     await expect(persistRendezvousPublication(
       env.DB,
-      publication("7".repeat(64), "game-v1", "Blocked Game", "8"),
+      publication("7".repeat(64), "game-v2", "Blocked Game", "8"),
     )).rejects.toThrow();
 
     expect(await snapshotDirectoryState()).toEqual(before);
@@ -550,14 +560,14 @@ describe("profile-scoped directory expiry", () => {
   it("persists and renders only an explicitly signed DNS fallback", async () => {
     const serverId = "f".repeat(64);
     const explicit = {
-      ...publication(serverId, "classic-v1", "Explicit host", "6"),
+      ...publication(serverId, "classic-v3", "Explicit host", "6"),
       quicHost: "play.example.net",
       quicPort: 1730,
     };
     await persistRendezvousPublication(env.DB, explicit);
     expect(await env.DB.prepare(
       `SELECT hostname, port FROM directory_entries
-        WHERE profile = 'classic-v1' AND server_id = ?`,
+        WHERE profile = 'classic-v3' AND server_id = ?`,
     ).bind(serverId).first()).toEqual({
       hostname: "play.example.net",
       port: 1730,
@@ -567,7 +577,7 @@ describe("profile-scoped directory expiry", () => {
   it("persists a canonical IDNA A-label fallback", async () => {
     const serverId = "9".repeat(64);
     const explicit = {
-      ...publication(serverId, "classic-v1", "IDNA host", "7"),
+      ...publication(serverId, "classic-v3", "IDNA host", "7"),
       quicHost: "xn--bcher-kva.example.org",
       quicPort: 1730,
     };
@@ -575,7 +585,7 @@ describe("profile-scoped directory expiry", () => {
       .toEqual({ accepted: true, visibleChanged: true });
     expect(await env.DB.prepare(
       `SELECT hostname, port FROM directory_entries
-        WHERE profile = 'classic-v1' AND server_id = ?`,
+        WHERE profile = 'classic-v3' AND server_id = ?`,
     ).bind(serverId).first()).toEqual({
       hostname: "xn--bcher-kva.example.org",
       port: 1730,
@@ -584,13 +594,13 @@ describe("profile-scoped directory expiry", () => {
 
   it("rolls back a publication whose required outbox write is ignored", async () => {
     const serverId = "b".repeat(64);
-    const initial = publication(serverId, "classic-v1", "Initial", "1");
+    const initial = publication(serverId, "classic-v3", "Initial", "1");
     await persistRendezvousPublication(env.DB, initial);
     const before = await snapshotDirectoryState();
     await env.DB.prepare(
       `CREATE TRIGGER directory_outbox_test_ignore_publication
        BEFORE INSERT ON directory_outbox
-       WHEN NEW.profile = 'classic-v1'
+       WHEN NEW.profile = 'classic-v3'
        BEGIN
          SELECT RAISE(IGNORE);
        END`,
@@ -612,13 +622,13 @@ describe("profile-scoped directory expiry", () => {
 
   it("rolls back a publication when outbox coalescing is ignored", async () => {
     const serverId = "f".repeat(64);
-    const initial = publication(serverId, "classic-v1", "Initial", "1");
+    const initial = publication(serverId, "classic-v3", "Initial", "1");
     await persistRendezvousPublication(env.DB, initial);
     const before = await snapshotDirectoryState();
     await env.DB.prepare(
       `CREATE TRIGGER directory_outbox_test_ignore_publication_coalesce
        BEFORE DELETE ON directory_outbox
-       WHEN OLD.profile = 'classic-v1' AND OLD.revision = 1
+       WHEN OLD.profile = 'classic-v3' AND OLD.revision = 1
        BEGIN SELECT RAISE(IGNORE); END`,
     ).run();
     await expect(persistRendezvousPublication(env.DB, nextPublication(initial, {
@@ -635,14 +645,14 @@ describe("profile-scoped directory expiry", () => {
     const privateFirstId = "c".repeat(64);
     const privateFirst = publication(
       privateFirstId,
-      "classic-v1",
+      "classic-v3",
       "Private first",
       "1",
     );
     await persistRendezvousPublication(env.DB, privateFirst);
     await env.DB.prepare(
       `UPDATE server_presence SET last_seen = ?
-        WHERE profile = 'classic-v1' AND server_id = ?`,
+        WHERE profile = 'classic-v3' AND server_id = ?`,
     ).bind(CUTOFF - 1, privateFirstId).run();
     await expect(persistRendezvousPublication(env.DB, nextPublication(
       privateFirst,
@@ -650,7 +660,7 @@ describe("profile-scoped directory expiry", () => {
     ))).resolves.toEqual({ accepted: true, visibleChanged: true });
     await expect(expireDirectoryEntries(
       env.DB,
-      "classic-v1",
+      "classic-v3",
       CUTOFF,
       NOW + 2,
     )).resolves.toEqual({ expiredEntries: 0, visibleChanged: false });
@@ -658,18 +668,18 @@ describe("profile-scoped directory expiry", () => {
     const expiryFirstId = "d".repeat(64);
     const expiryFirst = publication(
       expiryFirstId,
-      "game-v1",
+      "game-v2",
       "Expiry first",
       "3",
     );
     await persistRendezvousPublication(env.DB, expiryFirst);
     await env.DB.prepare(
       `UPDATE server_presence SET last_seen = ?
-        WHERE profile = 'game-v1' AND server_id = ?`,
+        WHERE profile = 'game-v2' AND server_id = ?`,
     ).bind(CUTOFF - 1, expiryFirstId).run();
     await expect(expireDirectoryEntries(
       env.DB,
-      "game-v1",
+      "game-v2",
       CUTOFF,
       NOW + 1,
     )).resolves.toEqual({ expiredEntries: 1, visibleChanged: true });
@@ -682,9 +692,9 @@ describe("profile-scoped directory expiry", () => {
       `SELECT profile, revision FROM directory_revisions ORDER BY profile`,
     ).all()).toMatchObject({
       results: [
-        { profile: "classic-v1", revision: 2 },
-        { profile: "classic-v2", revision: 0 },
-        { profile: "game-v1", revision: 2 },
+        { profile: "classic-v3", revision: 2 },
+        { profile: "classic-v3", revision: 0 },
+        { profile: "game-v2", revision: 2 },
       ],
     });
   });
@@ -707,15 +717,15 @@ describe("static artifact publication checkpoints", () => {
     await env.DB.batch([
       env.DB.prepare(
         `UPDATE directory_revisions SET revision = 2, updated_at = 100
-          WHERE profile = 'classic-v1'`,
+          WHERE profile = 'classic-v3'`,
       ),
       ...[1, 2].map((revision) => env.DB.prepare(
         `INSERT INTO directory_outbox (profile, revision, created_at)
-         VALUES ('classic-v1', ?, 100)`,
+         VALUES ('classic-v3', ?, 100)`,
       ).bind(revision)),
     ]);
     const commit = {
-      profile: "classic-v1",
+      profile: "classic-v3",
       publishedRevision: 2,
       generation: 1,
       generatedAt: 100,
@@ -730,7 +740,7 @@ describe("static artifact publication checkpoints", () => {
       .toBeUndefined();
     expect(await readDirectoryArtifactPublication(
       env.DB,
-      "classic-v1",
+      "classic-v3",
     )).toEqual({
       publishedRevision: 2,
       generation: 1,
@@ -741,9 +751,9 @@ describe("static artifact publication checkpoints", () => {
     });
     expect(await env.DB.prepare(
       `SELECT revision FROM directory_outbox
-        WHERE profile = 'classic-v1' ORDER BY revision`,
+        WHERE profile = 'classic-v3' ORDER BY revision`,
     ).all()).toMatchObject({ results: [] });
-    expect(await readDirectoryArtifactHistory(env.DB, "classic-v1"))
+    expect(await readDirectoryArtifactHistory(env.DB, "classic-v3"))
       .toEqual([1]);
   });
 
@@ -751,16 +761,16 @@ describe("static artifact publication checkpoints", () => {
     await env.DB.batch([
       env.DB.prepare(
         `UPDATE directory_revisions SET revision = 1, updated_at = 100
-          WHERE profile = 'classic-v1'`,
+          WHERE profile = 'classic-v3'`,
       ),
       env.DB.prepare(
         `INSERT INTO directory_outbox (profile, revision, created_at)
-         VALUES ('classic-v1', 1, 100)`,
+         VALUES ('classic-v3', 1, 100)`,
       ),
     ]);
 
     await expect(commitDirectoryArtifactPublication(env.DB, {
-      profile: "classic-v1",
+      profile: "classic-v3",
       publishedRevision: 0,
       generation: 1,
       generatedAt: 100,
@@ -770,17 +780,17 @@ describe("static artifact publication checkpoints", () => {
     })).rejects.toThrow();
     expect((await readDirectoryArtifactPublication(
       env.DB,
-      "classic-v1",
+      "classic-v3",
     )).generation).toBe(0);
     expect(await env.DB.prepare(
       `SELECT revision FROM directory_outbox
-        WHERE profile = 'classic-v1'`,
+        WHERE profile = 'classic-v3'`,
     ).all()).toMatchObject({ results: [{ revision: 1 }] });
   });
 
   it("allows a newer same-revision generation when the ranked model changes", async () => {
     const initial = {
-      profile: "classic-v1",
+      profile: "classic-v3",
       publishedRevision: 0,
       generation: 1,
       generatedAt: 100,
@@ -804,7 +814,7 @@ describe("static artifact publication checkpoints", () => {
     })).resolves.toBeUndefined();
     expect(await readDirectoryArtifactPublication(
       env.DB,
-      "classic-v1",
+      "classic-v3",
     )).toMatchObject({
       publishedRevision: 0,
       generation: 3,
@@ -815,10 +825,10 @@ describe("static artifact publication checkpoints", () => {
   it("rejects generation rollback and preserves the newer checkpoint", async () => {
     await env.DB.prepare(
       `UPDATE directory_revisions SET revision = 2, updated_at = 100
-        WHERE profile = 'classic-v1'`,
+        WHERE profile = 'classic-v3'`,
     ).run();
     const newer = {
-      profile: "classic-v1",
+      profile: "classic-v3",
       publishedRevision: 2,
       generation: 4,
       generatedAt: 100,
@@ -834,7 +844,7 @@ describe("static artifact publication checkpoints", () => {
     })).rejects.toThrow();
     expect(await readDirectoryArtifactPublication(
       env.DB,
-      "classic-v1",
+      "classic-v3",
     )).toEqual({
       publishedRevision: 2,
       generation: 4,
@@ -849,11 +859,11 @@ describe("static artifact publication checkpoints", () => {
     await env.DB.prepare(
       `CREATE TRIGGER directory_artifact_publication_test_ignore
        BEFORE UPDATE ON directory_artifact_publications
-       WHEN NEW.profile = 'classic-v1'
+       WHEN NEW.profile = 'classic-v3'
        BEGIN SELECT RAISE(IGNORE); END`,
     ).run();
     await expect(commitDirectoryArtifactPublication(env.DB, {
-      profile: "classic-v1",
+      profile: "classic-v3",
       publishedRevision: 0,
       generation: 1,
       generatedAt: 100,
@@ -866,11 +876,11 @@ describe("static artifact publication checkpoints", () => {
     ).run();
     expect((await readDirectoryArtifactPublication(
       env.DB,
-      "classic-v1",
+      "classic-v3",
     )).generation).toBe(0);
     expect(await env.DB.prepare(
       `SELECT COUNT(*) AS count FROM directory_artifact_commits
-        WHERE profile = 'classic-v1'`,
+        WHERE profile = 'classic-v3'`,
     ).first<number>("count")).toBe(0);
   });
 
@@ -878,11 +888,11 @@ describe("static artifact publication checkpoints", () => {
     await env.DB.prepare(
       `CREATE TRIGGER directory_artifact_history_test_ignore_insert
        BEFORE INSERT ON directory_artifact_history
-       WHEN NEW.profile = 'classic-v1'
+       WHEN NEW.profile = 'classic-v3'
        BEGIN SELECT RAISE(IGNORE); END`,
     ).run();
     await expect(commitDirectoryArtifactPublication(env.DB, {
-      profile: "classic-v1",
+      profile: "classic-v3",
       publishedRevision: 0,
       generation: 1,
       generatedAt: 100,
@@ -895,15 +905,15 @@ describe("static artifact publication checkpoints", () => {
     ).run();
     expect((await readDirectoryArtifactPublication(
       env.DB,
-      "classic-v1",
+      "classic-v3",
     )).generation).toBe(0);
-    expect(await readDirectoryArtifactHistory(env.DB, "classic-v1"))
+    expect(await readDirectoryArtifactHistory(env.DB, "classic-v3"))
       .toEqual([]);
   });
 
   it("rolls back when bounded rollback-history pruning is ignored", async () => {
     const base = {
-      profile: "classic-v1",
+      profile: "classic-v3",
       publishedRevision: 0,
       generatedAt: 100,
       expiresAt: 1_000,
@@ -919,7 +929,7 @@ describe("static artifact publication checkpoints", () => {
     await env.DB.prepare(
       `CREATE TRIGGER directory_artifact_history_test_ignore_prune
        BEFORE DELETE ON directory_artifact_history
-       WHEN OLD.profile = 'classic-v1' AND OLD.generation = 1
+       WHEN OLD.profile = 'classic-v3' AND OLD.generation = 1
        BEGIN SELECT RAISE(IGNORE); END`,
     ).run();
     await expect(commitDirectoryArtifactPublication(env.DB, {
@@ -932,9 +942,9 @@ describe("static artifact publication checkpoints", () => {
     ).run();
     expect((await readDirectoryArtifactPublication(
       env.DB,
-      "classic-v1",
+      "classic-v3",
     )).generation).toBe(8);
-    expect(await readDirectoryArtifactHistory(env.DB, "classic-v1"))
+    expect(await readDirectoryArtifactHistory(env.DB, "classic-v3"))
       .toEqual([1, 2, 3, 4, 5, 6, 7, 8]);
   });
 
@@ -942,21 +952,21 @@ describe("static artifact publication checkpoints", () => {
     await env.DB.batch([
       env.DB.prepare(
         `UPDATE directory_revisions SET revision = 1, updated_at = 100
-          WHERE profile = 'classic-v1'`,
+          WHERE profile = 'classic-v3'`,
       ),
       env.DB.prepare(
         `INSERT INTO directory_outbox (profile, revision, created_at)
-         VALUES ('classic-v1', 1, 100)`,
+         VALUES ('classic-v3', 1, 100)`,
       ),
       env.DB.prepare(
         `CREATE TRIGGER directory_outbox_test_ignore_acknowledgement
          BEFORE DELETE ON directory_outbox
-         WHEN OLD.profile = 'classic-v1'
+         WHEN OLD.profile = 'classic-v3'
          BEGIN SELECT RAISE(IGNORE); END`,
       ),
     ]);
     await expect(commitDirectoryArtifactPublication(env.DB, {
-      profile: "classic-v1",
+      profile: "classic-v3",
       publishedRevision: 1,
       generation: 1,
       generatedAt: 100,
@@ -969,14 +979,14 @@ describe("static artifact publication checkpoints", () => {
     ).run();
     expect((await readDirectoryArtifactPublication(
       env.DB,
-      "classic-v1",
+      "classic-v3",
     )).generation).toBe(0);
     expect(await env.DB.prepare(
-      `SELECT revision FROM directory_outbox WHERE profile = 'classic-v1'`,
+      `SELECT revision FROM directory_outbox WHERE profile = 'classic-v3'`,
     ).all()).toMatchObject({ results: [{ revision: 1 }] });
     expect(await env.DB.prepare(
       `SELECT COUNT(*) AS count FROM directory_artifact_commits
-        WHERE profile = 'classic-v1'`,
+        WHERE profile = 'classic-v3'`,
     ).first<number>("count")).toBe(0);
   });
 });
@@ -1018,11 +1028,12 @@ async function snapshotDirectoryState(): Promise<unknown> {
 
 function publication(
   serverId: string,
-  profile: "classic-v1" | "game-v1",
+  profile: "classic-v3" | "game-v2",
   name: string,
   discriminator: string,
 ): InternalRendezvousPublication {
   const common = {
+    certificate: "AQ==",
     serverId,
     publisherSequence: "1",
     publisherNonce: discriminator.repeat(32),
@@ -1041,7 +1052,7 @@ function publication(
     authorizationRequired: false,
     directoryFingerprint: discriminator.repeat(64),
   } as const;
-  return profile === "classic-v1"
+  return profile === "classic-v3"
     ? {
         ...common,
         directoryProfile: profile,
@@ -1066,7 +1077,7 @@ function publication(
 
 function replaySeed(
   serverId: string,
-  profile: "classic-v1" | "game-v1",
+  profile: "classic-v3" | "game-v2",
 ): D1PreparedStatement {
   return env.DB.prepare(
     `INSERT OR IGNORE INTO publisher_replay
@@ -1077,7 +1088,7 @@ function replaySeed(
 
 async function seedPublic(
   serverId: string,
-  profile: "classic-v1" | "game-v1",
+  profile: "classic-v3" | "game-v2",
   lastSeen: number,
 ): Promise<void> {
   await env.DB.batch([
@@ -1085,14 +1096,14 @@ async function seedPublic(
     env.DB.prepare(
       `INSERT INTO server_presence
          (profile, server_id, last_seen, rendezvous_token_hash,
-          rendezvous_generation)
-       VALUES (?, ?, ?, ?, ?)`,
+          rendezvous_generation,certificate,name,access_required)
+       VALUES (?, ?, ?, ?, ?,'AQ==','Directory test',0)`,
     ).bind(profile, serverId, lastSeen, "b".repeat(64), "c".repeat(64)),
-    profile === "classic-v1"
+    profile === "classic-v3"
       ? env.DB.prepare(
         `INSERT INTO directory_entries
            (profile, server_id, name, players_count, version, text_comment,
-            hostname, port, quic_cert_sha256, password_required,
+            hostname, port, quic_cert_sha256, access_required,
             directory_fingerprint)
          VALUES (?, ?, 'Directory test', 0, '4.0.0', '', NULL, NULL, ?, 0, ?)`,
       ).bind(profile, serverId, serverId, "d".repeat(64))
@@ -1101,7 +1112,7 @@ async function seedPublic(
            (profile, server_id, name, description, protocol_major,
             protocol_minor, content_id, content_revision_sha256,
             players_online, players_capacity, status, game_json_bytes, hostname, port,
-            quic_cert_sha256, password_required, directory_fingerprint)
+            quic_cert_sha256, access_required, directory_fingerprint)
          VALUES (?, ?, 'Directory test', '', 1, 0, 'atrinik-main', ?,
                  0, 64, 'online', 1, NULL, NULL, ?, 0, ?)`,
       ).bind(profile, serverId, "e".repeat(64), serverId, "d".repeat(64)),
@@ -1110,7 +1121,7 @@ async function seedPublic(
 
 async function seedPrivate(
   serverId: string,
-  profile: "classic-v1" | "game-v1",
+  profile: "classic-v3" | "game-v2",
   lastSeen: number,
 ): Promise<void> {
   await env.DB.batch([
@@ -1118,8 +1129,8 @@ async function seedPrivate(
     env.DB.prepare(
       `INSERT INTO server_presence
          (profile, server_id, last_seen, rendezvous_token_hash,
-          rendezvous_generation)
-       VALUES (?, ?, ?, ?, ?)`,
+          rendezvous_generation,certificate,name,access_required)
+       VALUES (?, ?, ?, ?, ?,'AQ==','Directory test',0)`,
     ).bind(profile, serverId, lastSeen, "b".repeat(64), "c".repeat(64)),
   ]);
 }

@@ -34,12 +34,14 @@ export const MINIMUM_LISTING_TTL_SECONDS =
 
 export interface DirectoryArtifactConfigurationInput {
   readonly CLASSIC_DIRECTORY_CUTOVER_MODE?: string;
+  readonly GAME_DIRECTORY_CUTOVER_MODE?: string;
   readonly DIRECTORY_REFRESH_LEAD_SECONDS?: string;
   readonly LISTING_TTL_SECONDS?: string;
 }
 
 export interface DirectoryArtifactConfiguration {
-  readonly classicDirectoryCutoverMode: "v4-production" | "v5-production";
+  readonly gameDirectoryCutoverMode: "v1-production" | "v2-production";
+  readonly classicDirectoryCutoverMode: "v4-production" | "v5-production" | "v6-production";
   readonly refreshLeadSeconds: number;
   readonly listingTtlSeconds: number;
   readonly artifactLifetimeSeconds: number;
@@ -285,10 +287,15 @@ export function directoryArtifactConfiguration(
     ),
   );
   return Object.freeze({
+    gameDirectoryCutoverMode: strictChoice(
+      input.GAME_DIRECTORY_CUTOVER_MODE ?? "v1-production",
+      "GAME_DIRECTORY_CUTOVER_MODE",
+      ["v1-production", "v2-production"] as const,
+    ),
     classicDirectoryCutoverMode: strictChoice(
       input.CLASSIC_DIRECTORY_CUTOVER_MODE,
       "CLASSIC_DIRECTORY_CUTOVER_MODE",
-      ["v4-production", "v5-production"] as const,
+      ["v4-production", "v5-production", "v6-production"] as const,
     ),
     refreshLeadSeconds,
     listingTtlSeconds,
