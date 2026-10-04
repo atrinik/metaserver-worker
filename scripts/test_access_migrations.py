@@ -1,5 +1,8 @@
 """Bounded private routing storage and populated pre-cutover migration proof."""
-import sqlite3
+try:
+    import sqlite3
+except ModuleNotFoundError:
+    import pysqlite3 as sqlite3
 import unittest
 from pathlib import Path
 
@@ -24,6 +27,7 @@ class AccessMigrationTests(unittest.TestCase):
             "('classic-v2', ?, 100, ?, ?)",
             ("1" * 64, "4" * 64, "5" * 64),
         )
+        self.db.executescript((ROOT / "migrations/0013_access_token_profiles.sql").read_text())
         self.before = self.snapshot()
         self.db.executescript(MIGRATION.read_text())
 

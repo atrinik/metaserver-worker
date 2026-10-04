@@ -5,12 +5,12 @@ import { readD1Migrations } from "@cloudflare/vitest-pool-workers";
 import { convertV4MiniflareOptions, Miniflare } from "miniflare";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 
-import classicV2Fixture from "../test/fixtures/metaserver-classic-publisher-v2.json";
-import publisherFixture from "../test/fixtures/metaserver-publisher-v1.json";
+import publisherFixture from "../test/fixtures/metaserver-classic-publisher-v3.json";
 
 const CURRENT_SECRET = "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA";
 const PREVIOUS_SECRET = "AQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQE";
 const COMPATIBILITY_DATE = "2026-08-05";
+const ROUTE_CAPABILITY = "3".repeat(64);
 const TEST_TOKEN = "a".repeat(64);
 
 let miniflare: Miniflare;
@@ -42,7 +42,7 @@ beforeAll(async () => {
               const forwardedHeaders = new Headers();
               const allowed = publisher
                 ? ["Atrinik-Publish-Sequence", "Atrinik-Server-ID", "Content-Digest", "Content-Type", "Signature", "Signature-Input"]
-                : ["Authorization", "Connection", "Sec-WebSocket-Key", "Sec-WebSocket-Protocol", "Sec-WebSocket-Version", "Upgrade"];
+                : ["Content-Type", "Content-Length", "Authorization", "Connection", "Sec-WebSocket-Key", "Sec-WebSocket-Protocol", "Sec-WebSocket-Version", "Upgrade"];
               if (edge) allowed.push("CF-Connecting-IP");
               for (const name of allowed) {
                 const value = headers.get(name);
@@ -245,7 +245,7 @@ describe("compiled named Worker Service Bindings", () => {
       bindings.DB.prepare(
         `INSERT INTO publisher_replay
            (server_id, profile, last_sequence, last_nonce, commit_token, updated_at)
-         VALUES (?, 'classic-v1', '1', ?, ?, ?)`,
+         VALUES (?, 'classic-v3', '1', ?, ?, ?)`,
       ).bind(
         publisherFixture.server_id,
         "1".repeat(32),
@@ -255,20 +255,21 @@ describe("compiled named Worker Service Bindings", () => {
       bindings.DB.prepare(
         `INSERT INTO server_presence
            (profile, server_id, last_seen, rendezvous_token_hash,
-            rendezvous_generation)
-         VALUES ('classic-v1', ?, ?, ?, ?)`,
+            rendezvous_generation,certificate,name,access_required)
+         VALUES ('classic-v3', ?, ?, ?, ?, ?, 'Binding test',1)`,
       ).bind(
         publisherFixture.server_id,
         now,
         tokenHash,
         "b".repeat(64),
+        publisherFixture.certificate_der_base64,
       ),
       bindings.DB.prepare(
         `INSERT INTO directory_entries
            (profile, server_id, name, players_count, version, text_comment,
-            hostname, port, quic_cert_sha256, password_required,
+            hostname, port, quic_cert_sha256, access_required,
             directory_fingerprint)
-         VALUES ('classic-v1', ?, 'Binding test', 0, '1.0', '', NULL, NULL,
+         VALUES ('classic-v3', ?, 'Binding test', 0, '1.0', '', NULL, NULL,
                  ?, 1, ?)`,
       ).bind(
         publisherFixture.server_id,
@@ -277,10 +278,17 @@ describe("compiled named Worker Service Bindings", () => {
       ),
     ]);
 
-    const protocol = "atrinik-classic-rendezvous-invite-v1";
+    const index=createHash("sha256").update("atrinik-access-index-v1\0").update(Buffer.from(ROUTE_CAPABILITY,"hex")).digest("hex");
+    await bindings.DB.prepare(`INSERT INTO access_routes(route_index,profile,server_id,token_id,token_revision,
+      state,expires_at,reservation_id,reserved_until,created_at,revoked_at)
+      VALUES(?,'classic',?,?,'1','active',NULL,?,?,?,NULL)`)
+      .bind(index,publisherFixture.server_id,"4".repeat(32),"5".repeat(32),now+60,now).run();
+    const protocol = "atrinik-access-rendezvous-v1";
     const sockets: WebSocket[] = [];
     const connect = async (role: "server" | "client"): Promise<WebSocket> => {
-      const target = `https://rendezvous.meta.atrinik.org/v1/classic/servers/${publisherFixture.server_id}?role=${role}`;
+      const target = role === "server"
+        ? `https://rendezvous.meta.atrinik.org/v1/classic/servers/${publisherFixture.server_id}?role=server`
+        : `https://rendezvous.meta.atrinik.org/v1/access/rendezvous/classic/${publisherFixture.server_id}`;
       const response = await harness.fetch("http://service-binding.test/forward", {
         headers: {
           ...(role === "server" ? { Authorization: `Bearer ${TEST_TOKEN}` } : {}),
@@ -302,8 +310,17 @@ describe("compiled named Worker Service Bindings", () => {
       sockets.push(socket);
       return socket;
     };
-    const exchange = async (server: WebSocket, ticket: string): Promise<void> => {
+    const exchange = async (server: WebSocket, clientNonce: string): Promise<void> => {
+      const resolved=await harness.fetch("http://service-binding.test/forward",{
+        method:"POST",headers:{"Content-Type":"application/json","CF-Connecting-IP":"192.0.2.211",
+          "X-Atrinik-Test-Edge":"1","X-Atrinik-Test-Target":"https://rendezvous.meta.atrinik.org/v1/access/resolve"},
+        body:JSON.stringify({schema:"atrinik-access-resolve-v1",routeCapability:ROUTE_CAPABILITY,clientNonce})});
+      expect(resolved.status,await resolved.clone().text()).toBe(200);
+      const {grant:ticket}=await resolved.json() as {grant:string};
       const client = await connect("client");
+      const ready=socketEvent(client,"message");
+      client.send(JSON.stringify({type:"access_init",version:1,grant:ticket,client_nonce:clientNonce}));
+      await expect(ready).resolves.toMatchObject({data:JSON.stringify({type:"access_ready",version:1})});
       const relay = async (
         from: WebSocket,
         to: WebSocket,
@@ -314,18 +331,6 @@ describe("compiled named Worker Service Bindings", () => {
         from.send(data);
         await expect(received).resolves.toMatchObject({ data });
       };
-      await relay(client, server, {
-        type: "auth_init", version: 1, ticket, invite_id: "a".repeat(32),
-      });
-      await relay(server, client, {
-        type: "auth_challenge", version: 1, ticket, challenge: "b".repeat(64),
-      });
-      await relay(client, server, {
-        type: "auth_proof", version: 1, ticket, proof: "c".repeat(64),
-      });
-      await relay(server, client, {
-        type: "auth_result", version: 1, ticket, authorized: true,
-      });
       await relay(client, server, {
         type: "client_candidate", host: "192.0.2.212", port: 1730, ticket,
       });
@@ -358,7 +363,7 @@ describe("compiled named Worker Service Bindings", () => {
     }
   });
 
-  it("keeps the v2 publisher canary valid after global v1 retirement", async () => {
+  it("keeps the v3 publisher canary independent of inert legacy retirement", async () => {
     const bindings = await miniflare.getBindings<{ DB: D1Database }>("core");
     await bindings.DB.prepare(
       `UPDATE classic_receiver_mode
@@ -401,16 +406,16 @@ function socketEvent(socket: WebSocket, type: "message" | "close"): Promise<Even
 }
 
 async function fetchPublisherCanary(): Promise<Response> {
-  const vector = classicV2Fixture.positive[0];
-  const target = `https://${classicV2Fixture.authority}${vector.path}`;
+  const vector = publisherFixture;
+  const target = `https://${publisherFixture.authority}${vector.path}`;
   return await harness.fetch("http://service-binding.test/forward", {
     method: "POST",
     headers: {
       "CF-Connecting-IP": "192.0.2.211",
       "Atrinik-Publish-Sequence": vector.sequence,
-      "Atrinik-Server-ID": classicV2Fixture.server_id,
+      "Atrinik-Server-ID": publisherFixture.server_id,
       "Content-Digest": vector.content_digest,
-      "Content-Type": classicV2Fixture.content_type,
+      "Content-Type": publisherFixture.content_type,
       Signature: `atrinik=:${"A".repeat(86)}==:`,
       "Signature-Input": vector.signature_input,
       "X-Atrinik-Test-Edge": "1",

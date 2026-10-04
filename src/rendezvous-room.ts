@@ -530,11 +530,19 @@ export class RendezvousRoom extends DurableObject<CoreEnv> {
         return;
       }
       if (attachment.role === "client") {
-        if (attachment.accessRedemption && !await this.accessStillLive(attachment)) {
-          this.failClient(socket, attachment, "authorization_failed", RENDEZVOUS_CLOSE.authorizationFailed);
-          return;
+        if (attachment.accessRedemption) {
+          const live = await this.accessStillLive(attachment);
+          const current = readClientAttachment(socket);
+          if (!live || current === null || current.stage === "terminal" ||
+              current.expiresAt <= Date.now() || current.connectionId !== attachment.connectionId ||
+              current.generation !== this.currentGeneration) {
+            if (current !== null) this.failClient(socket, current, "authorization_failed", RENDEZVOUS_CLOSE.authorizationFailed);
+            return;
+          }
+          await this.handleClientMessage(socket, current, parsed);
+        } else {
+          await this.handleClientMessage(socket, attachment, parsed);
         }
-        await this.handleClientMessage(socket, attachment, parsed);
       } else {
         await this.handleServerMessage(socket, attachment, parsed);
       }
@@ -1065,7 +1073,8 @@ export class RendezvousRoom extends DurableObject<CoreEnv> {
       Math.floor(Date.now() / 1000), rendezvousCoordinatorConfiguration(this.env).listingTtlSeconds);
     const current = readClientAttachment(socket);
     const server = this.reconcileActiveServer();
-    if (receipt === null || current === null || current.authorization !== "awaiting_init" ||
+    if (receipt === null || receipt.expires_at * 1000 <= Date.now() ||
+        current === null || current.authorization !== "awaiting_init" ||
         current.expiresAt <= Date.now() || current.connectionId !== attachment.connectionId ||
         socket.readyState !== WebSocket.OPEN || server === null ||
         server.attachment.controlId !== current.controlId || server.attachment.generation !== current.generation ||
@@ -1303,7 +1312,7 @@ export class RendezvousRoom extends DurableObject<CoreEnv> {
     }
 
     const ticketDigest = await this.digestTicket(parsed.signal.ticket);
-    const current = readServerAttachment(socket);
+    let current = readServerAttachment(socket);
     const active = this.reconcileActiveServer();
     const now = Date.now();
     if (
@@ -1322,7 +1331,7 @@ export class RendezvousRoom extends DurableObject<CoreEnv> {
     }
 
     pruneTicketList(current, now);
-    const ticket = current.tickets.find(
+    let ticket = current.tickets.find(
       ({ ticketDigest: used }) => used === ticketDigest,
     );
     if (ticket === undefined) {
@@ -1333,6 +1342,45 @@ export class RendezvousRoom extends DurableObject<CoreEnv> {
         RENDEZVOUS_CLOSE.protocolError,
       );
       return;
+    }
+
+    let target = this.findTicketClient(
+      current,
+      ticket,
+      parsed.signal.ticket,
+      now,
+    );
+    if (target === null) {
+      if (!applyServerFrameBudget(ticket, parsed.signal, parsed.bytes)) {
+        this.failServer(socket,current,"protocol_error",RENDEZVOUS_CLOSE.protocolError);
+        return;
+      }
+      ticket.stage = "terminal";
+      writeAttachment(socket, current);
+      return;
+    }
+
+    if (target.attachment.accessRedemption) {
+      const live = await this.accessStillLive(target.attachment);
+      const latest = readClientAttachment(target.socket);
+      const latestServer = this.reconcileActiveServer();
+      if (!live || latest === null || latest.stage === "terminal" || latest.expiresAt <= Date.now() ||
+          latest.connectionId !== target.attachment.connectionId || latest.generation !== this.currentGeneration ||
+          target.socket.readyState !== WebSocket.OPEN || latestServer?.socket !== socket ||
+          latestServer.attachment.controlId !== current.controlId) {
+        if (latest !== null) this.failClient(target.socket, latest, "authorization_failed", RENDEZVOUS_CLOSE.authorizationFailed);
+        return;
+      }
+      // Other client FIFOs may append tickets while D1 is pending. Never
+      // write the pre-await control snapshot over their committed attachment.
+      current = latestServer.attachment;
+      ticket = current.tickets.find(item => item.ticketDigest === ticketDigest &&
+        item.clientConnectionId === latest.connectionId);
+      if (ticket === undefined || ticket.stage !== "active" || ticket.expiresAt <= Date.now()) {
+        this.failClient(target.socket,latest,"authorization_failed",RENDEZVOUS_CLOSE.authorizationFailed);
+        return;
+      }
+      target = { socket: target.socket, attachment: latest };
     }
 
     if (
@@ -1348,31 +1396,6 @@ export class RendezvousRoom extends DurableObject<CoreEnv> {
         RENDEZVOUS_CLOSE.protocolError,
       );
       return;
-    }
-
-    const target = this.findTicketClient(
-      current,
-      ticket,
-      parsed.signal.ticket,
-      now,
-    );
-    if (target === null) {
-      ticket.stage = "terminal";
-      writeAttachment(socket, current);
-      return;
-    }
-
-    if (target.attachment.accessRedemption) {
-      const live = await this.accessStillLive(target.attachment);
-      const latest = readClientAttachment(target.socket);
-      const latestServer = this.reconcileActiveServer();
-      if (!live || latest === null || latest.stage === "terminal" ||
-          latest.connectionId !== target.attachment.connectionId || latest.generation !== this.currentGeneration ||
-          target.socket.readyState !== WebSocket.OPEN || latestServer?.socket !== socket ||
-          latestServer.attachment.controlId !== current.controlId) {
-        if (latest !== null) this.failClient(target.socket, latest, "authorization_failed", RENDEZVOUS_CLOSE.authorizationFailed);
-        return;
-      }
     }
 
     if (
@@ -2253,6 +2276,8 @@ export class RendezvousRoom extends DurableObject<CoreEnv> {
           attachment.authorization = "terminal";
           attachment.ticket = null;
           attachment.ticketDigest = null;
+          attachment.accessGrant = null;
+          attachment.accessRedemption = null;
           attachment.terminalOutcome = "internal_error";
           attachment.terminalCloseAttempts = 0;
           persistedSafeState = tryWriteAttachment(socket, attachment);
@@ -2282,6 +2307,8 @@ export class RendezvousRoom extends DurableObject<CoreEnv> {
           attachment.authorization = "terminal";
           attachment.ticket = null;
           attachment.ticketDigest = null;
+          attachment.accessGrant = null;
+          attachment.accessRedemption = null;
           attachment.terminalOutcome = "internal_error";
           attachment.terminalCloseAttempts = 0;
         }

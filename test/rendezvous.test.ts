@@ -1029,6 +1029,90 @@ describe("RendezvousRoom access grants", () => {
       expect((await denied).code).toBe(4005);
     } finally { closeForCleanup(f.client,f.server); }
   });
+  it.each(["closeSocketsForInitializationFailure","closeSocketsForTeardownRecovery"])("scrubs raw grants when %s cannot close the transport",async(method)=>{
+    const f=await fixture();
+    try {
+      const ready=nextJson(f.client); f.client.send(f.init); await ready;
+      await runInDurableObject(f.stub,(instance,state)=>{
+        const client=state.getWebSockets("client")[0]!;
+        const closes=state.getWebSockets().map(socket=>vi.spyOn(socket,"close").mockImplementation(()=>{throw new Error("injected close failure");}));
+        try {
+          expect((Reflect.get(instance,method) as ()=>boolean).call(instance)).toBe(true);
+          const raw=client.deserializeAttachment();
+          expect(raw).toMatchObject({s:2,u:null,e:null,t:null,d:null});
+          expect(JSON.stringify(raw)).not.toContain(f.grant);
+          expect(decodeRendezvousAttachment(raw)).toMatchObject({stage:"terminal",accessGrant:null,accessRedemption:null});
+        } finally {closes.forEach(spy=>spy.mockRestore());}
+      });
+    } finally {closeForCleanup(f.client,f.server);}
+  });
+  it("retains another client's ticket added while a grant liveness read is pending",async()=>{
+    const f=await fixture(); const secondGrant=ticket(500_000+roomSequence);
+    const keys=await requiredSourceTagKeyRing(env);
+    const tags=await keys.accessGrantTags(env.RENDEZVOUS_HOSTNAME,"classic",f.serverId,secondGrant,f.nonce);
+    await issueAccessGrant(env.DB,f.serverId,f.nonce,tags,f.generation,Math.floor(Date.now()/1000),14400);
+    const second=await connect(f.stub,"client",{accessProtocol:true,authorizationRequired:true,generation:f.generation});
+    try {
+      let ready=nextJson(f.client); f.client.send(f.init); await ready;
+      ready=nextJson(second); second.send(JSON.stringify({type:"access_init",version:1,grant:secondGrant,client_nonce:f.nonce})); await ready;
+      const firstOffer=nextJson(f.server); f.client.send(clientCandidate(f.grant)); await firstOffer;
+      const firstReply=nextJson(f.client),secondOffer=nextJson(f.server);
+      await runInDurableObject(f.stub,async(instance,state)=>{
+        const server=state.getWebSockets("server")[0]!;
+        const secondClient=state.getWebSockets("client").find(socket=>decodeRendezvousAttachment(socket.deserializeAttachment())?.role==="client" &&
+          (socket.deserializeAttachment() as {u:string}).u===secondGrant)!;
+        const original=(Reflect.get(instance,"accessStillLive") as (value:unknown)=>Promise<boolean>).bind(instance);
+        let release:()=>void=()=>{};const gate=new Promise<void>(resolve=>{release=resolve;});let entered=0;
+        Reflect.set(instance,"accessStillLive",async(value:unknown)=>{const live=await original(value);if(++entered===1)await gate;return live;});
+        try {
+          const pending=instance.webSocketMessage(server,serverCandidate(f.grant));
+          await vi.waitFor(()=>expect(entered).toBe(1));
+          await instance.webSocketMessage(secondClient,clientCandidate(secondGrant));
+          release();await pending;
+          const attachment=decodeRendezvousAttachment(server.deserializeAttachment());
+          expect(attachment?.role).toBe("server");
+          if(attachment?.role==="server")expect(attachment.tickets).toHaveLength(2);
+        } finally {release();Reflect.set(instance,"accessStillLive",original);}
+      });
+      expect(await firstReply).toMatchObject({ticket:f.grant});expect(await secondOffer).toMatchObject({ticket:secondGrant});
+      const secondReply=nextJson(second);f.server.send(serverCandidate(secondGrant));expect(await secondReply).toMatchObject({ticket:secondGrant});
+    } finally {closeForCleanup(second,f.client,f.server);}
+  });
+  it("does not forward a candidate when expiry passes during the grant liveness read",async()=>{
+    const f=await fixture();
+    try {
+      const ready=nextJson(f.client);f.client.send(f.init);await ready;
+      const offer=nextJson(f.server);f.client.send(clientCandidate(f.grant));await offer;
+      const closed=nextClose(f.client);
+      await runInDurableObject(f.stub,async(instance,state)=>{
+        const original=(Reflect.get(instance,"accessStillLive") as (value:unknown)=>Promise<boolean>).bind(instance);
+        const clock=vi.spyOn(Date,"now");const start=Date.now();
+        Reflect.set(instance,"accessStillLive",async(value:unknown)=>{const live=await original(value);clock.mockReturnValue(start+16_000);return live;});
+        try {await instance.webSocketMessage(state.getWebSockets("server")[0]!,serverCandidate(f.grant));}
+        finally {clock.mockRestore();Reflect.set(instance,"accessStillLive",original);}
+      });
+      expect((await closed).code).toBe(4005);
+    } finally {closeForCleanup(f.client,f.server);}
+  });
+  it("does not acknowledge a grant that expires while redemption commits",async()=>{
+    const start=Math.floor(Date.now()/1000)*1000;
+    const clock=vi.spyOn(Date,"now").mockReturnValue(start);
+    const f=await fixture();
+    try {
+      await env.DB.prepare("UPDATE access_grants SET expires_at=? WHERE server_id=?").bind(start/1000+1,f.serverId).run();
+      const closed=nextClose(f.client);
+      await runInDurableObject(f.stub,async(instance,state)=>{
+        const database=(Reflect.get(instance,"env") as {DB:D1Database}).DB;
+        const original=database.batch.bind(database);
+        const batch=vi.spyOn(database,"batch").mockImplementation(async(statements)=>{
+          const results=await original(statements);clock.mockReturnValue(start+1500);return results;
+        });
+        try {await instance.webSocketMessage(state.getWebSockets("client")[0]!,f.init);}
+        finally {batch.mockRestore();}
+      });
+      expect((await closed).code).toBe(4005);
+    } finally {clock.mockRestore();closeForCleanup(f.client,f.server);}
+  });
   it("expires uninitialized sockets at the two-second deadline", async () => {
     const f = await fixture();
     try {
