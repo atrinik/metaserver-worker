@@ -355,7 +355,7 @@ class AdminSqlTest(unittest.TestCase):
             expires_at="12345",
             note="operator's canary",
         ))
-        self.assertIn("BEGIN IMMEDIATE", sql)
+        self.assertIn("BEGIN TRANSACTION", sql)
         self.assertIn("operator''s canary", sql)
         connection.executescript(sql)
         self.assertEqual(

@@ -1485,7 +1485,11 @@ Identity reset requires publisher exclusion and a rendezvous room drain. It
 atomically removes presence, public entries, replay state, grants and receipts,
 and revokes active or reserved access routes. Existing route tombstones and
 request budgets remain to prevent reuse after republishing. Each affected public
-profile receives a directory invalidation; private-only state does not.
+profile receives a directory invalidation; private-only state does not. Use the
+complete generated file with the pinned Wrangler D1 execute workflow: Wrangler
+strips the single `BEGIN TRANSACTION`/`COMMIT` wrapper and submits the statements
+as one D1 transaction. Do not submit individual statements or an explicit
+`BEGIN IMMEDIATE` through the D1 binding.
 Do not use administrative SQL to restore retired routes or clear ordinary
 rendezvous cooldowns.
 
