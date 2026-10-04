@@ -1,249 +1,160 @@
 # Request budgets and circuit breakers
 
-The intended workload is small: directory fetches happen on launch or explicit
-refresh, servers publish on startup/visible change/slow heartbeat, and each
-server normally keeps one long-lived rendezvous WebSocket. The limits below are
-safety ceilings, not target traffic.
+Directory reads happen on launch or explicit refresh, publication happens on
+startup, visible change, or a slow heartbeat, and each server normally keeps one
+long-lived rendezvous control socket. The limits below are safety ceilings.
 
 ## Enforcement layers
 
-1. A zone WAF rule is the only layer that can reject traffic before a Worker
-   invocation. It uses a source-address characteristic and is an approximate
-   invocation-cost shield. The exact reviewed policy, plan fallback,
-   deployment gate, and canary are specified in
-   [edge-policy.md](edge-policy.md).
-2. Worker request control combines fast route-specific Rate Limiting bindings
-   with D1 state. Native bindings are permissive, per Cloudflare location, and
-   eventually consistent. D1 provides exact UTC fixed-window authenticated
-   identity budgets plus the canonical client's rolling source/server-pair
-   cooldown. One atomic batch mirrors rotating pair aliases without double
-   charging or extending a live cooldown.
-3. The SQLite-backed per-server Durable Object retains the exact 24-hour
-   replay authority. It atomically prunes expired rows and reserves a replay
-   row before returning `101`. On the first
-   client candidate, that reserved row atomically claims current/previous-key
-   HMAC replay aliases or rejects a collision. The same room enforces the
-   active-socket and per-session work ceilings because every rendezvous for one
-   server converges there.
+1. Exact host/method/raw-target gates can reject malformed traffic before Worker
+   invocation. [edge-policy.md](edge-policy.md) defines the separately authorized
+   operator boundary. Historical provider-managed IP WAF rules and retention are
+   unverified and unchanged by this source work; replacements require a separate
+   non-IP policy review. The application does not extract requester or forwarded
+   IP addresses, hash them, or store, audit, log, or metric them.
+2. Anonymous edge bindings use fixed-purpose shared keys, with separate publisher,
+   resolve, client-rendezvous, and server-rendezvous scopes. Counters are per
+   Cloudflare location and eventually consistent. They are coarse load ceilings,
+   not strict global limits or client fairness guarantees. They contain no
+   requester metadata. Retired internal source/pair headers are rejected without
+   a compatibility bridge.
+3. After authentication, core native bindings and exact D1 fixed-window budgets
+   use the server identity. Private route and eligible resolve budgets are also
+   identity-scoped. Unknown route guesses create no persistent per-guess rows.
+4. Per-server Durable Objects enforce atomic ticket replay rejection and bounded
+   live work. Replay HMACs use random capabilities, never IP-derived identities.
 
-All three layers are required. WAF stops mitigated traffic before it can become
-a Worker charge, the native binding avoids D1 and Durable Object work during a
-local burst, D1 applies exact pair backoff across locations, and the Durable
-Object preserves ticket replay isolation and finite session work. Its replay
-ledger is not an ordinary player admission quota.
-
-The domainless canonical publisher and rendezvous edge Workers have independent
-namespace IDs and only the native bindings needed by their own routes; the core
-retains the exact authenticated and D1 budgets.
-No namespace ID is reused across the three Workers because native counters are
-shared by ID. The checked-in Classic publisher and rendezvous circuits are
-enabled, while Game publishing remains disabled; all edge configurations stay
-domainless. Production routing is accepted only through the separately reviewed WAF,
-attachment, configuration-readback, and canary procedure.
+The domainless publisher and rendezvous edges have only their route-specific
+native bindings and one named Service Binding. Core authority owns D1 and room
+state. Native namespace IDs must remain distinct across Workers and isolated
+review environments. No Worker limiter can undo the invocation that reached it.
 
 ## Initial ceilings
 
 | Actor and route | Native burst | Durable budget |
 | --- | ---: | ---: |
-| Publisher ingress source | 10/minute | none |
+| Shared publisher ingress, including route CRUD | 32,768/minute/location | none |
+| Shared resolve ingress | 65,536/minute/location | none |
+| Shared client rendezvous ingress | 65,536/minute/location | none |
+| Shared server rendezvous ingress | 65,536/minute/location | none |
 | Authenticated Classic/Game publisher identity | 2/minute | 48/UTC day |
-| Canonical client rendezvous source | 60/minute; not also charged to global | none |
-| Canonical client source/server pair after live-target lookup | covered by client burst | 20 eligible attempts/rolling 60 seconds, then 30..900-second cooldown |
-| Server-role rendezvous source before authentication | 10/minute | none |
 | Authenticated server rendezvous identity | 3/minute | 50/UTC day |
-| Accepted client sessions per server | n/a | no ordinary daily quota; replay state remains bounded for 24 hours |
+| Authenticated private route operations | 16/minute | 64/hour/identity |
+| Eligible private resolves | covered by shared resolve ceiling | 60/server/minute |
+| Live access grants | n/a | 32/server; 32,768 global; 15-second expiry |
+| Accepted client sessions per server | n/a | no ordinary daily quota; 24-hour replay horizon |
 
-Static directory hosts execute no Worker after cutover and therefore have no
-D1 directory budget. Cache/probe abuse is handled at the edge.
+These shared ceilings cover the reviewed recovery cohort without adding a
+source identifier:
 
-Anonymous dimensions use rotating source tags. Authenticated server limits are
-applied only after authentication; a path parameter is not an authenticated
-identity. Each route has its own counter scope so one activity cannot exhaust
-another. The signed publisher authenticates every publish, including the first,
-before charging the server-identity budget. Classic v1 and v2 share one
-identity budget and one replay lineage: changing routes cannot reset sequence
-or nonce history. Game remains independent. A rejected identity budget cannot
-consume replay state or mutate a listing. Once a Classic lineage accepts the
-unsigned-64 maximum, later v1 or v2 requests return
-`publish_sequence_exhausted` without a minimum or mutation.
+- Publisher: `512 identities × 2 profiles × (16 route operations + 2 publishes)`
+  = **18,432** requests per minute, below 32,768.
+- Resolve: `512 × 60` = **30,720** requests per minute, below 65,536.
+- Client rendezvous: `512 × 16 × 4 + 30,720` = **63,488** requests per minute,
+  below 65,536.
 
-Each native limiter runs only after a request matches a valid canonical route.
-The pre-Worker WAF/raw-URI policy remains mandatory for invocation-cost control
-of retired and malformed targets.
+This is capacity arithmetic, not a reservation or proof of globally exact
+admission. Shared capacity can be exhausted by another caller. Authenticate
+before charging identity budgets: a path parameter alone is not authority.
+Counter scopes separate activities. Classic v3 preserves the highest historical
+Classic v1/v2 sequence and nonce lineage; Game v2 remains independent. A rejected
+publisher budget cannot consume replay state or mutate publication. A lineage
+at the unsigned-64 maximum returns `publish_sequence_exhausted` without mutation.
 
-## Canonical rendezvous cooldown and structural ceilings
+Static directory reads execute no Worker after cutover and have no D1 read
+budget. Fixed-purpose native limits run only after canonical route validation;
+raw-target gates retain responsibility for pre-invocation rejection.
 
-Only a route-valid canonical client request whose server lookup finds a fresh,
-public Classic target consumes a pair attempt. Unknown, retired, private, or
-offline targets cannot build durable pair strikes. The first 20 eligible
-attempts in a rolling 60-second window are admitted. The next request starts a
-30-second cooldown; a complete later burst after expiry doubles the next
-cooldown through 60, 120, 240, 480, and at most 900 seconds. Retries during a
-cooldown return the remaining delay without mutation or escalation. Thirty
-minutes without another threshold crossing resets the next penalty to 30
-seconds. No ordinary client counter resets at UTC midnight.
+## Producer cadence and bounded rendezvous work
 
-One accepted client attempt is also constrained as follows:
+Native publication defaults to a 9,000-second heartbeat, bounded to 60..10,800
+seconds with 10% jitter. Startup has a two-attempt cap with a 1,920-second refill;
+visible changes debounce for 10 seconds. Producers must honor `Retry-After` and
+use bounded backoff with jitter. Limiting is not a substitute for repairing a
+retry loop.
 
 | Dimension | Ceiling |
 | --- | ---: |
 | Active client attempts per server | 16 |
 | Attached client sockets per server | 64 absolute implementation ceiling |
 | Client session lifetime | 15 seconds |
-| Client authorization frames | 2 |
-| Server authorization frames | 2 |
-| Authorization proof attempts | 1 |
-| Authorization signaling bytes | 2,048 bytes |
 | Client candidates | 1 |
 | Server candidates | 12 |
 | Completion frames | 1 |
 | Signaling frame size | 512 bytes |
 | Accepted signaling bytes for the complete attempt | 9,216 bytes |
 
-A client is admitted only when one authenticated server-control socket is live.
-The single client candidate introduces a fresh client-generated 64-hex ticket
-for an open attempt. An access-code-protected attempt introduces it in `auth_init`
-and permits no candidate until the authenticated server completes the exact
-four-frame invite authorization exchange. The room binds it to that client
-socket and rejects duplicate, replayed, or
-cross-socket use. Server candidates and completion are routed only to that
-ticket. A completion closes the client immediately, and one hibernation-safe
-alarm closes any attempt and removes its routing state at the at-most-15-second
-deadline, then schedules the earliest retained admission's 24-hour expiry. No
-valid session can turn into an unbounded frame, byte, fan-out, or timer
-workload. Terminal state immediately clears the client attachment's raw ticket
-and routing digest. If `WebSocket.close()` itself repeatedly fails, the room
-makes four teardown-only attempts at the deadline and at one, three, and seven
-seconds afterward, then stops scheduling that already non-signaling socket.
-If an attempt cannot persist its counter and cannot close the socket, the alarm
-throws and relies on Cloudflare's bounded failed-alarm retries instead of
-creating another application alarm.
+Admission requires a live authenticated server control and fresh profile
+presence. Open clients introduce a fresh 64-hex ticket in their candidate.
+Protected clients use the exact access subprotocol and `access_init`, binding a
+single-use grant, client nonce, and ticket before candidates. Grant redemption
+checks current route revision, publication generation, expiry, and denial;
+dispatch rechecks authorization. Old invitation challenge/proof frames are
+rejected. Candidate addresses are validated and forwarded only in the live
+event, never retained in attachments, SQL, logs, metrics, or application history.
 
-Outside transient frame processing, the raw ticket may remain only in its
-client attachment for the at-most-15-second session. The server attachment
-keeps random per-connection IDs, opening/expiry times, its SHA-256 routing
-digest, and bounded counters only until that deadline.
-Long-window replay rejection instead uses the admission row's two
-purpose-separated HMAC-SHA-256 aliases, derived with the current and previous
-source-tag keys and scoped to the canonical deployment hostname plus opaque
-Durable Object room ID. The replay ledger has a high emergency storage ceiling
-and is pruned over the 24-hour security horizon; reaching that ceiling returns
-temporary unavailability rather than a multi-hour player `429`. No row contains
-a raw ticket, unkeyed SHA-256 routing digest, connection ID, or candidate address.
-The protocol requires an honest client to generate 32 random ticket bytes and
-encode them as 64 lowercase hex characters. The Worker enforces that shape and
-single use but cannot prove the entropy of a peer-supplied value.
+A ticket routes only to its bound client socket. Completion closes the client;
+one hibernation-safe alarm enforces the at-most-15-second deadline and the earliest
+replay expiry. Terminal teardown clears raw tickets, grants, and routing digests.
+If transport close fails, at most four teardown-only attempts occur at the
+deadline and one, three, and seven seconds later. If both attachment persistence
+and close fail, bounded platform alarm retries handle failure; no per-session
+timer or unbounded signaling remains.
 
-The authenticated server-control socket is intentionally long-lived: it uses
-the Durable Object Hibernation API and has no artificial lifetime frame quota.
-Every valid server frame must instead match one live, bounded routing digest,
-so an idle control connection can sleep without creating an unbounded signaling
-path. A late frame for a known ticket before its 15-second expiry consumes that
-ticket's remaining budget and is dropped when its client is gone; an unknown,
-expired, or over-budget ticket closes the control path. This preserves the
-safety bound without turning an ordinary client disconnect into the older
-server's two-second reconnect loop.
+The room reserves an admission row before `101` and atomically claims both
+current/previous-key replay aliases when the ticket is introduced. Its high
+emergency storage ceiling returns temporary unavailability when exhausted,
+not a daily player quota. A row contains acceptance time and HMAC aliases, never
+raw ticket, unkeyed routing digest, connection ID, or candidate. Honest clients
+must generate 32 random ticket bytes; shape validation cannot prove entropy.
+
+Server controls use hibernation and have no artificial lifetime frame quota.
+Every server frame must match live bounded routing state. Unknown, expired, or
+over-budget tickets close the control path; a known late frame consumes its
+remaining budget and is dropped if its client is gone.
 
 ## Response contract
 
-A rejected request returns `429`, `Cache-Control: no-store`, a bounded integer
-`Retry-After`, and a stable JSON body:
+Budget rejection returns `429`, `Cache-Control: no-store`, a bounded integer
+`Retry-After`, and the canonical `rate_limited` JSON envelope. Header and body
+retry values come from one bounded value. Native minute limits retry after
+60 seconds; exact fixed-window budgets use the remaining window. Public reasons
+remain the closed `burst_limit_exceeded` or `request_budget_exceeded` vocabulary;
+there is no source/pair cooldown reason or retry state.
 
-```json
-{
-  "error": {
-    "code": "rate_limited",
-    "message": "The request budget has been exhausted.",
-    "reason": "publish_daily",
-    "retry_after_seconds": 3600
-  }
-}
-```
+A missing or failed request-control dependency or invalid configuration fails
+closed with `503 request_control_unavailable`, `Cache-Control: no-store`, and
+`Retry-After: 60`. Canary settings may lower reviewed ceilings, not raise them.
+The room requires `RENDEZVOUS_ACTIVE_CLIENT_LIMIT=16` and
+`RENDEZVOUS_CLIENT_SESSION_SECONDS=15`; socket/frame/byte ceilings remain
+structural constants. Retired `RENDEZVOUS_CLIENT_PAIR_*` settings have no authority.
 
-Native minute limits use a 60-second retry. Fixed-window retry is the remaining
-window duration clamped to 1..86,400 seconds. The canonical pair cooldown uses
-`rendezvous_client_pair_cooldown`; both header and body carry its exact
-remaining 1..900-second delay. Rejected cooldown retries do not consume a
-burst slot, extend `blocked_until`, or increase the penalty.
+## Circuits, measurement, and retention
 
-Reason values are a closed route/dimension vocabulary: `global_burst`,
-`publish_burst|daily`, `rendezvous_client_burst`,
-`rendezvous_client_pair_cooldown`, and
-`rendezvous_server_burst|daily`. The `Retry-After` header and
-`retry_after_seconds` body member are generated from one bounded value.
+Publisher/rendezvous edges and core coordinators each require the corresponding
+circuit to be exactly `enabled`. Checked-in Classic circuits are enabled and
+Game publishing remains disabled; public deployments remain domainless until
+separate operator gates pass. Review limit changes across ingress, authenticated
+budgets, finite room work, producer cadence, and recovery cohort arithmetic.
 
-A request-control binding/D1 failure or malformed/over-policy configuration
-fails closed with `503 request_control_unavailable`, `Cache-Control: no-store`,
-and `Retry-After: 60`. It is never treated as admission. Configuration may
-lower a canary ceiling but cannot raise the reviewed maxima; the Worker also
-strictly bounds listing/retention lifetimes and uses the classifier's fixed
-body-size contract rather than a second environment override.
+Use aggregate Worker Metrics, reviewed provider analytics, and bounded terminal
+summaries described in [privacy.md](privacy.md). Routine `429` and open-circuit
+traffic emits no custom event; no source dimension, per-frame stream, or
+per-guess ledger is permitted. Canary at multiple locations when possible and
+prove rejected work stops before D1/room mutation. A shared counter is not a
+client identity or permission to disclose candidates.
 
-The coordinator requires the five `RENDEZVOUS_CLIENT_PAIR_*` burst, window,
-initial/maximum cooldown, and reset variables; the checked-in values are
-20, 60, 30, 900, and 1800 seconds. The room independently requires
-`RENDEZVOUS_ACTIVE_CLIENT_LIMIT=16` and
-`RENDEZVOUS_CLIENT_SESSION_SECONDS=15`. Missing, malformed, incoherent, or
-policy-raising values fail closed before the affected authority performs work.
-The
-64-client-socket, frame-count, frame-size, and total-byte ceilings are
-structural constants rather than runtime overrides.
+Historical `SOURCE_TAG_KEY_*` names and key-ring classes serve only grant/ticket
+replay HMACs. Consecutive `A/Z` then `B/A` key pairs must share the exact `A`
+material, namespace, and purpose for strictly more than 24 hours after all
+old-pair writers stop. Both aliases are checked atomically; disjoint or premature
+rotation loses replay comparison and must fail deployment closed.
 
-## Circuit breakers
-
-The publisher and rendezvous edges and their core coordinators each require the
-corresponding breaker to be exactly `enabled`; Classic publishing and Classic
-rendezvous are enabled in the checked-in production configurations, while the
-independent Game publishing breaker ships disabled. The public deployments have
-independent flags, native bindings, WAF rules, and observability, while D1 and
-Durable Object authority remains only in the core. Changing a limit requires
-reviewing all three enforcement layers, shared-NAT recovery allowance, consumer
-retry behavior, and the corresponding test boundary.
-
-## Operations and measurement
-
-Use aggregate Worker Metrics and WAF analytics; the request path deliberately
-keeps `429` and open-circuit outcomes out of custom logs. Its small curated
-diagnostic set is for bounded validation/security/dependency failures, not
-traffic counting. Canary at more than one location when possible, because
-native counters are not globally exact.
-Confirm that a rejected loop stops reaching D1/application work, and that a
-WAF mitigation also stops new Worker invocations.
-
-Use Durable Object metrics for aggregate upgrades, attached WebSockets, raw
-WebSocket message counts, and failures. For accepted-session outcomes and
-bounded work, use the at-most-one best-effort anonymous Analytics Engine
-terminal summary described in [privacy.md](privacy.md). No per-frame or
-rejected-session custom point is emitted, so the custom dataset itself cannot
-become a request-shaped cost amplifier.
-
-Shared networks are why the canonical native source shield is deliberately
-coarse and why exact backoff uses a source/server-pair dimension. Several
-legitimate clients behind one NAT share the native source key but ordinarily
-differ at the server-pair dimension. A source that retries intermittently all
-day does not accumulate toward a calendar-day ban. An anonymous source tag is a coarse recovery/abuse boundary, not a
-durable client identity or permission to disclose candidates. A producer must
-still use exponential backoff with jitter and honor `Retry-After`; rate
-limiting is not a substitute for fixing a retry loop.
-
-Native current/previous alias checks are sequential and conservative: if the
-second rejects, the first may already have been charged locally. For rolling
-`A/Z` to `B/A` deployments, each eligible D1 attempt has one opaque request ID
-mirrored to both aliases; the shared `A` carries the rolling cohort and active
-cooldown forward without charging twice. D1 errors fail closed.
-
-The per-room SQLite replay ledger uses the same `A/Z` then `B/A` overlap shape,
-but claims both HMAC aliases atomically on the first candidate. A replay matches
-through shared `A` even after server disconnect/reconnect and Durable Object
-reconstruction. Keep one identical key in consecutive deployment pairs for
-strictly more than the full 24-hour row lifetime after every old-pair writer has
-stopped; a disjoint or prematurely retired pair loses that exact comparison and
-must fail deployment closed.
-
-Rotation temporarily doubles anonymous counter rows/writes. The hourly task
-round-robins canonical request budgets, rendezvous pair attempts/cooldowns, and
-publisher nonces through at most eight indexed batches of 1,000 rows per state
-class (8,000/class/run and no more than 32 deletes plus four probes). If expired rows remain, the
-scheduled invocation fails so the bounded `unexpected_error` diagnostic and
-platform error alerts expose the backlog. Operators should inspect only
-aggregate age/count queries—never actor keys—to diagnose it.
+Migration `0015_remove_ip_derived_pair_tracking.sql` removes pair-attempt and
+cooldown storage. Hourly maintenance round-robins canonical identity request
+budgets and publisher nonces through at most eight indexed batches of 1,000 rows
+per class: 8,000/class/run, at most 16 deletes and two probes. Remaining expired
+rows fail the scheduled invocation so bounded diagnostics and platform alerts
+expose backlog. Diagnose with aggregate age/count queries, never actor keys.
+Provider recovery history and old IP-based rules/logs remain separate retention
+and operator-review concerns; live removal is not historical erasure.

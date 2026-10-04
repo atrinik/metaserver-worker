@@ -6,13 +6,13 @@
 - Use the `.nvmrc` Node 24.18.1 and `packageManager` npm 11.16.0 pins with the
   lockfile. Run `npm ci` for a clean dependency tree and `npm run check` before
   submitting.
-- Preserve strict request-size, identity, address, ticket, certificate-hash,
+- Preserve strict request-size, identity, candidate-address, ticket, certificate-hash,
   rate-limit, and expiry validation. Keep rendezvous state deterministic and
   bounded; test malformed and replayed input at the boundary.
 - Keep the Worker-to-rendezvous-room upgrade contract explicitly versioned and
   fail closed across deployment skew. Use hibernation attachments only for
-  bounded live-session routing and terminal-teardown state, D1 for the exact
-  eligible source/server rolling-burst cooldown, the room's SQLite ledger only
+  bounded live-session routing and terminal-teardown state, D1 for authenticated
+  identity budgets and private access state, the room's SQLite ledger only
   for bounded purpose-separated replay tags, and one alarm for expiry; never
   add candidate persistence or per-session timers.
 - `wrangler.jsonc` is the sole state-owning core configuration. It deliberately
@@ -76,7 +76,8 @@
   the versioned v4 room boundary and recheck denial before candidate dispatch.
   Raw grants may exist only in bounded live attachments and must be scrubbed at
   terminal teardown. The retired invitation challenge/proof frames are rejected.
-  Source migrations 0013/0014 preserve populated history. The separately gated
+  Source migrations 0013/0014 preserve populated history; 0015 physically removes
+  the obsolete IP-derived pair tables without changing replay or access state. The separately gated
   `deployment/retirement/retire-legacy-profiles.sql` is never auto-discovered or
   applied without the complete proof described alongside it.
 - Treat D1 revision/outbox as the static-directory authority and the
@@ -103,9 +104,17 @@
 - Route every direct-hostname write through `isCanonicalHostname()` before D1.
   SQLite independently enforces the bounded ASCII representation but has no
   Unicode/IDNA tables; direct administrative hostname writes are unsupported.
-- Treat request addresses as request-scoped data. Persist only authenticated
-  identities or purpose-separated, rotating HMAC tags with bounded retention;
-  never log raw addresses, tags, credentials, tokens, or rendezvous candidates.
+- Never extract requester or forwarded IP addresses, derive hashes/HMACs from
+  them, or store, audit, log, or metric them. Reject retired internal source/pair
+  headers without an old-envelope bridge. Anonymous edge counters use fixed
+  purpose keys per location, not requester metadata or a fairness identity.
+  Historical `SOURCE_TAG_KEY_*` names and key-ring classes serve only random
+  grant/ticket replay HMACs; preserve their exact domain separation and strictly
+  more than 24-hour overlapping-key retirement window. Preserve authenticated
+  identity budgets. Candidate addresses are transient validated forwarding data,
+  never attachment/SQL/log/history state; operator DNS endpoints are signed
+  routing metadata. Provider-managed historical IP rules and retention remain
+  separately audited operator concerns; source changes cannot prove their removal.
 - Declare required secret names in Wrangler configuration, keep their values in
   Cloudflare secrets or ignored local development files, and fail closed when
   key material or a route circuit breaker is invalid.
