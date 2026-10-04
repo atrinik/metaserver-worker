@@ -68,10 +68,10 @@ raw-target gates retain responsibility for pre-invocation rejection.
 ## Producer cadence and bounded rendezvous work
 
 Native publication defaults to a 9,000-second heartbeat, bounded to 60..10,800
-seconds with 10% jitter. Startup has a two-attempt cap with a 1,920-second refill;
-visible changes debounce for 10 seconds. Producers must honor `Retry-After` and
-use bounded backoff with jitter. Limiting is not a substitute for repairing a
-retry loop.
+seconds with 10% jitter. All publication attempts share a two-attempt capacity
+with a 1,920-second refill; visible changes debounce for 10 seconds. Producers
+must honor `Retry-After` and use bounded backoff with jitter. Limiting is not a
+substitute for repairing a retry loop.
 
 | Dimension | Ceiling |
 | --- | ---: |
@@ -118,9 +118,11 @@ remaining budget and is dropped if its client is gone.
 Budget rejection returns `429`, `Cache-Control: no-store`, a bounded integer
 `Retry-After`, and the canonical `rate_limited` JSON envelope. Header and body
 retry values come from one bounded value. Native minute limits retry after
-60 seconds; exact fixed-window budgets use the remaining window. Public reasons
-remain the closed `burst_limit_exceeded` or `request_budget_exceeded` vocabulary;
-there is no source/pair cooldown reason or retry state.
+60 seconds; exact fixed-window budgets use the remaining window. Request-control
+errors expose `global_burst`, `publish_burst`, `publish_daily`,
+`rendezvous_client_burst`, `rendezvous_server_burst`, or
+`rendezvous_server_daily`; authenticated access-budget exhaustion exposes
+`request_budget_exceeded`. There is no source/pair cooldown reason or retry state.
 
 A missing or failed request-control dependency or invalid configuration fails
 closed with `503 request_control_unavailable`, `Cache-Control: no-store`, and
