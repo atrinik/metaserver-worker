@@ -215,6 +215,11 @@
   `unexpected_error` diagnostics with their closed, redacted schemas. Do not
   log routine success, expected `404`, rate-limit, or open-circuit traffic; use
   aggregate platform metrics/WAF analytics for traffic measurements.
+  Rendezvous control-loss diagnostics must suppress deliberate retirement and
+  superseded controls using local/durable state, including after hibernation;
+  never infer local intent from a peer's close code or reason. Keep raw error
+  values and connection identities out of diagnostics, and preserve teardown
+  behavior when logging fails.
 - Keep generated Wrangler types and `dist/` untracked. Generate and check each
   configuration's types independently, and keep caller declarations isolated
   from the core `Cloudflare.Env`. Update bindings, runtime types, tests, and all

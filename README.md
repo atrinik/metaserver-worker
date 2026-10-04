@@ -408,6 +408,17 @@ success, expected `404`, rate-limit, and open-circuit traffic remains silent, so
 a throttled loop does not replace automatic invocation noise with one custom
 event per request.
 
+For the `rendezvous` handler, `rendezvous_control_disconnected` identifies an
+unclean close of the active server control, `rendezvous_control_error` a
+transport error callback, and `rendezvous_handler_failure` a caught close/error
+handler failure. Deliberate retirement, superseded controls, and clean closes
+remain silent. These fixed codes omit peer close codes, reasons, exception text,
+and identities; they cannot establish which network participant caused a reset.
+The real Service Binding regression exercises edge-to-coordinator-to-room
+signaling after an idle interval and control replacement. Room eviction tests
+separately verify hibernation behavior; neither test reproduces a production
+network interruption.
+
 All three deployable configurations also explicitly disable tracing, Workers
 Logpush, Tail/streaming-tail consumers, and OTLP destinations. Custom logs
 remain persisted at full sampling for the bounded diagnostics above. Audit

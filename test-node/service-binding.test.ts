@@ -237,7 +237,7 @@ describe("compiled named Worker Service Bindings", () => {
     });
   });
 
-  it("hands a real WebSocket 101 and selected subprotocol across the binding", async () => {
+  it("keeps edge control signaling usable after idle and reconnect across real bindings", async () => {
     const bindings = await miniflare.getBindings<{ DB: D1Database }>("core");
     const now = Math.floor(Date.now() / 1_000);
     const tokenHash = createHash("sha256").update(TEST_TOKEN).digest("hex");
@@ -278,26 +278,84 @@ describe("compiled named Worker Service Bindings", () => {
     ]);
 
     const protocol = "atrinik-classic-rendezvous-invite-v1";
-    const target = `https://rendezvous.meta.atrinik.org/v1/classic/servers/${publisherFixture.server_id}?role=server`;
-    const response = await harness.fetch("http://service-binding.test/forward", {
+    const sockets: WebSocket[] = [];
+    const connect = async (role: "server" | "client"): Promise<WebSocket> => {
+      const target = `https://rendezvous.meta.atrinik.org/v1/classic/servers/${publisherFixture.server_id}?role=${role}`;
+      const response = await harness.fetch("http://service-binding.test/forward", {
         headers: {
-          Authorization: `Bearer ${TEST_TOKEN}`,
+          ...(role === "server" ? { Authorization: `Bearer ${TEST_TOKEN}` } : {}),
           "CF-Connecting-IP": "192.0.2.211",
           Cookie: "must-not-cross=value",
+          "X-Atrinik-Test-Edge": "1",
           "X-Atrinik-Test-Target": target,
           "Sec-WebSocket-Protocol": protocol,
           Upgrade: "websocket",
         },
       });
+      if (response.status !== 101) {
+        throw new Error(`${response.status}: ${await response.text()}`);
+      }
+      expect(response.headers.get("Sec-WebSocket-Protocol")).toBe(protocol);
+      const socket = response.webSocket;
+      if (socket === null) throw new Error("Upgrade omitted its WebSocket");
+      socket.accept();
+      sockets.push(socket);
+      return socket;
+    };
+    const exchange = async (server: WebSocket, ticket: string): Promise<void> => {
+      const client = await connect("client");
+      const relay = async (
+        from: WebSocket,
+        to: WebSocket,
+        signal: Record<string, unknown>,
+      ): Promise<void> => {
+        const received = socketEvent(to, "message");
+        const data = JSON.stringify(signal);
+        from.send(data);
+        await expect(received).resolves.toMatchObject({ data });
+      };
+      await relay(client, server, {
+        type: "auth_init", version: 1, ticket, invite_id: "a".repeat(32),
+      });
+      await relay(server, client, {
+        type: "auth_challenge", version: 1, ticket, challenge: "b".repeat(64),
+      });
+      await relay(client, server, {
+        type: "auth_proof", version: 1, ticket, proof: "c".repeat(64),
+      });
+      await relay(server, client, {
+        type: "auth_result", version: 1, ticket, authorized: true,
+      });
+      await relay(client, server, {
+        type: "client_candidate", host: "192.0.2.212", port: 1730, ticket,
+      });
+      await relay(server, client, {
+        type: "server_candidate", host: "192.0.2.213", port: 1731,
+        kind: "srflx", ticket,
+      });
+      const closed = socketEvent(client, "close");
+      await relay(server, client, { type: "complete", ticket });
+      await expect(closed).resolves.toMatchObject({ code: 1000 });
+    };
 
-    if (response.status !== 101) {
-      throw new Error(`${response.status}: ${await response.text()}`);
+    try {
+      const server = await connect("server");
+      // Exercise deferred proxying after an idle interval. This does not
+      // assert a provider eviction or reproduce a production network reset;
+      // deterministic room eviction is covered by the Workers-pool tests.
+      await new Promise((resolve) => setTimeout(resolve, 12_000));
+      await exchange(server, "1".repeat(64));
+      const replaced = socketEvent(server, "close");
+      const replacement = await connect("server");
+      await expect(replaced).resolves.toMatchObject({ code: 4004 });
+      await exchange(replacement, "2".repeat(64));
+    } finally {
+      for (const socket of sockets) {
+        if (socket.readyState === WebSocket.OPEN) {
+          socket.close(1000, "Test complete");
+        }
+      }
     }
-    expect(response.status).toBe(101);
-    expect(response.headers.get("Sec-WebSocket-Protocol")).toBe(protocol);
-    expect(response.webSocket).not.toBeNull();
-    response.webSocket?.accept();
-    response.webSocket?.close(1000, "Test complete");
   });
 
   it("keeps the v2 publisher canary valid after global v1 retirement", async () => {
@@ -315,6 +373,32 @@ describe("compiled named Worker Service Bindings", () => {
     });
   });
 });
+
+function socketEvent(socket: WebSocket, type: "message" | "close"): Promise<Event> {
+  return new Promise((resolve, reject) => {
+    const cleanup = (): void => {
+      clearTimeout(timeout);
+      socket.removeEventListener(type, received);
+      socket.removeEventListener("error", failed);
+      if (type !== "close") socket.removeEventListener("close", failed);
+    };
+    const received = (event: Event): void => {
+      cleanup();
+      resolve(event);
+    };
+    const failed = (): void => {
+      cleanup();
+      reject(new Error(`WebSocket ended before ${type}`));
+    };
+    const timeout = setTimeout(() => {
+      cleanup();
+      reject(new Error(`Timed out waiting for WebSocket ${type}`));
+    }, 5_000);
+    socket.addEventListener(type, received);
+    socket.addEventListener("error", failed);
+    if (type !== "close") socket.addEventListener("close", failed);
+  });
+}
 
 async function fetchPublisherCanary(): Promise<Response> {
   const vector = classicV2Fixture.positive[0];
