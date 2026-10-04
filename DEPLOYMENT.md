@@ -1449,7 +1449,12 @@ bookmark does not authorize restoring retired APIs or active legacy state.
    model, exact security/cache/CORS headers, an opaque quoted strong `ETag` of 3
    through 128 bytes, bounded adjacent-generation convergence, plaintext
    same-path `308`, exact WAF denial for negative dynamic targets, and no
-   alternate Worker URL. Correlate the fixed block cohort with WAF Security
+   alternate Worker URL. The static verifier uses one convergence window for
+   the full GET/HEAD/conditional proof and resnapshots the complete three-file
+   cohort only after a same-path response fully proves a strictly newer valid
+   publication. Persistent mismatches, validator reuse, generation regression,
+   and same-generation body changes remain blockers. Correlate the fixed block
+   cohort with WAF Security
    Events and require zero increase in dynamic Worker or D1 reads. Do not enable
    a production hostname in this step.
 6. Warm all three `index.*` aliases to an exact old generation, publish a
