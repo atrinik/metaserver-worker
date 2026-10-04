@@ -6,6 +6,7 @@ import {
 } from "cloudflare:test";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
+import { INTERNAL_ACCESS_REVOKE_URL } from "../src/access-rendezvous";
 import { issueAccessGrant } from "../src/access-grants";
 import { requiredSourceTagKeyRing } from "../src/privacy";
 import { sha256Hex } from "../src/protocol";
@@ -1091,6 +1092,37 @@ describe("RendezvousRoom access grants", () => {
         try {await instance.webSocketMessage(state.getWebSockets("server")[0]!,serverCandidate(f.grant));}
         finally {clock.mockRestore();Reflect.set(instance,"accessStillLive",original);}
       });
+      expect((await closed).code).toBe(4005);
+    } finally {closeForCleanup(f.client,f.server);}
+  });
+  it("serializes a delivered revoke behind an in-flight admission transition",async()=>{
+    const f=await fixture();
+    try {
+      const ready=nextJson(f.client),closed=nextClose(f.client);
+      await runInDurableObject(f.stub,async(instance,state)=>{
+        const database=(Reflect.get(instance,"env") as {DB:D1Database}).DB;
+        const original=database.batch.bind(database);
+        let release:()=>void=()=>{};const gate=new Promise<void>(resolve=>{release=resolve;});let committed=false;
+        const batch=vi.spyOn(database,"batch").mockImplementation(async(statements)=>{
+          const result=await original(statements);committed=true;await gate;return result;
+        });
+        try {
+          const admission=instance.webSocketMessage(state.getWebSockets("client")[0]!,f.init);
+          await vi.waitFor(()=>expect(committed).toBe(true));
+          await database.prepare("UPDATE access_routes SET state='revoked',revoked_at=? WHERE route_index=?")
+            .bind(Math.floor(Date.now()/1000),f.serverId).run();
+          await database.prepare("DELETE FROM access_grants WHERE route_index=?").bind(f.serverId).run();
+          let delivered=false;
+          const revoke=instance.fetch(new Request(INTERNAL_ACCESS_REVOKE_URL,{headers:{[INTERNAL_RENDEZVOUS_GENERATION_HEADER]:f.generation}}))
+            .then(response=>{delivered=true;return response;});
+          await Promise.resolve();await Promise.resolve();expect(delivered).toBe(false);
+          release();await admission;expect((await revoke).status).toBe(204);
+          for(const socket of state.getWebSockets("client")) {
+            expect(socket.deserializeAttachment()).toMatchObject({s:2,u:null,e:null});
+          }
+        } finally {release();batch.mockRestore();}
+      });
+      expect(await ready).toEqual({type:"access_ready",version:1});
       expect((await closed).code).toBe(4005);
     } finally {closeForCleanup(f.client,f.server);}
   });

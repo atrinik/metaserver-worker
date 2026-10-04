@@ -294,9 +294,9 @@ export class RendezvousRoom extends DurableObject<CoreEnv> {
     });
   }
 
-  private serializeRoomOperation(
-    operation: () => Promise<Response>,
-  ): Promise<Response> {
+  private serializeRoomOperation<T>(
+    operation: () => Promise<T>,
+  ): Promise<T> {
     const result = this.operationTail.then(operation);
     this.operationTail = result.then(
       () => undefined,
@@ -526,7 +526,14 @@ export class RendezvousRoom extends DurableObject<CoreEnv> {
 
       if ("access" in parsed) {
         if (attachment.role !== "client") { this.failProtocolViolation(socket); return; }
-        await this.acceptAccessInit(socket, attachment, parsed);
+        // Admission, publication and revoke notification share one room
+        // transition queue. A delivered revoke cannot miss an in-flight grant
+        // redemption and leave the subsequently admitted socket open.
+        await this.serializeRoomOperation(async () => {
+          const current = readClientAttachment(socket);
+          if (current === null) { closeSocket(socket, RENDEZVOUS_CLOSE.internalError); return; }
+          await this.acceptAccessInit(socket, current, parsed);
+        });
         return;
       }
       if (attachment.role === "client") {
