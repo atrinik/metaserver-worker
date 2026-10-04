@@ -1,4 +1,5 @@
 import contextlib
+import hashlib
 import io
 import json
 import re
@@ -93,7 +94,7 @@ class FakeOrigin:
         values = {
             "content-length": str(len(body)),
             "content-type": canary.CONTENT_TYPES[path],
-            "etag": f'"{path[7:-1]}-opaque"',
+            "etag": f'"{path[7:-1]}-{hashlib.sha256(body).hexdigest()[:16]}"',
             "last-modified": formatdate(generated_at + 1, usegmt=True),
             "expires": formatdate(expires_at, usegmt=True),
             "cache-control": ", ".join(sorted(canary.REQUIRED_CACHE_DIRECTIVES)),
@@ -134,6 +135,10 @@ class FakeOrigin:
         body = self.selected_body(parsed.path)
         response_headers = self.headers(parsed.path, body)
         if headers.get("If-None-Match") is not None:
+            if headers["If-None-Match"] != response_headers["etag"][0]:
+                if len(body) > maximum_bytes:
+                    raise canary.CanaryError("fake transport exceeded its bound")
+                return canary.HttpResponse(200, response_headers, body)
             return canary.HttpResponse(
                 304,
                 {"etag": response_headers["etag"]},
@@ -193,6 +198,287 @@ class StaticOriginCanaryTests(unittest.TestCase):
         result = self.verify("game-v1", fake)
         self.assertEqual(result.generation, 42)
         self.assertEqual(result.attempts, 2)
+
+    def test_accepts_atomic_publication_before_head(self) -> None:
+        fake = FakeOrigin("game-v1")
+        published = False
+
+        def atomic_publication(method, url, headers, maximum_bytes):
+            nonlocal published
+            if not published and method == "HEAD":
+                set_generation(fake, 43)
+                published = True
+            return fake(method, url, headers, maximum_bytes)
+
+        result = self.verify("game-v1", atomic_publication)
+        self.assertEqual(result.generation, 43)
+        self.assertEqual(result.attempts, 2)
+        self.assertEqual(
+            [(method, urllib.parse.urlsplit(url).path) for method, url, _, _ in fake.calls[:5]],
+            [
+                ("GET", "/index.html"),
+                ("GET", "/index.json"),
+                ("GET", "/index.xml"),
+                ("HEAD", "/index.html"),
+                ("GET", "/index.html"),
+            ],
+        )
+        assert_complete_positive_attempt(self, fake.calls[5:])
+
+    def test_accepts_larger_atomic_publication_before_conditional(self) -> None:
+        fake = FakeOrigin("game-v1")
+        published = False
+
+        def atomic_publication(method, url, headers, maximum_bytes):
+            nonlocal published
+            if not published and headers.get("If-None-Match") is not None:
+                set_generation(fake, 100)
+                published = True
+            return fake(method, url, headers, maximum_bytes)
+
+        result = self.verify("game-v1", atomic_publication)
+        self.assertEqual(result.generation, 100)
+        self.assertEqual(result.attempts, 2)
+        conditional = next(
+            call for call in fake.calls if call[2].get("If-None-Match") is not None
+        )
+        self.assertEqual(
+            conditional[3], canary.MAXIMUM_BYTES["game-v1"]["/index.html"]
+        )
+        restart = next(
+            index
+            for index, call in enumerate(fake.calls)
+            if index > 4 and call[0] == "GET" and not call[2]
+        )
+        assert_complete_positive_attempt(self, fake.calls[restart:])
+
+    def test_rejects_persistent_head_mismatch(self) -> None:
+        fake = FakeOrigin("game-v1")
+        original = fake.__call__
+
+        def mismatched_head(method, url, headers, maximum_bytes):
+            response = original(method, url, headers, maximum_bytes)
+            if method == "HEAD" and url.endswith("/index.html"):
+                values = dict(response.headers)
+                values["etag"] = ('"unmatched-new-publication"',)
+                return canary.HttpResponse(response.status, values, response.body)
+            return response
+
+        with self.assertRaisesRegex(canary.CanaryError, "matching newer publication"):
+            self.verify("game-v1", mismatched_head)
+
+    def test_rejects_same_generation_change_and_reused_validator(self) -> None:
+        fake = FakeOrigin("game-v1")
+        current = fake.bodies["/index.html"][0]
+        generation, generated_at, expires_at, _, semantic = metadata(
+            current, "game-v1", "/index.html"
+        )
+        older = canary.canonical_html(
+            "game-v1", generation - 1, generated_at, expires_at, semantic
+        ).encode()
+        changed_older = canary.canonical_html(
+            "game-v1", generation - 1, generated_at + 1, expires_at, semantic
+        ).encode()
+        fake.bodies["/index.html"] = [older, changed_older]
+        with self.assertRaisesRegex(canary.CanaryError, "changed body"):
+            self.verify("game-v1", fake)
+
+        fake = FakeOrigin("game-v1")
+        set_generation(fake, 43)
+        reused = fake.headers("/index.html", fake.bodies["/index.html"][0])["etag"][0]
+        fake.bodies["/index.html"] = [
+            replace_generation(fake.bodies["/index.html"][0], "/index.html", 42),
+            fake.bodies["/index.html"][0],
+        ]
+        fake.header_overrides[("/index.html", "etag")] = reused
+        with self.assertRaisesRegex(canary.CanaryError, "reuse"):
+            self.verify("game-v1", fake)
+
+    def test_rejects_cross_attempt_same_generation_semantic_change(self) -> None:
+        fake = FakeOrigin("game-v1")
+        html = fake.bodies["/index.html"][0]
+        _, generated_at, expires_at, _, semantic = metadata(
+            html, "game-v1", "/index.html"
+        )
+        changed_server = json.loads(semantic[0])
+        changed_server["name"] = "Changed publication"
+        changed_semantic = (canary.semantic_server(changed_server), *semantic[1:])
+        html_43 = canary.canonical_html(
+            "game-v1", 43, generated_at, expires_at, changed_semantic
+        ).encode()
+        html_44 = canary.canonical_html(
+            "game-v1", 44, generated_at, expires_at, changed_semantic
+        ).encode()
+        phase = "cohort"
+
+        def contradictory_publication(method, url, headers, maximum_bytes):
+            nonlocal phase
+            path = urllib.parse.urlsplit(url).path
+            if phase == "cohort" and method == "HEAD" and path == "/index.html":
+                fake.bodies[path] = [html_43]
+                phase = "confirmation"
+            response = fake(method, url, headers, maximum_bytes)
+            if (
+                phase == "confirmation"
+                and method == "GET"
+                and path == "/index.html"
+                and not headers
+            ):
+                fake.bodies["/index.html"] = [html_44]
+                for other in ("/index.json", "/index.xml"):
+                    fake.bodies[other] = [
+                        replace_generation(fake.bodies[other][-1], other, 43)
+                    ]
+                phase = "retry"
+            return response
+
+        with self.assertRaisesRegex(
+            canary.CanaryError, "one generation has inconsistent"
+        ):
+            self.verify("game-v1", contradictory_publication)
+
+    def test_convergence_deadline_covers_positive_proofs(self) -> None:
+        fake = FakeOrigin("game-v1")
+        clock = Clock()
+
+        def slow_origin(method, url, headers, maximum_bytes):
+            response = fake(method, url, headers, maximum_bytes)
+            clock.value += 0.3
+            return response
+
+        with self.assertRaisesRegex(canary.CanaryError, "did not converge"):
+            self.verify(
+                "game-v1",
+                slow_origin,
+                clock=clock,
+                convergence_seconds=1,
+            )
+        self.assertEqual(len(fake.calls), 4)
+
+    def test_rejects_invalid_conditional_publication_responses(self) -> None:
+        for mode, message in (
+            ("same", "without a newer publication"),
+            ("expired", "future-dated or expired"),
+            ("oversized", "invalid body length"),
+            ("timeout", "timed out"),
+        ):
+            with self.subTest(mode=mode):
+                fake = FakeOrigin("game-v1")
+                original = fake.__call__
+
+                def invalid_conditional(method, url, headers, maximum_bytes):
+                    if headers.get("If-None-Match") is None:
+                        return original(method, url, headers, maximum_bytes)
+                    path = urllib.parse.urlsplit(url).path
+                    body = fake.bodies[path][-1]
+                    if mode == "timeout":
+                        raise canary.CanaryError("conditional request timed out")
+                    if mode == "expired":
+                        body = replace_generation(body, path, 43)
+                        body = replace_times(body, path, NOW - 100, NOW)
+                    elif mode == "oversized":
+                        body = b"x" * (canary.MAXIMUM_BYTES["game-v1"][path] + 1)
+                    response_headers = fake.headers(path, fake.bodies[path][-1])
+                    if mode == "expired":
+                        response_headers = fake.headers(path, body)
+                    if mode == "oversized":
+                        response_headers["etag"] = ('"oversized-new-publication"',)
+                        response_headers["content-length"] = (str(len(body)),)
+                    return canary.HttpResponse(200, response_headers, body)
+
+                with self.assertRaisesRegex(canary.CanaryError, message):
+                    self.verify("game-v1", invalid_conditional)
+
+    def test_rejects_unmatched_head_confirmation_and_invalid_304(self) -> None:
+        fake = FakeOrigin("game-v1")
+        original = fake.__call__
+        head_seen = False
+
+        def unmatched_confirmation(method, url, headers, maximum_bytes):
+            nonlocal head_seen
+            response = original(method, url, headers, maximum_bytes)
+            if method == "HEAD" and url.endswith("/index.html"):
+                set_generation(fake, 43)
+                head_seen = True
+                values = fake.headers("/index.html", fake.bodies["/index.html"][0])
+                values["etag"] = ('"head-only-validator"',)
+                return canary.HttpResponse(200, values, b"")
+            self.assertFalse(head_seen and method == "GET" and headers)
+            return response
+
+        with self.assertRaisesRegex(canary.CanaryError, "HEAD.*changed ETag"):
+            self.verify("game-v1", unmatched_confirmation)
+
+        for body, etag, message in (
+            (b"unexpected", None, "bodyless 304"),
+            (b"", '"wrong-validator"', "changed its validator"),
+        ):
+            with self.subTest(message=message):
+                fake = FakeOrigin("game-v1")
+                original = fake.__call__
+
+                def invalid_304(method, url, headers, maximum_bytes):
+                    response = original(method, url, headers, maximum_bytes)
+                    if headers.get("If-None-Match") is not None:
+                        value = headers["If-None-Match"] if etag is None else etag
+                        return canary.HttpResponse(304, {"etag": (value,)}, body)
+                    return response
+
+                with self.assertRaisesRegex(canary.CanaryError, message):
+                    self.verify("game-v1", invalid_304)
+
+    def test_repeated_valid_publications_exhaust_one_deadline(self) -> None:
+        fake = FakeOrigin("game-v1")
+        clock = Clock()
+        generation = 42
+
+        def continually_publishing(method, url, headers, maximum_bytes):
+            nonlocal generation
+            if method == "HEAD":
+                generation += 1
+                set_generation(fake, generation)
+            response = fake(method, url, headers, maximum_bytes)
+            clock.value += 0.08
+            return response
+
+        with self.assertRaisesRegex(canary.CanaryError, "did not converge"):
+            self.verify(
+                "game-v1",
+                continually_publishing,
+                clock=clock,
+                convergence_seconds=1,
+            )
+
+    def test_late_invalid_response_is_not_masked_by_deadline(self) -> None:
+        fake = FakeOrigin("game-v1")
+        clock = Clock()
+
+        def late_invalid(method, url, headers, maximum_bytes):
+            response = fake(method, url, headers, maximum_bytes)
+            if method == "HEAD":
+                clock.value += 2
+                return canary.HttpResponse(500, response.headers, b"")
+            return response
+
+        with self.assertRaisesRegex(canary.CanaryError, "bodyless 200"):
+            self.verify(
+                "game-v1", late_invalid, clock=clock, convergence_seconds=1
+            )
+
+    def test_rechecks_freshness_after_positive_proofs(self) -> None:
+        fake = FakeOrigin("game-v1")
+        set_times(fake, NOW - 100, NOW + 1)
+        clock = Clock()
+
+        def expiring_origin(method, url, headers, maximum_bytes):
+            response = fake(method, url, headers, maximum_bytes)
+            clock.value += 0.1
+            return response
+
+        with self.assertRaisesRegex(canary.CanaryError, "future-dated or expired"):
+            self.verify(
+                "game-v1", expiring_origin, clock=clock, convergence_seconds=2
+            )
 
     def test_rejects_nonconvergent_and_nonadjacent_aliases(self) -> None:
         fake = FakeOrigin("game-v1")
@@ -465,6 +751,67 @@ def replace_html_times(body: bytes, generated_at: int, expires_at: int) -> bytes
     text = re_sub_html_value(text, "Generated at", str(generated_at))
     text = re_sub_html_value(text, "Expires at", str(expires_at))
     return text.encode()
+
+
+def replace_generation(body: bytes, path: str, generation: int) -> bytes:
+    text = body.decode()
+    if path == "/index.json":
+        value = json.loads(text)
+        value["generation"] = str(generation)
+        return (
+            json.dumps(value, separators=(",", ":"), ensure_ascii=False) + "\n"
+        ).encode()
+    if path == "/index.xml":
+        return re_sub_attribute(text, "generation", str(generation)).encode()
+    return re_sub_html_value(text, "Generation", str(generation)).encode()
+
+
+def set_generation(fake: FakeOrigin, generation: int) -> None:
+    for path in canary.PUBLIC_PATHS:
+        fake.bodies[path] = [replace_generation(fake.bodies[path][-1], path, generation)]
+
+
+def replace_times(
+    body: bytes,
+    path: str,
+    generated_at: int,
+    expires_at: int,
+) -> bytes:
+    if path == "/index.json":
+        return reencode_game_json(body, generated_at, expires_at)
+    if path == "/index.xml":
+        return replace_xml_times(body, generated_at, expires_at)
+    return replace_html_times(body, generated_at, expires_at)
+
+
+def set_times(fake: FakeOrigin, generated_at: int, expires_at: int) -> None:
+    for path in canary.PUBLIC_PATHS:
+        fake.bodies[path] = [
+            replace_times(fake.bodies[path][-1], path, generated_at, expires_at)
+        ]
+
+
+def assert_complete_positive_attempt(
+    test: unittest.TestCase,
+    calls: list[tuple[str, str, dict[str, str], int]],
+) -> None:
+    for path in canary.PUBLIC_PATHS:
+        test.assertTrue(any(
+            method == "GET"
+            and urllib.parse.urlsplit(url).path == path
+            and not headers
+            for method, url, headers, _ in calls
+        ))
+        test.assertTrue(any(
+            method == "HEAD" and urllib.parse.urlsplit(url).path == path
+            for method, url, _, _ in calls
+        ))
+        test.assertTrue(any(
+            method == "GET"
+            and urllib.parse.urlsplit(url).path == path
+            and headers.get("If-None-Match") is not None
+            for method, url, headers, _ in calls
+        ))
 
 
 def re_sub_attribute(text: str, name: str, value: str) -> str:

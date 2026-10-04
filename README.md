@@ -220,7 +220,11 @@ It performs only bounded public HTTPS requests. It verifies the three formats,
 shared generation and complete normalized server-model parity, freshness,
 native ETag and conditional retrieval, HEAD parity, security/cache/CORS
 headers, canonical HTTPS root absence, path/query/method denial, and bounded
-monotonic convergence. The separate ingress verifier proves plaintext
+monotonic convergence. One convergence window covers the complete GET, HEAD,
+and conditional proof. If a same-path HEAD or conditional GET proves a strictly
+newer valid publication, the verifier resnapshots all three formats; persistent
+mismatches, validator reuse, and same-generation body changes still fail. The
+separate ingress verifier proves plaintext
 same-path redirects. Production hostnames require the additional
 `--allow-production` acknowledgement. The verifier cannot
 create, alter, or delete Cloudflare resources and accepts no API token.

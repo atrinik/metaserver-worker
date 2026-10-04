@@ -1217,10 +1217,20 @@ def observe_artifact(
 ) -> ArtifactObservation:
     maximum_bytes = MAXIMUM_BYTES[profile][path]
     response = fetch("GET", origin + path, {}, maximum_bytes)
+    return validate_artifact_response(response, path, profile, now)
+
+
+def validate_artifact_response(
+    response: HttpResponse,
+    path: str,
+    profile: str,
+    now: int,
+) -> ArtifactObservation:
+    maximum_bytes = MAXIMUM_BYTES[profile][path]
     if response.status != 200:
         fail(f"GET {path} returned {response.status}, expected 200")
-    if len(response.body) == 0:
-        fail(f"GET {path} returned an empty body")
+    if not 0 < len(response.body) <= maximum_bytes:
+        fail(f"GET {path} returned an invalid body length")
     content_length = optional_header(response, "Content-Length")
     if content_length is not None and (
         not content_length.isdecimal() or int(content_length) != len(response.body)
@@ -1278,10 +1288,88 @@ def verify_head_and_conditional(
     fetch: Fetch,
     origin: str,
     artifact: ArtifactObservation,
-) -> None:
+    profile: str,
+    current_time: Callable[[], int],
+    before_request: Callable[[], None],
+    after_response: Callable[[], None],
+    record: Callable[[ArtifactObservation], None],
+) -> ArtifactObservation | None:
+    before_request()
     head = fetch("HEAD", origin + artifact.path, {}, 0)
     if head.status != 200 or head.body:
         fail(f"HEAD {artifact.path} did not return one bodyless 200")
+    head_etag = one_header(head, "ETag")
+    if not strong_etag(head_etag):
+        fail(f"HEAD {artifact.path} has an invalid strong ETag")
+    no_header(head, "Set-Cookie")
+    no_header(head, "Content-Encoding")
+    if head_etag != artifact.etag:
+        after_response()
+        before_request()
+        replacement_response = fetch(
+            "GET",
+            origin + artifact.path,
+            {},
+            MAXIMUM_BYTES[profile][artifact.path],
+        )
+        replacement = validate_artifact_response(
+            replacement_response,
+            artifact.path,
+            profile,
+            current_time(),
+        )
+        record(replacement)
+        if (
+            replacement.generation <= artifact.generation
+            or replacement.etag == artifact.etag
+        ):
+            fail(
+                f"HEAD {artifact.path} changed ETag without a matching "
+                "newer publication"
+            )
+        validate_head(head, replacement)
+        after_response()
+        return replacement
+
+    validate_head(head, artifact)
+    after_response()
+
+    before_request()
+    conditional = fetch(
+        "GET",
+        origin + artifact.path,
+        {"If-None-Match": artifact.etag},
+        MAXIMUM_BYTES[profile][artifact.path],
+    )
+    if conditional.status == 200:
+        replacement = validate_artifact_response(
+            conditional,
+            artifact.path,
+            profile,
+            current_time(),
+        )
+        record(replacement)
+        if (
+            replacement.generation <= artifact.generation
+            or replacement.etag == artifact.etag
+        ):
+            fail(
+                f"conditional GET {artifact.path} returned 200 without a "
+                "newer publication"
+            )
+        after_response()
+        return replacement
+    if conditional.status != 304 or conditional.body:
+        fail(f"conditional GET {artifact.path} did not return one bodyless 304")
+    if one_header(conditional, "ETag") != artifact.etag:
+        fail(f"conditional GET {artifact.path} changed its validator")
+    no_header(conditional, "Set-Cookie")
+    no_header(conditional, "Content-Encoding")
+    after_response()
+    return None
+
+
+def validate_head(head: HttpResponse, artifact: ArtifactObservation) -> None:
     for name in (
         "Content-Type",
         "ETag",
@@ -1299,20 +1387,6 @@ def verify_head_and_conditional(
         not head_length.isdecimal() or int(head_length) != artifact.byte_length
     ):
         fail(f"HEAD {artifact.path} has an invalid Content-Length")
-    no_header(head, "Set-Cookie")
-
-    conditional = fetch(
-        "GET",
-        origin + artifact.path,
-        {"If-None-Match": artifact.etag},
-        artifact.byte_length,
-    )
-    if conditional.status != 304 or conditional.body:
-        fail(f"conditional GET {artifact.path} did not return one bodyless 304")
-    if one_header(conditional, "ETag") != artifact.etag:
-        fail(f"conditional GET {artifact.path} changed its validator")
-    no_header(conditional, "Set-Cookie")
-    no_header(conditional, "Content-Encoding")
 
 
 def cohort_is_coherent(observations: Sequence[ArtifactObservation]) -> bool:
@@ -1329,13 +1403,20 @@ def cohort_is_coherent(observations: Sequence[ArtifactObservation]) -> bool:
     ) == 1
 
 
-def verify_validator_separation(observations: Sequence[ArtifactObservation]) -> None:
-    body_by_etag: dict[str, str] = {}
+def verify_cohort_generation_consistency(
+    observations: Sequence[ArtifactObservation],
+) -> None:
+    coordinates_by_generation: dict[int, set[tuple[object, ...]]] = defaultdict(set)
     for observation in observations:
-        prior = body_by_etag.get(observation.etag)
-        if prior is not None and prior != observation.body_sha256:
-            fail("different representations reuse one HTTP validator")
-        body_by_etag[observation.etag] = observation.body_sha256
+        coordinates_by_generation[observation.generation].add(
+            (
+                observation.generated_at,
+                observation.expires_at,
+                observation.semantic_servers,
+            )
+        )
+    if any(len(coordinates) != 1 for coordinates in coordinates_by_generation.values()):
+        fail("one generation has inconsistent artifact representations")
 
 
 def verify_root_and_negative_routes(fetch: Fetch, origin: str) -> None:
@@ -1373,42 +1454,95 @@ def verify_static_origin(
     started = now_function()
     deadline = started + convergence_seconds
     attempts = 0
-    previous_generation = {path: 0 for path in PUBLIC_PATHS}
+    latest_by_path: dict[str, tuple[int, str]] = {}
+    body_by_etag: dict[str, str] = {}
+    coordinates_by_generation: dict[int, tuple[object, ...]] = {}
+
+    def before_positive_request() -> None:
+        if now_function() >= deadline:
+            fail("public aliases did not converge within the reviewed bound")
+
+    def after_positive_response() -> None:
+        if now_function() >= deadline:
+            fail("public aliases did not converge within the reviewed bound")
+
+    def record(observation: ArtifactObservation) -> None:
+        prior = latest_by_path.get(observation.path)
+        if prior is not None:
+            prior_generation, prior_digest = prior
+            if observation.generation < prior_generation:
+                fail(f"{observation.path} regressed to an older generation")
+            if (
+                observation.generation == prior_generation
+                and observation.body_sha256 != prior_digest
+            ):
+                fail(f"{observation.path} changed body within one generation")
+        coordinate = (
+            observation.generated_at,
+            observation.expires_at,
+            observation.semantic_servers,
+        )
+        prior_coordinate = coordinates_by_generation.get(observation.generation)
+        if prior_coordinate is not None and prior_coordinate != coordinate:
+            fail("one generation has inconsistent artifact representations")
+        prior_digest = body_by_etag.get(observation.etag)
+        if prior_digest is not None and prior_digest != observation.body_sha256:
+            fail("different representations reuse one HTTP validator")
+        latest_by_path[observation.path] = (
+            observation.generation,
+            observation.body_sha256,
+        )
+        body_by_etag[observation.etag] = observation.body_sha256
+        coordinates_by_generation[observation.generation] = coordinate
+
     observations: tuple[ArtifactObservation, ...]
     while True:
         attempts += 1
-        current_time = int(now_function())
-        observations = tuple(
-            observe_artifact(fetch, origin, path, profile, current_time)
-            for path in PUBLIC_PATHS
-        )
+        observed: list[ArtifactObservation] = []
+        for path in PUBLIC_PATHS:
+            before_positive_request()
+            observation = observe_artifact(
+                fetch, origin, path, profile, int(now_function())
+            )
+            record(observation)
+            after_positive_response()
+            observed.append(observation)
+        observations = tuple(observed)
         generations = [observation.generation for observation in observations]
         if max(generations) - min(generations) > 1:
             fail("public aliases exceed adjacent-generation convergence")
-        for observation in observations:
-            if observation.generation < previous_generation[observation.path]:
-                fail(f"{observation.path} regressed to an older generation")
-            previous_generation[observation.path] = observation.generation
-        if cohort_is_coherent(observations):
-            break
-        coordinates = {
-            (
-                observation.generation,
-                observation.generated_at,
-                observation.expires_at,
-            )
-            for observation in observations
-        }
-        if len(coordinates) == 1:
-            fail("one generation has inconsistent artifact representations")
-        if now_function() >= deadline:
-            fail("public aliases did not converge within the reviewed bound")
-        sleep_function(min(1.0, max(0.0, deadline - now_function())))
+        verify_cohort_generation_consistency(observations)
+        if not cohort_is_coherent(observations):
+            remaining = deadline - now_function()
+            if remaining <= 0:
+                fail("public aliases did not converge within the reviewed bound")
+            sleep_function(min(1.0, remaining))
+            continue
 
-    verify_validator_separation(observations)
-    for observation in observations:
-        verify_head_and_conditional(fetch, origin, observation)
+        retry = False
+        for observation in observations:
+            advanced = verify_head_and_conditional(
+                fetch,
+                origin,
+                observation,
+                profile,
+                lambda: int(now_function()),
+                before_positive_request,
+                after_positive_response,
+                record,
+            )
+            if advanced is not None:
+                retry = True
+                break
+        if retry:
+            continue
+        break
+
     verify_root_and_negative_routes(fetch, origin)
+    final_time = int(now_function())
+    for observation in observations:
+        if final_time >= observation.expires_at:
+            fail(f"GET {observation.path} is future-dated or expired")
     first = observations[0]
     return CanaryResult(
         profile=profile,
