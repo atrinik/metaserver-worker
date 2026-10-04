@@ -12,7 +12,7 @@ import {
 } from "./rendezvous-contract";
 import type { RendezvousTerminalOutcome } from "./rendezvous-contract";
 
-export const ATTACHMENT_VERSION = 2;
+export const ATTACHMENT_VERSION = 3;
 // Tickets live only for the 15-second signaling attempt. This independent
 // attachment ceiling is not a player-facing daily admission quota.
 export const MAX_RETAINED_TICKETS = 50;
@@ -52,7 +52,9 @@ export interface ClientAttachment {
   readonly connectionId: string;
   readonly admissionId: number;
   readonly openedAt: number;
-  readonly expiresAt: number;
+  expiresAt: number;
+  accessGrant?: string | null;
+  accessRedemption?: string | null;
   ticket: string | null;
   ticketDigest: string | null;
   stage: ClientStage;
@@ -113,6 +115,8 @@ export type StoredTicketState = [
 export interface StoredClientAttachment {
   readonly v: typeof ATTACHMENT_VERSION;
   readonly r: "c";
+  readonly u: string | null;
+  readonly e: string | null;
   readonly c: string;
   readonly g: string;
   readonly i: string;
@@ -239,10 +243,12 @@ function decodeClientAttachment(
   if (
     !hasExactKeys(value, [
       "v", "r", "c", "g", "i", "a", "o", "x", "t", "d", "s", "p", "h",
-      "j", "n", "q", "z", "b", "f", "m", "y", "k",
+      "j", "n", "q", "z", "b", "f", "m", "y", "k", "u", "e",
     ]) ||
     value.v !== ATTACHMENT_VERSION ||
     value.r !== "c" ||
+    !((value.u === null && value.e === null) || (isHex64(value.u) && isHex64(value.e))) ||
+    (value.s === 2 && (value.u !== null || value.e !== null)) ||
     !isConnectionId(value.c) ||
     !isHex64(value.g) ||
     !isConnectionId(value.i) ||
@@ -330,6 +336,8 @@ function decodeClientAttachment(
   return {
     v: ATTACHMENT_VERSION,
     role: "client",
+    accessGrant: value.u as string | null,
+    accessRedemption: value.e as string | null,
     controlId: value.c,
     generation: value.g,
     connectionId: value.i,
@@ -461,6 +469,8 @@ function encodeClientAttachment(
   return {
     v: ATTACHMENT_VERSION,
     r: "c",
+    u: attachment.accessGrant ?? null,
+    e: attachment.accessRedemption ?? null,
     c: attachment.controlId,
     g: attachment.generation,
     i: attachment.connectionId,

@@ -79,6 +79,7 @@
     }
   },
   "ratelimits": [
+    {"name":"ACCESS_ROUTE_RATE_LIMITER","namespace_id":"1008","simple":{"limit":16,"period":60}},
     {
       "name": "PUBLISH_IDENTITY_RATE_LIMITER",
       "namespace_id": "1006",

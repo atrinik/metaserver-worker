@@ -405,7 +405,7 @@ export async function validateRendezvousServiceResponse(
   return rejectUnsafeDynamicResponse(response);
 }
 
-async function readBoundedResponseBody(response: Response): Promise<string> {
+async function readBoundedResponseBody(response: Response, maximumBytes = MAXIMUM_DYNAMIC_RESPONSE_BYTES): Promise<string> {
   if (response.body === null) {
     return "";
   }
@@ -426,7 +426,7 @@ async function readBoundedResponseBody(response: Response): Promise<string> {
         break;
       }
       total += result.value.byteLength;
-      if (total > MAXIMUM_DYNAMIC_RESPONSE_BYTES) {
+      if (total > maximumBytes) {
         cancelReader(reader);
         throw new Error("Dynamic response exceeded its byte ceiling");
       }
@@ -649,4 +649,77 @@ function readAliasPair(
     throw new HttpError("bad_request");
   }
   return Object.freeze([current, previous]);
+}
+
+export function accessResolveServiceRequest(request: Request): Request {
+  assertNoInternalServiceHeaders(request.headers);
+  return copyRequest(request, ["Content-Type", "Content-Length", "Host"]);
+}
+export function consumeAccessResolveCoordinatorRequest(request: Request): Request {
+  assertExactHeaderNames(request.headers, ["Content-Type", "Content-Length", "Host", "Transfer-Encoding"]);
+  const encoding = request.headers.get("Transfer-Encoding");
+  if (encoding !== null && encoding !== "chunked") throw new HttpError("bad_request");
+  const headers = new Headers(request.headers);
+  headers.delete("Transfer-Encoding");
+  return new Request(request.url, { method: request.method, headers, redirect: "manual", body: request.body });
+}
+
+/** Closed, size-bounded capability responses; never forwards arbitrary headers. */
+export async function validateAccessServiceResponse(
+  response: Response, kind: "routes" | "resolve",
+): Promise<Response> {
+  if (response.status === 101 || response.webSocket !== null || response.status < 200 ||
+      (response.status >= 300 && response.status < 400) || response.headers.has("Location")) {
+    return rejectUnsafeDynamicResponse(response);
+  }
+  let body: string;
+  try { body = await readBoundedResponseBody(response, kind === "resolve" ? 8192 : 1024); }
+  catch { return rejectUnsafeDynamicResponse(response); }
+  const headers = jsonResponseHeaders();
+  if (response.status === 404 && body === '{"error":{"code":"access_unavailable"}}' &&
+      serviceResponseHeadersEqual(response.headers, headers, body)) {
+    return new Response(body, { status: 404, headers });
+  }
+  if (response.status !== 200) {
+    const error = await canonicalHttpErrorResponse(response, body);
+    return error ?? rejectUnsafeDynamicResponse(response);
+  }
+  const value = parseJsonRecord(body);
+  let canonical: string | null = null;
+  const hash = (value: unknown): value is string => typeof value === "string" && /^[0-9a-f]{64}$/.test(value);
+  const id = (value: unknown): value is string => typeof value === "string" && /^[0-9a-f]{32}$/.test(value);
+  const decimal = (value: unknown): value is string => typeof value === "string" && /^[1-9][0-9]{0,19}$/.test(value);
+  if (value !== null && kind === "routes" && value.schema === "atrinik-access-route-result-v1" &&
+      id(value.requestId) && ["reserved","active","revoked","conflict","expired","not_found","unavailable"].includes(value.outcome as string) &&
+      (value.reservationId === null || id(value.reservationId)) &&
+      (value.reservationExpiresAt === null || decimal(value.reservationExpiresAt)) && decimal(value.tokenRevision)) {
+    canonical = JSON.stringify({ schema: value.schema, requestId: value.requestId, outcome: value.outcome,
+      reservationId: value.reservationId, reservationExpiresAt: value.reservationExpiresAt, tokenRevision: value.tokenRevision });
+  }
+  if (value !== null && kind === "resolve" && value.schema === "atrinik-access-resolved-v1" &&
+      (value.profile === "classic" || value.profile === "game") && hash(value.serverId) &&
+      typeof value.certificate === "string" && value.certificate.length <= 2732 &&
+      /^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/.test(value.certificate) &&
+      typeof value.name === "string" && new TextEncoder().encode(value.name).byteLength <= 80 &&
+      value.name.length > 0 && !/[\x00-\x1f\x7f]/.test(value.name) &&
+      value.accessRequired === true && hash(value.generation) && hash(value.clientNonce) &&
+      hash(value.grant) && decimal(value.expiresAt)) {
+    let endpoint: { hostname: string; port: number } | undefined;
+    if (value.endpoint !== undefined) {
+      const candidate = value.endpoint;
+      if (!isRecord(candidate) || typeof candidate.hostname !== "string" ||
+          !/^[a-z0-9.-]{3,253}$/.test(candidate.hostname) ||
+          typeof candidate.port !== "number" || !Number.isInteger(candidate.port) || candidate.port < 1 || candidate.port > 65535 ||
+          Object.keys(candidate).join(",") !== "hostname,port") return rejectUnsafeDynamicResponse(response);
+      endpoint = { hostname: candidate.hostname, port: candidate.port };
+    }
+    canonical = JSON.stringify({ schema: value.schema, profile: value.profile, serverId: value.serverId,
+      certificate: value.certificate, name: value.name, accessRequired: true, generation: value.generation,
+      clientNonce: value.clientNonce, grant: value.grant, expiresAt: value.expiresAt,
+      ...(endpoint === undefined ? {} : { endpoint }), });
+  }
+  if (canonical === null || canonical !== body || !serviceResponseHeadersEqual(response.headers, headers, body)) {
+    return rejectUnsafeDynamicResponse(response);
+  }
+  return new Response(body, { headers });
 }

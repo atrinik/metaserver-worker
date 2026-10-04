@@ -248,6 +248,32 @@ export class SourceTagKeyRing {
     const tags: [string, string] = [current, previous];
     return Object.freeze(tags);
   }
+
+  /** Separate domain from transport tickets and request-source abuse tags. */
+  async accessGrantTags(
+    namespace: string, profile: "classic" | "game", serverId: string,
+    grant: string, clientNonce: string,
+  ): Promise<RendezvousReplayTags> {
+    const validatedNamespace = validateNamespace(namespace);
+    validateServerId(serverId);
+    validateRendezvousClientTicket(grant);
+    validateRendezvousClientTicket(clientNonce);
+    if (profile !== "classic" && profile !== "game") {
+      throw new SourceTagConfigurationError("Invalid access profile");
+    }
+    const [currentKey, previousKey, unexpectedKey] = this.#keys;
+    if (currentKey === undefined || previousKey === undefined || unexpectedKey !== undefined) {
+      throw new SourceTagConfigurationError("Access grants require exactly two source-tag keys");
+    }
+    const domain = JSON.stringify(["atrinik-access-grant-v1", validatedNamespace,
+      profile, serverId, grant, clientNonce]);
+    const tags = await Promise.all([
+      deriveVersionedTag(currentKey, RENDEZVOUS_REPLAY_TAG_VERSION, domain),
+      deriveVersionedTag(previousKey, RENDEZVOUS_REPLAY_TAG_VERSION, domain),
+    ]);
+    return Object.freeze([tags[0], tags[1]] as [string, string]);
+  }
+
 }
 
 export function parseSourceTagKeyRing(

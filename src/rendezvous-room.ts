@@ -1,3 +1,7 @@
+import { parseAccessInit, INTERNAL_ACCESS_PROBE_URL, INTERNAL_ACCESS_REVOKE_URL } from "./access-rendezvous";
+import type { ParsedAccessInit } from "./access-rendezvous";
+import { redeemAccessGrant, isAccessRedemptionLive } from "./access-grants";
+
 import { DurableObject } from "cloudflare:workers";
 
 import type { CoreEnv } from "./core-env";
@@ -14,7 +18,8 @@ import {
   requiredSourceTagKeyRing,
 } from "./privacy";
 import type { SourceTagKeyRing } from "./privacy";
-import { sha256Hex } from "./protocol";
+import { sha256Hex, randomToken } from "./protocol";
+import { rendezvousCoordinatorConfiguration } from "./config";
 import { RendezvousAdmissionStore } from "./rendezvous-admission";
 import {
   ATTACHMENT_VERSION,
@@ -202,6 +207,28 @@ export class RendezvousRoom extends DurableObject<CoreEnv> {
   }
 
   async fetch(request: Request): Promise<Response> {
+    if (request.url === INTERNAL_ACCESS_PROBE_URL || request.url === INTERNAL_ACCESS_REVOKE_URL) {
+      if (request.method !== "GET" || request.body !== null || [...request.headers.keys()].length !== 1 ||
+          !request.headers.has(INTERNAL_RENDEZVOUS_GENERATION_HEADER)) return roomError("forbidden");
+      const generation = request.headers.get(INTERNAL_RENDEZVOUS_GENERATION_HEADER)!;
+      if (!TOKEN_GENERATION.test(generation)) return roomError("forbidden");
+      return this.serializeRoomOperation(async () => {
+        await this.ensureInitialized();
+        const server = this.reconcileActiveServer();
+        if (this.currentGeneration !== generation || server?.attachment.generation !== generation) {
+          return roomError("server_unavailable");
+        }
+        if (request.url === INTERNAL_ACCESS_REVOKE_URL) {
+          for (const socket of this.ctx.getWebSockets("client")) {
+            const client = readClientAttachment(socket);
+            if (client?.accessRedemption && !await this.accessStillLive(client)) {
+              this.failClient(socket, client, "authorization_failed", RENDEZVOUS_CLOSE.authorizationFailed);
+            }
+          }
+        }
+        return new Response(null, { status: 204 });
+      });
+    }
     if (request.url === INTERNAL_RENDEZVOUS_PUBLISH_URL) {
       let publication: InternalRendezvousPublication | null = null;
       try {
@@ -442,7 +469,7 @@ export class RendezvousRoom extends DurableObject<CoreEnv> {
     // Parse before a promise closure captures the frame. This keeps the FIFO's
     // retained memory bounded by the 512-byte protocol contract even while an
     // earlier digest is awaiting Web Crypto.
-    const parsed = parseRendezvousSignal(message);
+    const parsed = parseAccessInit(message) ?? parseRendezvousSignal(message);
     if (!parsed.ok) {
       try {
         this.failProtocolViolation(socket);
@@ -490,7 +517,7 @@ export class RendezvousRoom extends DurableObject<CoreEnv> {
 
   private async processWebSocketMessage(
     socket: WebSocket,
-    parsed: Extract<RendezvousSignalParseResult, { ok: true }>,
+    parsed: Extract<RendezvousSignalParseResult, { ok: true }> | ParsedAccessInit,
   ): Promise<void> {
     if (socket.readyState !== WebSocket.OPEN) {
       return;
@@ -534,7 +561,16 @@ export class RendezvousRoom extends DurableObject<CoreEnv> {
         return;
       }
 
+      if ("access" in parsed) {
+        if (attachment.role !== "client") { this.failProtocolViolation(socket); return; }
+        await this.acceptAccessInit(socket, attachment, parsed);
+        return;
+      }
       if (attachment.role === "client") {
+        if (attachment.accessRedemption && !await this.accessStillLive(attachment)) {
+          this.failClient(socket, attachment, "authorization_failed", RENDEZVOUS_CLOSE.authorizationFailed);
+          return;
+        }
         await this.handleClientMessage(socket, attachment, parsed);
       } else {
         await this.handleServerMessage(socket, attachment, parsed);
@@ -983,7 +1019,7 @@ export class RendezvousRoom extends DurableObject<CoreEnv> {
         connectionId: crypto.randomUUID(),
         admissionId: admission.admissionId,
         openedAt: now,
-        expiresAt: now + policy.rendezvousClientSessionSeconds * 1_000,
+        expiresAt: now + (authorizationRequired ? 2_000 : policy.rendezvousClientSessionSeconds * 1_000),
         ticket: null,
         ticketDigest: null,
         stage: "awaiting_candidate",
@@ -1037,6 +1073,53 @@ export class RendezvousRoom extends DurableObject<CoreEnv> {
     }
   }
 
+  private async accessStillLive(attachment: ClientAttachment): Promise<boolean> {
+    return attachment.accessRedemption !== undefined && attachment.accessRedemption !== null &&
+      await isAccessRedemptionLive(this.env.DB, attachment.accessRedemption,
+        attachment.generation, Math.floor(Date.now() / 1000),
+        rendezvousCoordinatorConfiguration(this.env).listingTtlSeconds);
+  }
+
+  private async acceptAccessInit(
+    socket: WebSocket, attachment: ClientAttachment, parsed: ParsedAccessInit,
+  ): Promise<void> {
+    if (attachment.authorization !== "awaiting_init" || attachment.stage !== "awaiting_candidate" ||
+        attachment.expiresAt <= Date.now() || attachment.accessRedemption) {
+      this.failClient(socket, attachment, "authorization_failed", RENDEZVOUS_CLOSE.authorizationFailed);
+      return;
+    }
+    const roomName = this.ctx.id.name ?? "";
+    const profile = roomName.startsWith("game-v2:") ? "game" : "classic";
+    const serverId = profile === "game" ? roomName.slice(8) : roomName;
+    if (!/^[0-9a-f]{64}$/.test(serverId)) {
+      this.failClient(socket, attachment, "authorization_failed", RENDEZVOUS_CLOSE.authorizationFailed);
+      return;
+    }
+    const tags = await this.replayTagKeys.accessGrantTags(this.env.RENDEZVOUS_HOSTNAME,
+      profile, serverId, parsed.grant, parsed.clientNonce);
+    const receipt = await redeemAccessGrant(this.env.DB, profile, serverId,
+      attachment.generation, parsed.clientNonce, tags, randomToken(),
+      Math.floor(Date.now() / 1000), rendezvousCoordinatorConfiguration(this.env).listingTtlSeconds);
+    const current = readClientAttachment(socket);
+    const server = this.reconcileActiveServer();
+    if (receipt === null || current === null || current.authorization !== "awaiting_init" ||
+        current.expiresAt <= Date.now() || current.connectionId !== attachment.connectionId ||
+        socket.readyState !== WebSocket.OPEN || server === null ||
+        server.attachment.controlId !== current.controlId || server.attachment.generation !== current.generation ||
+        this.currentGeneration !== current.generation) {
+      if (current !== null) this.failClient(socket, current, "authorization_failed", RENDEZVOUS_CLOSE.authorizationFailed);
+      else closeSocket(socket, RENDEZVOUS_CLOSE.authorizationFailed);
+      return;
+    }
+    current.accessGrant = parsed.grant;
+    current.accessRedemption = receipt.redemption_id;
+    current.authorization = "not_required"; // Grant, rather than server-relayed challenge, authorized this socket.
+    current.expiresAt = Math.min(current.openedAt + 15000, receipt.expires_at * 1000);
+    writeAttachment(socket, current);
+    await this.scheduleNextAlarm(Date.now());
+    socket.send(JSON.stringify({ type: "access_ready", version: 1 }));
+  }
+
   private async handleClientMessage(
     socket: WebSocket,
     attachment: ClientAttachment,
@@ -1081,6 +1164,11 @@ export class RendezvousRoom extends DurableObject<CoreEnv> {
       (attachment.authorization === "not_required" ||
         attachment.authorization === "authorized")
     ) {
+      if (attachment.accessGrant !== undefined && attachment.accessGrant !== null &&
+          parsed.signal.ticket !== attachment.accessGrant) {
+        this.failClient(socket, attachment, "authorization_failed", RENDEZVOUS_CLOSE.authorizationFailed);
+        return;
+      }
       if (attachment.authorization === "not_required") {
         await this.beginClientTicket(socket, attachment, parsed, false);
       } else {
@@ -1534,6 +1622,11 @@ export class RendezvousRoom extends DurableObject<CoreEnv> {
       }
       ticket.stage = "terminal";
       writeAttachment(socket, current);
+      return;
+    }
+
+    if (target.attachment.accessRedemption && !await this.accessStillLive(target.attachment)) {
+      this.failClient(target.socket, target.attachment, "authorization_failed", RENDEZVOUS_CLOSE.authorizationFailed);
       return;
     }
 
@@ -2239,6 +2332,8 @@ export class RendezvousRoom extends DurableObject<CoreEnv> {
     // extending their attachment lifetime past the signaling session.
     attachment.ticket = null;
     attachment.ticketDigest = null;
+    attachment.accessGrant = null;
+    attachment.accessRedemption = null;
     attachment.terminalOutcome = outcome;
     attachment.terminalCloseAttempts = 0;
   }

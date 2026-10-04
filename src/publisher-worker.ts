@@ -1,3 +1,5 @@
+import { classifyAccessRoute } from "./routes";
+import { validateAccessServiceResponse } from "./internal-service";
 import { publisherEdgeConfiguration } from "./config";
 import type { DiagnosticRoute } from "./diagnostics";
 import { enforceCircuitBreaker } from "./http";
@@ -24,6 +26,19 @@ export default {
     let diagnosticRoute: DiagnosticRoute = "unclassified";
     try {
       const control = publisherEdgeConfiguration(env);
+      const access = classifyAccessRoute(routeInputFromRequest(request), control.authority, "publisher");
+      if (access?.kind === "access-routes") {
+        diagnosticRoute = access.profile === "classic" ? "publish-classic" : "publish-game";
+        assertNoInternalServiceHeaders(request.headers);
+        enforceCircuitBreaker(access.profile === "classic" ? env.PUBLISH_ENABLED : env.GAME_PUBLISH_ENABLED,
+          control.routeDisabledRetrySeconds);
+        const privacy = createRequestPrivacyContext(request, {
+          keys: await requiredSourceTagKeyRing(env), namespace: control.authority,
+        });
+        await enforceNativeBurstAliases(env.GLOBAL_RATE_LIMITER,
+          actorAliases(await privacy.tags(SourceTagPurpose.GlobalIngress)), "global");
+        return await validateAccessServiceResponse(await env.COORDINATOR.fetch(publisherServiceRequest(request)), "routes");
+      }
       const route = classifyCanonicalPublisherRoute(
         routeInputFromRequest(request),
         control.authority,

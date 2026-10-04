@@ -77,24 +77,20 @@ export async function openRendezvous(
   const inviteProtocol = requestedSubprotocol ===
     CLASSIC_RENDEZVOUS_INVITE_SUBPROTOCOL;
 
+  if (role === "client" && inviteProtocol &&
+      !new URL(request.url).pathname.startsWith("/v1/access/rendezvous/classic/")) {
+    return fixedError("invalid_websocket_subprotocol");
+  }
   const cutoff = Math.floor(Date.now() / 1_000) - hooks.listingTtlSeconds;
   const server = await env.DB.prepare(
-    `SELECT CASE entries.profile
-              WHEN 'classic-v2' THEN entries.access_code_required
-              ELSE entries.password_required
-            END AS authorization_required,
-            presence.rendezvous_token_hash,
-            presence.rendezvous_generation
-       FROM server_presence AS presence
-       JOIN directory_entries AS entries
-         ON entries.profile = presence.profile
-        AND entries.server_id = presence.server_id
-      WHERE presence.profile IN ('classic-v1', 'classic-v2')
-        AND presence.server_id = ?
-        AND presence.last_seen > ?
-      ORDER BY presence.profile = 'classic-v2' DESC
-      LIMIT 1`,
-  ).bind(serverId, cutoff).first<RendezvousServerRecord>();
+    `SELECT presence.access_required AS authorization_required,
+            presence.rendezvous_token_hash, presence.rendezvous_generation
+       FROM server_presence presence
+      WHERE presence.profile='classic-v3' AND presence.server_id=? AND presence.last_seen>?
+        AND NOT EXISTS(SELECT 1 FROM server_denials WHERE server_id=presence.server_id)
+        AND (?='server' OR ?=1 OR EXISTS(SELECT 1 FROM directory_entries entries
+          WHERE entries.profile=presence.profile AND entries.server_id=presence.server_id))`,
+  ).bind(serverId, cutoff, role, inviteProtocol ? 1 : 0).first<RendezvousServerRecord>();
 
   if (server === null) {
     return fixedError("server_offline");
@@ -131,7 +127,7 @@ export async function openRendezvous(
         Upgrade: "websocket",
         [INTERNAL_RENDEZVOUS_ROLE_HEADER]: role,
         [INTERNAL_RENDEZVOUS_PROTOCOL_HEADER]: inviteProtocol
-          ? "classic-invite-v1"
+          ? "access-tokens-v1"
           : "none",
         [INTERNAL_RENDEZVOUS_AUTHORIZATION_HEADER]:
           role === "client" && server.authorization_required === 1

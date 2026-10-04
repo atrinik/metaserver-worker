@@ -1,3 +1,5 @@
+import { classifyAccessRoute, ACCESS_RENDEZVOUS_SUBPROTOCOL } from "./routes";
+import { accessResolveServiceRequest, validateAccessServiceResponse } from "./internal-service";
 import { rendezvousEdgeConfiguration } from "./config";
 import type { DiagnosticRoute } from "./diagnostics";
 import { enforceCircuitBreaker, HttpError } from "./http";
@@ -24,6 +26,27 @@ export default {
     let diagnosticRoute: DiagnosticRoute = "unclassified";
     try {
       const control = rendezvousEdgeConfiguration(env);
+      const access = classifyAccessRoute(routeInputFromRequest(request), control.authority, "rendezvous");
+      if (access !== null) {
+        diagnosticRoute = "rendezvous-client";
+        assertNoInternalServiceHeaders(request.headers);
+        enforceCircuitBreaker(env.RENDEZVOUS_ENABLED, control.routeDisabledRetrySeconds);
+        const privacy = createRequestPrivacyContext(request, {
+          keys: await requiredSourceTagKeyRing(env), namespace: control.authority,
+        });
+        if (access.kind === "access-resolve") {
+          // Existing ten/minute global ingress is stricter than resolve's thirty/minute ceiling.
+          await enforceNativeBurstAliases(env.GLOBAL_RATE_LIMITER,
+            actorAliases(await privacy.tags(SourceTagPurpose.GlobalIngress)), "global");
+          return await validateAccessServiceResponse(await env.COORDINATOR.fetch(accessResolveServiceRequest(request)), "resolve");
+        }
+        if (access.kind !== "access-rendezvous" || access.profile !== "classic") throw new HttpError("service_disabled");
+        await enforceNativeBurstAliases(env.RENDEZVOUS_CLIENT_RATE_LIMITER,
+          actorAliases(await privacy.tags(SourceTagPurpose.RendezvousClientGlobal)), "rendezvous-client-source");
+        const pair = actorAliases(await privacy.serverTags(SourceTagPurpose.RendezvousClientServer, access.serverId));
+        return await validateRendezvousServiceResponse(await env.COORDINATOR.fetch(
+          rendezvousServiceRequest(request, "client", { source: null, pair })), ACCESS_RENDEZVOUS_SUBPROTOCOL);
+      }
       const route = classifyCanonicalRendezvousRoute(
         routeInputFromRequest(request),
         control.authority,

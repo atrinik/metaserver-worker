@@ -14,19 +14,19 @@ import type { RendezvousRole } from "./routes";
  * rolling deployment, either version therefore fails closed instead of
  * silently entering the legacy broadcast implementation.
  */
-export const INTERNAL_RENDEZVOUS_URL = "https://rendezvous.internal/v3";
+export const INTERNAL_RENDEZVOUS_URL = "https://rendezvous.internal/v4";
 export const INTERNAL_RENDEZVOUS_PUBLISH_URL =
-  "https://rendezvous.internal/v3/publish";
+  "https://rendezvous.internal/v4/publish";
 export const INTERNAL_DIRECTORY_CHANGED_HEADER =
   "X-Atrinik-Directory-Changed";
 export const INTERNAL_RENDEZVOUS_ROLE_HEADER =
-  "X-Atrinik-Rendezvous-V3-Role";
+  "X-Atrinik-Rendezvous-V4-Role";
 export const INTERNAL_RENDEZVOUS_PROTOCOL_HEADER =
-  "X-Atrinik-Rendezvous-V3-Protocol";
+  "X-Atrinik-Rendezvous-V4-Protocol";
 export const INTERNAL_RENDEZVOUS_AUTHORIZATION_HEADER =
-  "X-Atrinik-Rendezvous-V3-Authorization";
+  "X-Atrinik-Rendezvous-V4-Authorization";
 export const INTERNAL_RENDEZVOUS_GENERATION_HEADER =
-  "X-Atrinik-Rendezvous-V3-Generation";
+  "X-Atrinik-Rendezvous-V4-Generation";
 export const LEGACY_INTERNAL_RENDEZVOUS_ROLE_HEADER = "X-Atrinik-Role";
 export const LEGACY_INTERNAL_RENDEZVOUS_V1_ROLE_HEADER =
   "X-Atrinik-Rendezvous-V1-Role";
@@ -369,14 +369,14 @@ export function validateInternalRendezvousUpgrade(
   );
   if (
     (role !== "client" && role !== "server") ||
-    (protocol !== "none" && protocol !== "classic-invite-v1") ||
+    (protocol !== "none" && protocol !== "access-tokens-v1") ||
     (authorization !== "not-required" && authorization !== "required") ||
     generation === null ||
     !HEX_64.test(generation)
   ) {
     return null;
   }
-  const inviteProtocol = protocol === "classic-invite-v1";
+  const inviteProtocol = protocol === "access-tokens-v1";
   const authorizationRequired = authorization === "required";
   if (
     (role === "server" && authorizationRequired) ||
@@ -573,6 +573,11 @@ export function parseRendezvousSignal(
     return { ok: false, error: "invalid_json" };
   }
   if (!isJsonObject(parsed)) {
+    return { ok: false, error: "unsupported_signal" };
+  }
+
+  // Removed invitation challenge/proof frames are never accepted by v4 rooms.
+  if (typeof parsed.type === "string" && parsed.type.startsWith("auth_")) {
     return { ok: false, error: "unsupported_signal" };
   }
 

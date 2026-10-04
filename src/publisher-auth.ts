@@ -177,7 +177,7 @@ export async function authenticateGamePublish(
   );
 }
 
-async function authenticateSignedPublish<Payload extends {
+export async function authenticateSignedPublish<Payload extends {
   readonly serverId: string;
   readonly certificate: string;
 }>(

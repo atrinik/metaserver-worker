@@ -1,3 +1,7 @@
+import { classifyAccessRoute, ACCESS_RENDEZVOUS_SUBPROTOCOL } from "./routes";
+import { handleAccessRouteMutation, handleAccessResolve } from "./access-controller";
+import { consumeAccessResolveCoordinatorRequest } from "./internal-service";
+import { cleanupAccessState } from "./access-route-state";
 import { WorkerEntrypoint } from "cloudflare:workers";
 
 import type { CoreEnv } from "./core-env";
@@ -107,6 +111,7 @@ export default {
         }
         return;
       }
+      await cleanupAccessState(env.DB, now);
       const listingCutoff = now - control.listingTtlSeconds;
       for (const profile of DIRECTORY_PROFILES) {
         await expireDirectoryEntries(env.DB, profile, listingCutoff, now);
@@ -142,6 +147,15 @@ export async function handlePublisherCoordinatorRequest(
     const control = publisherCoordinatorConfiguration(env);
     const publisherHeaders = new Headers(request.headers);
     publisherHeaders.delete("Transfer-Encoding");
+    const access = classifyAccessRoute({ target: request.url, method: request.method,
+      headers: publisherHeaders, hasBody: request.body !== null }, control.authority, "publisher");
+    if (access?.kind === "access-routes") {
+      diagnosticRoute = access.profile === "classic" ? "publish-classic" : "publish-game";
+      enforceCircuitBreaker(access.profile === "classic" ? env.PUBLISH_ENABLED : env.GAME_PUBLISH_ENABLED,
+        control.routeDisabledRetrySeconds);
+      return await handleAccessRouteMutation(consumePublisherCoordinatorRequest(request), env,
+        access.profile, access.serverId, control.authority, Math.floor(Date.now() / 1000));
+    }
     const route = classifyCanonicalPublisherRoute(
       {
         target: request.url,
@@ -182,6 +196,23 @@ export async function handleRendezvousCoordinatorRequest(
   let diagnosticRoute: DiagnosticRoute = "unclassified";
   try {
     const control = rendezvousCoordinatorConfiguration(env);
+    const accessHeaders = new Headers(request.headers);
+    accessHeaders.delete("Transfer-Encoding");
+    const access = classifyAccessRoute({ target: request.url, method: request.method,
+      headers: accessHeaders, hasBody: request.body !== null }, control.authority, "rendezvous");
+    if (access !== null) {
+      diagnosticRoute = "rendezvous-client";
+      enforceCircuitBreaker(env.RENDEZVOUS_ENABLED, control.routeDisabledRetrySeconds);
+      if (access.kind === "access-resolve") return await handleAccessResolve(
+        consumeAccessResolveCoordinatorRequest(request), env, Math.floor(Date.now() / 1000), control.listingTtlSeconds);
+      if (access.kind !== "access-rendezvous" || access.profile !== "classic") throw new HttpError("service_disabled");
+      rendezvousPolicyConfiguration(env);
+      const internal = consumeRendezvousAdmissionAliases(request, "client");
+      return await openCanonicalRendezvous(internal.request, env, {
+        kind: "rendezvous", generation: "classic", serverId: access.serverId,
+        role: "client", subprotocol: ACCESS_RENDEZVOUS_SUBPROTOCOL, authority: control.authority,
+      }, internal.aliases, control, Math.floor(Date.now() / 1000), ctx);
+    }
     const route = classifyCanonicalRendezvousRoute(
       routeInputFromRequest(request),
       control.authority,
