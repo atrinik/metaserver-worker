@@ -30,10 +30,9 @@ import { logBlacklistMatch, logUnexpectedError } from "./diagnostics";
 import type { BlacklistRoute, DiagnosticRoute } from "./diagnostics";
 import {
   consumePublisherCoordinatorRequest,
-  consumeRendezvousAdmissionAliases,
+  consumeRendezvousCoordinatorRequest,
   validatePublisherCoordinatorRequest,
 } from "./internal-service";
-import type { RendezvousAdmissionAliases } from "./internal-service";
 import { cleanupExpiredState } from "./maintenance";
 import {
   randomToken,
@@ -53,7 +52,6 @@ import {
 } from "./rate-limit";
 import { handleRequestError } from "./request-errors";
 import { openRendezvous, RendezvousRoom } from "./rendezvous";
-import { consumeRendezvousPairCooldown } from "./rendezvous-cooldown";
 import {
   recordRendezvousAuthenticatedAdmission,
   RendezvousHealth,
@@ -116,7 +114,6 @@ export default {
       }
       const cleanup = await cleanupExpiredState(env.DB, {
         requestBudgetsAtOrBefore: now,
-        rendezvousPairAtOrBefore: now,
         publisherNoncesAtOrBefore: now,
       }, {
         batchSize: 1_000,
@@ -199,11 +196,11 @@ export async function handleRendezvousCoordinatorRequest(
         consumeAccessResolveCoordinatorRequest(request), env, Math.floor(Date.now() / 1000), control.listingTtlSeconds);
       if (access.kind !== "access-rendezvous" || access.profile !== "classic") throw new HttpError("service_disabled");
       rendezvousPolicyConfiguration(env);
-      const internal = consumeRendezvousAdmissionAliases(request, "client");
-      return await openCanonicalRendezvous(internal.request, env, {
+      const internal = consumeRendezvousCoordinatorRequest(request, "client");
+      return await openCanonicalRendezvous(internal, env, {
         kind: "rendezvous", generation: "classic", serverId: access.serverId,
         role: "client", subprotocol: ACCESS_RENDEZVOUS_SUBPROTOCOL, authority: control.authority,
-      }, internal.aliases, control, Math.floor(Date.now() / 1000), ctx);
+      }, control, Math.floor(Date.now() / 1000), ctx);
     }
     const route = classifyCanonicalRendezvousRoute(
       routeInputFromRequest(request),
@@ -219,12 +216,11 @@ export async function handleRendezvousCoordinatorRequest(
     );
     // The room independently parses this same policy across rolling deploys.
     rendezvousPolicyConfiguration(env);
-    const internal = consumeRendezvousAdmissionAliases(request, route.role);
+    const internal = consumeRendezvousCoordinatorRequest(request, route.role);
     return await openCanonicalRendezvous(
-      internal.request,
+      internal,
       env,
       route,
-      internal.aliases,
       control,
       Math.floor(Date.now() / 1_000),
       ctx,
@@ -247,39 +243,12 @@ async function openCanonicalRendezvous(
   request: Request,
   env: CoreEnv,
   route: Extract<CanonicalDynamicRoute, { kind: "rendezvous" }>,
-  aliases: RendezvousAdmissionAliases,
   control: RendezvousCoordinatorConfiguration,
   now: number,
   ctx?: ExecutionContext,
 ): Promise<Response> {
-  if (route.role === "client") {
-    if (aliases.pair === null || aliases.source !== null) {
-      throw new Error("Client rendezvous omitted pair admission aliases");
-    }
-  } else {
-    if (aliases.pair !== null || aliases.source !== null) {
-      throw new Error("Server rendezvous included pair admission aliases");
-    }
-  }
-
   return openRendezvous(request, env, route.serverId, route.role, {
     listingTtlSeconds: control.listingTtlSeconds,
-    async clientEligible(): Promise<void> {
-      if (aliases.pair === null) {
-        throw new Error("Client rendezvous omitted pair admission aliases");
-      }
-      await consumeRendezvousPairCooldown(env.DB, {
-        actorKeys: aliases.pair,
-        now,
-        burstLimit: control.rendezvousClientPairBurstLimit,
-        windowSeconds: control.rendezvousClientPairWindowSeconds,
-        initialCooldownSeconds:
-          control.rendezvousClientPairInitialCooldownSeconds,
-        maximumCooldownSeconds:
-          control.rendezvousClientPairMaximumCooldownSeconds,
-        resetSeconds: control.rendezvousClientPairResetSeconds,
-      });
-    },
     async serverAuthenticated(): Promise<void> {
       await enforceNativeBurst(
         env.RENDEZVOUS_SERVER_RATE_LIMITER,

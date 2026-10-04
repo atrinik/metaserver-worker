@@ -302,7 +302,7 @@
         "workersDevPrivateSubdomain": "exact-dedicated-live-account-subdomain-readback"
       },
       "sources": [
-        { "role": "core", "path": "wrangler.jsonc", "sha256": "ad32c2b69de90e76f241e00a4003d497c8078e50e87ddafdbbd22e0c26e94346" },
+        { "role": "core", "path": "wrangler.jsonc", "sha256": "d74f963f3e167563661a78c9f9c0972431940e69f2a6b24f302be44cc3de28d1" },
         { "role": "publisher", "path": "wrangler.publisher.jsonc", "sha256": "b847b3d35c239545ceb3ff15afa17a05e39f0de590e89a414aaf21220d56d01d" },
         { "role": "rendezvous", "path": "wrangler.rendezvous.jsonc", "sha256": "10b32a4c9544c8153950a25db080824a72a6f5c621688e7d8accaf8b984b4e38" }
       ],
@@ -479,14 +479,14 @@
           "owner": "publisher",
           "binding": "GLOBAL_RATE_LIMITER",
           "namespaceId": "2101",
-          "simple": { "limit": 10, "period": 60 },
+          "simple": { "limit": 32768, "period": 60 },
           "productionNamespaceReuse": false
         },
         {
           "owner": "rendezvous",
           "binding": "GLOBAL_RATE_LIMITER",
           "namespaceId": "2201",
-          "simple": { "limit": 10, "period": 60 },
+          "simple": { "limit": 65536, "period": 60 },
           "productionNamespaceReuse": false
         }
       ],
@@ -494,7 +494,7 @@
         "owner": "rendezvous",
         "binding": "RENDEZVOUS_CLIENT_RATE_LIMITER",
         "namespaceId": "2202",
-        "simple": { "limit": 60, "period": 60 },
+        "simple": { "limit": 65536, "period": 60 },
         "countedWithinRateLimitNamespaceCeiling": true,
         "productionNamespaceReuse": false
       },

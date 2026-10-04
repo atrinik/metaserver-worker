@@ -22,7 +22,6 @@ export const INTERNAL_PAIR_TAG_HEADER =
 export const INTERNAL_PAIR_TAG_PREVIOUS_HEADER =
   "Atrinik-Internal-Pair-Tag-Previous";
 
-const SOURCE_TAG = /^v1\.[A-Za-z0-9_-]{1,32}\.[A-Za-z0-9_-]{43}$/;
 const INTERNAL_HEADERS = Object.freeze([
   INTERNAL_SOURCE_TAG_HEADER,
   INTERNAL_SOURCE_TAG_PREVIOUS_HEADER,
@@ -99,28 +98,6 @@ const FIXED_RENDEZVOUS_ERRORS = Object.freeze([
   },
 ] as const);
 
-export type ActorAliases = readonly [current: string, previous: string];
-
-export type RendezvousAdmissionAliases =
-  | { readonly source: null; readonly pair: ActorAliases }
-  | { readonly source: null; readonly pair: null };
-
-/** Convert the required two-key source-tag result into a strict RPC tuple. */
-export function actorAliases(values: readonly string[]): ActorAliases {
-  const [current, previous, unexpected] = values;
-  if (
-    current === undefined ||
-    previous === undefined ||
-    unexpected !== undefined ||
-    current === previous ||
-    !SOURCE_TAG.test(current) ||
-    !SOURCE_TAG.test(previous)
-  ) {
-    throw new Error("Source-tag key ring produced an invalid alias set");
-  }
-  return Object.freeze([current, previous]);
-}
-
 /**
  * Build the publisher service-binding request from a fixed header allowlist.
  * Request-source and browser state cannot cross into the storage-owning Worker.
@@ -159,106 +136,21 @@ export function validatePublisherCoordinatorRequest(request: Request): void {
   }
 }
 
-/** Build a source-scrubbed rendezvous request with fixed internal aliases. */
-export function rendezvousServiceRequest(
-  request: Request,
-  role: RendezvousRole,
-  aliases: RendezvousAdmissionAliases,
-): Request {
+/** Build a rendezvous envelope containing only transport/authentication headers. */
+export function rendezvousServiceRequest(request: Request, role: RendezvousRole): Request {
   assertNoInternalServiceHeaders(request.headers);
-  if (role === "client" && request.headers.has("Authorization")) {
-    throw new HttpError("bad_request");
-  }
-  const additions = new Headers();
-  if (role === "client") {
-    if (aliases.source !== null || aliases.pair === null) {
-      throw new HttpError("bad_request");
-    }
-    additions.set(INTERNAL_PAIR_TAG_HEADER, aliases.pair[0]);
-    additions.set(INTERNAL_PAIR_TAG_PREVIOUS_HEADER, aliases.pair[1]);
-  } else {
-    if (aliases.source !== null || aliases.pair !== null) {
-      throw new HttpError("bad_request");
-    }
-  }
-  const allowlist = role === "server"
-    ? [...RENDEZVOUS_FORWARD_HEADERS, "Authorization"]
-    : RENDEZVOUS_FORWARD_HEADERS;
-  return copyRequest(request, allowlist, additions);
+  if (role === "client" && request.headers.has("Authorization")) throw new HttpError("bad_request");
+  return copyRequest(request, role === "server"
+    ? [...RENDEZVOUS_FORWARD_HEADERS, "Authorization"] : RENDEZVOUS_FORWARD_HEADERS);
 }
 
-/**
- * Read and remove the internal alias envelope before the request reaches D1 or
- * a RendezvousRoom. Only the named rendezvous coordinator may call this.
- */
-export function consumeRendezvousAdmissionAliases(
-  request: Request,
-  role: RendezvousRole,
-): { readonly request: Request; readonly aliases: RendezvousAdmissionAliases } {
-  const allowedHeaders = role === "server"
-    ? [
-      ...RENDEZVOUS_FORWARD_HEADERS,
-      "Authorization",
-      INTERNAL_SOURCE_TAG_HEADER,
-      INTERNAL_SOURCE_TAG_PREVIOUS_HEADER,
-    ]
-    : [
-      ...RENDEZVOUS_FORWARD_HEADERS,
-      INTERNAL_PAIR_TAG_HEADER,
-      INTERNAL_PAIR_TAG_PREVIOUS_HEADER,
-    ];
-  assertExactHeaderNames(request.headers, allowedHeaders);
-  // A v1.11.2 caller still supplies the compatibility-era source aliases.
-  // Validate and scrub that bridge envelope, but never return or persist it.
-  // The provider-first v1.12 caller omits both headers.
-  if (
-    role === "server" &&
-    (request.headers.has(INTERNAL_SOURCE_TAG_HEADER) ||
-      request.headers.has(INTERNAL_SOURCE_TAG_PREVIOUS_HEADER))
-  ) {
-    readAliasPair(
-      request.headers,
-      INTERNAL_SOURCE_TAG_HEADER,
-      INTERNAL_SOURCE_TAG_PREVIOUS_HEADER,
-    );
-  }
-  const pair = role === "client"
-    ? readAliasPair(
-      request.headers,
-      INTERNAL_PAIR_TAG_HEADER,
-      INTERNAL_PAIR_TAG_PREVIOUS_HEADER,
-    )
-    : null;
-  if (
-    role === "server" &&
-    (request.headers.has(INTERNAL_PAIR_TAG_HEADER) ||
-      request.headers.has(INTERNAL_PAIR_TAG_PREVIOUS_HEADER))
-  ) {
-    throw new HttpError("bad_request");
-  }
-
-  const headers = new Headers(request.headers);
-  for (const name of INTERNAL_HEADERS) {
-    headers.delete(name);
-  }
-  return Object.freeze({
-    request: new Request(request.url, {
-      method: request.method,
-      headers,
-      redirect: "manual",
-    }),
-    aliases: role === "client"
-      ? Object.freeze({ source: null, pair: requireAliases(pair) })
-      : Object.freeze({ source: null, pair: null }),
-  });
+/** Reject all requester metadata, including retired source/pair alias envelopes. */
+export function consumeRendezvousCoordinatorRequest(request: Request, role: RendezvousRole): Request {
+  assertExactHeaderNames(request.headers, role === "server"
+    ? [...RENDEZVOUS_FORWARD_HEADERS, "Authorization"] : RENDEZVOUS_FORWARD_HEADERS);
+  return new Request(request.url, {method: request.method, headers: request.headers, redirect: "manual"});
 }
 
-function requireAliases(value: ActorAliases | null): ActorAliases {
-  if (value === null) {
-    throw new HttpError("bad_request");
-  }
-  return value;
-}
 
 /** Validate and reconstruct one bounded, canonical publisher response. */
 export async function validatePublisherServiceResponse(
@@ -631,25 +523,6 @@ function copyRequest(
     ]),
     ...(request.body === null ? {} : { body: request.body }),
   });
-}
-
-function readAliasPair(
-  headers: Headers,
-  currentName: string,
-  previousName: string,
-): ActorAliases {
-  const current = headers.get(currentName);
-  const previous = headers.get(previousName);
-  if (
-    current === null ||
-    previous === null ||
-    current === previous ||
-    !SOURCE_TAG.test(current) ||
-    !SOURCE_TAG.test(previous)
-  ) {
-    throw new HttpError("bad_request");
-  }
-  return Object.freeze([current, previous]);
 }
 
 export function accessResolveServiceRequest(request: Request): Request {

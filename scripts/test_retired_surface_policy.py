@@ -32,6 +32,7 @@ HISTORICAL_PREFIXES = (
 )
 
 NEGATIVE_FIXTURES = {
+    "scripts/test_ip_tracking_removal.py": {"server_owners", "one_time_tokens", "rate_limits"},
     "scripts/static_origin_canary.py": {"source_ip"},
     "test/rendezvous-contract.test.ts": {
         "compat-key-v1",
@@ -51,6 +52,14 @@ NEGATIVE_FIXTURES = {
 
 
 class RetiredSurfaceSourcePolicyTests(unittest.TestCase):
+    def test_runtime_never_reads_requester_address_metadata(self) -> None:
+        # Endpoint candidate normalization remains necessary for signaling;
+        # requester-address metadata has no runtime consumer at any edge/core.
+        forbidden = re.compile(r"cf-connecting-ip|x-forwarded-for|true-client-ip|[\"']forwarded[\"']|request\.cf", re.IGNORECASE)
+        for source in (ROOT / "src").glob("*.ts"):
+            with self.subTest(source=source.name):
+                self.assertIsNone(forbidden.search(source.read_text()))
+
     def test_game_v2_exception_does_not_admit_retired_collection_routes(self):
         for path in ("/v2/servers", "/v2/servers/unknown/publish", "/v2/rendezvous",
                      "/v2/servers/" + "a" * 64 + "/update"):

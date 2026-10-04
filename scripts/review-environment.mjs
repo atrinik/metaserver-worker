@@ -470,7 +470,7 @@ function validateResources(resources) {
     exactValue(rate.productionNamespaceReuse, false, "review rate namespace isolation");
   exactArray(resources.rateLimits.map(({ simple }) => simple), [
     { limit: 16, period: 60 }, { limit: 2, period: 60 }, { limit: 3, period: 60 },
-    { limit: 10, period: 60 }, { limit: 10, period: 60 },
+    { limit: 32768, period: 60 }, { limit: 65536, period: 60 },
   ], "review rate policies");
   exactKeys(resources.rendezvousClientRateLimit, [
     "owner", "binding", "namespaceId", "simple", "countedWithinRateLimitNamespaceCeiling", "productionNamespaceReuse",
@@ -479,7 +479,7 @@ function validateResources(resources) {
   exactValue(resources.rendezvousClientRateLimit.binding, "RENDEZVOUS_CLIENT_RATE_LIMITER", "review client rate binding");
   exactValue(resources.rendezvousClientRateLimit.namespaceId, "2202", "review client rate namespace");
   exactKeys(resources.rendezvousClientRateLimit.simple, ["limit", "period"], "review client rate policy");
-  exactValue(resources.rendezvousClientRateLimit.simple.limit, 60, "review client rate limit");
+  exactValue(resources.rendezvousClientRateLimit.simple.limit, 65536, "review client rate limit");
   exactValue(resources.rendezvousClientRateLimit.simple.period, 60, "review client rate period");
   exactValue(resources.rendezvousClientRateLimit.countedWithinRateLimitNamespaceCeiling, true, "review rate ceiling accounting");
   exactKeys(resources.secrets, ["owner", "names", "epochIds", "productionValueReuse", "buildReadable"], "review secrets");
@@ -535,7 +535,7 @@ function validateConfigurationMaterialization(value) {
       workersDevPrivateSubdomain: "exact-dedicated-live-account-subdomain-readback",
     },
     sources: [
-      { role: "core", path: "wrangler.jsonc", sha256: "ad32c2b69de90e76f241e00a4003d497c8078e50e87ddafdbbd22e0c26e94346" },
+      { role: "core", path: "wrangler.jsonc", sha256: "d74f963f3e167563661a78c9f9c0972431940e69f2a6b24f302be44cc3de28d1" },
       { role: "publisher", path: "wrangler.publisher.jsonc", sha256: "b847b3d35c239545ceb3ff15afa17a05e39f0de590e89a414aaf21220d56d01d" },
       { role: "rendezvous", path: "wrangler.rendezvous.jsonc", sha256: "10b32a4c9544c8153950a25db080824a72a6f5c621688e7d8accaf8b984b4e38" },
     ],

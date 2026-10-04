@@ -63,6 +63,25 @@ class WranglerSecurityConfigurationTests(unittest.TestCase):
         ):
             self.assertNotIn(retired, {binding["name"] for binding in bindings})
 
+    def test_shared_ingress_circuits_cover_supported_cohort_bursts(self) -> None:
+        # Arithmetic capacity contract, not provider throughput/cost qualification.
+        root = Path(__file__).resolve().parents[1]
+        publisher = json.loads((root / "wrangler.publisher.jsonc").read_text())
+        rendezvous = json.loads((root / "wrangler.rendezvous.jsonc").read_text())
+        pub = publisher["ratelimits"][0]["simple"]
+        rv = {item["name"]: item["simple"] for item in rendezvous["ratelimits"]}
+        self.assertEqual(pub, {"limit": 32768, "period": 60})
+        self.assertEqual(rv["GLOBAL_RATE_LIMITER"], {"limit": 65536, "period": 60})
+        self.assertEqual(rv["RENDEZVOUS_CLIENT_RATE_LIMITER"], {"limit": 65536, "period": 60})
+        identities = 512
+        publisher_burst = identities * 2 * (16 + 2)
+        resolve_burst = identities * 60
+        client_burst = identities * 16 * (60 // 15) + resolve_burst
+        self.assertEqual((publisher_burst, resolve_burst, client_burst), (18432, 30720, 63488))
+        self.assertGreaterEqual(pub["limit"], publisher_burst)
+        self.assertGreaterEqual(rv["GLOBAL_RATE_LIMITER"]["limit"], resolve_burst)
+        self.assertGreaterEqual(rv["RENDEZVOUS_CLIENT_RATE_LIMITER"]["limit"], client_burst)
+
     def test_source_tag_secrets_and_logging_policy_are_pinned(self) -> None:
         self.assertEqual(
             set(self.configuration["secrets"]["required"]),
@@ -187,21 +206,11 @@ class WranglerSecurityConfigurationTests(unittest.TestCase):
             {
                 name: self.configuration["vars"][name]
                 for name in (
-                    "RENDEZVOUS_CLIENT_PAIR_BURST_LIMIT",
-                    "RENDEZVOUS_CLIENT_PAIR_WINDOW_SECONDS",
-                    "RENDEZVOUS_CLIENT_PAIR_INITIAL_COOLDOWN_SECONDS",
-                    "RENDEZVOUS_CLIENT_PAIR_MAXIMUM_COOLDOWN_SECONDS",
-                    "RENDEZVOUS_CLIENT_PAIR_RESET_SECONDS",
                     "RENDEZVOUS_ACTIVE_CLIENT_LIMIT",
                     "RENDEZVOUS_CLIENT_SESSION_SECONDS",
                 )
             },
             {
-                "RENDEZVOUS_CLIENT_PAIR_BURST_LIMIT": "20",
-                "RENDEZVOUS_CLIENT_PAIR_WINDOW_SECONDS": "60",
-                "RENDEZVOUS_CLIENT_PAIR_INITIAL_COOLDOWN_SECONDS": "30",
-                "RENDEZVOUS_CLIENT_PAIR_MAXIMUM_COOLDOWN_SECONDS": "900",
-                "RENDEZVOUS_CLIENT_PAIR_RESET_SECONDS": "1800",
                 "RENDEZVOUS_ACTIVE_CLIENT_LIMIT": "16",
                 "RENDEZVOUS_CLIENT_SESSION_SECONDS": "15",
             },
@@ -508,7 +517,7 @@ class DynamicServiceBoundaryConfigurationTests(unittest.TestCase):
         }
         self.assertEqual(
             rendezvous_limits["RENDEZVOUS_CLIENT_RATE_LIMITER"],
-            {"limit": 60, "period": 60},
+            {"limit": 65536, "period": 60},
         )
 
     def test_rate_limit_namespaces_are_unique_across_worker_services(self) -> None:

@@ -14,7 +14,7 @@ function environment(fetch: (request:Request)=>Promise<Response>) {
     SOURCE_TAG_KEY_PREVIOUS_ID:"previous",SOURCE_TAG_KEY_PREVIOUS:"AQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQE"} as unknown as RendezvousEnv};
 }
 describe("private access edge ingress",()=>{
-  it("charges source admission before lookup and forwards only a bounded POST body",async()=>{
+  it("charges shared admission before lookup and forwards only a bounded POST body",async()=>{
     const fetch=vi.fn(async(request:Request)=>{
       expect(request.url).toBe(target); expect(request.url).not.toContain(capability);
       expect(request.headers.has("CF-Connecting-IP")).toBe(false);
@@ -27,6 +27,19 @@ describe("private access edge ingress",()=>{
     expect(response.status).toBe(404); expect(response.headers.get("Cache-Control")).toBe("no-store");
     expect(fetch).toHaveBeenCalledTimes(1); expect(configured.limit).toHaveBeenCalled();
     expect(configured.limit.mock.invocationCallOrder[0]).toBeLessThan(fetch.mock.invocationCallOrder[0]);
+  });
+  it("does not inspect addresses and shares one fixed resolve ingress key",async()=>{
+    const fetch=vi.fn(async(request:Request)=>{
+      expect([...request.headers.keys()]).toEqual(["content-type"]);
+      return Response.json({error:{code:"access_unavailable"}},{status:404,headers:{"Cache-Control":"no-store","X-Content-Type-Options":"nosniff"}});
+    });
+    const configured=environment(fetch);
+    for(const address of [undefined,"192.0.2.5","2001:db8::1","not an address"]){
+      const headers=new Headers({"Content-Type":"application/json"});
+      if(address!==undefined){headers.set("CF-Connecting-IP",address);headers.set("X-Forwarded-For",address);headers.set("Forwarded",address)}
+      expect((await rendezvousWorker.fetch(new Request(target,{method:"POST",headers,body}),configured.env)).status).toBe(404);
+    }
+    expect(configured.limit.mock.calls).toEqual(Array.from({length:4},()=>[{key:"shared-ingress-v1.resolve"}]));
   });
   it("rejects secret-bearing URL and browser credential alternatives before dispatch",async()=>{
     const fetch=vi.fn(async()=>new Response(null,{status:500})); const configured=environment(fetch);

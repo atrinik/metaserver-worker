@@ -632,26 +632,6 @@ export function validateTopology(contract, configs, { production = false } = {})
   );
   boundedIntegerVariable(core.vars, "PUBLISH_SERVER_DAILY_LIMIT", 1, 48);
   boundedIntegerVariable(core.vars, "RENDEZVOUS_SERVER_DAILY_LIMIT", 1, 50);
-  boundedIntegerVariable(core.vars, "RENDEZVOUS_CLIENT_PAIR_BURST_LIMIT", 1, 20);
-  boundedIntegerVariable(core.vars, "RENDEZVOUS_CLIENT_PAIR_WINDOW_SECONDS", 1, 60);
-  const initialCooldown = boundedIntegerVariable(
-    core.vars,
-    "RENDEZVOUS_CLIENT_PAIR_INITIAL_COOLDOWN_SECONDS",
-    1,
-    30,
-  );
-  const maximumCooldown = boundedIntegerVariable(
-    core.vars,
-    "RENDEZVOUS_CLIENT_PAIR_MAXIMUM_COOLDOWN_SECONDS",
-    initialCooldown,
-    900,
-  );
-  boundedIntegerVariable(
-    core.vars,
-    "RENDEZVOUS_CLIENT_PAIR_RESET_SECONDS",
-    maximumCooldown,
-    1_800,
-  );
   boundedIntegerVariable(core.vars, "RENDEZVOUS_ACTIVE_CLIENT_LIMIT", 1, 16);
   boundedIntegerVariable(core.vars, "RENDEZVOUS_CLIENT_SESSION_SECONDS", 1, 15);
   boundedIntegerVariable(

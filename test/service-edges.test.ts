@@ -186,7 +186,7 @@ describe("publisher edge Worker", () => {
       configured.env,
     );
     expect(response.status).toBe(200);
-    expect(configured.limit).toHaveBeenCalledTimes(2);
+    expect(configured.limit).toHaveBeenCalledTimes(1);
     expect(fetch).toHaveBeenCalledTimes(1);
     expect(forwarded).toBeDefined();
     expect(forwarded?.headers.has("CF-Connecting-IP")).toBe(false);
@@ -228,7 +228,7 @@ describe("publisher edge Worker", () => {
       configured.env,
     )).status).toBe(200);
     expect(fetch).toHaveBeenCalledTimes(1);
-    expect(configured.limit).toHaveBeenCalledTimes(2);
+    expect(configured.limit).toHaveBeenCalledTimes(1);
   });
 
   it("turns an unsafe coordinator response into a fixed error", async () => {
@@ -265,7 +265,7 @@ describe("rendezvous edge Worker", () => {
     ), canary)).status).toBe(421);
   });
 
-  it("forwards a client upgrade with opaque aliases and no raw source", async () => {
+  it("forwards a client upgrade without requester identifiers", async () => {
     let forwarded: Request | undefined;
     const pair = new WebSocketPair();
     const configured = rendezvousEnvironment(async (request) => {
@@ -283,7 +283,7 @@ describe("rendezvous edge Worker", () => {
     expect(response.status).toBe(101);
     expect(response.webSocket).not.toBeNull();
     expect(configured.globalLimit).not.toHaveBeenCalled();
-    expect(configured.clientLimit).toHaveBeenCalledTimes(2);
+    expect(configured.clientLimit).toHaveBeenCalledTimes(1);
     expect(forwarded?.headers.has("CF-Connecting-IP")).toBe(false);
     expect(forwarded?.headers.has("Cookie")).toBe(false);
     expect(forwarded?.cf).toBeUndefined();
@@ -293,9 +293,7 @@ describe("rendezvous edge Worker", () => {
       INTERNAL_PAIR_TAG_HEADER,
       INTERNAL_PAIR_TAG_PREVIOUS_HEADER,
     ]) {
-      expect(forwarded?.headers.get(header)).toMatch(
-        /^v1\.(2026-08-a|2026-07-a)\.[A-Za-z0-9_-]{43}$/,
-      );
+      expect(forwarded?.headers.has(header)).toBe(false);
     }
     pair[1].accept();
     pair[1].close(1000, "Test complete");
@@ -312,7 +310,7 @@ describe("rendezvous edge Worker", () => {
       configured.env,
     );
     expect(response.status).toBe(401);
-    expect(configured.globalLimit).toHaveBeenCalledTimes(2);
+    expect(configured.globalLimit).toHaveBeenCalledTimes(1);
     expect(configured.clientLimit).not.toHaveBeenCalled();
     expect(forwarded?.headers.has(INTERNAL_PAIR_TAG_HEADER)).toBe(false);
     expect(forwarded?.headers.has(INTERNAL_PAIR_TAG_PREVIOUS_HEADER)).toBe(false);

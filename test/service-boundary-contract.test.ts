@@ -141,8 +141,6 @@ beforeEach(async () => {
     env.DB.prepare("DELETE FROM directory_entries"),
     env.DB.prepare("DELETE FROM server_presence"),
     env.DB.prepare("DELETE FROM request_budgets"),
-    env.DB.prepare("DELETE FROM rendezvous_pair_attempts"),
-    env.DB.prepare("DELETE FROM rendezvous_pair_cooldowns"),
     env.DB.prepare("DELETE FROM classic_identity_modes"),
     env.DB.prepare(
       `UPDATE classic_receiver_mode
@@ -269,7 +267,7 @@ describe("in-process service-boundary contract", () => {
       expect(offline.status).toBe(404);
     }
     expect(await env.DB.prepare(
-      "SELECT COUNT(*) AS count FROM rendezvous_pair_attempts",
+      "SELECT COUNT(*) AS count FROM sqlite_schema WHERE name='rendezvous_pair_attempts'",
     ).first<number>("count")).toBe(0);
   });
 
@@ -355,7 +353,7 @@ describe("in-process service-boundary contract", () => {
     socket?.close(1000, "Test complete");
   });
 
-  it("applies the canonical pair cooldown only after live-target eligibility", async () => {
+  it("does not retain requester tracking or impose a retired source-pair cooldown", async () => {
     const core = coreEnvironment();
     const context = createExecutionContext();
     const published = await publisherWorker.fetch(
@@ -404,7 +402,7 @@ describe("in-process service-boundary contract", () => {
     );
     const clients: WebSocket[] = [];
     try {
-      for (let attempt = 0; attempt < 20; attempt += 1) {
+      for (let attempt = 0; attempt < 21; attempt += 1) {
         const admitted = await rendezvousWorker.fetch(clientRequest(), edge);
         expect(admitted.status).toBe(101);
         const socket = admitted.webSocket;
@@ -415,27 +413,9 @@ describe("in-process service-boundary contract", () => {
         clients.push(socket);
         socket.close(1000, "Test attempt complete");
       }
-      const blocked = await rendezvousWorker.fetch(clientRequest(), edge);
-      expect(blocked.status).toBe(429);
-      expect(blocked.headers.get("Retry-After")).toBe("30");
-      expect(await blocked.json()).toEqual({
-        error: {
-          code: "rate_limited",
-          message: "The request budget has been exhausted.",
-          reason: "rendezvous_client_pair_cooldown",
-          retry_after_seconds: 30,
-        },
-      });
       expect(await env.DB.prepare(
-        `SELECT COUNT(*) AS count FROM request_budgets
-          WHERE scope IN (
-            'rendezvous-client-source',
-            'rendezvous-client-source-server'
-          )`,
+        "SELECT COUNT(*) AS count FROM sqlite_schema WHERE name IN ('rendezvous_pair_attempts','rendezvous_pair_cooldowns')",
       ).first<number>("count")).toBe(0);
-      expect(await env.DB.prepare(
-        "SELECT COUNT(*) AS count FROM rendezvous_pair_cooldowns",
-      ).first<number>("count")).toBe(2);
     } finally {
       for (const client of clients) {
         client.close(1000, "Test cleanup");
