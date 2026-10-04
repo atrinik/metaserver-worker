@@ -53,6 +53,7 @@ import {
   RENDEZVOUS_CLOSE,
   TERMINAL_CLOSE_RETRY_OFFSETS_MS,
   INTERNAL_RENDEZVOUS_PUBLISH_URL,
+  INTERNAL_RENDEZVOUS_GENERATION_HEADER,
   validateInternalRendezvousUpgrade,
   validateInternalRendezvousPublication,
 } from "./rendezvous-contract";
@@ -68,8 +69,6 @@ import {
   persistRendezvousPublication,
   readPublishedGeneration,
   readPublisherReplayState,
-  isClassicV1GloballyRetired,
-  isClassicV1ProfileRetired,
   rendezvousPublicationMatches,
 } from "./rendezvous-publication";
 
@@ -215,7 +214,8 @@ export class RendezvousRoom extends DurableObject<CoreEnv> {
       return this.serializeRoomOperation(async () => {
         await this.ensureInitialized();
         const server = this.reconcileActiveServer();
-        if (this.currentGeneration !== generation || server?.attachment.generation !== generation) {
+        if (this.currentGeneration !== generation || server?.attachment.generation !== generation ||
+            !server.attachment.inviteProtocol) {
           return roomError("server_unavailable");
         }
         if (request.url === INTERNAL_ACCESS_REVOKE_URL) {
@@ -308,13 +308,6 @@ export class RendezvousRoom extends DurableObject<CoreEnv> {
   private async commitPublication(
     publication: InternalRendezvousPublication,
   ): Promise<Response> {
-    if (
-      publication.directoryProfile === "classic-v1" &&
-      (await isClassicV1GloballyRetired(this.env.DB) ||
-        await isClassicV1ProfileRetired(this.env.DB, publication.serverId))
-    ) {
-      return profileRetiredResponse();
-    }
     const conflict = await this.signedPublicationConflict(publication);
     if (conflict !== null) {
       return conflict === "exhausted"
@@ -342,13 +335,6 @@ export class RendezvousRoom extends DurableObject<CoreEnv> {
           publication.serverId,
         );
         const conflict = await this.signedPublicationConflict(publication);
-        if (
-          publication.directoryProfile === "classic-v1" &&
-          (await isClassicV1GloballyRetired(this.env.DB) ||
-            await isClassicV1ProfileRetired(this.env.DB, publication.serverId))
-        ) {
-          return profileRetiredResponse();
-        }
         if (conflict === null) {
           throw new Error("Publisher replay state did not explain rejection");
         }
@@ -407,36 +393,13 @@ export class RendezvousRoom extends DurableObject<CoreEnv> {
   }
 
   private async reconcileUpgradeGeneration(generation: string): Promise<boolean> {
-    const serverId = this.ctx.id.name;
-    if (serverId === undefined || !TOKEN_GENERATION.test(serverId)) {
-      // Production rooms are always named with a verified Classic server ID.
-      // Descriptive names are reserved for isolated Durable Object tests,
-      // which intentionally exercise the room without coordinator-owned D1
-      // publication state.
-      return this.currentGeneration === null ||
-        this.currentGeneration === generation;
+    const room = this.ctx.id.name ?? "";
+    const game = room.startsWith("game-v2:");
+    const serverId = game ? room.slice(8) : room;
+    if (!TOKEN_GENERATION.test(serverId)) {
+      return this.currentGeneration === null || this.currentGeneration === generation;
     }
-    const v2Generation = await readPublishedGeneration(
-      this.env.DB,
-      "classic-v2",
-      serverId,
-    );
-    if (v2Generation !== null) {
-      await this.rotateTokenGeneration(v2Generation);
-      return v2Generation === generation;
-    }
-    if (
-      await isClassicV1GloballyRetired(this.env.DB) ||
-      await isClassicV1ProfileRetired(this.env.DB, serverId)
-    ) {
-      await this.rotateTokenGeneration(null);
-      return false;
-    }
-    const v1Generation = await this.reconcilePublishedGeneration(
-      "classic-v1",
-      serverId,
-    );
-    return v1Generation === generation;
+    return await this.reconcilePublishedGeneration(game ? "game-v2" : "classic-v3", serverId) === generation;
   }
 
   private async reconcilePublishedGeneration(
@@ -1625,9 +1588,17 @@ export class RendezvousRoom extends DurableObject<CoreEnv> {
       return;
     }
 
-    if (target.attachment.accessRedemption && !await this.accessStillLive(target.attachment)) {
-      this.failClient(target.socket, target.attachment, "authorization_failed", RENDEZVOUS_CLOSE.authorizationFailed);
-      return;
+    if (target.attachment.accessRedemption) {
+      const live = await this.accessStillLive(target.attachment);
+      const latest = readClientAttachment(target.socket);
+      const latestServer = this.reconcileActiveServer();
+      if (!live || latest === null || latest.stage === "terminal" ||
+          latest.connectionId !== target.attachment.connectionId || latest.generation !== this.currentGeneration ||
+          target.socket.readyState !== WebSocket.OPEN || latestServer?.socket !== socket ||
+          latestServer.attachment.controlId !== current.controlId) {
+        if (latest !== null) this.failClient(target.socket, latest, "authorization_failed", RENDEZVOUS_CLOSE.authorizationFailed);
+        return;
+      }
     }
 
     if (parsed.signal.type === "auth_challenge") {
@@ -2759,7 +2730,7 @@ function logRoomFailure(code: UnexpectedErrorCode): void {
 function publicationRoomName(publication: InternalRendezvousPublication): string {
   return publication.directoryProfile.startsWith("classic-")
     ? publication.serverId
-    : `game-v1:${publication.serverId}`;
+    : `game-v2:${publication.serverId}`;
 }
 
 function profileRetiredResponse(): Response {

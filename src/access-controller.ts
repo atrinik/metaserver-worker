@@ -55,6 +55,11 @@ export async function handleAccessResolve(
   const parsed = parseAccessResolveRequest(await readBoundedPublishBody(request, 512));
   const index = await accessRouteIndex(parsed.routeCapability);
   try {
+    // Remember observed expiry before returning the uniform denial, so a later
+    // wall-clock regression cannot make a previously expired route usable.
+    await env.DB.prepare(`UPDATE access_routes SET state='expired', revoked_at=?
+      WHERE route_index=? AND state='active' AND expires_at IS NOT NULL AND expires_at<=?`)
+      .bind(now, index, now).run();
     const eligible = await env.DB.prepare(`SELECT route.profile,route.server_id,presence.rendezvous_generation
       FROM access_routes route JOIN server_presence presence ON presence.server_id=route.server_id
         AND presence.profile=CASE route.profile WHEN 'classic' THEN 'classic-v3' ELSE 'game-v2' END

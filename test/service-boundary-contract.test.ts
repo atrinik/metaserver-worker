@@ -268,7 +268,8 @@ describe("in-process service-boundary contract", () => {
       const token = String(index + 1).repeat(64);
       await persistRendezvousPublication(env.DB, {
         serverId,
-        directoryProfile: "classic-v1",
+        directoryProfile: "classic-v3",
+        certificate: "AA==",
         publisherSequence: String(index + 1),
         publisherNonce: String(index + 1).repeat(32),
         publisherNonceExpiresAt: now + 86_400,

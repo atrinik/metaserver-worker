@@ -1,3 +1,4 @@
+import { isCanonicalHostname } from "./hostname";
 import {
   HTTP_ERROR_CODES,
   HTTP_RATE_LIMIT_REASONS,
@@ -692,13 +693,13 @@ export async function validateAccessServiceResponse(
   if (value !== null && kind === "routes" && value.schema === "atrinik-access-route-result-v1" &&
       id(value.requestId) && ["reserved","active","revoked","conflict","expired","not_found","unavailable"].includes(value.outcome as string) &&
       (value.reservationId === null || id(value.reservationId)) &&
-      (value.reservationExpiresAt === null || decimal(value.reservationExpiresAt)) && decimal(value.tokenRevision)) {
+      (value.reservationExpiresAt === null || decimal(value.reservationExpiresAt)) && decimal(value.tokenRevision) && BigInt(value.tokenRevision) <= 18446744073709551615n) {
     canonical = JSON.stringify({ schema: value.schema, requestId: value.requestId, outcome: value.outcome,
       reservationId: value.reservationId, reservationExpiresAt: value.reservationExpiresAt, tokenRevision: value.tokenRevision });
   }
   if (value !== null && kind === "resolve" && value.schema === "atrinik-access-resolved-v1" &&
       (value.profile === "classic" || value.profile === "game") && hash(value.serverId) &&
-      typeof value.certificate === "string" && value.certificate.length <= 2732 &&
+      typeof value.certificate === "string" && value.certificate.length > 0 && value.certificate.length <= 2732 &&
       /^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/.test(value.certificate) &&
       typeof value.name === "string" && new TextEncoder().encode(value.name).byteLength <= 80 &&
       value.name.length > 0 && !/[\x00-\x1f\x7f]/.test(value.name) &&
@@ -708,7 +709,7 @@ export async function validateAccessServiceResponse(
     if (value.endpoint !== undefined) {
       const candidate = value.endpoint;
       if (!isRecord(candidate) || typeof candidate.hostname !== "string" ||
-          !/^[a-z0-9.-]{3,253}$/.test(candidate.hostname) ||
+          !isCanonicalHostname(candidate.hostname) ||
           typeof candidate.port !== "number" || !Number.isInteger(candidate.port) || candidate.port < 1 || candidate.port > 65535 ||
           Object.keys(candidate).join(",") !== "hostname,port") return rejectUnsafeDynamicResponse(response);
       endpoint = { hostname: candidate.hostname, port: candidate.port };

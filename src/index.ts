@@ -42,7 +42,6 @@ import {
 } from "./protocol";
 import {
   authenticateClassicPublish,
-  authenticateClassicV2Publish,
   authenticateGamePublish,
   isValidPublisherSequence,
   readBoundedPublishBody,
@@ -65,7 +64,6 @@ import {
 } from "./rendezvous-contract";
 import type { InternalRendezvousPublication } from "./rendezvous-contract";
 import {
-  isClassicV1GloballyRetired,
   readPublishedGeneration,
 } from "./rendezvous-publication";
 import {
@@ -172,12 +170,6 @@ export async function handlePublisherCoordinatorRequest(
         : env.GAME_PUBLISH_ENABLED,
       control.routeDisabledRetrySeconds,
     );
-    if (
-      route.publisherProfile === "classic-v1" &&
-      await isClassicV1GloballyRetired(env.DB)
-    ) {
-      return profileRetiredResponse();
-    }
     const internal = consumePublisherCoordinatorRequest(request);
     const now = Math.floor(Date.now() / 1_000);
     return route.generation === "classic"
@@ -321,27 +313,8 @@ async function publishClassicServer(
   ctx: ExecutionContext,
 ): Promise<Response> {
   const body = await readBoundedPublishBody(request, route.maximumBodyBytes);
-  if (
-    route.publisherProfile !== "classic-v1" &&
-    route.publisherProfile !== "classic-v2"
-  ) {
-    throw new Error("Classic route carried a non-Classic profile");
-  }
-  const authenticated = route.publisherProfile === "classic-v2"
-    ? await authenticateClassicV2Publish(
-      request,
-      body,
-      route.serverId,
-      route.authority,
-      now,
-    )
-    : await authenticateClassicPublish(
-      request,
-      body,
-      route.serverId,
-      route.authority,
-      now,
-    );
+  if (route.publisherProfile !== "classic-v3") throw new Error("Wrong Classic publisher profile");
+  const authenticated = await authenticateClassicPublish(request, body, route.serverId, route.authority, now);
 
   await enforceAuthenticatedPublishBudget(
     env,
@@ -357,9 +330,7 @@ async function publishClassicServer(
   );
 
   const payload = authenticated.payload;
-  const authorizationRequired = "accessCodeRequired" in payload
-    ? payload.accessCodeRequired
-    : payload.passwordRequired;
+  const authorizationRequired = payload.accessRequired;
   const rendezvousToken = randomToken();
   const publication = {
     serverId: route.serverId,
@@ -377,6 +348,7 @@ async function publishClassicServer(
     tokenHash: await sha256Hex(rendezvousToken),
     now,
     visibilityCutoff: now - control.listingTtlSeconds,
+    certificate: payload.certificate,
     name: payload.name,
     playersCount: payload.playersCount,
     version: payload.version,
@@ -459,7 +431,7 @@ async function publishGameServer(
     route.serverId,
     control.publishServerDaily,
     now,
-    "game-v1",
+    "game-v2",
   );
   await enforceServerIdentityDenial(env, route.serverId, "publish-game");
 
@@ -467,20 +439,21 @@ async function publishGameServer(
   const rendezvousToken = randomToken();
   const publication = {
     serverId: route.serverId,
-    directoryProfile: "game-v1",
+    directoryProfile: "game-v2",
     publisherSequence: authenticated.sequence,
     publisherNonce: authenticated.nonce,
     publisherNonceExpiresAt: authenticated.nonceExpiresAt,
     commitToken: randomToken(),
     expectedGeneration: await readPublishedGeneration(
       env.DB,
-      "game-v1",
+      "game-v2",
       route.serverId,
     ),
     generation: randomToken(),
     tokenHash: await sha256Hex(rendezvousToken),
     now,
     visibilityCutoff: now - control.listingTtlSeconds,
+    certificate: payload.certificate,
     name: payload.name,
     description: payload.description,
     region: payload.region ?? null,
@@ -495,7 +468,7 @@ async function publishGameServer(
     quicHost: payload.endpoint?.hostname ?? "",
     quicPort: payload.endpoint?.port ?? 1,
     quicCertSha256: route.serverId,
-    authorizationRequired: payload.passwordRequired,
+    authorizationRequired: payload.accessRequired,
     directoryFingerprint: await gameDirectoryFingerprint({
       serverId: route.serverId,
       name: payload.name,
@@ -509,7 +482,7 @@ async function publishGameServer(
       status: payload.status,
       quicHost: payload.endpoint?.hostname ?? "",
       quicPort: payload.endpoint?.port ?? 1,
-      passwordRequired: payload.passwordRequired,
+      accessRequired: payload.accessRequired,
     }),
   } satisfies InternalRendezvousPublication;
   const committed = await commitRendezvousPublication(env, publication);
@@ -533,7 +506,7 @@ async function publishGameServer(
     await committed.body?.cancel();
     throw new Error("Game publication did not commit");
   }
-  scheduleDirectoryReconciliation(env, ctx, committed, "game-v1");
+  scheduleDirectoryReconciliation(env, ctx, committed, "game-v2");
   return Response.json(
     { status: "ok", rendezvousToken },
     {
@@ -551,7 +524,7 @@ async function commitRendezvousPublication(
 ): Promise<Response> {
   const roomName = publication.directoryProfile.startsWith("classic-")
     ? publication.serverId
-    : `game-v1:${publication.serverId}`;
+    : `game-v2:${publication.serverId}`;
   return env.RENDEZVOUS.getByName(roomName).fetch(
     new Request(INTERNAL_RENDEZVOUS_PUBLISH_URL, {
       method: "POST",
@@ -667,15 +640,15 @@ interface GameDirectoryFingerprintInput {
   readonly status: "online" | "full" | "maintenance";
   readonly quicHost: string;
   readonly quicPort: number;
-  readonly passwordRequired: boolean;
+  readonly accessRequired: boolean;
 }
 
 async function classicDirectoryFingerprint(
-  profile: "classic-v1" | "classic-v2",
+  profile: "classic-v3" | "classic-v3",
   input: ClassicDirectoryFingerprintInput,
 ): Promise<string> {
   return sha256Hex(JSON.stringify({
-    schema: profile === "classic-v2"
+    schema: profile === "classic-v3"
       ? "atrinik-classic-directory-entry-v2"
       : "atrinik-classic-directory-entry-v1",
     serverId: input.serverId,
@@ -683,9 +656,9 @@ async function classicDirectoryFingerprint(
     playersCount: input.playersCount,
     version: input.version,
     textComment: input.textComment,
-    ...(profile === "classic-v2"
-      ? { accessCodeRequired: input.authorizationRequired }
-      : { passwordRequired: input.authorizationRequired }),
+    ...(profile === "classic-v3"
+      ? { accessRequired: input.authorizationRequired }
+      : { accessRequired: input.authorizationRequired }),
     certificateSha256: input.quicCertSha256,
     ...(input.quicHost === ""
       ? {}
@@ -713,7 +686,7 @@ async function gameDirectoryFingerprint(
       capacity: input.playersCapacity,
     },
     status: input.status,
-    passwordRequired: input.passwordRequired,
+    accessRequired: input.accessRequired,
     ...(input.quicHost === ""
       ? {}
       : { endpoint: { hostname: input.quicHost, port: input.quicPort } }),
@@ -725,7 +698,7 @@ async function enforceAuthenticatedPublishBudget(
   serverId: string,
   dailyLimit: number,
   now: number,
-  profile: "classic-v1" | "classic-v2" | "game-v1",
+  profile: "classic-v3" | "classic-v3" | "game-v2",
 ): Promise<void> {
   const scope = profile.startsWith("classic-")
     ? "publish-server"

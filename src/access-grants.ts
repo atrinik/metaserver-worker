@@ -64,7 +64,14 @@ export async function redeemAccessGrant(
   clientNonce: string, tags: RendezvousReplayTags, redemptionId: string,
   now: number, freshness: number,
 ): Promise<GrantRedemption | null> {
-  const row = await db.prepare(`UPDATE access_grants SET redemption_id=?
+  const results = await db.batch([
+    db.prepare(`UPDATE access_routes SET state='expired',revoked_at=? WHERE state='active'
+      AND expires_at IS NOT NULL AND expires_at<=? AND route_index IN (
+        SELECT route_index FROM access_grants WHERE profile=? AND server_id=?
+          AND (tag_current IN (?,?) OR tag_previous IN (?,?)))`).bind(now,now,profile,serverId,...tags,...tags),
+    db.prepare(`DELETE FROM access_grants WHERE expires_at<=? AND
+      (tag_current IN (?,?) OR tag_previous IN (?,?))`).bind(now,...tags,...tags),
+    db.prepare(`UPDATE access_grants SET redemption_id=?
     WHERE profile=? AND server_id=? AND generation=? AND client_nonce=?
       AND expires_at>? AND redemption_id IS NULL
       AND (tag_current IN (?,?) OR tag_previous IN (?,?))
@@ -76,8 +83,10 @@ export async function redeemAccessGrant(
     RETURNING route_index,token_revision,generation,expires_at,redemption_id`).bind(
       redemptionId, profile, serverId, generation, clientNonce, now, ...tags, ...tags,
       now, now - freshness,
-    ).first<GrantRedemption>();
-  return row;
+    ),
+  ]);
+  if (results.some((result) => !result.success)) throw new Error("Access redemption failed");
+  return (results[2].results[0] as unknown as GrantRedemption | undefined) ?? null;
 }
 
 /** Recheck before every bounded candidate dispatch, including lost revoke events. */

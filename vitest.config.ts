@@ -32,6 +32,8 @@ export default defineConfig({
       miniflare: {
         d1Databases: ["DB"],
         bindings: {
+          CLASSIC_DIRECTORY_CUTOVER_MODE: "v6-production",
+          GAME_DIRECTORY_CUTOVER_MODE: "v2-production",
           TEST_MIGRATIONS: await readD1Migrations(
             path.join(projectDirectory, "migrations"),
           ),
