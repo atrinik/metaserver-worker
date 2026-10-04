@@ -130,34 +130,6 @@ export interface ClientCandidateSignal {
   readonly ticket: string;
 }
 
-export interface AuthInitSignal {
-  readonly type: "auth_init";
-  readonly version: 1;
-  readonly ticket: string;
-  readonly invite_id: string;
-}
-
-export interface AuthChallengeSignal {
-  readonly type: "auth_challenge";
-  readonly version: 1;
-  readonly ticket: string;
-  readonly challenge: string;
-}
-
-export interface AuthProofSignal {
-  readonly type: "auth_proof";
-  readonly version: 1;
-  readonly ticket: string;
-  readonly proof: string;
-}
-
-export interface AuthResultSignal {
-  readonly type: "auth_result";
-  readonly version: 1;
-  readonly ticket: string;
-  readonly authorized: boolean;
-}
-
 export type ServerSignalCandidateKind = Extract<
   DirectCandidateKind,
   "lan" | "ipv6" | "mapped" | "srflx"
@@ -177,10 +149,6 @@ export interface CompleteSignal {
 }
 
 export type RendezvousSignal =
-  | AuthInitSignal
-  | AuthChallengeSignal
-  | AuthProofSignal
-  | AuthResultSignal
   | ClientCandidateSignal
   | ServerCandidateSignal
   | CompleteSignal;
@@ -225,18 +193,9 @@ const SERVER_CANDIDATE_KEYS = [
   "ticket",
 ] as const;
 const COMPLETE_KEYS = ["type", "ticket"] as const;
-const AUTH_INIT_KEYS = ["type", "version", "ticket", "invite_id"] as const;
-const AUTH_CHALLENGE_KEYS = [
-  "type", "version", "ticket", "challenge",
-] as const;
-const AUTH_PROOF_KEYS = ["type", "version", "ticket", "proof"] as const;
-const AUTH_RESULT_KEYS = [
-  "type", "version", "ticket", "authorized",
-] as const;
-
 export interface InternalRendezvousUpgrade {
   readonly role: RendezvousRole;
-  readonly inviteProtocol: boolean;
+  readonly accessProtocol: boolean;
   readonly authorizationRequired: boolean;
   readonly generation: string;
 }
@@ -370,15 +329,15 @@ export function validateInternalRendezvousUpgrade(
   ) {
     return null;
   }
-  const inviteProtocol = protocol === "access-tokens-v1";
+  const accessProtocol = protocol === "access-tokens-v1";
   const authorizationRequired = authorization === "required";
   if (
     (role === "server" && authorizationRequired) ||
-    (role === "client" && inviteProtocol !== authorizationRequired)
+    (role === "client" && accessProtocol !== authorizationRequired)
   ) {
     return null;
   }
-  return { role, inviteProtocol, authorizationRequired, generation };
+  return { role, accessProtocol, authorizationRequired, generation };
 }
 
 /**
@@ -592,9 +551,6 @@ export function parseRendezvousSignal(
     return { ok: false, error: "unsupported_signal" };
   }
   const serialized = serializeRendezvousSignal(signal);
-  if (isAuthorizationSignal(signal) && message !== serialized) {
-    return { ok: false, error: "unsupported_signal" };
-  }
   return {
     ok: true,
     signal,
@@ -608,34 +564,6 @@ export function parseRendezvousSignal(
  */
 export function serializeRendezvousSignal(signal: RendezvousSignal): string {
   switch (signal.type) {
-    case "auth_init":
-      return JSON.stringify({
-        type: signal.type,
-        version: signal.version,
-        ticket: signal.ticket,
-        invite_id: signal.invite_id,
-      });
-    case "auth_challenge":
-      return JSON.stringify({
-        type: signal.type,
-        version: signal.version,
-        ticket: signal.ticket,
-        challenge: signal.challenge,
-      });
-    case "auth_proof":
-      return JSON.stringify({
-        type: signal.type,
-        version: signal.version,
-        ticket: signal.ticket,
-        proof: signal.proof,
-      });
-    case "auth_result":
-      return JSON.stringify({
-        type: signal.type,
-        version: signal.version,
-        ticket: signal.ticket,
-        authorized: signal.authorized,
-      });
     case "client_candidate":
       return JSON.stringify({
         type: signal.type,
@@ -662,70 +590,6 @@ export function serializeRendezvousSignal(signal: RendezvousSignal): string {
 function parseSignalObject(
   fields: Record<string, unknown>,
 ): RendezvousSignal | null {
-  if (fields.type === "auth_init") {
-    if (
-      !hasExactKeys(fields, AUTH_INIT_KEYS) ||
-      fields.version !== 1 ||
-      !isTicket(fields.ticket) ||
-      !isInviteId(fields.invite_id)
-    ) {
-      return null;
-    }
-    return {
-      type: "auth_init",
-      version: 1,
-      ticket: fields.ticket,
-      invite_id: fields.invite_id,
-    };
-  }
-  if (fields.type === "auth_challenge") {
-    if (
-      !hasExactKeys(fields, AUTH_CHALLENGE_KEYS) ||
-      fields.version !== 1 ||
-      !isTicket(fields.ticket) ||
-      !isTicket(fields.challenge)
-    ) {
-      return null;
-    }
-    return {
-      type: "auth_challenge",
-      version: 1,
-      ticket: fields.ticket,
-      challenge: fields.challenge,
-    };
-  }
-  if (fields.type === "auth_proof") {
-    if (
-      !hasExactKeys(fields, AUTH_PROOF_KEYS) ||
-      fields.version !== 1 ||
-      !isTicket(fields.ticket) ||
-      !isTicket(fields.proof)
-    ) {
-      return null;
-    }
-    return {
-      type: "auth_proof",
-      version: 1,
-      ticket: fields.ticket,
-      proof: fields.proof,
-    };
-  }
-  if (fields.type === "auth_result") {
-    if (
-      !hasExactKeys(fields, AUTH_RESULT_KEYS) ||
-      fields.version !== 1 ||
-      !isTicket(fields.ticket) ||
-      typeof fields.authorized !== "boolean"
-    ) {
-      return null;
-    }
-    return {
-      type: "auth_result",
-      version: 1,
-      ticket: fields.ticket,
-      authorized: fields.authorized,
-    };
-  }
   if (fields.type === "complete") {
     if (!hasExactKeys(fields, COMPLETE_KEYS) || !isTicket(fields.ticket)) {
       return null;
@@ -857,17 +721,6 @@ function isPublisherReplayMetadata(
 
 function isTicket(value: unknown): value is string {
   return typeof value === "string" && HEX_64.test(value);
-}
-
-function isInviteId(value: unknown): value is string {
-  return typeof value === "string" && HEX_32.test(value);
-}
-
-function isAuthorizationSignal(
-  signal: RendezvousSignal,
-): signal is AuthInitSignal | AuthChallengeSignal | AuthProofSignal | AuthResultSignal {
-  return signal.type === "auth_init" || signal.type === "auth_challenge" ||
-    signal.type === "auth_proof" || signal.type === "auth_result";
 }
 
 function isServerSignalCandidateKind(

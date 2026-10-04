@@ -488,3 +488,25 @@ describe("durable rendezvous replay tags", () => {
     }
   });
 });
+
+
+describe("access grant purpose tags",()=>{
+  it("binds every target dimension and survives one key rotation without retaining the raw grant",async()=>{
+    const previous=await parseSourceTagKeyRing(ROTATING_CONFIGURATION);
+    const successor=await parseSourceTagKeyRing({currentKeyId:"2026-09",currentSecret:"AQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQE",
+      previousKeyId:ROTATING_CONFIGURATION.currentKeyId,previousSecret:ROTATING_CONFIGURATION.currentSecret});
+    const grant="a".repeat(64),nonce="b".repeat(64);
+    const tags=await previous.accessGrantTags(SOURCE_TAG_NAMESPACE,"classic",SERVER_ID,grant,nonce);
+    expect((await successor.accessGrantTags(SOURCE_TAG_NAMESPACE,"classic",SERVER_ID,grant,nonce))[1]).toBe(tags[0]);
+    const separated=await Promise.all([
+      previous.accessGrantTags("other.example.test","classic",SERVER_ID,grant,nonce),
+      previous.accessGrantTags(SOURCE_TAG_NAMESPACE,"game",SERVER_ID,grant,nonce),
+      previous.accessGrantTags(SOURCE_TAG_NAMESPACE,"classic",OTHER_SERVER_ID,grant,nonce),
+      previous.accessGrantTags(SOURCE_TAG_NAMESPACE,"classic",SERVER_ID,"c".repeat(64),nonce),
+      previous.accessGrantTags(SOURCE_TAG_NAMESPACE,"classic",SERVER_ID,grant,"c".repeat(64)),
+    ]);
+    for(const other of separated) expect(other[0]).not.toBe(tags[0]);
+    expect(JSON.stringify(tags)).not.toContain(grant);
+    expect(tags[0]).not.toBe((await previous.rendezvousReplayTags(SOURCE_TAG_NAMESPACE,SERVER_ID,grant))[0]);
+  });
+});

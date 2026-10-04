@@ -57,7 +57,7 @@ import {
   validateInternalRendezvousUpgrade,
   validateInternalRendezvousPublication,
 } from "./rendezvous-contract";
-import { CLASSIC_RENDEZVOUS_INVITE_SUBPROTOCOL } from "./routes";
+import { ACCESS_RENDEZVOUS_SUBPROTOCOL } from "./routes";
 import type {
   CompleteSignal,
   RendezvousTerminalOutcome,
@@ -215,7 +215,7 @@ export class RendezvousRoom extends DurableObject<CoreEnv> {
         await this.ensureInitialized();
         const server = this.reconcileActiveServer();
         if (this.currentGeneration !== generation || server?.attachment.generation !== generation ||
-            !server.attachment.inviteProtocol) {
+            !server.attachment.accessProtocol) {
           return roomError("server_unavailable");
         }
         if (request.url === INTERNAL_ACCESS_REVOKE_URL) {
@@ -275,14 +275,14 @@ export class RendezvousRoom extends DurableObject<CoreEnv> {
         return upgrade.role === "server"
           ? await this.acceptServer(
             now,
-            upgrade.inviteProtocol,
+            upgrade.accessProtocol,
             upgrade.generation,
           )
           : await this.acceptClient(
             now,
             policy,
             upgrade.authorizationRequired,
-            upgrade.inviteProtocol,
+            upgrade.accessProtocol,
             upgrade.generation,
           );
       } catch (error) {
@@ -699,7 +699,7 @@ export class RendezvousRoom extends DurableObject<CoreEnv> {
 
   private async acceptServer(
     now: number,
-    inviteProtocol: boolean,
+    accessProtocol: boolean,
     generation: string,
   ): Promise<Response> {
     try {
@@ -780,13 +780,13 @@ export class RendezvousRoom extends DurableObject<CoreEnv> {
         v: ATTACHMENT_VERSION,
         role: "server",
         current: false,
-        inviteProtocol,
+        accessProtocol,
         controlId: crypto.randomUUID(),
         generation,
         openedAt: now,
         tickets: [],
       };
-      response = this.createUpgradeResponse(clientSocket, inviteProtocol);
+      response = this.createUpgradeResponse(clientSocket, accessProtocol);
       this.ctx.acceptWebSocket(room, ["server"]);
       writeAttachment(room, attachment);
       attachment.current = true;
@@ -921,7 +921,7 @@ export class RendezvousRoom extends DurableObject<CoreEnv> {
     now: number,
     policy: RendezvousPolicyConfiguration,
     authorizationRequired: boolean,
-    inviteProtocol: boolean,
+    accessProtocol: boolean,
     generation: string,
   ): Promise<Response> {
     if (this.currentGeneration !== generation) {
@@ -931,7 +931,7 @@ export class RendezvousRoom extends DurableObject<CoreEnv> {
     if (server === null) {
       return roomError("server_unavailable");
     }
-    if (authorizationRequired && !server.attachment.inviteProtocol) {
+    if (authorizationRequired && !server.attachment.accessProtocol) {
       return roomError("server_unavailable");
     }
     if (server.attachment.generation !== generation) {
@@ -1016,7 +1016,7 @@ export class RendezvousRoom extends DurableObject<CoreEnv> {
       ) {
         throw new Error("Server control changed during admission");
       }
-      const response = this.createUpgradeResponse(client, inviteProtocol);
+      const response = this.createUpgradeResponse(client, accessProtocol);
       attachment.summaryEmitted = false;
       writeAttachment(room, attachment);
       return response;
@@ -1100,49 +1100,16 @@ export class RendezvousRoom extends DurableObject<CoreEnv> {
     }
 
     if (
-      parsed.signal.type === "auth_init" &&
-      attachment.authorization === "awaiting_init" &&
-      attachment.stage === "awaiting_candidate"
-    ) {
-      await this.beginClientTicket(socket, attachment, parsed, true);
-      return;
-    }
-    if (
-      parsed.signal.type === "auth_proof" &&
-      attachment.authorization === "awaiting_proof" &&
-      attachment.stage === "awaiting_candidate"
-    ) {
-      await this.forwardClientProof(
-        socket,
-        attachment,
-        parsed.signal,
-        parsed.serialized,
-        parsed.bytes,
-      );
-      return;
-    }
-    if (
       parsed.signal.type === "client_candidate" &&
       attachment.stage === "awaiting_candidate" &&
-      (attachment.authorization === "not_required" ||
-        attachment.authorization === "authorized")
+      attachment.authorization === "not_required"
     ) {
       if (attachment.accessGrant !== undefined && attachment.accessGrant !== null &&
           parsed.signal.ticket !== attachment.accessGrant) {
         this.failClient(socket, attachment, "authorization_failed", RENDEZVOUS_CLOSE.authorizationFailed);
         return;
       }
-      if (attachment.authorization === "not_required") {
-        await this.beginClientTicket(socket, attachment, parsed, false);
-      } else {
-        this.forwardAuthorizedClientCandidate(
-          socket,
-          attachment,
-          parsed.signal,
-          parsed.serialized,
-          parsed.bytes,
-        );
-      }
+      await this.beginClientTicket(socket, attachment, parsed);
       return;
     }
 
@@ -1158,12 +1125,8 @@ export class RendezvousRoom extends DurableObject<CoreEnv> {
     socket: WebSocket,
     attachment: ClientAttachment,
     parsed: Extract<RendezvousSignalParseResult, { ok: true }>,
-    authorizationRequired: boolean,
   ): Promise<void> {
-    if (
-      (authorizationRequired && parsed.signal.type !== "auth_init") ||
-      (!authorizationRequired && parsed.signal.type !== "client_candidate")
-    ) {
+    if (parsed.signal.type !== "client_candidate") {
       this.failClient(
         socket,
         attachment,
@@ -1207,12 +1170,9 @@ export class RendezvousRoom extends DurableObject<CoreEnv> {
       );
       return;
     }
-    const expectedAuthorization = authorizationRequired
-      ? "awaiting_init"
-      : "not_required";
     if (
       current.stage !== "awaiting_candidate" ||
-      current.authorization !== expectedAuthorization
+      current.authorization !== "not_required"
     ) {
       this.failClient(
         socket,
@@ -1280,16 +1240,10 @@ export class RendezvousRoom extends DurableObject<CoreEnv> {
 
     current.ticket = parsed.signal.ticket;
     current.ticketDigest = ticketDigest;
-    current.authorization = authorizationRequired
-      ? "awaiting_challenge"
-      : "not_required";
-    current.clientAuthorizationFrames = authorizationRequired ? 1 : 0;
-    current.stage = authorizationRequired
-      ? "awaiting_candidate"
-      : "candidate_exchange";
-    current.clientCandidates = authorizationRequired
-      ? 0
-      : MAX_CLIENT_CANDIDATES;
+    current.authorization = "not_required";
+    current.clientAuthorizationFrames = 0;
+    current.stage = "candidate_exchange";
+    current.clientCandidates = MAX_CLIENT_CANDIDATES;
     current.signalBytes = parsed.bytes;
     server.attachment.tickets.push({
       ticketDigest,
@@ -1297,10 +1251,8 @@ export class RendezvousRoom extends DurableObject<CoreEnv> {
       openedAt: current.openedAt,
       expiresAt: current.expiresAt,
       stage: "active",
-      authorization: authorizationRequired
-        ? "awaiting_challenge"
-        : "not_required",
-      clientAuthorizationFrames: authorizationRequired ? 1 : 0,
+      authorization: "not_required",
+      clientAuthorizationFrames: 0,
       serverAuthorizationFrames: 0,
       serverCandidates: 0,
       completionCount: 0,
@@ -1333,153 +1285,13 @@ export class RendezvousRoom extends DurableObject<CoreEnv> {
     }
   }
 
-  private async forwardClientProof(
-    socket: WebSocket,
-    attachment: ClientAttachment,
-    signal: { readonly type: "auth_proof"; readonly ticket: string },
-    serialized: string,
-    bytes: number,
-  ): Promise<void> {
-    const ticketDigest = await this.digestTicket(signal.ticket);
-    const current = readClientAttachment(socket);
-    const server = this.reconcileActiveServer();
-    const now = Date.now();
-    const expired = (current ?? attachment).expiresAt <= now;
-    if (
-      current === null ||
-      socket.readyState !== WebSocket.OPEN ||
-      current.connectionId !== attachment.connectionId ||
-      current.controlId !== attachment.controlId ||
-      current.generation !== attachment.generation ||
-      current.expiresAt <= now ||
-      current.stage !== "awaiting_candidate" ||
-      current.authorization !== "awaiting_proof" ||
-      current.ticket !== signal.ticket ||
-      current.ticketDigest !== ticketDigest ||
-      server === null ||
-      server.attachment.controlId !== current.controlId ||
-      server.attachment.generation !== current.generation
-    ) {
-      this.failClient(
-        socket,
-        current ?? attachment,
-        expired
-          ? "session_expired"
-          : "protocol_error",
-        expired
-          ? RENDEZVOUS_CLOSE.sessionExpired
-          : RENDEZVOUS_CLOSE.protocolError,
-      );
-      return;
-    }
-    const ticket = server.attachment.tickets.find(({ ticketDigest: digest,
-      clientConnectionId }) =>
-      digest === ticketDigest && clientConnectionId === current.connectionId
-    );
-    if (
-      ticket === undefined ||
-      ticket.stage !== "active" ||
-      ticket.authorization !== "awaiting_proof" ||
-      ticket.signalBytes + bytes > MAX_RENDEZVOUS_SESSION_SIGNAL_BYTES
-    ) {
-      this.failClient(
-        socket,
-        current,
-        "protocol_error",
-        RENDEZVOUS_CLOSE.protocolError,
-      );
-      return;
-    }
-
-    current.authorization = "awaiting_result";
-    current.clientAuthorizationFrames = 2;
-    current.signalBytes += bytes;
-    ticket.authorization = "awaiting_result";
-    ticket.clientAuthorizationFrames = 2;
-    ticket.signalBytes += bytes;
-    writeAttachment(socket, current);
-    writeAttachment(server.socket, server.attachment);
-    try {
-      server.socket.send(serialized);
-    } catch {
-      this.failServer(
-        server.socket,
-        server.attachment,
-        "server_unavailable",
-        RENDEZVOUS_CLOSE.serverUnavailable,
-      );
-      return;
-    }
-    current.framesForwarded += 1;
-    writeAttachment(socket, current);
-  }
-
-  private forwardAuthorizedClientCandidate(
-    socket: WebSocket,
-    attachment: ClientAttachment,
-    signal: { readonly type: "client_candidate"; readonly ticket: string },
-    serialized: string,
-    bytes: number,
-  ): void {
-    const server = this.reconcileActiveServer();
-    const now = Date.now();
-    const ticket = server?.attachment.tickets.find(({ ticketDigest,
-      clientConnectionId }) =>
-      ticketDigest === attachment.ticketDigest &&
-      clientConnectionId === attachment.connectionId
-    );
-    if (
-      server === null ||
-      server.attachment.controlId !== attachment.controlId ||
-      server.attachment.generation !== attachment.generation ||
-      ticket === undefined ||
-      ticket.stage !== "active" ||
-      ticket.authorization !== "authorized" ||
-      attachment.ticket !== signal.ticket ||
-      attachment.expiresAt <= now ||
-      ticket.signalBytes + bytes > MAX_RENDEZVOUS_SESSION_SIGNAL_BYTES
-    ) {
-      this.failClient(
-        socket,
-        attachment,
-        attachment.expiresAt <= now ? "session_expired" : "protocol_error",
-        attachment.expiresAt <= now
-          ? RENDEZVOUS_CLOSE.sessionExpired
-          : RENDEZVOUS_CLOSE.protocolError,
-      );
-      return;
-    }
-
-    attachment.stage = "candidate_exchange";
-    attachment.clientCandidates = MAX_CLIENT_CANDIDATES;
-    attachment.signalBytes += bytes;
-    ticket.signalBytes += bytes;
-    writeAttachment(socket, attachment);
-    writeAttachment(server.socket, server.attachment);
-    try {
-      server.socket.send(serialized);
-    } catch {
-      this.failServer(
-        server.socket,
-        server.attachment,
-        "server_unavailable",
-        RENDEZVOUS_CLOSE.serverUnavailable,
-      );
-      return;
-    }
-    attachment.framesForwarded += 1;
-    writeAttachment(socket, attachment);
-  }
-
   private async handleServerMessage(
     socket: WebSocket,
     attachment: ServerAttachment,
     parsed: Extract<RendezvousSignalParseResult, { ok: true }>,
   ): Promise<void> {
     if (
-      parsed.signal.type === "client_candidate" ||
-      parsed.signal.type === "auth_init" ||
-      parsed.signal.type === "auth_proof"
+      parsed.signal.type === "client_candidate"
     ) {
       this.failServer(
         socket,
@@ -1526,8 +1338,7 @@ export class RendezvousRoom extends DurableObject<CoreEnv> {
     if (
       (parsed.signal.type === "server_candidate" ||
         parsed.signal.type === "complete") &&
-      ((ticket.authorization !== "not_required" &&
-        ticket.authorization !== "authorized") ||
+      (ticket.authorization !== "not_required" ||
         !applyServerFrameBudget(ticket, parsed.signal, parsed.bytes))
     ) {
       this.failServer(
@@ -1546,43 +1357,6 @@ export class RendezvousRoom extends DurableObject<CoreEnv> {
       now,
     );
     if (target === null) {
-      if (parsed.signal.type === "auth_challenge") {
-        if (
-          ticket.authorization !== "awaiting_challenge" ||
-          ticket.signalBytes + parsed.bytes >
-            MAX_RENDEZVOUS_SESSION_SIGNAL_BYTES
-        ) {
-          this.failServer(
-            socket,
-            current,
-            "protocol_error",
-            RENDEZVOUS_CLOSE.protocolError,
-          );
-          return;
-        }
-        ticket.serverAuthorizationFrames = 1;
-        ticket.signalBytes += parsed.bytes;
-        ticket.authorization = "awaiting_proof";
-      } else if (parsed.signal.type === "auth_result") {
-        if (
-          ticket.authorization !== "awaiting_result" ||
-          ticket.signalBytes + parsed.bytes >
-            MAX_RENDEZVOUS_SESSION_SIGNAL_BYTES
-        ) {
-          this.failServer(
-            socket,
-            current,
-            "protocol_error",
-            RENDEZVOUS_CLOSE.protocolError,
-          );
-          return;
-        }
-        ticket.serverAuthorizationFrames = 2;
-        ticket.signalBytes += parsed.bytes;
-        ticket.authorization = parsed.signal.authorized
-          ? "authorized"
-          : "denied";
-      }
       ticket.stage = "terminal";
       writeAttachment(socket, current);
       return;
@@ -1599,104 +1373,6 @@ export class RendezvousRoom extends DurableObject<CoreEnv> {
         if (latest !== null) this.failClient(target.socket, latest, "authorization_failed", RENDEZVOUS_CLOSE.authorizationFailed);
         return;
       }
-    }
-
-    if (parsed.signal.type === "auth_challenge") {
-      if (
-        ticket.stage !== "active" ||
-        ticket.authorization !== "awaiting_challenge" ||
-        target.attachment.stage !== "awaiting_candidate" ||
-        target.attachment.authorization !== "awaiting_challenge" ||
-        ticket.signalBytes + parsed.bytes >
-          MAX_RENDEZVOUS_SESSION_SIGNAL_BYTES
-      ) {
-        this.failServer(
-          socket,
-          current,
-          "protocol_error",
-          RENDEZVOUS_CLOSE.protocolError,
-        );
-        return;
-      }
-      ticket.authorization = "awaiting_proof";
-      ticket.serverAuthorizationFrames = 1;
-      ticket.signalBytes += parsed.bytes;
-      copyTicketBudgetToClient(target.attachment, ticket);
-      target.attachment.authorization = "awaiting_proof";
-      writeAttachment(socket, current);
-      writeAttachment(target.socket, target.attachment);
-      try {
-        target.socket.send(parsed.serialized);
-      } catch {
-        this.failClient(
-          target.socket,
-          target.attachment,
-          "internal_error",
-          RENDEZVOUS_CLOSE.internalError,
-        );
-        return;
-      }
-      target.attachment.framesForwarded += 1;
-      writeAttachment(target.socket, target.attachment);
-      return;
-    }
-
-    if (parsed.signal.type === "auth_result") {
-      if (
-        ticket.stage !== "active" ||
-        ticket.authorization !== "awaiting_result" ||
-        target.attachment.stage !== "awaiting_candidate" ||
-        target.attachment.authorization !== "awaiting_result" ||
-        ticket.signalBytes + parsed.bytes >
-          MAX_RENDEZVOUS_SESSION_SIGNAL_BYTES
-      ) {
-        this.failServer(
-          socket,
-          current,
-          "protocol_error",
-          RENDEZVOUS_CLOSE.protocolError,
-        );
-        return;
-      }
-      ticket.serverAuthorizationFrames = 2;
-      ticket.signalBytes += parsed.bytes;
-      ticket.authorization = parsed.signal.authorized
-        ? "authorized"
-        : "denied";
-      if (!parsed.signal.authorized) {
-        ticket.stage = "terminal";
-      }
-      copyTicketBudgetToClient(target.attachment, ticket);
-      target.attachment.authorization = parsed.signal.authorized
-        ? "authorized"
-        : "awaiting_result";
-      writeAttachment(socket, current);
-      if (parsed.signal.authorized) {
-        writeAttachment(target.socket, target.attachment);
-      }
-      try {
-        target.socket.send(parsed.serialized);
-      } catch {
-        this.failClient(
-          target.socket,
-          target.attachment,
-          "internal_error",
-          RENDEZVOUS_CLOSE.internalError,
-        );
-        return;
-      }
-      target.attachment.framesForwarded += 1;
-      if (!parsed.signal.authorized) {
-        this.failClient(
-          target.socket,
-          target.attachment,
-          "authorization_failed",
-          RENDEZVOUS_CLOSE.authorizationFailed,
-        );
-      } else {
-        writeAttachment(target.socket, target.attachment);
-      }
-      return;
     }
 
     if (
@@ -1784,16 +1460,16 @@ export class RendezvousRoom extends DurableObject<CoreEnv> {
 
   private createUpgradeResponse(
     socket: WebSocket,
-    inviteProtocol: boolean,
+    accessProtocol: boolean,
   ): Response {
     const headers = new Headers({
       "Cache-Control": "no-store",
       "X-Content-Type-Options": "nosniff",
     });
-    if (inviteProtocol) {
+    if (accessProtocol) {
       headers.set(
         "Sec-WebSocket-Protocol",
-        CLASSIC_RENDEZVOUS_INVITE_SUBPROTOCOL,
+        ACCESS_RENDEZVOUS_SUBPROTOCOL,
       );
     }
     return new Response(null, { status: 101, headers, webSocket: socket });

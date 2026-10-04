@@ -8,7 +8,7 @@ import {
   INTERNAL_SOURCE_TAG_HEADER,
   INTERNAL_SOURCE_TAG_PREVIOUS_HEADER,
 } from "../src/internal-service";
-import { CLASSIC_RENDEZVOUS_INVITE_SUBPROTOCOL } from "../src/routes";
+import { ACCESS_RENDEZVOUS_SUBPROTOCOL } from "../src/routes";
 
 const CURRENT_SECRET = "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA";
 const PREVIOUS_SECRET = "AQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQE";
@@ -116,7 +116,7 @@ function publisherRequest(
   requestHeaders.set("Content-Type", "application/json");
   requestHeaders.set("Cookie", "publisher-private=value");
   return new Request(
-    `https://${authority}/v1/classic/servers/${SERVER_ID}/publish`,
+    `https://${authority}/v3/classic/servers/${SERVER_ID}/publish`,
     { method: "POST", headers: requestHeaders, body: "{}" },
   );
 }
@@ -127,7 +127,7 @@ function gamePublisherRequest(): Request {
     "Content-Type": "application/json",
   });
   return new Request(
-    `https://publish.meta.atrinik.org/v1/servers/${SERVER_ID}/publish`,
+    `https://publish.meta.atrinik.org/v2/servers/${SERVER_ID}/publish`,
     { method: "POST", headers, body: "{}" },
   );
 }
@@ -327,7 +327,7 @@ describe("rendezvous edge Worker", () => {
       webSocket: pair[0],
     }));
     const response = await rendezvousWorker.fetch(rendezvousRequest("client", {
-      "Sec-WebSocket-Protocol": CLASSIC_RENDEZVOUS_INVITE_SUBPROTOCOL,
+      "Sec-WebSocket-Protocol": ACCESS_RENDEZVOUS_SUBPROTOCOL,
     }), configured.env);
     expect(response.status).toBe(500);
   });

@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 
 import { SERVER_SIGNAL_CANDIDATE_KINDS } from "../src/protocol";
 import inviteVector from "./fixtures/rendezvous-invite-v1.json";
-import negativeInviteVector from "./fixtures/rendezvous-invite-v1-negative.json";
+import { parseAccessInit } from "../src/access-rendezvous";
 
 import {
   INTERNAL_RENDEZVOUS_AUTHORIZATION_HEADER,
@@ -33,7 +33,8 @@ const TICKET = "a".repeat(64);
 const GENERATION = "0".repeat(64);
 const PUBLICATION = Object.freeze({
   serverId: "1".repeat(64),
-  directoryProfile: "classic-v1",
+  directoryProfile: "classic-v3",
+  certificate: "AA==",
   publisherSequence: "1",
   publisherNonce: "6".repeat(32),
   publisherNonceExpiresAt: 2_000_086_400,
@@ -71,28 +72,6 @@ function publicationRequest(
   });
 }
 
-function hexBytes(value: string): Uint8Array {
-  if (!/^(?:[0-9a-f]{2})+$/.test(value)) {
-    throw new Error("Fixture contains noncanonical hexadecimal bytes");
-  }
-  return Uint8Array.from(
-    value.match(/../g) ?? [],
-    (byte) => Number.parseInt(byte, 16),
-  );
-}
-
-function concatBytes(...parts: readonly Uint8Array[]): Uint8Array {
-  const combined = new Uint8Array(
-    parts.reduce((total, part) => total + part.byteLength, 0),
-  );
-  let offset = 0;
-  for (const part of parts) {
-    combined.set(part, offset);
-    offset += part.byteLength;
-  }
-  return combined;
-}
-
 function internalRequest(
   role: string = "client",
   init: RequestInit = {},
@@ -121,18 +100,18 @@ describe("internal rendezvous upgrade contract", () => {
   it("accepts only the two exact versioned internal roles", () => {
     expect(validateInternalRendezvousUpgrade(internalRequest("client"))).toEqual({
       role: "client",
-      inviteProtocol: false,
+      accessProtocol: false,
       authorizationRequired: false,
       generation: GENERATION,
     });
     expect(validateInternalRendezvousUpgrade(internalRequest("server"))).toEqual({
       role: "server",
-      inviteProtocol: false,
+      accessProtocol: false,
       authorizationRequired: false,
       generation: GENERATION,
     });
-    expect(INTERNAL_RENDEZVOUS_URL).toContain("/v3");
-    expect(INTERNAL_RENDEZVOUS_ROLE_HEADER).toContain("V3");
+    expect(INTERNAL_RENDEZVOUS_URL).toContain("/v4");
+    expect(INTERNAL_RENDEZVOUS_ROLE_HEADER).toContain("V4");
     expect(INTERNAL_RENDEZVOUS_ROLE_HEADER).not.toBe(
       LEGACY_INTERNAL_RENDEZVOUS_ROLE_HEADER,
     );
@@ -180,22 +159,22 @@ describe("internal rendezvous upgrade contract", () => {
   it("accepts only coherent invite-protocol authorization metadata", () => {
     expect(validateInternalRendezvousUpgrade(internalRequest("client", {
       headers: {
-        [INTERNAL_RENDEZVOUS_PROTOCOL_HEADER]: "classic-invite-v1",
+        [INTERNAL_RENDEZVOUS_PROTOCOL_HEADER]: "access-tokens-v1",
         [INTERNAL_RENDEZVOUS_AUTHORIZATION_HEADER]: "required",
       },
     }))).toEqual({
       role: "client",
-      inviteProtocol: true,
+      accessProtocol: true,
       authorizationRequired: true,
       generation: GENERATION,
     });
     expect(validateInternalRendezvousUpgrade(internalRequest("server", {
       headers: {
-        [INTERNAL_RENDEZVOUS_PROTOCOL_HEADER]: "classic-invite-v1",
+        [INTERNAL_RENDEZVOUS_PROTOCOL_HEADER]: "access-tokens-v1",
       },
     }))).toEqual({
       role: "server",
-      inviteProtocol: true,
+      accessProtocol: true,
       authorizationRequired: false,
       generation: GENERATION,
     });
@@ -203,7 +182,7 @@ describe("internal rendezvous upgrade contract", () => {
     const invalid = [
       internalRequest("client", {
         headers: {
-          [INTERNAL_RENDEZVOUS_PROTOCOL_HEADER]: "classic-invite-v1",
+          [INTERNAL_RENDEZVOUS_PROTOCOL_HEADER]: "access-tokens-v1",
         },
       }),
       internalRequest("client", {
@@ -213,7 +192,7 @@ describe("internal rendezvous upgrade contract", () => {
       }),
       internalRequest("server", {
         headers: {
-          [INTERNAL_RENDEZVOUS_PROTOCOL_HEADER]: "classic-invite-v1",
+          [INTERNAL_RENDEZVOUS_PROTOCOL_HEADER]: "access-tokens-v1",
           [INTERNAL_RENDEZVOUS_AUTHORIZATION_HEADER]: "required",
         },
       }),
@@ -248,7 +227,8 @@ describe("internal rendezvous upgrade contract", () => {
     });
     const gamePublication = {
       serverId: PUBLICATION.serverId,
-      directoryProfile: "game-v1",
+      directoryProfile: "game-v2",
+      certificate: "AA==",
       publisherSequence: "1",
       publisherNonce: "6".repeat(32),
       publisherNonceExpiresAt: PUBLICATION.now + 86_400,
@@ -356,153 +336,25 @@ describe("internal rendezvous upgrade contract", () => {
 });
 
 describe("rendezvous signal contract", () => {
-  it("validates the cross-repository invite proof and frame fixture", async () => {
-    expect(inviteVector.version).toBe(1);
-    expect(inviteVector.subprotocol).toBe(
-      "atrinik-classic-rendezvous-invite-v1",
-    );
-    expect(inviteVector.capability).toBe(
-      `atrinik-invite-v1.${inviteVector.server_id}.` +
-        `${inviteVector.invite_id}.${inviteVector.secret}.` +
-        `${inviteVector.expiry}`,
-    );
+  it("rejects every retired invitation authorization frame", () => {
     for (const frame of Object.values(inviteVector.frames)) {
-      const parsed = parseRendezvousSignal(frame);
-      expect(parsed).toMatchObject({ ok: true, serialized: frame });
+      expect(parseRendezvousSignal(frame)).toMatchObject({ ok: false });
     }
-
-    const expiry = new Uint8Array(8);
-    new DataView(expiry.buffer).setBigUint64(
-      0,
-      BigInt(inviteVector.expiry),
-      false,
-    );
-    const transcript = concatBytes(
-      new TextEncoder().encode(`${inviteVector.subprotocol}\0`),
-      hexBytes(inviteVector.server_id),
-      hexBytes(inviteVector.ticket),
-      hexBytes(inviteVector.invite_id),
-      hexBytes(inviteVector.challenge),
-      expiry,
-    );
-    expect(Array.from(transcript, (byte) =>
-      byte.toString(16).padStart(2, "0")).join(""))
-      .toBe(inviteVector.transcript_hex);
-
-    const key = await crypto.subtle.importKey(
-      "raw",
-      hexBytes(inviteVector.secret),
-      { name: "HMAC", hash: "SHA-256" },
-      false,
-      ["sign"],
-    );
-    const proof = await crypto.subtle.sign(
-      "HMAC",
-      key,
-      transcript,
-    );
-    expect(Array.from(new Uint8Array(proof), (byte) =>
-      byte.toString(16).padStart(2, "0")).join("")).toBe(inviteVector.proof);
   });
 
-  it("validates the cross-repository negative invite fixture", () => {
-    expect(negativeInviteVector.version).toBe(inviteVector.version);
-    expect(negativeInviteVector.wrong_ticket).toMatch(/^[0-9a-f]{64}$/);
-    expect(negativeInviteVector.wrong_ticket).not.toBe(inviteVector.ticket);
-
-    const wrongCandidate = parseRendezvousSignal(
-      negativeInviteVector.wrong_ticket_server_candidate,
-    );
-    expect(wrongCandidate).toMatchObject({
-      ok: true,
-      signal: {
-        type: "server_candidate",
-        ticket: negativeInviteVector.wrong_ticket,
-      },
-    });
-    const wrongResult = parseRendezvousSignal(
-      negativeInviteVector.wrong_ticket_auth_result,
-    );
-    expect(wrongResult).toMatchObject({
-      ok: true,
-      signal: {
-        type: "auth_result",
-        ticket: negativeInviteVector.wrong_ticket,
-      },
-    });
-
+  it("accepts only the canonical bounded grant initialization frame", () => {
+    const frame = JSON.stringify({ type: "access_init", version: 1,
+      grant: TICKET, client_nonce: "b".repeat(64) });
+    expect(parseAccessInit(frame)).toEqual({ ok: true, access: true,
+      grant: TICKET, clientNonce: "b".repeat(64), bytes: frame.length });
     for (const malformed of [
-      negativeInviteVector.oversized_port_server_candidate,
-      negativeInviteVector.leading_zero_port_server_candidate,
-      negativeInviteVector.truncated_auth_challenge,
-    ]) {
-      expect(parseRendezvousSignal(malformed)).toMatchObject({ ok: false });
-    }
-  });
-
-  it("parses and serializes the four canonical authorization frames", () => {
-    const frames = [
-      {
-        type: "auth_init",
-        version: 1,
-        ticket: TICKET,
-        invite_id: "b".repeat(32),
-      },
-      {
-        type: "auth_challenge",
-        version: 1,
-        ticket: TICKET,
-        challenge: "c".repeat(64),
-      },
-      {
-        type: "auth_proof",
-        version: 1,
-        ticket: TICKET,
-        proof: "d".repeat(64),
-      },
-      {
-        type: "auth_result",
-        version: 1,
-        ticket: TICKET,
-        authorized: false,
-      },
-    ] as const;
-
-    for (const signal of frames) {
-      const serialized = JSON.stringify(signal);
-      expect(parseRendezvousSignal(serialized)).toEqual({
-        ok: true,
-        signal,
-        serialized,
-        bytes: serialized.length,
-      });
-      expect(serializeRendezvousSignal(signal)).toBe(serialized);
-    }
-  });
-
-  it("requires canonical authorization JSON and exact fields", () => {
-    const valid = JSON.stringify({
-      type: "auth_init",
-      version: 1,
-      ticket: TICKET,
-      invite_id: "b".repeat(32),
-    });
-    const invalid = [
-      ` ${valid}`,
-      valid.replace('"type":"auth_init","version":1',
-        '"version":1,"type":"auth_init"'),
-      valid.replace('"version":1', '"version":2'),
-      valid.replace("b".repeat(32), "B".repeat(32)),
-      valid.replace("b".repeat(32), "b".repeat(31)),
-      valid.slice(0, -1) + ',"extra":true}',
-      valid.replace('"version":1', '"version":1,"version":1'),
-    ];
-    for (const frame of invalid) {
-      expect(parseRendezvousSignal(frame)).toEqual({
-        ok: false,
-        error: "unsupported_signal",
-      });
-    }
+      ` ${frame}`, frame + " ", frame.replace('"version":1', '"version":2'),
+      frame.replace('"version":1', '"version":1,"version":1'),
+      frame.replace(TICKET, TICKET.toUpperCase()),
+      frame.replace('"type":"access_init","version":1', '"version":1,"type":"access_init"'),
+      frame.slice(0,-1) + ',"extra":true}', "x".repeat(257), "null", "[]",
+    ]) expect(parseAccessInit(malformed)).toBeNull();
+    expect(parseAccessInit(new ArrayBuffer(1))).toBeNull();
   });
 
   it("normalizes client candidates and serializes classic property order", () => {

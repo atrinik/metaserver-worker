@@ -24,17 +24,20 @@ export function accessRoomName(profile: AccessProfile, serverId: string): string
 
 export async function handleAccessRouteMutation(
   request: Request, env: CoreEnv, profile: AccessProfile, serverId: string,
-  authority: string, now: number,
+  authority: string, now: number, freshness = 14400,
 ): Promise<Response> {
   const authenticated = await authenticateAccessRoute(request,
     await readBoundedPublishBody(request, 4096), profile, serverId, authority, now);
   if (await env.DB.prepare("SELECT 1 AS denied FROM server_denials WHERE server_id=?")
       .bind(serverId).first<number>("denied") === 1) throw new HttpError("forbidden");
+  const registered = await env.DB.prepare("SELECT 1 AS registered FROM publisher_replay WHERE profile=? AND server_id=?")
+    .bind(profile === "classic" ? "classic-v3" : "game-v2",serverId).first<number>("registered");
+  if (registered !== 1) throw new HttpError("conflict");
   // Dedicated quota avoids starving the first reserve/activate pair behind the
   // separately bounded publication required to bring a locked server online.
   await enforceNativeBurst(env.ACCESS_ROUTE_RATE_LIMITER, serverId, "publish-server");
   await consumeAccessBudget(env.DB, profile, serverId, "routes", now);
-  const result = await mutateAccessRoute(env.DB, authenticated, now);
+  const result = await mutateAccessRoute(env.DB, authenticated, now, freshness);
   if (result.outcome === "revoked") {
     const generation = await env.DB.prepare("SELECT rendezvous_generation FROM server_presence WHERE profile=? AND server_id=?")
       .bind(profile === "classic" ? "classic-v3" : "game-v2", serverId).first<string>("rendezvous_generation");

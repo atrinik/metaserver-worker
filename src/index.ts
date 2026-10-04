@@ -152,7 +152,7 @@ export async function handlePublisherCoordinatorRequest(
       enforceCircuitBreaker(access.profile === "classic" ? env.PUBLISH_ENABLED : env.GAME_PUBLISH_ENABLED,
         control.routeDisabledRetrySeconds);
       return await handleAccessRouteMutation(consumePublisherCoordinatorRequest(request), env,
-        access.profile, access.serverId, control.authority, Math.floor(Date.now() / 1000));
+        access.profile, access.serverId, control.authority, Math.floor(Date.now() / 1000), control.listingTtlSeconds);
     }
     const route = classifyCanonicalPublisherRoute(
       {

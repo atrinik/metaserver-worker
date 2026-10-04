@@ -6,6 +6,8 @@ import {
 } from "cloudflare:test";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
+import { issueAccessGrant } from "../src/access-grants";
+import { requiredSourceTagKeyRing } from "../src/privacy";
 import { sha256Hex } from "../src/protocol";
 import { RendezvousRoom } from "../src/rendezvous";
 import { decodeRendezvousAttachment } from "../src/rendezvous-attachments";
@@ -26,7 +28,7 @@ import {
   LEGACY_INTERNAL_RENDEZVOUS_ROLE_HEADER,
   RENDEZVOUS_ROLLING_WINDOW_MS,
 } from "../src/rendezvous-contract";
-import { CLASSIC_RENDEZVOUS_INVITE_SUBPROTOCOL } from "../src/routes";
+import { ACCESS_RENDEZVOUS_SUBPROTOCOL } from "../src/routes";
 
 beforeEach(async () => {
   await env.DB.prepare(
@@ -98,15 +100,15 @@ async function connect(
   stub: DurableObjectStub,
   role: "client" | "server",
   options: {
-    readonly inviteProtocol?: boolean;
+    readonly accessProtocol?: boolean;
     readonly authorizationRequired?: boolean;
     readonly generation?: string;
   } = {},
 ): Promise<WebSocket> {
-  const inviteProtocol = options.inviteProtocol ?? false;
+  const accessProtocol = options.accessProtocol ?? false;
   const headers = {
-    [INTERNAL_RENDEZVOUS_PROTOCOL_HEADER]: inviteProtocol
-      ? "classic-invite-v1"
+    [INTERNAL_RENDEZVOUS_PROTOCOL_HEADER]: accessProtocol
+      ? "access-tokens-v1"
       : "none",
     [INTERNAL_RENDEZVOUS_AUTHORIZATION_HEADER]:
       options.authorizationRequired ? "required" : "not-required",
@@ -116,7 +118,7 @@ async function connect(
   const response = await stub.fetch(roomRequest(role, { headers }));
   expect(response.status).toBe(101);
   expect(response.headers.get("Sec-WebSocket-Protocol")).toBe(
-    inviteProtocol ? CLASSIC_RENDEZVOUS_INVITE_SUBPROTOCOL : null,
+    accessProtocol ? ACCESS_RENDEZVOUS_SUBPROTOCOL : null,
   );
   const socket = response.webSocket;
   if (socket === null) {
@@ -143,10 +145,10 @@ function generationPublicationRequest(
   serverId: string,
   expectedGeneration: string,
   generation: string,
-  directoryProfile: "classic-v1" | "classic-v2" | "game-v1" = "classic-v1",
+  directoryProfile: "classic-v3" | "game-v2" = "classic-v3",
 ): Request {
   const publisherSequence = BigInt(`0x${generation.slice(0, 16)}`).toString();
-  const profileFields = directoryProfile !== "game-v1"
+  const profileFields = directoryProfile !== "game-v2"
     ? {
         playersCount: 0,
         version: "4.0.0",
@@ -169,6 +171,7 @@ function generationPublicationRequest(
     body: JSON.stringify({
       serverId,
       directoryProfile,
+      certificate: "AA==",
       publisherSequence,
       publisherNonce: generation.slice(0, 32),
       publisherNonceExpiresAt: 2_000_086_400,
@@ -198,20 +201,20 @@ async function seedPublishedGeneration(
     env.DB.prepare(
       `INSERT INTO publisher_replay
          (server_id, profile, last_sequence, last_nonce, commit_token, updated_at)
-       VALUES (?, 'classic-v1', '1', ?, ?, 0)`,
+       VALUES (?, 'classic-v3', '1', ?, ?, 0)`,
     ).bind(serverId, "1".repeat(32), "1".repeat(64)),
     env.DB.prepare(
       `INSERT INTO server_presence
          (profile, server_id, last_seen, rendezvous_token_hash,
-          rendezvous_generation)
-       VALUES ('classic-v1', ?, 2000000000, ?, ?)`,
+          rendezvous_generation,certificate,name,access_required)
+       VALUES ('classic-v3', ?, 2000000000, ?, ?, 'AA==','Generation test',1)`,
     ).bind(serverId, "e".repeat(64), generation),
     env.DB.prepare(
       `INSERT INTO directory_entries
          (profile, server_id, name, players_count, version, text_comment,
-          hostname, port, quic_cert_sha256, password_required,
+          hostname, port, quic_cert_sha256, access_required,
           directory_fingerprint)
-       VALUES ('classic-v1', ?, 'Generation test', 0, '4.0.0',
+       VALUES ('classic-v3', ?, 'Generation test', 0, '4.0.0',
                'Generation rotation', NULL, NULL, ?, 1, ?)`,
     ).bind(serverId, serverId, "b".repeat(64)),
   ]);
@@ -257,45 +260,6 @@ function serverCandidate(
 
 function complete(selectedTicket: string): string {
   return JSON.stringify({ type: "complete", ticket: selectedTicket });
-}
-
-function authInit(selectedTicket: string, inviteId = "a".repeat(32)): string {
-  return JSON.stringify({
-    type: "auth_init",
-    version: 1,
-    ticket: selectedTicket,
-    invite_id: inviteId,
-  });
-}
-
-function authChallenge(
-  selectedTicket: string,
-  challenge = "b".repeat(64),
-): string {
-  return JSON.stringify({
-    type: "auth_challenge",
-    version: 1,
-    ticket: selectedTicket,
-    challenge,
-  });
-}
-
-function authProof(selectedTicket: string, proof = "c".repeat(64)): string {
-  return JSON.stringify({
-    type: "auth_proof",
-    version: 1,
-    ticket: selectedTicket,
-    proof,
-  });
-}
-
-function authResult(selectedTicket: string, authorized: boolean): string {
-  return JSON.stringify({
-    type: "auth_result",
-    version: 1,
-    ticket: selectedTicket,
-    authorized,
-  });
 }
 
 function nextMessage(
@@ -446,7 +410,7 @@ async function injectCurrentServer(
     const roomServer = pair[1];
     state.acceptWebSocket(roomServer, ["server"]);
     roomServer.serializeAttachment({
-      v: 2,
+      v: 3,
       r: "s",
       u: true,
       p: false,
@@ -646,7 +610,7 @@ describe("RendezvousRoom HTTP and admission boundary", () => {
         serverId,
         oldGeneration,
         newGeneration,
-        "game-v1",
+        "game-v2",
       )),
       403,
       "Forbidden\n",
@@ -654,7 +618,7 @@ describe("RendezvousRoom HTTP and admission boundary", () => {
     expect(await env.DB.prepare(
       `SELECT rendezvous_generation
          FROM server_presence
-        WHERE profile = 'classic-v1' AND server_id = ?`,
+        WHERE profile = 'classic-v3' AND server_id = ?`,
     ).bind(serverId).first<string>("rendezvous_generation"))
       .toBe(oldGeneration);
   });
@@ -897,7 +861,7 @@ describe("RendezvousRoom HTTP and admission boundary", () => {
           readonly rendezvousClientSessionSeconds: number;
         },
         authorizationRequired: boolean,
-        inviteProtocol: boolean,
+        accessProtocol: boolean,
         generation: string,
       ) => Promise<Response>;
       try {
@@ -951,7 +915,7 @@ describe("RendezvousRoom HTTP and admission boundary", () => {
     expect(heartbeat.headers.get(INTERNAL_DIRECTORY_CHANGED_HEADER)).toBe("0");
   });
 
-  it("rejects a stale forwarded upgrade after global v1 retirement", async () => {
+  it("rejects a stale forwarded upgrade after active presence removal", async () => {
     const serverId = ticket(40_002);
     const generation = "4".repeat(64);
     await seedPublishedGeneration(serverId, generation);
@@ -966,7 +930,7 @@ describe("RendezvousRoom HTTP and admission boundary", () => {
       ),
       env.DB.prepare(
         `DELETE FROM server_presence
-          WHERE profile = 'classic-v1' AND server_id = ?`,
+          WHERE profile = 'classic-v3' AND server_id = ?`,
       ).bind(serverId),
     ]);
     const stub = env.RENDEZVOUS.getByName(serverId);
@@ -981,13 +945,13 @@ describe("RendezvousRoom HTTP and admission boundary", () => {
     });
   });
 
-  it("rejects a stale forwarded upgrade after v1 presence disappears", async () => {
+  it("rejects a stale forwarded upgrade after active presence disappears", async () => {
     const serverId = ticket(40_003);
     const generation = "5".repeat(64);
     await seedPublishedGeneration(serverId, generation);
     await env.DB.prepare(
       `DELETE FROM server_presence
-        WHERE profile = 'classic-v1' AND server_id = ?`,
+        WHERE profile = 'classic-v3' AND server_id = ?`,
     ).bind(serverId).run();
     const stub = env.RENDEZVOUS.getByName(serverId);
     await expectFixedError(
@@ -1004,686 +968,75 @@ describe("RendezvousRoom HTTP and admission boundary", () => {
   });
 });
 
-describe("RendezvousRoom protected authorization", () => {
-  it("requires an invite-capable current server before protected admission", async () => {
-    const stub = room("protected-server-capability");
-    const server = await connect(stub, "server");
-    await expectFixedError(
-      await stub.fetch(roomRequest("client", {
-        headers: {
-          [INTERNAL_RENDEZVOUS_PROTOCOL_HEADER]: "classic-invite-v1",
-          [INTERNAL_RENDEZVOUS_AUTHORIZATION_HEADER]: "required",
-        },
-      })),
-      503,
-      "Rendezvous server unavailable\n",
-      "5",
-    );
-    await expect(admissionCount(stub)).resolves.toBe(0);
-    closeForCleanup(server);
-  });
-
-  it("gates candidates behind a hibernation-safe four-frame exchange", async () => {
-    const stub = room("protected-success");
-    const server = await connect(stub, "server", { inviteProtocol: true });
-    const client = await connect(stub, "client", {
-      inviteProtocol: true,
-      authorizationRequired: true,
-    });
-    const selectedTicket = ticket(700);
-
-    let relayed = nextJson(server, "authorization init");
-    client.send(authInit(selectedTicket));
-    expect(await relayed).toEqual(JSON.parse(authInit(selectedTicket)));
-    await runInDurableObject(stub, (_instance, state) => {
-      const serialized = JSON.stringify(
-        state.getWebSockets().map((socket) => socket.deserializeAttachment()),
-      );
-      expect(serialized).not.toMatch(/invite_id|challenge|proof|secret/);
-    });
-    await evictDurableObject(stub);
-
-    relayed = nextJson(client, "authorization challenge");
-    server.send(authChallenge(selectedTicket));
-    expect(await relayed).toEqual(JSON.parse(authChallenge(selectedTicket)));
-    await evictDurableObject(stub);
-
-    relayed = nextJson(server, "authorization proof");
-    client.send(authProof(selectedTicket));
-    expect(await relayed).toEqual(JSON.parse(authProof(selectedTicket)));
-    await evictDurableObject(stub);
-
-    relayed = nextJson(client, "authorization result");
-    server.send(authResult(selectedTicket, true));
-    expect(await relayed).toEqual(JSON.parse(authResult(selectedTicket, true)));
-    await evictDurableObject(stub);
-
-    relayed = nextJson(server, "authorized client candidate");
-    client.send(clientCandidate(selectedTicket));
-    expect(await relayed).toEqual(JSON.parse(clientCandidate(selectedTicket)));
-    const candidate = nextJson(client, "authorized server candidate");
-    server.send(serverCandidate(selectedTicket));
-    expect(await candidate).toEqual(JSON.parse(serverCandidate(selectedTicket)));
-    const completed = nextJson(client, "authorized completion");
-    const clientClosed = nextClose(client, "authorized completion close");
-    server.send(complete(selectedTicket));
-    expect(await completed).toEqual(JSON.parse(complete(selectedTicket)));
-    await expect(clientClosed).resolves.toMatchObject(COMPLETE_CLOSE);
-    closeForCleanup(server);
-  });
-
-  it.each([
-    ["before auth_init", 0],
-    ["after auth_init", 1],
-    ["after auth_challenge", 2],
-    ["after auth_proof", 3],
-    ["after authorization", 4],
-  ] as const)("invalidates protected state %s on token rotation", async (
-    _label,
-    prefix,
-  ) => {
-    const serverId = ticket(50_000 + prefix);
-    const oldGeneration = "1".repeat(64);
-    const newGeneration = "2".repeat(64);
-    await seedPublishedGeneration(serverId, oldGeneration);
+describe("RendezvousRoom access grants", () => {
+  async function fixture() {
+    const serverId = ticket(80_000 + ++roomSequence);
+    const generation = "a".repeat(64);
+    const grant = ticket(90_000 + roomSequence);
+    const nonce = "b".repeat(64);
+    const now = Math.floor(Date.now() / 1000);
+    await seedPublishedGeneration(serverId, generation);
+    await env.DB.prepare(`INSERT INTO access_routes(route_index,profile,server_id,token_id,
+      token_revision,state,expires_at,reservation_id,reserved_until,created_at,revoked_at)
+      VALUES(?,'classic',?,?,'1','active',NULL,?,?,?,NULL)`)
+      .bind(serverId,serverId,serverId.slice(32),"c".repeat(32),now+60,now).run();
+    const keys = await requiredSourceTagKeyRing(env);
+    const tags = await keys.accessGrantTags(env.RENDEZVOUS_HOSTNAME,"classic",serverId,grant,nonce);
+    expect(await issueAccessGrant(env.DB,serverId,nonce,tags,generation,now,14400)).not.toBeNull();
     const stub = env.RENDEZVOUS.getByName(serverId);
-    const server = await connect(stub, "server", {
-      inviteProtocol: true,
-      generation: oldGeneration,
-    });
-    const client = await connect(stub, "client", {
-      inviteProtocol: true,
-      authorizationRequired: true,
-      generation: oldGeneration,
-    });
-    const selectedTicket = ticket(720 + prefix);
-
-    if (prefix >= 1) {
-      const init = nextJson(server, "generation init");
-      client.send(authInit(selectedTicket));
-      await init;
-    }
-    if (prefix >= 2) {
-      const challenge = nextJson(client, "generation challenge");
-      server.send(authChallenge(selectedTicket));
-      await challenge;
-    }
-    if (prefix >= 3) {
-      const proof = nextJson(server, "generation proof");
-      client.send(authProof(selectedTicket));
-      await proof;
-    }
-    if (prefix >= 4) {
-      const result = nextJson(client, "generation result");
-      server.send(authResult(selectedTicket, true));
-      await result;
-    }
-
-    const serverClosed = nextClose(server, "rotated server close");
-    const clientClosed = nextClose(client, "rotated client close");
-    expect((await rotateGeneration(
-      stub,
-      serverId,
-      oldGeneration,
-      newGeneration,
-    )).status).toBe(204);
-    await expect(serverClosed).resolves.toMatchObject(REPLACED_CLOSE);
-    await expect(clientClosed).resolves.toMatchObject(REPLACED_CLOSE);
-
-    await evictDurableObject(stub);
-    await expectFixedError(
-      await stub.fetch(roomRequest("server", {
-        headers: {
-          [INTERNAL_RENDEZVOUS_GENERATION_HEADER]: oldGeneration,
-        },
-      })),
-      503,
-      "Rendezvous room unavailable\n",
-      "60",
-    );
-    const replacement = await connect(stub, "server", {
-      inviteProtocol: true,
-      generation: newGeneration,
-    });
-    const nextClient = await connect(stub, "client", {
-      inviteProtocol: true,
-      authorizationRequired: true,
-      generation: newGeneration,
-    });
-    closeForCleanup(nextClient, replacement);
-  });
-
-  it("serializes a cold upgrade reconciliation with publication", async () => {
-    const serverId = ticket(50_100);
-    const oldGeneration = "3".repeat(64);
-    const newGeneration = "4".repeat(64);
-    await seedPublishedGeneration(serverId, oldGeneration);
-    const stub = env.RENDEZVOUS.getByName(serverId);
-
-    await runInDurableObject(stub, async (instance, state) => {
-      const roomEnv = Reflect.get(instance, "env") as Env;
-      let releaseStaleRead = (): void => {};
-      const staleReadGate = new Promise<void>((resolve) => {
-        releaseStaleRead = resolve;
-      });
-      let markStaleRead = (): void => {};
-      const staleRead = new Promise<void>((resolve) => {
-        markStaleRead = resolve;
-      });
-      const internals = instance as unknown as {
-        reconcilePublishedGeneration(serverId: string): Promise<string | null>;
-      };
-      let firstReconciliation = true;
-      const reconcileSpy = vi.spyOn(internals, "reconcilePublishedGeneration")
-        .mockImplementation(async (_selectedServerId: string) => {
-          if (!firstReconciliation) {
-            throw new Error("Stale reconciliation test spy was not restored");
-          }
-          firstReconciliation = false;
-          reconcileSpy.mockRestore();
-          markStaleRead();
-          await staleReadGate;
-          Reflect.set(instance, "currentGeneration", oldGeneration);
-          return oldGeneration;
-        });
-
-      const staleUpgrade = instance.fetch(roomRequest("server", {
-        headers: {
-          [INTERNAL_RENDEZVOUS_GENERATION_HEADER]: oldGeneration,
-        },
-      }));
-      await staleRead;
-      const publication = instance.fetch(generationPublicationRequest(
-        serverId,
-        oldGeneration,
-        newGeneration,
-      ));
-      let publicationSettled = false;
-      void publication.then(() => {
-        publicationSettled = true;
-      });
-      await new Promise((resolve) => setTimeout(resolve, 25));
-      expect(publicationSettled).toBe(false);
-      expect(await roomEnv.DB.prepare(
-        `SELECT rendezvous_generation
-           FROM server_presence
-          WHERE profile = 'classic-v1' AND server_id = ?`,
-      ).bind(serverId).first<string>("rendezvous_generation"))
-        .toBe(oldGeneration);
-      releaseStaleRead();
-
-      const [upgradeResponse, publicationResponse] = await Promise.all([
-        staleUpgrade,
-        publication,
-      ]);
-      expect(upgradeResponse.status).toBe(101);
-      expect(publicationResponse.status).toBe(204);
-      expect(publicationResponse.headers.get(INTERNAL_DIRECTORY_CHANGED_HEADER))
-        .toBe("1");
-      const oldSocket = upgradeResponse.webSocket;
-      if (oldSocket === null) {
-        throw new Error("Serialized stale upgrade returned no WebSocket");
-      }
-      oldSocket.accept();
-      closeForCleanup(oldSocket);
-      expect(await state.storage.get("rendezvous:token-generation"))
-        .toBe(newGeneration);
-      expect(state.getWebSockets("server").filter((socket) => {
-        const attachment = decodeRendezvousAttachment(
-          socket.deserializeAttachment(),
-        );
-        return attachment?.role === "server" && attachment.current;
-      })).toHaveLength(0);
-    });
-    expect(await env.DB.prepare(
-      `SELECT rendezvous_generation
-         FROM server_presence
-        WHERE profile = 'classic-v1' AND server_id = ?`,
-    ).bind(serverId).first<string>("rendezvous_generation")).toBe(newGeneration);
-
-    await evictDurableObject(stub);
-    await expectFixedError(
-      await stub.fetch(roomRequest("server", {
-        headers: {
-          [INTERNAL_RENDEZVOUS_GENERATION_HEADER]: oldGeneration,
-        },
-      })),
-      503,
-      "Rendezvous room unavailable\n",
-      "60",
-    );
-    const current = await connect(stub, "server", {
-      generation: newGeneration,
-    });
-    closeForCleanup(current);
-  });
-
-  it("acknowledges an exact publication committed before an ambiguous rejection", async () => {
-    const serverId = ticket(50_101);
-    const oldGeneration = "5".repeat(64);
-    const newGeneration = "6".repeat(64);
-    await seedPublishedGeneration(serverId, oldGeneration);
-    const stub = env.RENDEZVOUS.getByName(serverId);
-
-    await runInDurableObject(stub, async (instance, state) => {
-      const originalPersister = Reflect.get(
-        instance,
-        "publicationPersister",
-      ) as (
-        db: D1Database,
-        publication: unknown,
-      ) => Promise<void>;
-      Reflect.set(instance, "publicationPersister", async (
-        db: D1Database,
-        publication: unknown,
-      ) => {
-        await originalPersister(db, publication);
-        throw new Error("Injected response loss after D1 commit");
-      });
-      try {
-        const response = await instance.fetch(generationPublicationRequest(
-          serverId,
-          oldGeneration,
-          newGeneration,
-        ));
-        expect(response.status).toBe(204);
-        expect(response.headers.get(INTERNAL_DIRECTORY_CHANGED_HEADER)).toBe("1");
-        expect(await state.storage.get("rendezvous:token-generation"))
-          .toBe(newGeneration);
-      } finally {
-        Reflect.set(instance, "publicationPersister", originalPersister);
-      }
-    });
-
-    expect(await env.DB.prepare(
-      `SELECT presence.rendezvous_generation AS listing_generation,
-              presence.rendezvous_token_hash
-         FROM server_presence AS presence
-        WHERE presence.profile = 'classic-v1' AND presence.server_id = ?`,
-    ).bind(serverId).first()).toEqual({
-      listing_generation: newGeneration,
-      rendezvous_token_hash: "f".repeat(64),
-    });
-    await evictDurableObject(stub);
-    const current = await connect(stub, "server", {
-      generation: newGeneration,
-    });
-    closeForCleanup(current);
-  });
-
-  it("persists recovery quarantine when publish-time retirement cannot finish", async () => {
-    const serverId = ticket(50_102);
-    const oldGeneration = "7".repeat(64);
-    const newGeneration = "8".repeat(64);
-    await seedPublishedGeneration(serverId, oldGeneration);
-    const stub = env.RENDEZVOUS.getByName(serverId);
-
-    await runInDurableObject(stub, async (instance, state) => {
-      const oldResponse = await instance.fetch(roomRequest("server", {
-        headers: {
-          [INTERNAL_RENDEZVOUS_GENERATION_HEADER]: oldGeneration,
-        },
-      }));
-      expect(oldResponse.status).toBe(101);
-      const oldPeer = oldResponse.webSocket;
-      const roomServer = state.getWebSockets("server")[0];
-      if (oldPeer === null || roomServer === undefined) {
-        throw new Error("Publish teardown test server pair is absent");
-      }
-      oldPeer.accept();
-      const serialize = vi.spyOn(roomServer, "serializeAttachment")
-        .mockImplementation(() => {
-          throw new Error("Injected generation retirement write failure");
-        });
-      const close = vi.spyOn(roomServer, "close").mockImplementation(() => {
-        throw new Error("Injected generation retirement close failure");
-      });
-      try {
-        await expect(instance.fetch(generationPublicationRequest(
-          serverId,
-          oldGeneration,
-          newGeneration,
-        ))).rejects.toMatchObject({
-          name: "RendezvousTeardownIntegrityError",
-          message: "Rendezvous server teardown was not persisted",
-        });
-        expect(await state.storage.get(
-          "rendezvous:teardown-recovery-required",
-        )).toBe(true);
-        expect(await state.storage.get("rendezvous:token-generation"))
-          .toBe(newGeneration);
-      } finally {
-        close.mockRestore();
-        serialize.mockRestore();
-        await instance.alarm();
-        closeForCleanup(oldPeer);
-      }
-    });
-
-    expect(await env.DB.prepare(
-      `SELECT rendezvous_generation
-         FROM server_presence
-        WHERE profile = 'classic-v1' AND server_id = ?`,
-    ).bind(serverId).first<string>("rendezvous_generation")).toBe(oldGeneration);
-    await evictDurableObject(stub);
-    const recovered = await connect(stub, "server", {
-      generation: oldGeneration,
-    });
-    await runInDurableObject(stub, async (_instance, state) => {
-      expect(await state.storage.get(
-        "rendezvous:teardown-recovery-required",
-      )).toBeUndefined();
-      expect(await state.storage.get("rendezvous:token-generation"))
-        .toBe(oldGeneration);
-    });
-    closeForCleanup(recovered);
-  });
-
-  it("keeps authorization and candidates isolated between protected clients", async () => {
-    const stub = room("protected-client-isolation");
-    const server = await connect(stub, "server", { inviteProtocol: true });
-    const firstClient = await connect(stub, "client", {
-      inviteProtocol: true,
-      authorizationRequired: true,
-    });
-    const secondClient = await connect(stub, "client", {
-      inviteProtocol: true,
-      authorizationRequired: true,
-    });
-    const firstTicket = ticket(707);
-    const secondTicket = ticket(708);
+    const server = await connect(stub,"server",{ accessProtocol:true,generation });
+    const client = await connect(stub,"client",{ accessProtocol:true,authorizationRequired:true,generation });
+    const init = JSON.stringify({type:"access_init",version:1,grant,client_nonce:nonce});
+    return {serverId,generation,grant,nonce,stub,server,client,init};
+  }
+  it("redeems once, survives hibernation, and relays only the grant-bound ticket", async () => {
+    const f = await fixture();
     try {
-      let relayed = nextJson(server, "first protected init");
-      firstClient.send(authInit(firstTicket, "1".repeat(32)));
-      expect(await relayed).toEqual(
-        JSON.parse(authInit(firstTicket, "1".repeat(32))),
-      );
-      relayed = nextJson(server, "second protected init");
-      secondClient.send(authInit(secondTicket, "2".repeat(32)));
-      expect(await relayed).toEqual(
-        JSON.parse(authInit(secondTicket, "2".repeat(32))),
-      );
-
-      relayed = nextJson(firstClient, "first protected challenge");
-      server.send(authChallenge(firstTicket, "3".repeat(64)));
-      expect(await relayed).toEqual(
-        JSON.parse(authChallenge(firstTicket, "3".repeat(64))),
-      );
-      relayed = nextJson(secondClient, "second protected challenge");
-      server.send(authChallenge(secondTicket, "4".repeat(64)));
-      expect(await relayed).toEqual(
-        JSON.parse(authChallenge(secondTicket, "4".repeat(64))),
-      );
-
-      relayed = nextJson(server, "first protected proof");
-      firstClient.send(authProof(firstTicket, "5".repeat(64)));
-      expect(await relayed).toEqual(
-        JSON.parse(authProof(firstTicket, "5".repeat(64))),
-      );
-      relayed = nextJson(server, "second protected proof");
-      secondClient.send(authProof(secondTicket, "6".repeat(64)));
-      expect(await relayed).toEqual(
-        JSON.parse(authProof(secondTicket, "6".repeat(64))),
-      );
-
-      relayed = nextJson(firstClient, "first protected result");
-      server.send(authResult(firstTicket, true));
-      expect(await relayed).toEqual(JSON.parse(authResult(firstTicket, true)));
-
-      const secondLeak = vi.fn();
-      secondClient.addEventListener("message", secondLeak);
-      relayed = nextJson(server, "first authorized candidate");
-      firstClient.send(clientCandidate(firstTicket));
-      expect(await relayed).toEqual(JSON.parse(clientCandidate(firstTicket)));
-      const firstReply = nextJson(firstClient, "first isolated reply");
-      server.send(serverCandidate(firstTicket));
-      expect(await firstReply).toEqual(JSON.parse(serverCandidate(firstTicket)));
-      await Promise.resolve();
-      expect(secondLeak).not.toHaveBeenCalled();
-
-      const unauthorizedForward = vi.fn();
-      server.addEventListener("message", unauthorizedForward);
-      const secondClosed = nextClose(
-        secondClient,
-        "second preauthorization candidate close",
-      );
-      secondClient.send(clientCandidate(secondTicket));
-      await expect(secondClosed).resolves.toMatchObject(PROTOCOL_CLOSE);
-      await Promise.resolve();
-      expect(unauthorizedForward).not.toHaveBeenCalled();
-      expect(server.readyState).toBe(WebSocket.OPEN);
-      secondClient.removeEventListener("message", secondLeak);
-      server.removeEventListener("message", unauthorizedForward);
-    } finally {
-      closeForCleanup(firstClient, secondClient, server);
-    }
+      const ready = nextJson(f.client); f.client.send(f.init);
+      expect(await ready).toEqual({type:"access_ready",version:1});
+      await evictDurableObject(f.stub);
+      const forwarded = nextJson(f.server); f.client.send(clientCandidate(f.grant));
+      expect(await forwarded).toEqual(JSON.parse(clientCandidate(f.grant)));
+      const returned = nextJson(f.client); f.server.send(serverCandidate(f.grant));
+      expect(await returned).toEqual(JSON.parse(serverCandidate(f.grant)));
+      const replay = await connect(f.stub,"client",{accessProtocol:true,authorizationRequired:true,generation:f.generation});
+      const denied = nextClose(replay); replay.send(f.init);
+      expect((await denied).code).toBe(4005);
+      closeForCleanup(replay);
+    } finally { closeForCleanup(f.client,f.server); }
   });
-
-  it("rejects a protected ticket replay after control replacement and eviction", async () => {
-    const stub = room("protected-ticket-replay");
-    const originalServer = await connect(stub, "server", {
-      inviteProtocol: true,
-    });
-    const originalClient = await connect(stub, "client", {
-      inviteProtocol: true,
-      authorizationRequired: true,
-    });
-    const selectedTicket = ticket(709);
-    const offered = nextJson(originalServer, "original protected init");
-    originalClient.send(authInit(selectedTicket));
-    await offered;
-
-    const originalClientClosed = nextClose(
-      originalClient,
-      "original protected client control-disconnect close",
-    );
-    originalServer.close(1_000, "Test control disconnect");
-    await expect(originalClientClosed).resolves.toMatchObject(
-      SERVER_UNAVAILABLE_CLOSE,
-    );
-    await evictDurableObject(stub);
-
-    const replacementServer = await connect(stub, "server", {
-      inviteProtocol: true,
-    });
-    const replacementClient = await connect(stub, "client", {
-      inviteProtocol: true,
-      authorizationRequired: true,
-    });
-    const forwarded = vi.fn();
-    replacementServer.addEventListener("message", forwarded);
-    const replayClosed = nextClose(
-      replacementClient,
-      "replayed protected ticket close",
-    );
-    replacementClient.send(authInit(selectedTicket));
-    await expect(replayClosed).resolves.toMatchObject(PROTOCOL_CLOSE);
-    await Promise.resolve();
-    expect(forwarded).not.toHaveBeenCalled();
-    replacementServer.removeEventListener("message", forwarded);
-    closeForCleanup(replacementServer);
-  });
-
-  it("expires an incomplete protected authorization after 15 seconds", async () => {
-    const stub = room("protected-authorization-expiry");
-    const now = 2_250_000_000_000;
-    const dateNow = vi.spyOn(Date, "now").mockReturnValue(now);
-    let server: WebSocket | undefined;
-    let client: WebSocket | undefined;
+  it.each(["wrong nonce","wrong ticket","candidate first","legacy init","repeated init"])("denies %s", async (attack) => {
+    const f = await fixture();
     try {
-      server = await connect(stub, "server", { inviteProtocol: true });
-      client = await connect(stub, "client", {
-        inviteProtocol: true,
-        authorizationRequired: true,
-      });
-      const init = nextJson(server, "expiring protected init");
-      client.send(authInit(ticket(710)));
-      await init;
-
-      dateNow.mockReturnValue(now + 15_000);
-      await evictDurableObject(stub);
-      const summaries = await recordTerminalSummaries(stub);
-      const closed = nextClose(client, "expired protected client close");
-      expect(await runDurableObjectAlarm(stub)).toBe(true);
-      await expect(closed).resolves.toMatchObject(EXPIRED_CLOSE);
-      expect(summaries).toEqual([
-        expect.objectContaining({ outcome: "session_expired" }),
-      ]);
-    } finally {
-      closeForCleanup(...[client, server].filter(
-        (socket): socket is WebSocket => socket !== undefined,
-      ));
-      dateNow.mockRestore();
-    }
+      if (attack === "wrong ticket" || attack === "repeated init") {
+        const ready = nextJson(f.client); f.client.send(f.init); await ready;
+      }
+      const denied = nextClose(f.client);
+      f.client.send(attack === "wrong nonce" ? f.init.replace(f.nonce,"d".repeat(64)) :
+        attack === "wrong ticket" ? clientCandidate("e".repeat(64)) :
+        attack === "candidate first" ? clientCandidate(f.grant) :
+        attack === "legacy init" ? JSON.stringify({type:"auth_init",version:1,ticket:f.grant,invite_id:"f".repeat(32)}) : f.init);
+      expect([4000,4005]).toContain((await denied).code);
+    } finally { closeForCleanup(f.client,f.server); }
   });
-
-  it("closes a protected client that discloses a candidate before authorization", async () => {
-    const stub = room("protected-candidate-downgrade");
-    const server = await connect(stub, "server", { inviteProtocol: true });
-    const client = await connect(stub, "client", {
-      inviteProtocol: true,
-      authorizationRequired: true,
-    });
-    const clientClosed = nextClose(client, "preauthorization candidate close");
-    client.send(clientCandidate(ticket(701)));
-    await expect(clientClosed).resolves.toMatchObject(PROTOCOL_CLOSE);
-    await runInDurableObject(stub, (_instance, state) => {
-      const roomServer = state.getWebSockets("server")[0];
-      const stored = roomServer?.deserializeAttachment() as
-        | { readonly t?: unknown[] }
-        | null
-        | undefined;
-      expect(stored?.t).toEqual([]);
-    });
-    closeForCleanup(server);
+  it.each([false,true])("revocation fences admission and candidate dispatch (redeemed=%s)", async (redeemed) => {
+    const f = await fixture();
+    try {
+      if (redeemed) { const ready = nextJson(f.client); f.client.send(f.init); await ready; }
+      await env.DB.prepare(`UPDATE access_routes SET state='revoked',revoked_at=? WHERE route_index=?`)
+        .bind(Math.floor(Date.now()/1000),f.serverId).run();
+      const denied = nextClose(f.client); f.client.send(redeemed ? clientCandidate(f.grant) : f.init);
+      expect((await denied).code).toBe(4005);
+    } finally { closeForCleanup(f.client,f.server); }
   });
-
-  it("forwards one generic denial and records authorization failure", async () => {
-    const stub = room("protected-denial");
-    const server = await connect(stub, "server", { inviteProtocol: true });
-    const client = await connect(stub, "client", {
-      inviteProtocol: true,
-      authorizationRequired: true,
-    });
-    const summaries = await recordTerminalSummaries(stub);
-    const selectedTicket = ticket(702);
-    let relayed = nextJson(server, "denial init");
-    client.send(authInit(selectedTicket));
-    await relayed;
-    relayed = nextJson(client, "denial challenge");
-    server.send(authChallenge(selectedTicket));
-    await relayed;
-    relayed = nextJson(server, "denial proof");
-    client.send(authProof(selectedTicket));
-    await relayed;
-
-    const denied = nextJson(client, "authorization denial");
-    const clientClosed = nextClose(client, "authorization denial close");
-    server.send(authResult(selectedTicket, false));
-    expect(await denied).toEqual(JSON.parse(authResult(selectedTicket, false)));
-    await expect(clientClosed).resolves.toMatchObject({
-      code: 4_005,
-      reason: "Rendezvous authorization failed",
-    });
-    expect(summaries).toHaveLength(1);
-    expect(summaries[0]).toMatchObject({
-      outcome: "authorization_failed",
-      clientFramesAccepted: 2,
-      serverFramesMatched: 2,
-      framesForwarded: 4,
-    });
-    await evictDurableObject(stub);
-    const nextClient = await connect(stub, "client", {
-      inviteProtocol: true,
-      authorizationRequired: true,
-    });
-    const nextInit = nextJson(server, "post-denial authorization init");
-    nextClient.send(authInit(ticket(711)));
-    expect(await nextInit).toEqual(JSON.parse(authInit(ticket(711))));
-    closeForCleanup(nextClient, server);
-  });
-
-  it("rejects cross-ticket and repeated authorization frames", async () => {
-    const crossStub = room("protected-cross-ticket");
-    const crossServer = await connect(crossStub, "server", {
-      inviteProtocol: true,
-    });
-    const crossClient = await connect(crossStub, "client", {
-      inviteProtocol: true,
-      authorizationRequired: true,
-    });
-    const selectedTicket = ticket(703);
-    const init = nextJson(crossServer, "cross-ticket init");
-    crossClient.send(authInit(selectedTicket));
-    await init;
-    const serverClosed = nextClose(crossServer, "cross-ticket server close");
-    const clientClosed = nextClose(crossClient, "cross-ticket client close");
-    crossServer.send(authChallenge(ticket(704)));
-    await expect(serverClosed).resolves.toMatchObject(PROTOCOL_CLOSE);
-    await expect(clientClosed).resolves.toMatchObject(PROTOCOL_CLOSE);
-
-    const repeatStub = room("protected-repeated-proof");
-    const repeatServer = await connect(repeatStub, "server", {
-      inviteProtocol: true,
-    });
-    const repeatClient = await connect(repeatStub, "client", {
-      inviteProtocol: true,
-      authorizationRequired: true,
-    });
-    const repeatTicket = ticket(705);
-    let frame = nextJson(repeatServer, "repeat init");
-    repeatClient.send(authInit(repeatTicket));
-    await frame;
-    frame = nextJson(repeatClient, "repeat challenge");
-    repeatServer.send(authChallenge(repeatTicket));
-    await frame;
-    frame = nextJson(repeatServer, "first proof");
-    repeatClient.send(authProof(repeatTicket));
-    await frame;
-    const repeatClosed = nextClose(repeatClient, "repeated proof close");
-    repeatClient.send(authProof(repeatTicket));
-    await expect(repeatClosed).resolves.toMatchObject(PROTOCOL_CLOSE);
-    closeForCleanup(repeatServer);
-  });
-
-  it("permits one causal late authorization frame and rejects repetition", async () => {
-    const stub = room("protected-late-authorization");
-    const server = await connect(stub, "server", { inviteProtocol: true });
-    const client = await connect(stub, "client", {
-      inviteProtocol: true,
-      authorizationRequired: true,
-    });
-    const selectedTicket = ticket(712);
-    const init = nextJson(server, "late-frame init");
-    client.send(authInit(selectedTicket));
-    await init;
-
-    const clientClosed = nextClose(client, "terminal prechallenge client");
-    client.send(authProof(selectedTicket));
-    await expect(clientClosed).resolves.toMatchObject(PROTOCOL_CLOSE);
-
-    server.send(authChallenge(selectedTicket));
-    const serverClosed = nextClose(server, "repeated late challenge server close");
-    server.send(authChallenge(selectedTicket));
-    await expect(serverClosed).resolves.toMatchObject(PROTOCOL_CLOSE);
-  });
-
-  it("invalidates pending authorization when the server control is replaced", async () => {
-    const stub = room("protected-replacement");
-    const server = await connect(stub, "server", { inviteProtocol: true });
-    const client = await connect(stub, "client", {
-      inviteProtocol: true,
-      authorizationRequired: true,
-    });
-    const init = nextJson(server, "replacement pending init");
-    client.send(authInit(ticket(706)));
-    await init;
-    const serverClosed = nextClose(server, "protected replaced server");
-    const clientClosed = nextClose(client, "protected replaced client");
-    const replacement = await connect(stub, "server", { inviteProtocol: true });
-    await expect(serverClosed).resolves.toMatchObject(REPLACED_CLOSE);
-    await expect(clientClosed).resolves.toMatchObject(REPLACED_CLOSE);
-    closeForCleanup(replacement);
+  it("expires uninitialized sockets at the two-second deadline", async () => {
+    const f = await fixture();
+    try {
+      const expired = nextClose(f.client);
+      const clock = vi.spyOn(Date,"now").mockReturnValue(Date.now()+2_001);
+      try { await runDurableObjectAlarm(f.stub); } finally { clock.mockRestore(); }
+      expect((await expired).code).toBe(4001);
+    } finally { closeForCleanup(f.client,f.server); }
   });
 });
 

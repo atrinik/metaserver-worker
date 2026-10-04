@@ -693,7 +693,7 @@ export async function validateAccessServiceResponse(
   if (value !== null && kind === "routes" && value.schema === "atrinik-access-route-result-v1" &&
       id(value.requestId) && ["reserved","active","revoked","conflict","expired","not_found","unavailable"].includes(value.outcome as string) &&
       (value.reservationId === null || id(value.reservationId)) &&
-      (value.reservationExpiresAt === null || decimal(value.reservationExpiresAt)) && decimal(value.tokenRevision) && BigInt(value.tokenRevision) <= 18446744073709551615n) {
+      (value.reservationExpiresAt === null || (decimal(value.reservationExpiresAt) && BigInt(value.reservationExpiresAt)<=253402300799n)) && decimal(value.tokenRevision) && BigInt(value.tokenRevision) <= 18446744073709551615n) {
     canonical = JSON.stringify({ schema: value.schema, requestId: value.requestId, outcome: value.outcome,
       reservationId: value.reservationId, reservationExpiresAt: value.reservationExpiresAt, tokenRevision: value.tokenRevision });
   }
@@ -704,7 +704,7 @@ export async function validateAccessServiceResponse(
       typeof value.name === "string" && new TextEncoder().encode(value.name).byteLength <= 80 &&
       value.name.length > 0 && !/[\x00-\x1f\x7f]/.test(value.name) &&
       value.accessRequired === true && hash(value.generation) && hash(value.clientNonce) &&
-      hash(value.grant) && decimal(value.expiresAt)) {
+      hash(value.grant) && decimal(value.expiresAt) && BigInt(value.expiresAt)<=253402300799n) {
     let endpoint: { hostname: string; port: number } | undefined;
     if (value.endpoint !== undefined) {
       const candidate = value.endpoint;

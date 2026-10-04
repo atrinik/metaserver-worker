@@ -2,7 +2,7 @@ import { HttpError } from "./http";
 
 export const PUBLISH_AUTHORITY = "publish.meta.atrinik.org";
 export const RENDEZVOUS_AUTHORITY = "rendezvous.meta.atrinik.org";
-export const CLASSIC_RENDEZVOUS_INVITE_SUBPROTOCOL =
+export const ACCESS_RENDEZVOUS_SUBPROTOCOL =
   "atrinik-access-rendezvous-v1";
 export const PUBLISH_MAX_BODY_BYTES = 4_096;
 
@@ -29,7 +29,7 @@ export type ProtocolGeneration = "game-protocol-1" | "classic";
 export type PublisherProfile = "classic-v3" | "game-v2";
 export type RendezvousRole = "client" | "server";
 export type ClassicRendezvousSubprotocol =
-  typeof CLASSIC_RENDEZVOUS_INVITE_SUBPROTOCOL;
+  typeof ACCESS_RENDEZVOUS_SUBPROTOCOL;
 
 export interface RouteInput {
   /**
@@ -297,7 +297,7 @@ function parseRendezvousSubprotocol(
   if (value === null) {
     return null;
   }
-  if (allowClassicInvite && value === CLASSIC_RENDEZVOUS_INVITE_SUBPROTOCOL) {
+  if (allowClassicInvite && value === ACCESS_RENDEZVOUS_SUBPROTOCOL) {
     return value;
   }
   throw new HttpError("bad_request");
@@ -395,7 +395,6 @@ function rejectAmbiguousCriticalHeaders(headers: Headers): void {
   }
 }
 
-export const ACCESS_RENDEZVOUS_SUBPROTOCOL = "atrinik-access-rendezvous-v1";
 export type AccessDynamicRoute =
   | { readonly kind: "access-routes"; readonly profile: "classic" | "game";
       readonly serverId: string; readonly authority: string; }

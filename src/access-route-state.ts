@@ -1,3 +1,4 @@
+import { HttpError } from "./http";
 import type { AccessRoutePayload } from "./access-route-auth";
 import { randomToken, sha256Hex } from "./protocol";
 
@@ -33,7 +34,7 @@ interface SignedMutation {
  * authorizes a write. Request retries require a fresh signature and sequence.
  */
 export async function mutateAccessRoute(
-  db: D1Database, authenticated: SignedMutation, now: number,
+  db: D1Database, authenticated: SignedMutation, now: number, freshness = 14400,
 ): Promise<AccessRouteResult> {
   const p = authenticated.payload;
   const profile = p.profile === "classic" ? "classic-v3" : "game-v2";
@@ -51,18 +52,12 @@ export async function mutateAccessRoute(
   const receiptValues = (outcome: AccessRouteOutcome) => [p.profile, p.serverId, p.requestId, commit, outcome];
 
   const statements = [db.prepare(
-    `INSERT INTO publisher_replay(server_id, profile, last_sequence, last_nonce, commit_token, updated_at)
-     SELECT ?, ?, ?, ?, ?, ? WHERE NOT EXISTS (
-       SELECT 1 FROM publisher_nonces WHERE server_id = ? AND profile = ? AND nonce = ?
-     ) ON CONFLICT(server_id, profile) DO UPDATE SET
-       last_sequence = excluded.last_sequence, last_nonce = excluded.last_nonce,
-       commit_token = excluded.commit_token, updated_at = excluded.updated_at
-     WHERE (length(excluded.last_sequence) > length(last_sequence) OR
-       (length(excluded.last_sequence) = length(last_sequence) AND excluded.last_sequence > last_sequence))
-       AND NOT EXISTS (SELECT 1 FROM publisher_nonces WHERE server_id = excluded.server_id
-         AND profile = excluded.profile AND nonce = excluded.last_nonce)`,
-  ).bind(p.serverId, profile, authenticated.sequence, authenticated.nonce, commit, now,
-    p.serverId, profile, authenticated.nonce),
+    `UPDATE publisher_replay SET last_sequence=?,last_nonce=?,commit_token=?,updated_at=?
+     WHERE server_id=? AND profile=? AND
+       (length(?)>length(last_sequence) OR (length(?)=length(last_sequence) AND ?>last_sequence))
+       AND NOT EXISTS(SELECT 1 FROM publisher_nonces WHERE server_id=? AND profile=? AND nonce=?)`,
+  ).bind(authenticated.sequence,authenticated.nonce,commit,now,p.serverId,profile,
+    authenticated.sequence,authenticated.sequence,authenticated.sequence,p.serverId,profile,authenticated.nonce),
   db.prepare(`INSERT INTO publisher_nonces(server_id,profile,nonce,expires_at,created_at)
     SELECT ?,?,?,?,? WHERE ${fence}`).bind(p.serverId, profile, authenticated.nonce,
       authenticated.nonceExpiresAt, now, ...fenceValues)];
@@ -87,10 +82,12 @@ export async function mutateAccessRoute(
        decision AS (SELECT state.*, CASE
           WHEN token_conflict OR (old_profile IS NOT NULL AND
             (old_profile<>profile OR old_server<>server_id OR old_token<>token_id)) THEN 'conflict'
+          WHEN operation<>'revoke' AND old_state='revoked' THEN 'revoked'
+          WHEN operation<>'revoke' AND old_state='expired' THEN 'expired'
           WHEN operation='reserve' AND old_profile IS NOT NULL THEN 'conflict'
           WHEN operation='reserve' AND expires_at IS NOT NULL AND expires_at<=now THEN 'expired'
           WHEN operation='reserve' AND NOT EXISTS (
-            SELECT 1 FROM server_presence WHERE profile=? AND server_id=state.server_id
+            SELECT 1 FROM server_presence WHERE profile=? AND server_id=state.server_id AND last_seen>?
           ) THEN 'unavailable'
           WHEN operation='reserve' AND (
             (SELECT count(*) FROM access_routes)>=65536 OR
@@ -120,7 +117,8 @@ export async function mutateAccessRoute(
        SELECT profile,server_id,request_id,request_digest,tuple_digest,operation,token_id,result,
           CASE WHEN result='reserved' THEN new_handle ELSE old_handle END,
           CASE WHEN result='reserved' THEN now+60 ELSE old_until END,
-          CASE WHEN result='revoked' AND old_revision IS NOT NULL AND
+          CASE WHEN operation<>'revoke' AND old_state IN ('revoked','expired') THEN old_revision
+            WHEN result='revoked' AND old_revision IS NOT NULL AND
             (length(old_revision)>length(token_revision) OR
              (length(old_revision)=length(token_revision) AND old_revision>token_revision))
             THEN old_revision ELSE token_revision END, ?, now, now+?
@@ -134,7 +132,7 @@ export async function mutateAccessRoute(
             AND state IN ('reserved','active')) + growth <=4096`,
     ).bind(p.profile, p.serverId, p.requestId, requestDigest, tupleDigest, p.operation,
       p.tokenId, p.tokenRevision, p.index, p.reservationId, expiry, now, handle,
-      profile, commit, RETENTION_SECONDS, ...fenceValues));
+      profile, now-freshness, commit, RETENTION_SECONDS, ...fenceValues));
     statements.push(db.prepare(
       `INSERT INTO access_routes(route_index,profile,server_id,token_id,token_revision,state,
           expires_at,reservation_id,reserved_until,created_at,revoked_at)
@@ -144,6 +142,7 @@ export async function mutateAccessRoute(
     statements.push(db.prepare(
       `UPDATE access_routes SET state='active' WHERE route_index=? AND ${receiptFence}`,
     ).bind(p.index, ...receiptValues("active")));
+    if (p.operation === "revoke") {
     statements.push(db.prepare(
       `INSERT INTO access_routes(route_index,profile,server_id,token_id,token_revision,state,
           expires_at,reservation_id,reserved_until,created_at,revoked_at)
@@ -158,6 +157,7 @@ export async function mutateAccessRoute(
     statements.push(db.prepare(
       `DELETE FROM access_grants WHERE route_index=? AND ${receiptFence}`,
     ).bind(p.index, ...receiptValues("revoked")));
+    }
     // Expired pending rows become terminal; expiry can never be undone by a
     // delayed activation or a later wall-clock regression.
     statements.push(db.prepare(
@@ -172,7 +172,7 @@ export async function mutateAccessRoute(
   const results = await db.batch(statements);
   if (results.some((result) => !result.success)) throw new Error("Access transaction failed");
   if (results[0].meta.changes !== 1 || results[1].meta.changes !== 1) {
-    throw new Error("Access publisher replay rejected");
+    throw new HttpError("conflict");
   }
   const receipt = results.at(-1)!.results[0] as Receipt | undefined;
   if (receipt === undefined) return result(p, p.operation === "result" ? "not_found" : "unavailable");

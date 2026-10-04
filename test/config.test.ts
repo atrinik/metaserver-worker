@@ -131,6 +131,7 @@ describe("rendezvous room and directory artifact configuration", () => {
       DIRECTORY_REFRESH_LEAD_SECONDS: "7200",
     })).toEqual({
       classicDirectoryCutoverMode: "v4-production",
+      gameDirectoryCutoverMode: "v1-production",
       listingTtlSeconds: 86_400,
       artifactLifetimeSeconds: 14_400,
       refreshLeadSeconds: 7_200,

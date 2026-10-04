@@ -39,6 +39,7 @@ export async function issueAccessGrant(
       WHERE route.route_index=? AND route.state='active' AND
         (route.expires_at IS NULL OR route.expires_at>?) AND presence.last_seen>?
         AND presence.access_required=1 AND presence.rendezvous_generation=?
+        AND NOT EXISTS(SELECT 1 FROM server_denials WHERE server_id=route.server_id)
         AND presence.certificate IS NOT NULL AND presence.name IS NOT NULL
         AND (SELECT count(*) FROM access_grants)<32768
         AND (SELECT count(*) FROM access_grants WHERE profile=route.profile AND server_id=route.server_id)<32
@@ -79,7 +80,8 @@ export async function redeemAccessGrant(
         WHERE route.route_index=access_grants.route_index AND route.state='active'
           AND route.token_revision=access_grants.token_revision AND
           (route.expires_at IS NULL OR route.expires_at>?) AND presence.access_required=1
-          AND presence.last_seen>? AND presence.rendezvous_generation=access_grants.generation)
+          AND presence.last_seen>? AND presence.rendezvous_generation=access_grants.generation
+          AND NOT EXISTS(SELECT 1 FROM server_denials WHERE server_id=route.server_id))
     RETURNING route_index,token_revision,generation,expires_at,redemption_id`).bind(
       redemptionId, profile, serverId, generation, clientNonce, now, ...tags, ...tags,
       now, now - freshness,
@@ -99,7 +101,8 @@ export async function isAccessRedemptionLive(
     WHERE grant_row.redemption_id=? AND grant_row.generation=? AND grant_row.expires_at>?
       AND route.state='active' AND route.token_revision=grant_row.token_revision
       AND (route.expires_at IS NULL OR route.expires_at>?) AND presence.access_required=1
-      AND presence.last_seen>? AND presence.rendezvous_generation=grant_row.generation`).bind(
+      AND presence.last_seen>? AND presence.rendezvous_generation=grant_row.generation
+      AND NOT EXISTS(SELECT 1 FROM server_denials WHERE server_id=route.server_id)`).bind(
         redemptionId, generation, now, now, now - freshness,
       ).first<number>("live");
   return live === 1;

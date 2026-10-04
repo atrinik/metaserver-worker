@@ -52,16 +52,33 @@
   former control-plane-ready secret is optional, inert transition state and
   must never influence a delivery decision.
 - Treat `server_presence` plus the profile-discriminated `directory_entries`
-  as authoritative, profile-scoped publication state. Presence retains only
-  the accepted rendezvous verifier, generation, and last-seen time for both public and
-  private publishers; `directory_entries` alone is public. Classic v1 and v2
-  share one replay lineage but have disjoint password/access-code policy rows;
-  Game remains independent. Never use sentinel fields to imitate another
-  profile. Game rows additionally retain the exact derived
+  as authoritative, profile-scoped publication state. Active profiles are Classic
+  publisher v3/directory v6 and Game publisher v2/directory v2. Private presence
+  retains the signed certificate, name, endpoint, access policy, rendezvous verifier,
+  generation and last-seen time; `directory_entries` alone is public. Historic
+  publisher profiles retain replay lineage only and have no runtime fallback.
+  Never use sentinel fields to imitate another profile. Game rows additionally retain the exact derived
   canonical-JSON byte count so D1 can reject an over-limit aggregate before it
   becomes authoritative. Visible expiry must
   advance `directory_revisions` and `directory_outbox` atomically before
   removing expired entries; stale private presence is revision-neutral.
+- Access tokens use authenticated POST route CRUD on the publisher authority and
+  bounded POST resolve plus the access rendezvous subprotocol on the rendezvous
+  authority. No secret belongs in a URL, log, public artifact or cache. Require
+  an existing publisher identity before CRUD allocation; reserve additionally
+  requires fresh signed presence. Share publisher sequence/nonce replay fences.
+  Keep reserve/activate CAS, terminal revocation, global index collision checks,
+  receipts and reserved revocation capacity in one D1 transaction. Retained
+  receipts plus nonterminal routes cannot exceed 4096 per identity or 65536
+  globally; existing-record revocation must work at capacity.
+  Grants are single-use, fifteen seconds, purpose-HMAC tagged in D1, and bound to
+  identity, generation, token revision and client nonce. Admit them only through
+  the versioned v4 room boundary and recheck denial before candidate dispatch.
+  Raw grants may exist only in bounded live attachments and must be scrubbed at
+  terminal teardown. The retired invitation challenge/proof frames are rejected.
+  Source migrations 0013/0014 preserve populated history. The separately gated
+  `deployment/retirement/retire-legacy-profiles.sql` is never auto-discovered or
+  applied without the complete proof described alongside it.
 - Treat D1 revision/outbox as the static-directory authority and the
   profile-named `DirectoryBuilder` only as a serialized, retryable publisher.
   Persist pending intent before R2 awaits, publish immutable objects before

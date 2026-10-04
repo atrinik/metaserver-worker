@@ -1,0 +1,69 @@
+{
+  "schema": "atrinik-access-route-fixtures-v1",
+  "signature_vectors": [
+    {
+      "operation": "reserve",
+      "authority": "publish.meta.atrinik.org",
+      "server_id": "0d61dae94226a68c2452598898d33ef8eb97a73a040294825c2eedb01d6aee40",
+      "certificate_der_base64": "MIIBOjCB4KADAgECAgID6TAKBggqhkjOPQQDAjAmMSQwIgYDVQQDDBtBdHJpbmlrIGFjY2VzcyBmaXh0dXJlIG9ubHkwHhcNMjYwMTAxMDAwMDAwWhcNMzYwMTAxMDAwMDAwWjAmMSQwIgYDVQQDDBtBdHJpbmlrIGFjY2VzcyBmaXh0dXJlIG9ubHkwWTATBgcqhkjOPQIBBggqhkjOPQMBBwNCAARrF9Hy4SxCR/i85uVjpEDydwN9gS3rM6D0oTlF2JjClk/jQuL+Gn+bjufrSnwPnhYrzjNXazFezsu2QGg3v1H1MAoGCCqGSM49BAMCA0kAMEYCIQDuJYjSE1s0zA8WTnf+zwhLUj7HiAN3I4u9Se0dmU2jvAIhALgq0zfa5cvIFi8xBKYqCN8gNsxnhvb2qPHKe/pUq8DT",
+      "path": "/v1/access/servers/classic/0d61dae94226a68c2452598898d33ef8eb97a73a040294825c2eedb01d6aee40/routes",
+      "sequence": "101",
+      "nonce": "00000000000000000000000000000065",
+      "created": 1800000000,
+      "body": "{\"schema\":\"atrinik-access-route-v1\",\"profile\":\"classic\",\"serverId\":\"0d61dae94226a68c2452598898d33ef8eb97a73a040294825c2eedb01d6aee40\",\"certificate\":\"MIIBOjCB4KADAgECAgID6TAKBggqhkjOPQQDAjAmMSQwIgYDVQQDDBtBdHJpbmlrIGFjY2VzcyBmaXh0dXJlIG9ubHkwHhcNMjYwMTAxMDAwMDAwWhcNMzYwMTAxMDAwMDAwWjAmMSQwIgYDVQQDDBtBdHJpbmlrIGFjY2VzcyBmaXh0dXJlIG9ubHkwWTATBgcqhkjOPQIBBggqhkjOPQMBBwNCAARrF9Hy4SxCR/i85uVjpEDydwN9gS3rM6D0oTlF2JjClk/jQuL+Gn+bjufrSnwPnhYrzjNXazFezsu2QGg3v1H1MAoGCCqGSM49BAMCA0kAMEYCIQDuJYjSE1s0zA8WTnf+zwhLUj7HiAN3I4u9Se0dmU2jvAIhALgq0zfa5cvIFi8xBKYqCN8gNsxnhvb2qPHKe/pUq8DT\",\"operation\":\"reserve\",\"requestId\":\"00000000000000000000000000000065\",\"tokenId\":\"10101010101010101010101010101010\",\"tokenRevision\":\"1\",\"index\":\"6128199c2e3ad6b5022a86fa42ed5d43709c80023bd21a485a049dcdd898596f\",\"reservationId\":null,\"expiresAt\":null}",
+      "content_digest": "sha-256=:AC5ZJagA3Dx8EwqTolfh78gzc7Gdcf39VXTN/F2p974=:",
+      "signature_input": "atrinik=(\"@method\" \"@authority\" \"@path\" \"content-digest\" \"content-type\" \"atrinik-server-id\" \"atrinik-publish-sequence\");created=1800000000;expires=1800000300;nonce=\"00000000000000000000000000000065\";alg=\"ecdsa-p256-sha256\";keyid=\"0d61dae94226a68c2452598898d33ef8eb97a73a040294825c2eedb01d6aee40\";tag=\"atrinik-access-routes-v1\"",
+      "signature_base": "\"@method\": POST\n\"@authority\": publish.meta.atrinik.org\n\"@path\": /v1/access/servers/classic/0d61dae94226a68c2452598898d33ef8eb97a73a040294825c2eedb01d6aee40/routes\n\"content-digest\": sha-256=:AC5ZJagA3Dx8EwqTolfh78gzc7Gdcf39VXTN/F2p974=:\n\"content-type\": application/json\n\"atrinik-server-id\": 0d61dae94226a68c2452598898d33ef8eb97a73a040294825c2eedb01d6aee40\n\"atrinik-publish-sequence\": 101\n\"@signature-params\": (\"@method\" \"@authority\" \"@path\" \"content-digest\" \"content-type\" \"atrinik-server-id\" \"atrinik-publish-sequence\");created=1800000000;expires=1800000300;nonce=\"00000000000000000000000000000065\";alg=\"ecdsa-p256-sha256\";keyid=\"0d61dae94226a68c2452598898d33ef8eb97a73a040294825c2eedb01d6aee40\";tag=\"atrinik-access-routes-v1\"",
+      "signature_base64": "htJgTgybDOBaU2rUOKi/AOAvD5+egK0CxKbuGAhMRiaj4/bPwgPeLoLPFsgyecKnFarjE0+Foeo9uuu2hJhDWw==",
+      "signature_header": "atrinik=:htJgTgybDOBaU2rUOKi/AOAvD5+egK0CxKbuGAhMRiaj4/bPwgPeLoLPFsgyecKnFarjE0+Foeo9uuu2hJhDWw==:"
+    },
+    {
+      "operation": "activate",
+      "authority": "publish.meta.atrinik.org",
+      "server_id": "0d61dae94226a68c2452598898d33ef8eb97a73a040294825c2eedb01d6aee40",
+      "certificate_der_base64": "MIIBOjCB4KADAgECAgID6TAKBggqhkjOPQQDAjAmMSQwIgYDVQQDDBtBdHJpbmlrIGFjY2VzcyBmaXh0dXJlIG9ubHkwHhcNMjYwMTAxMDAwMDAwWhcNMzYwMTAxMDAwMDAwWjAmMSQwIgYDVQQDDBtBdHJpbmlrIGFjY2VzcyBmaXh0dXJlIG9ubHkwWTATBgcqhkjOPQIBBggqhkjOPQMBBwNCAARrF9Hy4SxCR/i85uVjpEDydwN9gS3rM6D0oTlF2JjClk/jQuL+Gn+bjufrSnwPnhYrzjNXazFezsu2QGg3v1H1MAoGCCqGSM49BAMCA0kAMEYCIQDuJYjSE1s0zA8WTnf+zwhLUj7HiAN3I4u9Se0dmU2jvAIhALgq0zfa5cvIFi8xBKYqCN8gNsxnhvb2qPHKe/pUq8DT",
+      "path": "/v1/access/servers/classic/0d61dae94226a68c2452598898d33ef8eb97a73a040294825c2eedb01d6aee40/routes",
+      "sequence": "102",
+      "nonce": "00000000000000000000000000000066",
+      "created": 1800000000,
+      "body": "{\"schema\":\"atrinik-access-route-v1\",\"profile\":\"classic\",\"serverId\":\"0d61dae94226a68c2452598898d33ef8eb97a73a040294825c2eedb01d6aee40\",\"certificate\":\"MIIBOjCB4KADAgECAgID6TAKBggqhkjOPQQDAjAmMSQwIgYDVQQDDBtBdHJpbmlrIGFjY2VzcyBmaXh0dXJlIG9ubHkwHhcNMjYwMTAxMDAwMDAwWhcNMzYwMTAxMDAwMDAwWjAmMSQwIgYDVQQDDBtBdHJpbmlrIGFjY2VzcyBmaXh0dXJlIG9ubHkwWTATBgcqhkjOPQIBBggqhkjOPQMBBwNCAARrF9Hy4SxCR/i85uVjpEDydwN9gS3rM6D0oTlF2JjClk/jQuL+Gn+bjufrSnwPnhYrzjNXazFezsu2QGg3v1H1MAoGCCqGSM49BAMCA0kAMEYCIQDuJYjSE1s0zA8WTnf+zwhLUj7HiAN3I4u9Se0dmU2jvAIhALgq0zfa5cvIFi8xBKYqCN8gNsxnhvb2qPHKe/pUq8DT\",\"operation\":\"activate\",\"requestId\":\"00000000000000000000000000000066\",\"tokenId\":\"10101010101010101010101010101010\",\"tokenRevision\":\"1\",\"index\":\"6128199c2e3ad6b5022a86fa42ed5d43709c80023bd21a485a049dcdd898596f\",\"reservationId\":\"20202020202020202020202020202020\",\"expiresAt\":null}",
+      "content_digest": "sha-256=:ybcmCnI6rT8tCnJmaVzD1m2ToS8tBXuJnGcWtSOpANQ=:",
+      "signature_input": "atrinik=(\"@method\" \"@authority\" \"@path\" \"content-digest\" \"content-type\" \"atrinik-server-id\" \"atrinik-publish-sequence\");created=1800000000;expires=1800000300;nonce=\"00000000000000000000000000000066\";alg=\"ecdsa-p256-sha256\";keyid=\"0d61dae94226a68c2452598898d33ef8eb97a73a040294825c2eedb01d6aee40\";tag=\"atrinik-access-routes-v1\"",
+      "signature_base": "\"@method\": POST\n\"@authority\": publish.meta.atrinik.org\n\"@path\": /v1/access/servers/classic/0d61dae94226a68c2452598898d33ef8eb97a73a040294825c2eedb01d6aee40/routes\n\"content-digest\": sha-256=:ybcmCnI6rT8tCnJmaVzD1m2ToS8tBXuJnGcWtSOpANQ=:\n\"content-type\": application/json\n\"atrinik-server-id\": 0d61dae94226a68c2452598898d33ef8eb97a73a040294825c2eedb01d6aee40\n\"atrinik-publish-sequence\": 102\n\"@signature-params\": (\"@method\" \"@authority\" \"@path\" \"content-digest\" \"content-type\" \"atrinik-server-id\" \"atrinik-publish-sequence\");created=1800000000;expires=1800000300;nonce=\"00000000000000000000000000000066\";alg=\"ecdsa-p256-sha256\";keyid=\"0d61dae94226a68c2452598898d33ef8eb97a73a040294825c2eedb01d6aee40\";tag=\"atrinik-access-routes-v1\"",
+      "signature_base64": "Aml+vKCo4TukljoTZg5uuaPzrWRgDP6xa9Ec++29WVJXMGBrOFbWO8dI+lrbdX/3tsy1LSJZ9XJPETFh0a6MEg==",
+      "signature_header": "atrinik=:Aml+vKCo4TukljoTZg5uuaPzrWRgDP6xa9Ec++29WVJXMGBrOFbWO8dI+lrbdX/3tsy1LSJZ9XJPETFh0a6MEg==:"
+    },
+    {
+      "operation": "revoke",
+      "authority": "publish.meta.atrinik.org",
+      "server_id": "0d61dae94226a68c2452598898d33ef8eb97a73a040294825c2eedb01d6aee40",
+      "certificate_der_base64": "MIIBOjCB4KADAgECAgID6TAKBggqhkjOPQQDAjAmMSQwIgYDVQQDDBtBdHJpbmlrIGFjY2VzcyBmaXh0dXJlIG9ubHkwHhcNMjYwMTAxMDAwMDAwWhcNMzYwMTAxMDAwMDAwWjAmMSQwIgYDVQQDDBtBdHJpbmlrIGFjY2VzcyBmaXh0dXJlIG9ubHkwWTATBgcqhkjOPQIBBggqhkjOPQMBBwNCAARrF9Hy4SxCR/i85uVjpEDydwN9gS3rM6D0oTlF2JjClk/jQuL+Gn+bjufrSnwPnhYrzjNXazFezsu2QGg3v1H1MAoGCCqGSM49BAMCA0kAMEYCIQDuJYjSE1s0zA8WTnf+zwhLUj7HiAN3I4u9Se0dmU2jvAIhALgq0zfa5cvIFi8xBKYqCN8gNsxnhvb2qPHKe/pUq8DT",
+      "path": "/v1/access/servers/classic/0d61dae94226a68c2452598898d33ef8eb97a73a040294825c2eedb01d6aee40/routes",
+      "sequence": "103",
+      "nonce": "00000000000000000000000000000067",
+      "created": 1800000000,
+      "body": "{\"schema\":\"atrinik-access-route-v1\",\"profile\":\"classic\",\"serverId\":\"0d61dae94226a68c2452598898d33ef8eb97a73a040294825c2eedb01d6aee40\",\"certificate\":\"MIIBOjCB4KADAgECAgID6TAKBggqhkjOPQQDAjAmMSQwIgYDVQQDDBtBdHJpbmlrIGFjY2VzcyBmaXh0dXJlIG9ubHkwHhcNMjYwMTAxMDAwMDAwWhcNMzYwMTAxMDAwMDAwWjAmMSQwIgYDVQQDDBtBdHJpbmlrIGFjY2VzcyBmaXh0dXJlIG9ubHkwWTATBgcqhkjOPQIBBggqhkjOPQMBBwNCAARrF9Hy4SxCR/i85uVjpEDydwN9gS3rM6D0oTlF2JjClk/jQuL+Gn+bjufrSnwPnhYrzjNXazFezsu2QGg3v1H1MAoGCCqGSM49BAMCA0kAMEYCIQDuJYjSE1s0zA8WTnf+zwhLUj7HiAN3I4u9Se0dmU2jvAIhALgq0zfa5cvIFi8xBKYqCN8gNsxnhvb2qPHKe/pUq8DT\",\"operation\":\"revoke\",\"requestId\":\"00000000000000000000000000000067\",\"tokenId\":\"10101010101010101010101010101010\",\"tokenRevision\":\"2\",\"index\":\"6128199c2e3ad6b5022a86fa42ed5d43709c80023bd21a485a049dcdd898596f\",\"reservationId\":\"20202020202020202020202020202020\",\"expiresAt\":null}",
+      "content_digest": "sha-256=:0cWnX1KrhpVfmMjZG15V9i1f6ssQaGagqUN/ZYVVYFI=:",
+      "signature_input": "atrinik=(\"@method\" \"@authority\" \"@path\" \"content-digest\" \"content-type\" \"atrinik-server-id\" \"atrinik-publish-sequence\");created=1800000000;expires=1800000300;nonce=\"00000000000000000000000000000067\";alg=\"ecdsa-p256-sha256\";keyid=\"0d61dae94226a68c2452598898d33ef8eb97a73a040294825c2eedb01d6aee40\";tag=\"atrinik-access-routes-v1\"",
+      "signature_base": "\"@method\": POST\n\"@authority\": publish.meta.atrinik.org\n\"@path\": /v1/access/servers/classic/0d61dae94226a68c2452598898d33ef8eb97a73a040294825c2eedb01d6aee40/routes\n\"content-digest\": sha-256=:0cWnX1KrhpVfmMjZG15V9i1f6ssQaGagqUN/ZYVVYFI=:\n\"content-type\": application/json\n\"atrinik-server-id\": 0d61dae94226a68c2452598898d33ef8eb97a73a040294825c2eedb01d6aee40\n\"atrinik-publish-sequence\": 103\n\"@signature-params\": (\"@method\" \"@authority\" \"@path\" \"content-digest\" \"content-type\" \"atrinik-server-id\" \"atrinik-publish-sequence\");created=1800000000;expires=1800000300;nonce=\"00000000000000000000000000000067\";alg=\"ecdsa-p256-sha256\";keyid=\"0d61dae94226a68c2452598898d33ef8eb97a73a040294825c2eedb01d6aee40\";tag=\"atrinik-access-routes-v1\"",
+      "signature_base64": "+S0eu+lMJJ0T/YnANVEocPgVXCPBucAIDLBYA1IbUu2SmKuKrH6hm8mH4b/VrxVJl5RCg13NBTGlqimQNzbLSQ==",
+      "signature_header": "atrinik=:+S0eu+lMJJ0T/YnANVEocPgVXCPBucAIDLBYA1IbUu2SmKuKrH6hm8mH4b/VrxVJl5RCg13NBTGlqimQNzbLSQ==:"
+    },
+    {
+      "operation": "result",
+      "authority": "publish.meta.atrinik.org",
+      "server_id": "0d61dae94226a68c2452598898d33ef8eb97a73a040294825c2eedb01d6aee40",
+      "certificate_der_base64": "MIIBOjCB4KADAgECAgID6TAKBggqhkjOPQQDAjAmMSQwIgYDVQQDDBtBdHJpbmlrIGFjY2VzcyBmaXh0dXJlIG9ubHkwHhcNMjYwMTAxMDAwMDAwWhcNMzYwMTAxMDAwMDAwWjAmMSQwIgYDVQQDDBtBdHJpbmlrIGFjY2VzcyBmaXh0dXJlIG9ubHkwWTATBgcqhkjOPQIBBggqhkjOPQMBBwNCAARrF9Hy4SxCR/i85uVjpEDydwN9gS3rM6D0oTlF2JjClk/jQuL+Gn+bjufrSnwPnhYrzjNXazFezsu2QGg3v1H1MAoGCCqGSM49BAMCA0kAMEYCIQDuJYjSE1s0zA8WTnf+zwhLUj7HiAN3I4u9Se0dmU2jvAIhALgq0zfa5cvIFi8xBKYqCN8gNsxnhvb2qPHKe/pUq8DT",
+      "path": "/v1/access/servers/classic/0d61dae94226a68c2452598898d33ef8eb97a73a040294825c2eedb01d6aee40/routes",
+      "sequence": "104",
+      "nonce": "00000000000000000000000000000068",
+      "created": 1800000000,
+      "body": "{\"schema\":\"atrinik-access-route-v1\",\"profile\":\"classic\",\"serverId\":\"0d61dae94226a68c2452598898d33ef8eb97a73a040294825c2eedb01d6aee40\",\"certificate\":\"MIIBOjCB4KADAgECAgID6TAKBggqhkjOPQQDAjAmMSQwIgYDVQQDDBtBdHJpbmlrIGFjY2VzcyBmaXh0dXJlIG9ubHkwHhcNMjYwMTAxMDAwMDAwWhcNMzYwMTAxMDAwMDAwWjAmMSQwIgYDVQQDDBtBdHJpbmlrIGFjY2VzcyBmaXh0dXJlIG9ubHkwWTATBgcqhkjOPQIBBggqhkjOPQMBBwNCAARrF9Hy4SxCR/i85uVjpEDydwN9gS3rM6D0oTlF2JjClk/jQuL+Gn+bjufrSnwPnhYrzjNXazFezsu2QGg3v1H1MAoGCCqGSM49BAMCA0kAMEYCIQDuJYjSE1s0zA8WTnf+zwhLUj7HiAN3I4u9Se0dmU2jvAIhALgq0zfa5cvIFi8xBKYqCN8gNsxnhvb2qPHKe/pUq8DT\",\"operation\":\"result\",\"requestId\":\"00000000000000000000000000000068\",\"tokenId\":\"10101010101010101010101010101010\",\"tokenRevision\":\"1\",\"index\":\"6128199c2e3ad6b5022a86fa42ed5d43709c80023bd21a485a049dcdd898596f\",\"reservationId\":\"20202020202020202020202020202020\",\"expiresAt\":null}",
+      "content_digest": "sha-256=:tnGRo+qbBCp+svuB0ehcFI2MvT5+46rbVpjtP3zug4Y=:",
+      "signature_input": "atrinik=(\"@method\" \"@authority\" \"@path\" \"content-digest\" \"content-type\" \"atrinik-server-id\" \"atrinik-publish-sequence\");created=1800000000;expires=1800000300;nonce=\"00000000000000000000000000000068\";alg=\"ecdsa-p256-sha256\";keyid=\"0d61dae94226a68c2452598898d33ef8eb97a73a040294825c2eedb01d6aee40\";tag=\"atrinik-access-routes-v1\"",
+      "signature_base": "\"@method\": POST\n\"@authority\": publish.meta.atrinik.org\n\"@path\": /v1/access/servers/classic/0d61dae94226a68c2452598898d33ef8eb97a73a040294825c2eedb01d6aee40/routes\n\"content-digest\": sha-256=:tnGRo+qbBCp+svuB0ehcFI2MvT5+46rbVpjtP3zug4Y=:\n\"content-type\": application/json\n\"atrinik-server-id\": 0d61dae94226a68c2452598898d33ef8eb97a73a040294825c2eedb01d6aee40\n\"atrinik-publish-sequence\": 104\n\"@signature-params\": (\"@method\" \"@authority\" \"@path\" \"content-digest\" \"content-type\" \"atrinik-server-id\" \"atrinik-publish-sequence\");created=1800000000;expires=1800000300;nonce=\"00000000000000000000000000000068\";alg=\"ecdsa-p256-sha256\";keyid=\"0d61dae94226a68c2452598898d33ef8eb97a73a040294825c2eedb01d6aee40\";tag=\"atrinik-access-routes-v1\"",
+      "signature_base64": "6PfSUzdiDczKVfU5SA5IupwQKKriy2h/qN0WrY3F/JngDri9Rywgu/nmYkzMnLH4kiwdxLAyR7+qX8ECWMN4SA==",
+      "signature_header": "atrinik=:6PfSUzdiDczKVfU5SA5IupwQKKriy2h/qN0WrY3F/JngDri9Rywgu/nmYkzMnLH4kiwdxLAyR7+qX8ECWMN4SA==:"
+    }
+  ]
+}
