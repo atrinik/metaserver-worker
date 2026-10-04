@@ -1,5 +1,8 @@
 """Isolated SQLite proof for the nonautomatic, operator-gated retirement artifact."""
-import sqlite3
+try:
+    import sqlite3
+except ImportError:  # Match the pinned build image SQLite fallback.
+    import pysqlite3 as sqlite3
 import time
 import unittest
 from pathlib import Path
@@ -24,6 +27,11 @@ class DirectoryRetirementTests(unittest.TestCase):
                             ("a"*64,profile,"a"*32,int(time.time())+86400))
             self.db.execute("INSERT INTO server_presence(profile,server_id,last_seen,rendezvous_token_hash,rendezvous_generation) VALUES (?,?,100,?,?)",(profile,"a"*64,"b"*64,"c"*64))
         self.db.executescript((ROOT / "migrations/0013_access_token_profiles.sql").read_text())
+        self.db.executescript((ROOT / "migrations/0014_access_token_routing.sql").read_text())
+        self.db.execute("INSERT INTO access_routes VALUES (?,'classic',?,?,'1','active',NULL,?,200,100,NULL)",("1"*64,"a"*64,"1"*32,"2"*32))
+        self.db.execute("INSERT INTO access_route_receipts VALUES ('classic',?,?,?,?, 'activate',?,'active',?,200,'1',?,100,1000)",("a"*64,"3"*32,"4"*64,"5"*64,"1"*32,"2"*32,"6"*64))
+        self.db.execute("INSERT INTO access_grants VALUES (?,?,?,'classic',?,'1',?,?,200,NULL)",("a"*64,"b"*64,"1"*64,"a"*64,"c"*64,"d"*64))
+        self.db.execute("INSERT INTO access_request_budgets VALUES ('classic',?,'routes',100,200,1)",("a"*64,))
         for profile in ("classic-v3", "game-v2"):
             self.db.execute("INSERT INTO server_presence(profile,server_id,last_seen,rendezvous_token_hash,rendezvous_generation,certificate,name,hostname,port,access_required) VALUES (?,?,100,?,?,'AQ==','Private','play.example.org',13327,1)",(profile,"a"*64,"b"*64,"c"*64))
             self.db.execute("INSERT INTO directory_activity_state VALUES (?,?,100,100,3,1)",(profile,"a"*64))
@@ -52,10 +60,15 @@ class DirectoryRetirementTests(unittest.TestCase):
 
     def test_preserves_every_active_row_and_removes_obsolete_schema(self):
         before=self.active_state()
+        private_names=("access_routes","access_route_receipts","access_grants","access_request_budgets")
+        private_before={name:self.db.execute(f"SELECT * FROM {name}").fetchall() for name in private_names}
         self.execute()
+        self.assertEqual(private_before,{name:self.db.execute(f"SELECT * FROM {name}").fetchall() for name in private_names})
         self.assertEqual(self.active_state(),before)
         self.assertEqual(self.db.execute("PRAGMA foreign_key_check").fetchall(),[])
         for name in before:
+            if name.startswith("access_"):
+                continue
             self.assertEqual(self.db.execute(f"SELECT count(*) FROM {name} WHERE profile NOT IN ('classic-v3','game-v2')").fetchone(),(0,))
         columns={row[1] for row in self.db.execute("PRAGMA table_info(directory_entries)")}
         self.assertNotIn("password_required",columns)

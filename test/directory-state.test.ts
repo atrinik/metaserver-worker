@@ -33,7 +33,7 @@ beforeEach(async () => {
     env.DB.prepare("DELETE FROM classic_identity_modes"),
     env.DB.prepare(
       `UPDATE classic_receiver_mode
-          SET mode = 'classic-v3-accepting', activated_at = NULL
+          SET mode = 'classic-v1-accepting', activated_at = NULL
         WHERE singleton = 1`,
     ),
     env.DB.prepare(
@@ -84,7 +84,6 @@ describe("profile-scoped directory expiry", () => {
     }
     expect(results).toEqual([
       { expiredEntries: 2, visibleChanged: true },
-      { expiredEntries: 0, visibleChanged: false },
       { expiredEntries: 1, visibleChanged: true },
     ]);
     expect(await env.DB.prepare(
@@ -96,8 +95,10 @@ describe("profile-scoped directory expiry", () => {
          FROM directory_revisions ORDER BY profile`,
     ).all()).toMatchObject({
       results: [
+        { profile: "classic-v1", revision: 0, updated_at: 0 },
+        { profile: "classic-v2", revision: 0, updated_at: 0 },
         { profile: "classic-v3", revision: 1, updated_at: NOW },
-        { profile: "classic-v3", revision: 0, updated_at: 0 },
+        { profile: "game-v1", revision: 0, updated_at: 0 },
         { profile: "game-v2", revision: 1, updated_at: NOW },
       ],
     });
@@ -293,8 +294,10 @@ describe("profile-scoped directory expiry", () => {
       `SELECT profile, revision FROM directory_revisions ORDER BY profile`,
     ).all()).toMatchObject({
       results: [
+        { profile: "classic-v1", revision: 0 },
+        { profile: "classic-v2", revision: 0 },
         { profile: "classic-v3", revision: 1 },
-        { profile: "classic-v3", revision: 0 },
+        { profile: "game-v1", revision: 0 },
         { profile: "game-v2", revision: 1 },
       ],
     });
@@ -692,8 +695,10 @@ describe("profile-scoped directory expiry", () => {
       `SELECT profile, revision FROM directory_revisions ORDER BY profile`,
     ).all()).toMatchObject({
       results: [
+        { profile: "classic-v1", revision: 0 },
+        { profile: "classic-v2", revision: 0 },
         { profile: "classic-v3", revision: 2 },
-        { profile: "classic-v3", revision: 0 },
+        { profile: "game-v1", revision: 0 },
         { profile: "game-v2", revision: 2 },
       ],
     });
