@@ -303,8 +303,8 @@
       },
       "sources": [
         { "role": "core", "path": "wrangler.jsonc", "sha256": "d74f963f3e167563661a78c9f9c0972431940e69f2a6b24f302be44cc3de28d1" },
-        { "role": "publisher", "path": "wrangler.publisher.jsonc", "sha256": "b847b3d35c239545ceb3ff15afa17a05e39f0de590e89a414aaf21220d56d01d" },
-        { "role": "rendezvous", "path": "wrangler.rendezvous.jsonc", "sha256": "10b32a4c9544c8153950a25db080824a72a6f5c621688e7d8accaf8b984b4e38" }
+        { "role": "publisher", "path": "wrangler.publisher.jsonc", "sha256": "82fb0f0e69c773c0346bc787df6772da1eae8826a7d667dc3c7209e04a33f678" },
+        { "role": "rendezvous", "path": "wrangler.rendezvous.jsonc", "sha256": "13b2ad49c5f5bb548b1ef53615cf9c5c712d76109c4c6cb3307bfa60cf1efe07" }
       ],
       "common": {
         "workersDev": true,

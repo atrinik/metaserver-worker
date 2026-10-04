@@ -362,7 +362,7 @@ export function validateContract(contract) {
     !Array.isArray(contract.workers) ||
     contract.workers.length !== 3 ||
     sha256Json(canonicalJson(contract.workers)) !==
-      "d7008f189964d8d8a9f51ea4935aac2c3ed5ca811acc28238246707484105ae3" ||
+      "c9059f0406b468029fdc6e7cfa835bf9251e690cc3ba35cb894ba60b12c026d8" ||
     JSON.stringify(contract.workers.map(({ name }) => name)) !==
       JSON.stringify(expectedWorkerNames) ||
     JSON.stringify(contract.workers.map(({ order }) => order)) !==
