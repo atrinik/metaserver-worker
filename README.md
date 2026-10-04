@@ -287,21 +287,23 @@ See [DEPLOYMENT.md](DEPLOYMENT.md) for the release checklist.
 
 ## Request controls and privacy
 
-For public requests, newly observed raw addresses remain request-scoped.
-Purpose-separated rotating HMAC tags protect coarse edge shields and the
-canonical client pair cooldown; authenticated stages use the server identity.
+The application does not track request IP addresses or derive identifiers from
+them. Authenticated request budgets use the server identity; private access-grant
+and ticket replay tags derive only from the corresponding random capabilities.
 Only a signed, canonical DNS hostname is eligible for persistence. Canonical `xn--`
 labels are checked with strict, non-transitional UTS #46 processing, including
 STD3, hyphen, joiner, bidirectional, and DNS-length checks. Migration
 `0009_remove_legacy_storage.sql` physically removes retired ownership, OTP,
-source-rate, shadow-directory, and wildcard-denial storage. No publish infers a
-QUIC endpoint from the HTTPS source.
+source-rate, shadow-directory, and wildcard-denial storage. Migration
+`0015_remove_ip_derived_pair_tracking.sql` removes the populated
+source/server-pair attempt and cooldown tables, including their indexes. No
+publish infers a QUIC endpoint from the HTTPS source.
 The request path emits only the closed, redacted diagnostic events described in
 [docs/privacy.md](docs/privacy.md).
 
-Native rate bindings cap local bursts. D1 enforces exact authenticated
-publisher/server budgets and the canonical client's rolling source/server-pair
-cooldown. Each per-server Durable Object preserves replay
+Identity rate bindings cap authenticated bursts. D1 retains authenticated
+publisher/server budgets and private access-request budgets. Each per-server
+Durable Object preserves replay
 rejection for 24 hours without imposing a daily player quota. Rooms admit at most 16 active client
 attempts and retain 64 client sockets only as an absolute implementation
 ceiling. A

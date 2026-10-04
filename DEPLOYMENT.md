@@ -1490,8 +1490,10 @@ complete generated file with the pinned Wrangler D1 execute workflow: Wrangler
 strips the single `BEGIN TRANSACTION`/`COMMIT` wrapper and submits the statements
 as one D1 transaction. Do not submit individual statements or an explicit
 `BEGIN IMMEDIATE` through the D1 binding.
-Do not use administrative SQL to restore retired routes or clear ordinary
-rendezvous cooldowns.
+Do not use administrative SQL to restore retired routes or address-derived
+tracking. Migration `0015_remove_ip_derived_pair_tracking.sql` drops the retired
+source/server-pair tables and their indexes while preserving publisher identity,
+private access routing, grant replay state, and identity-scoped request budgets.
 
 ## Roll back
 
