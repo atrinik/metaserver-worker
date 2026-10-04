@@ -16,7 +16,7 @@ PATTERN = re.compile(
     r"compat-(?:status|directory|otp|update(?:-source|-server)?|"
     r"rendezvous(?:-[a-z-]+)?)|"
     r"/index\.wsgi/(?:otp|update)|/v2/(?:servers(?!/"
-    r"(?:[0-9a-f]{64}|\$\{serverId\}|\{server-id\})/publish)|rendezvous)"
+    r"(?:[0-9a-f]{64}|\$\{(?:serverId|SERVER_ID)\}|\{server-id\})/publish)|rendezvous)"
 )
 
 RETIRED_DOCUMENTATION_PATTERN = re.compile(
@@ -56,7 +56,9 @@ class RetiredSurfaceSourcePolicyTests(unittest.TestCase):
                      "/v2/servers/" + "a" * 64 + "/update"):
             with self.subTest(path=path):
                 self.assertIsNotNone(PATTERN.search(path))
-        self.assertIsNone(PATTERN.search("/v2/servers/" + "a" * 64 + "/publish"))
+        for identity in ("a" * 64, "${serverId}", "${SERVER_ID}", "{server-id}"):
+            self.assertIsNone(PATTERN.search(f"/v2/servers/{identity}/publish"))
+            self.assertIsNotNone(PATTERN.search(f"/v2/servers/{identity}/update"))
 
     def test_storage_removal_requires_noncanonical_deny_disposition(self) -> None:
         deployment = (ROOT / "DEPLOYMENT.md").read_text(encoding="utf-8")

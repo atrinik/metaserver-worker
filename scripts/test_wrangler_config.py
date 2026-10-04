@@ -25,6 +25,7 @@ class WranglerSecurityConfigurationTests(unittest.TestCase):
 
     def test_canonical_core_bindings_pin_reviewed_limits(self) -> None:
         expected_bindings = {
+            "ACCESS_ROUTE_RATE_LIMITER": ("1008", 16),
             "PUBLISH_IDENTITY_RATE_LIMITER": ("1006", 2),
             "RENDEZVOUS_SERVER_RATE_LIMITER": ("1007", 3),
         }
@@ -306,17 +307,16 @@ class WranglerSecurityConfigurationTests(unittest.TestCase):
         self.assertRegex(
             deployment,
             r"python3 scripts/static_origin_canary\.py \\\n"
-            r"\s+--profile classic-v2 \\\n"
-            r"\s+--base-url https://classic-v5-directory-canary\.example\.org \\\n"
-            r"\s+--alias-prefix canary-v5 \\\n"
-            r"\s+--json",
+            r"\s+--profile classic-v3 \\\n"
+            r"\s+--base-url https://classic-v6-directory-canary\.example\.org \\\n"
+            r"\s+--alias-prefix canary-v6 --json",
         )
         self.assertIn(
             "python3 scripts/edge_ingress_canary.py",
             normalized_deployment,
         )
-        self.assertIn("--profile classic-v1", normalized_deployment)
-        self.assertIn("--profile game-v1", normalized_deployment)
+        self.assertIn("--profile classic-v3", normalized_deployment)
+        self.assertIn("--profile game-v2", normalized_deployment)
         self.assertIn("--hsts-max-age 300", normalized_deployment)
         self.assertIn("Strict-Transport-Security: max-age=300", edge_policy)
         self.assertIn(

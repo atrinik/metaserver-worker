@@ -116,7 +116,8 @@ class AdminSqlTest(unittest.TestCase):
             connection.execute(
                 "SELECT profile, revision FROM directory_revisions ORDER BY profile"
             ).fetchall(),
-            [("classic-v1", 1), ("classic-v2", 0), ("game-v1", 1)],
+            [("classic-v1", 1), ("classic-v2", 0), ("classic-v3", 0),
+             ("game-v1", 1), ("game-v2", 0)],
         )
         self.assertEqual(
             connection.execute(
@@ -154,12 +155,162 @@ class AdminSqlTest(unittest.TestCase):
             connection.execute(
                 "SELECT profile, revision FROM directory_revisions ORDER BY profile"
             ).fetchall(),
-            [("classic-v1", 0), ("classic-v2", 0), ("game-v1", 0)],
+            [("classic-v1", 0), ("classic-v2", 0), ("classic-v3", 0),
+             ("game-v1", 0), ("game-v2", 0)],
         )
         self.assertEqual(
             connection.execute("SELECT count(*) FROM directory_outbox").fetchone(),
             (0,),
         )
+
+    def seed_private_access(self, connection, server_id, profile, route_index):
+        connection.execute(
+            "INSERT INTO access_routes VALUES (?, ?, ?, ?, '1', 'active', "
+            "NULL, ?, 200, 100, NULL)",
+            (route_index, profile, server_id, "1" * 32, "2" * 32),
+        )
+        connection.execute(
+            "INSERT INTO access_route_receipts VALUES (?, ?, ?, ?, ?, "
+            "'activate', ?, 'active', ?, 200, '1', ?, 100, 1000)",
+            (profile, server_id, "3" * 32, "4" * 64, "5" * 64,
+             "1" * 32, "2" * 32, "6" * 64),
+        )
+        connection.execute(
+            "INSERT INTO access_grants VALUES (?, ?, ?, ?, ?, '1', ?, ?, 200, NULL)",
+            (route_index + "a", route_index + "b", route_index, profile,
+             server_id, "c" * 64, "d" * 64),
+        )
+        connection.execute(
+            "INSERT INTO access_request_budgets VALUES (?, ?, 'routes', 100, 200, 1)",
+            (profile, server_id),
+        )
+
+    def test_reset_revokes_both_private_profiles_and_preserves_other_identity(self):
+        connection = self.database()
+        for identity, route_prefix in ((SERVER_ID, "a"), (OTHER_SERVER_ID, "b")):
+            for profile, route_suffix in (("classic", "1"), ("game", "2")):
+                self.seed_private_access(
+                    connection, identity, profile, route_prefix * 63 + route_suffix
+                )
+        connection.execute(
+            "INSERT INTO access_routes VALUES (?, 'classic', ?, ?, '1', 'revoked', "
+            "NULL, NULL, 200, 100, 123)",
+            ("c" * 64, SERVER_ID, "7" * 32),
+        )
+        connection.execute(
+            "UPDATE access_routes SET state='reserved' WHERE profile='game' "
+            "AND server_id=?", (SERVER_ID,)
+        )
+        for profile in ("classic-v3", "game-v2"):
+            connection.execute(
+                "INSERT INTO publisher_replay VALUES (?, ?, '1', ?, ?, 100)",
+                (SERVER_ID, profile, "a" * 32, "b" * 64),
+            )
+            connection.execute(
+                "INSERT INTO server_presence(profile,server_id,last_seen,"
+                "rendezvous_token_hash,rendezvous_generation,name,certificate,"
+                "access_required) VALUES (?, ?, 100, ?, ?, 'Private', 'AQ==', 1)",
+                (profile, SERVER_ID, "a" * 64, "b" * 64),
+            )
+        budgets = connection.execute(
+            "SELECT * FROM access_request_budgets ORDER BY profile,server_id"
+        ).fetchall()
+        untouched = {
+            table: connection.execute(
+                f"SELECT * FROM {table} WHERE server_id=? ORDER BY 1", (OTHER_SERVER_ID,)
+            ).fetchall()
+            for table in ("access_routes", "access_route_receipts", "access_grants")
+        }
+        connection.executescript(admin_sql.command_reset_identity(
+            argparse.Namespace(server_id=SERVER_ID)
+        ))
+        for table, rows in untouched.items():
+            self.assertEqual(connection.execute(
+                f"SELECT * FROM {table} WHERE server_id=? ORDER BY 1", (OTHER_SERVER_ID,)
+            ).fetchall(), rows)
+        self.assertEqual(connection.execute(
+            "SELECT * FROM access_request_budgets ORDER BY profile,server_id"
+        ).fetchall(), budgets)
+        self.assertEqual(connection.execute(
+            "SELECT count(*) FROM access_routes WHERE server_id=? "
+            "AND (state<>'revoked' OR revoked_at IS NULL)", (SERVER_ID,)
+        ).fetchone(), (0,))
+        self.assertEqual(connection.execute(
+            "SELECT revoked_at FROM access_routes WHERE route_index=?", ("c" * 64,)
+        ).fetchone(), (123,))
+        for table in ("server_presence", "access_route_receipts", "access_grants"):
+            self.assertEqual(connection.execute(
+                f"SELECT count(*) FROM {table} WHERE server_id=?", (SERVER_ID,)
+            ).fetchone(), (0,))
+        self.assertEqual(connection.execute(
+            "SELECT count(*) FROM directory_outbox"
+        ).fetchone(), (0,))
+        with self.assertRaises(sqlite3.IntegrityError):
+            connection.execute(
+                "UPDATE access_routes SET state='active', revoked_at=NULL "
+                "WHERE server_id=?", (SERVER_ID,)
+            )
+
+    def test_reset_invalidates_active_public_profiles(self):
+        connection = self.database()
+        for profile in ("classic-v3", "game-v2"):
+            connection.execute(
+                "INSERT INTO publisher_replay VALUES (?, ?, '1', ?, ?, 100)",
+                (SERVER_ID, profile, "a" * 32, "b" * 64),
+            )
+            connection.execute(
+                "INSERT INTO server_presence(profile,server_id,last_seen,"
+                "rendezvous_token_hash,rendezvous_generation,name,certificate,"
+                "access_required) VALUES (?, ?, 100, ?, ?, 'Public', 'AQ==', 0)",
+                (profile, SERVER_ID, "a" * 64, "b" * 64),
+            )
+        connection.execute(
+            "INSERT INTO directory_entries(profile,server_id,name,players_count,"
+            "version,text_comment,quic_cert_sha256,access_required,directory_fingerprint) "
+            "VALUES ('classic-v3',?,'Classic',1,'6.0','',?,0,?)",
+            (SERVER_ID, SERVER_ID, "b" * 64),
+        )
+        connection.execute(
+            "INSERT INTO directory_entries(profile,server_id,name,description,"
+            "protocol_major,protocol_minor,content_id,content_revision_sha256,"
+            "players_online,players_capacity,status,game_json_bytes,"
+            "quic_cert_sha256,access_required,directory_fingerprint) "
+            "VALUES ('game-v2',?,'Game','',1,1,'main',?,3,64,'online',300,?,0,?)",
+            (SERVER_ID, "a" * 64, SERVER_ID, "b" * 64),
+        )
+        connection.executescript(admin_sql.command_reset_identity(
+            argparse.Namespace(server_id=SERVER_ID)
+        ))
+        self.assertEqual(connection.execute(
+            "SELECT profile,revision FROM directory_outbox ORDER BY profile"
+        ).fetchall(), [("classic-v3", 1), ("game-v2", 1)])
+        self.assertEqual(connection.execute(
+            "SELECT count(*) FROM directory_entries"
+        ).fetchone(), (0,))
+
+    def test_reset_failure_rolls_back_revocation_and_grant_cleanup(self):
+        connection = self.database()
+        self.seed_server(connection, SERVER_ID)
+        self.seed_private_access(connection, SERVER_ID, "classic", "a" * 64)
+        connection.execute(
+            "CREATE TRIGGER prevent_reset BEFORE DELETE ON publisher_replay "
+            "BEGIN SELECT RAISE(ABORT, 'reset failure'); END"
+        )
+        connection.commit()
+        with self.assertRaisesRegex(sqlite3.IntegrityError, "reset failure"):
+            connection.executescript(admin_sql.command_reset_identity(
+                argparse.Namespace(server_id=SERVER_ID)
+            ))
+        connection.rollback()
+        self.assertEqual(connection.execute(
+            "SELECT state,revoked_at FROM access_routes"
+        ).fetchone(), ("active", None))
+        self.assertEqual(connection.execute(
+            "SELECT count(*) FROM access_grants"
+        ).fetchone(), (1,))
+        self.assertEqual(connection.execute(
+            "SELECT count(*) FROM directory_outbox"
+        ).fetchone(), (0,))
 
     def test_denial_commands_execute_and_normalize_identity(self) -> None:
         connection = self.database()
@@ -198,7 +349,7 @@ class AdminSqlTest(unittest.TestCase):
     def test_pin_commands_are_profile_scoped_reviewable_and_reversible(self) -> None:
         connection = self.database()
         sql = admin_sql.command_pin_add(argparse.Namespace(
-            profile="classic-v1",
+            profile="classic-v3",
             server_id=SERVER_ID.upper(),
             priority="7",
             expires_at="12345",
@@ -212,11 +363,11 @@ class AdminSqlTest(unittest.TestCase):
                 "SELECT profile, server_id, priority, expires_at, note "
                 "FROM directory_admin_pins"
             ).fetchone(),
-            ("classic-v1", SERVER_ID, 7, 12345, "operator's canary"),
+            ("classic-v3", SERVER_ID, 7, 12345, "operator's canary"),
         )
 
         connection.executescript(admin_sql.command_pin_add(argparse.Namespace(
-            profile="classic-v1",
+            profile="classic-v3",
             server_id=SERVER_ID,
             priority=0,
             expires_at=None,
@@ -229,7 +380,7 @@ class AdminSqlTest(unittest.TestCase):
             (0, None, "updated"),
         )
         connection.executescript(admin_sql.command_pin_remove(argparse.Namespace(
-            profile="classic-v1",
+            profile="classic-v3",
             server_id=SERVER_ID,
         )))
         self.assertEqual(
@@ -320,22 +471,22 @@ class AdminSqlTest(unittest.TestCase):
             ))
         with self.assertRaisesRegex(ValueError, "priority"):
             admin_sql.command_pin_add(argparse.Namespace(
-                profile="classic-v1", server_id=SERVER_ID,
+                profile="classic-v3", server_id=SERVER_ID,
                 priority="1001", expires_at=None, note="",
             ))
         with self.assertRaisesRegex(ValueError, "expires_at"):
             admin_sql.command_pin_add(argparse.Namespace(
-                profile="classic-v1", server_id=SERVER_ID,
+                profile="classic-v3", server_id=SERVER_ID,
                 priority="1", expires_at="not-a-time", note="",
             ))
         with self.assertRaisesRegex(ValueError, "control"):
             admin_sql.command_pin_add(argparse.Namespace(
-                profile="classic-v1", server_id=SERVER_ID,
+                profile="classic-v3", server_id=SERVER_ID,
                 priority="1", expires_at=None, note="bad\noperator",
             ))
         with self.assertRaisesRegex(ValueError, "surrogate"):
             admin_sql.command_pin_add(argparse.Namespace(
-                profile="classic-v1", server_id=SERVER_ID,
+                profile="classic-v3", server_id=SERVER_ID,
                 priority="1", expires_at=None, note="bad\ud800",
             ))
 

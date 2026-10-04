@@ -1396,11 +1396,11 @@ bookmark does not authorize restoring retired APIs or active legacy state.
 
    ```sh
    python3 scripts/static_origin_canary.py \
-     --profile classic-v1 \
+     --profile classic-v3 \
      --base-url https://classic-directory-canary.example.org \
      --json
    python3 scripts/static_origin_canary.py \
-     --profile game-v1 \
+     --profile game-v2 \
      --base-url https://game-directory-canary.example.org \
      --json
    python3 scripts/edge_ingress_canary.py \
@@ -1481,6 +1481,11 @@ The identity-scoped commands are `reset-identity`, `deny-add`, and
 `retire-classic-v1` command accepts only the fixed human-gate confirmation in
 the staged rollout above and has no inverse. Wildcards, addresses, and CIDRs
 are rejected.
+Identity reset requires publisher exclusion and a rendezvous room drain. It
+atomically removes presence, public entries, replay state, grants and receipts,
+and revokes active or reserved access routes. Existing route tombstones and
+request budgets remain to prevent reuse after republishing. Each affected public
+profile receives a directory invalidation; private-only state does not.
 Do not use administrative SQL to restore retired routes or clear ordinary
 rendezvous cooldowns.
 
