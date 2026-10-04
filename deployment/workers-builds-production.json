@@ -90,8 +90,7 @@
     "coreConfigVariable": "ATRINIK_PRODUCTION_CORE_CONFIG",
     "publisherConfigVariable": "ATRINIK_PRODUCTION_PUBLISHER_CONFIG",
     "rendezvousConfigVariable": "ATRINIK_PRODUCTION_RENDEZVOUS_CONFIG",
-    "buildsApiTokenVariable": "ATRINIK_WORKERS_BUILDS_API_TOKEN",
-    "controlPlaneGateVariable": "ATRINIK_PRODUCTION_CONTROL_PLANE_READY"
+    "buildsApiTokenVariable": "ATRINIK_WORKERS_BUILDS_API_TOKEN"
   },
   "initialBootstrapPredecessor": {
     "requiredPhase": "all-builds-triggers-absent",
@@ -253,10 +252,10 @@
     "productionWorkersDev": false,
     "productionPreviewUrls": false,
     "migrationPolicy": "exact-ledger-no-automatic-apply",
-    "controlPlanePolicy": "explicit-external-gate-before-upload",
+    "controlPlanePolicy": "automatic-after-live-preflight",
     "deploymentOrder": ["core", "publisher", "rendezvous"],
     "deploymentMode": "direct-100-percent-strict",
-    "initialApiHandoff": "approved-exact-sha-api-managed-source-only",
+    "initialApiHandoff": "automatic-unannotated-api-managed-source-only",
     "buildSerialization": "newest-current-main-build-owns-one-topology-entrypoint",
     "noOp": "matching-bundles-config-migrations-and-command-contract",
     "recovery": "disabled-circuit-fix-forward-and-exact-current-main-retry"

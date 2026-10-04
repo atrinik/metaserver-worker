@@ -41,13 +41,16 @@
   selects the pinned npm, runs `npm ci`, and then `npm run deploy:production`
   for every accepted `main` push. Keep its exact
   Node/npm pins and lockfile-resolved Wrangler, all-path trigger, protected-input names, migration
-  gate, no-op digest, newest-current-main lease, strict disabled-circuit
+  prefix proof, no-op digest, newest-current-main lease, strict disabled-circuit
   core/publisher/rendezvous staging, caller-before-core restoration, coherent
   phase readback, prefix-proven migration horizons, positive-allowlist child
   environments, live-trigger reconciliation, and bounded static plus
   canonical-envelope Service Binding canaries synchronized with the
   implementation and runbook. `npm run deploy:production:dry-run` must retain zero remote
   mutation paths.
+  An accepted `main` push proceeds automatically after those preflights. The
+  former control-plane-ready secret is optional, inert transition state and
+  must never influence a delivery decision.
 - Treat `server_presence` plus the profile-discriminated `directory_entries`
   as authoritative, profile-scoped publication state. Presence retains only
   the accepted rendezvous verifier, generation, and last-seen time for both public and
