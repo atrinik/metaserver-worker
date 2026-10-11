@@ -96,8 +96,10 @@ branch selector, requested cancellation, cached inventory or source contract
 alone is insufficient. Preserve exact predecessor versions and private proof.
 
 Seal the bounded protected-input allowlist by name and classification. Retained
-PROD secret names are account, the three production configs,
-`ATRINIK_WORKERS_BUILDS_API_TOKEN` and optionally
+PROD secret names are `CLOUDFLARE_ACCOUNT_ID`,
+`ATRINIK_PRODUCTION_CORE_CONFIG`, `ATRINIK_PRODUCTION_PUBLISHER_CONFIG`,
+`ATRINIK_PRODUCTION_RENDEZVOUS_CONFIG`, `ATRINIK_WORKERS_BUILDS_API_TOKEN`
+and optionally
 `ATRINIK_PRODUCTION_CONTROL_PLANE_READY`; review may retain only optional
 `ATRINIK_WORKERS_BUILDS_API_TOKEN`. Each retained protected entry must read back
 as secret-classified with no visible value. `SKIP_DEPENDENCY_INSTALL` is the
