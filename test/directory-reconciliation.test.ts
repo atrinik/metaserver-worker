@@ -5,6 +5,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { CoreEnv } from "../src/core-env";
 import type { DirectoryBuildResult } from "../src/directory-builder";
 import {
+  DirectoryReconciliation,
   handleDirectoryReconciliationRequest,
   INTERNAL_DIRECTORY_RECONCILIATION_URL,
 } from "../src/directory-reconciliation";
@@ -91,9 +92,7 @@ describe("private deployment directory reconciliation", () => {
     for (const profile of DIRECTORY_PROFILES) {
       expect((await readDirectoryArtifactPublication(env.DB, profile)).generation).toBe(0);
     }
-    const response = await handleDirectoryReconciliationRequest(request("", {
-      Host: "internal.atrinik.invalid", "Content-Length": "0",
-    }), env);
+    const response = await new DirectoryReconciliation(createExecutionContext(), env).reconcile();
     expect(response.status).toBe(200);
     expect(response.headers.get("Cache-Control")).toBe("no-store");
     const receipt = await response.json();

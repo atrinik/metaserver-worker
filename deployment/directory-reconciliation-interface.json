@@ -1,0 +1,20 @@
+{
+  "schemaVersion": 1,
+  "entrypoint": "DirectoryReconciliation",
+  "transport": "service-binding-rpc",
+  "method": "reconcile",
+  "argumentCount": 0,
+  "request": {
+    "method": "POST",
+    "url": "https://internal.atrinik.invalid/v1/directory-reconciliation",
+    "body": null
+  },
+  "receipt": {
+    "schema": "directory-reconciliation-v1",
+    "maximumBytes": 4096,
+    "profiles": [
+      "classic-v3",
+      "game-v2"
+    ]
+  }
+}

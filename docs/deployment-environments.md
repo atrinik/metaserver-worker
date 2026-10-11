@@ -265,6 +265,15 @@ unused development-tool pins do not override the controller toolchain. The
 resolved deployable digest binds both selected-source and controller lockfile
 digests.
 
+Selected-source eligibility also requires the canonical checked-in
+`deployment/directory-reconciliation-interface.json` contract for the
+zero-argument RPC and bounded `directory-reconciliation-v1` receipt. Before
+provider access, the controller compares the regular file with the exact blob
+in the selected Git commit and rejects a missing or unsupported interface.
+Its digest is part of the deployable plan. A compatible older tag can still be
+promoted while main is ahead; a historical fetch-only tag cannot be uploaded
+by this controller. Uncommitted compatibility declarations grant no eligibility.
+
 Both environments validate exact source/configuration/migration identity,
 read back the remote ledger and resolve desired plus disabled bundles before
 mutation. If the complete deployable digest is already active, retain the
@@ -281,8 +290,12 @@ Authority and expected predecessor checks must occur at the point of use,
 including after awaits; cached preflight evidence cannot authorize a write.
 
 Reconcile the two fixed directory profiles through the private
-`DirectoryReconciliation` Service Binding, retaining bounded receipts and purge
-completion. Then prove static-origin formats/freshness/conditional behavior and
+`DirectoryReconciliation.reconcile()` Service Binding RPC with zero arguments,
+retaining bounded receipts and purge completion. The Worker constructs the fixed
+empty internal POST, keeping Node Request types and proxy HTTP headers outside
+the strict request envelope. Deadline expiry disposes the proxy and stops
+acceptance; it cannot undo core work already accepted. Then prove
+static-origin formats/freshness/conditional behavior and
 canonical credential-free publisher/rendezvous envelopes, followed by coherent
 final topology and source/authority readback. Report the exact selected SHA,
 digests, phase prefix, no-op/deployment result and recovery outcome without

@@ -19,9 +19,11 @@
   uses declarative `exports` for both SQLite Durable Objects and the narrow
   publisher/rendezvous and private `RendezvousHealth` and
   `DirectoryReconciliation` Worker entrypoints, and
-  contains a placeholder D1 ID. `DirectoryReconciliation` accepts only the fixed
-  empty POST `https://internal.atrinik.invalid/v1/directory-reconciliation` through
-  a deployment-owned Service Binding; it reconciles only the two fixed current
+  contains a placeholder D1 ID. `DirectoryReconciliation.reconcile()` accepts
+  zero arguments through a deployment-owned Service Binding and constructs the
+  fixed empty POST `https://internal.atrinik.invalid/v1/directory-reconciliation`
+  inside the Worker. Its fetch handler retains that exact envelope guard; it
+  reconciles only the two fixed current
   profiles and verifies authoritative publication receipts without exposing
   private revisions. Never give it a public route or caller binding, a default
   fetch handler, or supplied profile/object/URL authority.
@@ -65,6 +67,11 @@
   incident verification; never reactivate it as routine policy. Stop before
   promotion until the owner reviews and approves the exact tag. Both environment
   dry runs must retain zero remote mutation paths.
+  The selected Git tree must contain the supported canonical
+  `deployment/directory-reconciliation-interface.json` regular blob before any
+  provider access. Bind its digest into the deployable plan. Older compatible
+  tags may lag main; historical fetch-only tags and uncommitted declarations
+  are ineligible. Never fall back to Node HTTP transport or loosen its envelope.
 - Both GitHub execution environments require protected
   `ATRINIK_DELIVERY_RESOURCE_POLICY` and
   `ATRINIK_DELIVERY_RESOURCE_READ_TOKEN`. The bounded private policy pins exact

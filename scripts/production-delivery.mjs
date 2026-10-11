@@ -6,6 +6,8 @@ import { dirname, isAbsolute, relative, resolve } from "node:path";
 import { setTimeout as wait } from "node:timers/promises";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
+import { parseDirectoryFailure } from "./directory-reconciliation-diagnostics.mjs";
+import { readDirectoryInterface, incompatibleDirectoryInterface } from "./directory-reconciliation-interface.mjs";
 import { parseResourcePolicy, resourcePolicyDigest as digestResourcePolicy, validateResourceConfigurations,
   assertResourcePolicyLive, resourcePolicyReader } from "./delivery-resource-policy.mjs";
 import { developmentWorkerNames, promotionEnvironmentNames, targetContract, developmentFixture, deliveryTarget } from "./delivery-targets.mjs";
@@ -1129,6 +1131,11 @@ export function describeSubprocessFailure(error) {
   const messageStage = /\b(stage=(?:git|node|npm|npx|python3|tsc|vitest|wrangler))\b/u.exec(message)?.[1];
   if (messageStage && !details.some((value) => value === messageStage))
     details.push(messageStage);
+  const directoryFailure = fields.map(({ stderr }) => parseDirectoryFailure(stderr)).find(Boolean);
+  if (directoryFailure) {
+    details.push(`directory-phase=${directoryFailure.phase}`, `directory-reason=${directoryFailure.reason}`);
+    return details.join(" ");
+  }
   const providerOutput = subprocessText(primary);
   const executable = diagnosticExecutable(providerOutput);
   if (executable && !details.some((value) => value === `stage=${executable}`))
@@ -1376,7 +1383,9 @@ async function buildPlan(
   stagedPaths = configPaths,
   stagedConfigs = configs,
   resourcePolicy = null,
+  directoryInterface,
 ) {
+  if (!directoryInterface?.digest) fail(incompatibleDirectoryInterface);
   const migrations = await migrationLedger();
   const bundles = await bundleWorkers(configPaths);
   const configurations = configs.map(configurationDigest);
@@ -1391,6 +1400,7 @@ async function buildPlan(
   const deploy = sha256Json({
     schemaVersion: contract.schemaVersion,
     resourcePolicyDigest: resourcePolicy ? digestResourcePolicy(resourcePolicy) : null,
+    directoryInterfaceDigest: directoryInterface.digest,
     provider: contract.provider,
     repository: contract.repository,
     productionBranch: contract.productionBranch,
@@ -1415,6 +1425,7 @@ async function buildPlan(
   });
   return {
     deploy,
+    directoryInterfaceDigest: directoryInterface.digest,
     controls,
     stagedControls,
     configurations,
@@ -2253,7 +2264,13 @@ export async function runDelivery({ target = "production", sourceRoot, mode = "d
   const flags = new Set(mode === "deploy" ? [] : [`--${mode}`]);
   const contract = await readJson(contractPath);
   await validateDeliveryContract(contract);
+  let directoryInterface;
+  try {
+    directoryInterface = await readDirectoryInterface(root, { committed: ["deploy", "plan"].includes(mode) });
+  } catch { fail(incompatibleDirectoryInterface); }
   const authority = mode === "deploy" ? await createDeliveryAuthority(contract) : null;
+  if (authority && directoryInterface.sourceSha !== authority.sourceSha)
+    fail("selected directory reconciliation interface source changed");
   const checkedIn = await validateCheckedIn(contract);
   if (flags.has("--validate-only")) {
     console.log("production delivery contract valid");
@@ -2271,7 +2288,8 @@ export async function runDelivery({ target = "production", sourceRoot, mode = "d
         fixturePaths.push(path);
       }
       plan = await buildPlan(contract, fixturePaths, checkedIn.configs,
-        contract.workers.map(({ requiredSecrets }) => sorted(requiredSecrets)));
+        contract.workers.map(({ requiredSecrets }) => sorted(requiredSecrets)),
+        undefined, undefined, null, directoryInterface);
     } finally { await rm(fixtureDirectory, { recursive: true, force: true }); }
     console.log(
       JSON.stringify({
@@ -2294,6 +2312,8 @@ export async function runDelivery({ target = "production", sourceRoot, mode = "d
 
   if (mode === "plan") {
     const sourceSha = await git("rev-parse", "HEAD");
+    if (sourceSha !== directoryInterface.sourceSha)
+      fail("selected directory reconciliation interface source changed");
     if ((await git("status", "--porcelain")) !== "") fail("selected planning checkout is dirty");
     if (target === "production" && sourceSha !== process.env.ATRINIK_PROMOTION_SHA)
       fail("planning checkout differs from selected tag SHA");
@@ -2306,7 +2326,8 @@ export async function runDelivery({ target = "production", sourceRoot, mode = "d
       const { stagedConfigs, stagedPaths } = await materializeStagedConfigurations(
         protectedInputs.directory, configs, contract.workers);
       const plan = await buildPlan(contract, protectedInputs.configPaths, configs,
-        contract.workers.map(({ requiredSecrets }) => sorted(requiredSecrets)), stagedPaths, stagedConfigs, policy);
+        contract.workers.map(({ requiredSecrets }) => sorted(requiredSecrets)), stagedPaths, stagedConfigs, policy,
+        directoryInterface);
       const result = { outcome: "planned", mutation: false, environment: target, sourceSha,
         deployableDigest: plan.deploy, configDigest: plan.configDigest,
         migrationDigest: plan.migrationDigest, bundles: plan.bundles };
@@ -2356,6 +2377,7 @@ export async function runDelivery({ target = "production", sourceRoot, mode = "d
     stagedPaths,
     stagedConfigs,
     policy,
+    directoryInterface,
   );
   failureEvidence.deployableDigest = plan.deploy;
   await authority.validatePlan(plan);
