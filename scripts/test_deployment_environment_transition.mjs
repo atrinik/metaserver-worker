@@ -85,6 +85,9 @@ for (const [name, mutate] of [
   ["PROD env changed", (s) => { s.environments[id(1)].OTHER = { is_secret: true, value: null }; }],
   ["secret disclosure", (s) => { s.environments[id(1)].PROD_SECRET.value = "never-print"; }],
   ["deleted trigger", (s) => { s.productionTriggers[0].deleted_on = new Date(now).toISOString(); }],
+  ["deleted repository connection", (s) => {
+    s.productionTriggers[0].repo_connection.deleted_on = new Date(now).toISOString();
+  }],
 ]) test(`rejects ${name} before a write`, async () => {
   const f = fixture(), plan = createTransitionPlan(f); mutate(f.snapshot);
   await assert.rejects(applyTransitionStep({ plan, snapshot: f.snapshot, records: [], now,
@@ -208,4 +211,16 @@ test("CLI concurrent intent emission has one winner and preserves immutable rece
     await assert.rejects(runTransitionCli(["--next", input, join(directory, "replay.json")]));
     assert.equal(await readFile(`${journalPath}.0.json`, "utf8"), receipt);
   } finally { await rm(directory, { recursive: true, force: true }); }
+});
+
+test("normalization accepts null tombstones but rejects deleted repository connections even with matching field digests", () => {
+  const f = fixture(), plan = createTransitionPlan(f), policy = fencePolicy(plan);
+  f.snapshot.productionTriggers[0].branch_excludes = ["*"];
+  f.snapshot.productionTriggers[0].repo_connection.deleted_on = null;
+  assert.equal(validateProductionWriterFence({ triggers: f.snapshot.productionTriggers,
+    builds: [], environments: f.snapshot.environments }, policy).mutation, false);
+  f.snapshot.productionTriggers[0].repo_connection.deleted_on = new Date(now).toISOString();
+  assert.throws(() => validateProductionWriterFence({ triggers: f.snapshot.productionTriggers,
+    builds: [], environments: f.snapshot.environments }, policy), /deleted repository connection/);
+  assert.throws(() => createTransitionPlan(f), /deleted repository connection/);
 });

@@ -23,6 +23,8 @@ export const transitionDigest = (value) => createHash("sha256")
 export function normalizeTransitionTrigger(trigger) {
   // Provider timestamps are observation metadata, never editable configuration.
   if (trigger?.deleted_on != null) fail("deleted trigger in live inventory");
+  if (trigger?.repo_connection?.deleted_on != null)
+    fail("deleted repository connection in live inventory");
   const result = structuredClone(trigger);
   for (const key of ["created_on", "modified_on", "deleted_on", "build_token_name"])
     delete result[key];
