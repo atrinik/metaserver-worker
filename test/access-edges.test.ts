@@ -11,8 +11,7 @@ function environment(fetch: (request:Request)=>Promise<Response>) {
   const limit=vi.fn(async()=>({success:true}));
   return {limit,env:{COORDINATOR:{fetch},GLOBAL_RATE_LIMITER:{limit},RENDEZVOUS_CLIENT_RATE_LIMITER:{limit},
     RENDEZVOUS_HOSTNAME:authority,RENDEZVOUS_ENABLED:"enabled",ROUTE_DISABLED_RETRY_SECONDS:"300",
-    SOURCE_TAG_KEY_CURRENT_ID:"current",SOURCE_TAG_KEY_CURRENT:"AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
-    SOURCE_TAG_KEY_PREVIOUS_ID:"previous",SOURCE_TAG_KEY_PREVIOUS:"AQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQE"} as unknown as RendezvousEnv};
+} as unknown as RendezvousEnv};
 }
 describe("private access edge ingress",()=>{
   it("charges the shared client ingress before a blind bounded challenge and strips source metadata", async () => {

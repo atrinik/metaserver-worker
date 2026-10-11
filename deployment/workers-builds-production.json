@@ -213,16 +213,11 @@
         "GAME_PUBLISH_ENABLED",
         "PUBLISH_ENABLED",
         "PUBLISH_HOSTNAME",
-        "ROUTE_DISABLED_RETRY_SECONDS",
-        "SOURCE_TAG_KEY_CURRENT_ID",
-        "SOURCE_TAG_KEY_PREVIOUS_ID"
+        "ROUTE_DISABLED_RETRY_SECONDS"
       ],
       "state": ["RateLimit:GLOBAL_RATE_LIMITER"],
       "serviceBindings": ["COORDINATOR:atrinik-metaserver#PublisherCoordinator"],
-      "requiredSecrets": [
-        "SOURCE_TAG_KEY_CURRENT",
-        "SOURCE_TAG_KEY_PREVIOUS"
-      ]
+      "requiredSecrets": []
     },
     {
       "role": "rendezvous",
@@ -234,19 +229,14 @@
       "requiredVariables": [
         "RENDEZVOUS_ENABLED",
         "RENDEZVOUS_HOSTNAME",
-        "ROUTE_DISABLED_RETRY_SECONDS",
-        "SOURCE_TAG_KEY_CURRENT_ID",
-        "SOURCE_TAG_KEY_PREVIOUS_ID"
+        "ROUTE_DISABLED_RETRY_SECONDS"
       ],
       "state": [
         "RateLimit:GLOBAL_RATE_LIMITER",
         "RateLimit:RENDEZVOUS_CLIENT_RATE_LIMITER"
       ],
       "serviceBindings": ["COORDINATOR:atrinik-metaserver#RendezvousCoordinator"],
-      "requiredSecrets": [
-        "SOURCE_TAG_KEY_CURRENT",
-        "SOURCE_TAG_KEY_PREVIOUS"
-      ]
+      "requiredSecrets": []
     }
   ],
   "invariants": {

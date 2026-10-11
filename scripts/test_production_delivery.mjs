@@ -384,7 +384,7 @@ test("rejects missing secrets, duplicate rate namespaces, and production placeho
           value[1].vars.SOURCE_TAG_KEY_CURRENT_ID = "unreviewed-epoch";
         }),
       ),
-    /configuration epoch drift/u,
+    /required variable names drift/u,
   );
 });
 
@@ -575,14 +575,9 @@ test("requires runtime-valid and coherent protected policy values", () => {
     (value) => {
       value[0].vars.SOURCE_TAG_KEY_PREVIOUS_ID =
         value[0].vars.SOURCE_TAG_KEY_CURRENT_ID;
-      value[1].vars.SOURCE_TAG_KEY_PREVIOUS_ID =
-        value[1].vars.SOURCE_TAG_KEY_CURRENT_ID;
-      value[2].vars.SOURCE_TAG_KEY_PREVIOUS_ID =
-        value[2].vars.SOURCE_TAG_KEY_CURRENT_ID;
     },
     (value) => {
-      for (const config of value)
-        config.vars.SOURCE_TAG_KEY_CURRENT_ID = "a".repeat(33);
+      value[0].vars.SOURCE_TAG_KEY_CURRENT_ID = "a".repeat(33);
     },
   ]) {
     assert.throws(
@@ -591,10 +586,8 @@ test("requires runtime-valid and coherent protected policy values", () => {
     );
   }
   const runtimeValidIds = changedConfigs((value) => {
-    for (const config of value) {
-      config.vars.SOURCE_TAG_KEY_CURRENT_ID = "Release_A-1";
-      config.vars.SOURCE_TAG_KEY_PREVIOUS_ID = "Release_A-0";
-    }
+    value[0].vars.SOURCE_TAG_KEY_CURRENT_ID = "Release_A-1";
+    value[0].vars.SOURCE_TAG_KEY_PREVIOUS_ID = "Release_A-0";
   });
   assert.doesNotThrow(() => validateTopology(contract, runtimeValidIds));
 });
@@ -1549,4 +1542,15 @@ test("static canaries follow each profile's explicit alias cutover", () => {
   }
   scenarioConfigs[0].vars.GAME_DIRECTORY_CUTOVER_MODE = "unknown";
   assert.throws(() => resolveProductionCanaryCommand(contract.productionCanaries[0], scenarioConfigs), /cutover policy drift/u);
+});
+
+
+test("public callers reject signing secrets and key identifiers", () => {
+  for (const index of [1, 2]) {
+    assert.deepEqual(contract.workers[index].requiredSecrets, []);
+    for (const mutate of [
+      (value) => { value[index].secrets = { required: ["SOURCE_TAG_KEY_CURRENT"] }; },
+      (value) => { value[index].vars.SOURCE_TAG_KEY_CURRENT_ID = "unexpected"; },
+    ]) assert.throws(() => validateTopology(contract, changedConfigs(mutate)));
+  }
 });

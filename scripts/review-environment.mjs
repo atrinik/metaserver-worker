@@ -485,7 +485,7 @@ function validateResources(resources) {
   exactKeys(resources.secrets, ["owner", "names", "epochIds", "productionValueReuse", "buildReadable"], "review secrets");
   exactArray(resources.secrets.names, ["DIRECTORY_CACHE_PURGE_TOKEN", "RENDEZVOUS_HEALTH_EXPORT_TOKEN", "SOURCE_TAG_KEY_CURRENT", "SOURCE_TAG_KEY_PREVIOUS"], "review secret bindings");
   exactArray(resources.secrets.epochIds, ["review-canary-current", "review-canary-previous"], "review secret epochs");
-  exactValue(resources.secrets.owner, "canary-cohort-only", "review secret owner");
+  exactValue(resources.secrets.owner, "core", "review secret owner");
   exactValue(resources.secrets.productionValueReuse, false, "review secret isolation");
   exactValue(resources.secrets.buildReadable, false, "review secret visibility");
   exactKeys(resources.hostnames, [
@@ -535,16 +535,16 @@ function validateConfigurationMaterialization(value) {
       workersDevPrivateSubdomain: "exact-dedicated-live-account-subdomain-readback",
     },
     sources: [
-      { role: "core", path: "wrangler.jsonc", sha256: "d74f963f3e167563661a78c9f9c0972431940e69f2a6b24f302be44cc3de28d1" },
-      { role: "publisher", path: "wrangler.publisher.jsonc", sha256: "82fb0f0e69c773c0346bc787df6772da1eae8826a7d667dc3c7209e04a33f678" },
-      { role: "rendezvous", path: "wrangler.rendezvous.jsonc", sha256: "13b2ad49c5f5bb548b1ef53615cf9c5c712d76109c4c6cb3307bfa60cf1efe07" },
+      { role: "core", path: "wrangler.jsonc", sha256: "1f7566c98f27258f875fdfb845a82c702ba4d8a129bf7d3fe658e5a7b6d33731" },
+      { role: "publisher", path: "wrangler.publisher.jsonc", sha256: "aa33ab454fbdc3ce8b8894fefe7d45d959f2cfbf667a03e977a94e6a6fc23bbe" },
+      { role: "rendezvous", path: "wrangler.rendezvous.jsonc", sha256: "8c015eaff5b80a3e4ad74631e50b9f912d740940aa7a2ebcf15a394245958b39" },
     ],
     common: {
       workersDev: true, previewUrls: false, routes: [], observabilityDestinations: [],
-      sourceTagCurrentId: "review-canary-current", sourceTagPreviousId: "review-canary-previous",
       routeDisabledRetrySeconds: "60",
     },
     core: {
+      sourceTagCurrentId: "review-canary-current", sourceTagPreviousId: "review-canary-previous",
       name: "atrinik-metaserver-review-canary", d1DatabaseName: "atrinik-metaserver-review-canary",
       d1DatabaseId: "<provider-issued-review-d1-uuid>",
       r2BucketNames: ["atrinik-metaserver-review-canary-generations", "atrinik-metaserver-review-canary-classic", "atrinik-metaserver-review-canary-game"],
@@ -595,11 +595,11 @@ export function materializeReviewConfiguration(source, role, materialization, li
     fail(`review ${role} source configuration shape drift`);
   config.observability.logs.destinations = structuredClone(common.observabilityDestinations);
   config.observability.traces.destinations = structuredClone(common.observabilityDestinations);
-  config.vars.SOURCE_TAG_KEY_CURRENT_ID = common.sourceTagCurrentId;
-  config.vars.SOURCE_TAG_KEY_PREVIOUS_ID = common.sourceTagPreviousId;
   config.vars.ROUTE_DISABLED_RETRY_SECONDS = common.routeDisabledRetrySeconds;
   config.name = override.name;
   if (role === "core") {
+    config.vars.SOURCE_TAG_KEY_CURRENT_ID = override.sourceTagCurrentId;
+    config.vars.SOURCE_TAG_KEY_PREVIOUS_ID = override.sourceTagPreviousId;
     if (config.d1_databases?.length !== 1 || config.r2_buckets?.length !== 3 ||
         config.analytics_engine_datasets?.length !== 2 || config.ratelimits?.length !== 3)
       fail("review core source resource shape drift");
@@ -617,6 +617,9 @@ export function materializeReviewConfiguration(source, role, materialization, li
     config.vars.RENDEZVOUS_HOSTNAME = override.rendezvousHostname;
     config.triggers = { crons: structuredClone(override.cronTriggers) };
   } else {
+    if ((config.secrets?.required ?? []).length !== 0 ||
+        Object.keys(config.vars).some(name => name.startsWith("SOURCE_TAG_KEY_")))
+      fail(`review ${role} must not own signing keys`);
     if (config.services?.length !== 1) fail(`review ${role} source Service Binding shape drift`);
     const [binding, serviceAndEntrypoint] = override.serviceBinding.split(":");
     const [service, entrypoint] = serviceAndEntrypoint.split("#");

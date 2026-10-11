@@ -1154,13 +1154,12 @@ readonly ATRINIK_PROD_CORE_CONFIG=/secure/path/atrinik-metaserver.production.jso
 readonly ATRINIK_PROD_PUBLISHER_CONFIG=/secure/path/atrinik-publisher.production.jsonc
 readonly ATRINIK_PROD_RENDEZVOUS_CONFIG=/secure/path/atrinik-rendezvous.production.jsonc
 readonly ATRINIK_PROD_CORE_SECRETS=/secure/path/atrinik-core-secrets.json
-readonly ATRINIK_PROD_EDGE_SECRETS=/secure/path/atrinik-edge-source-tags.json
 ```
 
-Both secret files must be owner-only, ignored, bounded, and reviewed by binding
-name without printing values. The core file must supply every currently
-required encrypted binding, including the source-tag pair and cache-purge
-credential; the edge file supplies only the shared reviewed source-tag pair.
+The core secret file must be owner-only, ignored, bounded, and reviewed by
+binding name without printing values. It supplies every required encrypted
+binding, including the replay/admission pair and cache-purge credential. Public
+publisher/rendezvous callers receive no secret file, signing keys or key IDs.
 Do not use sequential `secret put` operations or an incomplete file that would
 create an unreviewed intermediate version.
 
@@ -1287,12 +1286,10 @@ core.
    ```sh
    npx wrangler versions upload --strict \
      --config "$ATRINIK_PROD_PUBLISHER_CONFIG" \
-     --secrets-file "$ATRINIK_PROD_EDGE_SECRETS" \
      --tag runtime-retirement-bridge \
      --message "stage canonical-only publisher caller"
    npx wrangler versions upload --strict \
      --config "$ATRINIK_PROD_RENDEZVOUS_CONFIG" \
-     --secrets-file "$ATRINIK_PROD_EDGE_SECRETS" \
      --tag runtime-retirement-bridge \
      --message "stage canonical-only rendezvous caller"
    ```
@@ -1457,13 +1454,17 @@ bookmark does not authorize restoring retired APIs or active legacy state.
 
 ## Rotate source-tag keys
 
-`atrinik-metaserver`, `atrinik-metaserver-publisher`, and
-`atrinik-metaserver-rendezvous` use the same reviewed overlapping pair but derive in their
-own canonical authority namespaces. Deploy `A/Z`, then `B/A`; keep shared `A`
-for strictly more than the full 24-hour replay lifetime after every `A/Z`
-writer has stopped. Update encrypted secrets and public key IDs provider first,
-then both callers. There is no cross-Worker atomic deploy, so every intermediate
-cohort must retain one exact overlap key. Disjoint pairs fail closed.
+Key rotation is core-only. `atrinik-metaserver` owns the reviewed replay and
+admission signing pair. `atrinik-metaserver-publisher` and
+`atrinik-metaserver-rendezvous` receive no signing secrets or key IDs. Deploy
+`A/Z`, then `B/A`; keep shared `A` for strictly more than the full 24-hour replay
+lifetime after every `A/Z` writer has stopped. Update core encrypted secrets and
+public key IDs together in one reviewed version. Admission challenges also verify
+current/previous keys in a separate purpose domain. Disjoint pairs fail closed.
+
+Removing old caller bindings requires reviewed deployment configuration and
+provider readback proving their absence; editing source does not delete deployed
+secret values or prove their historical erasure.
 
 ## Observability
 

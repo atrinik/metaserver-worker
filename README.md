@@ -30,15 +30,19 @@ The dynamic split is implemented as three deployable Workers. The existing
 `atrinik-metaserver` core remains the sole owner of D1, R2, schedules, and the
 `RendezvousRoom` and `DirectoryBuilder` Durable Objects. Domainless
 `atrinik-metaserver-publisher` and `atrinik-metaserver-rendezvous` edge Workers
-own only their route-specific breakers, source-tag secrets, and native burst
+own only their route-specific breakers and native burst
 bindings, then call one named core entrypoint through a Service Binding. The
-edges derive pseudonymous aliases and reconstruct a fixed allowlisted request,
+edges reconstruct a fixed allowlisted request,
 so the raw request address and browser state never cross into the state owner;
 the core independently validates the complete route and protocol again. The
 checked-in edge configurations have no public route. Classic publishing and
 Classic rendezvous are enabled; Game publishing remains disabled. The core
 exports scheduled handlers, Durable Objects, and named
 Service Binding entrypoints only; it has no default `fetch` handler.
+The private `DirectoryReconciliation` entrypoint accepts one fixed empty POST
+from the deployment-owned Service Binding to reconcile the two current directory
+profiles and return verified publication receipts. It has no public route, caller
+binding or client-selected profile/object authority; see [the capability contract](docs/directory-reconciliation.md).
 
 The operator-safe rendezvous health source contract is the private
 `RendezvousHealth` entrypoint documented in
@@ -229,8 +233,9 @@ Wrangler files have no production route. Supply reviewed production bindings
 during the provider-first deployment procedure. Never run remote migrations,
 deployments, or identity resets merely to validate a change.
 
-The Worker requires current and previous source-tag HMAC secrets. Their names
-are declared in all three dynamic-service configurations; values belong only in
+Only the core requires current and previous replay/admission HMAC secrets. Their
+names are declared in its configuration; public callers have no secret or key-ID
+binding. Values belong only in
 Cloudflare encrypted secrets or ignored `.dev.vars` files. See
 [docs/privacy.md](docs/privacy.md) for rotation and retention rules.
 Consecutive key pairs must overlap for strictly more than the 24-hour

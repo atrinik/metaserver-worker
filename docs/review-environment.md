@@ -190,7 +190,7 @@ their results; the account boundary is the hard production isolation.
 | Service Bindings | Publisher/rendezvous bind only to the named review core entrypoints |
 | R2/static | Three private review buckets, `r2.dev` disabled; verify objects through provider readback, not a public static hostname |
 | Analytics/rates | Two exact datasets and five unique numeric namespace IDs (`2006`, `2007`, `2101`, `2201`, `2202`) with exact owner/binding and `simple.limit`/`simple.period` policies and no production reuse |
-| Secrets | Canary-only cache/source-tag values and review-only key IDs; values are write-only, never build-readable or copied |
+| Secrets | Core-only canary cache/health/replay/admission secrets and review-only key IDs; public callers have none; values are write-only, never build-readable or copied |
 | Host/TLS/Access | Three stable review `workers.dev` hosts, provider TLS, one account-scoped `all_workers` Access application; no Custom Domain, zone WAF, cache rule, route, or preview URL |
 | Data | No production/live-request copies; fresh ephemeral nonproduction signing keys and certificates per run; no real identity or rendezvous state |
 | Schedules/logs | No cron; private Worker logs with repository redaction and no external destination |
@@ -207,7 +207,7 @@ reused as live valid publications.
 The machine contract pins the raw SHA-256 of all three checked-in role
 configurations and permits only its enumerated review overrides. Those exact
 overrides name every Worker, D1/R2/Analytics/rate binding, Service Binding,
-review hostname, source-tag epoch, every core and caller circuit, no-zone placeholder origin/cache
+review hostname, core-only replay/admission key epoch, every core and caller circuit, no-zone placeholder origin/cache
 ID, schedule, `workers_dev`, preview, route, and observability setting. The
 separately authorized materializer may
 substitute only provider-issued private resource IDs and the read-back account

@@ -53,10 +53,6 @@ function publisherEnvironment(
     PUBLISH_ENABLED: "enabled",
     GAME_PUBLISH_ENABLED: "disabled",
     ROUTE_DISABLED_RETRY_SECONDS: "300",
-    SOURCE_TAG_KEY_CURRENT_ID: "2026-08-a",
-    SOURCE_TAG_KEY_PREVIOUS_ID: "2026-07-a",
-    SOURCE_TAG_KEY_CURRENT: CURRENT_SECRET,
-    SOURCE_TAG_KEY_PREVIOUS: PREVIOUS_SECRET,
   } satisfies PublisherEnv;
   return override(base, {
     PUBLISH_ENABLED: "enabled",
@@ -79,10 +75,6 @@ function rendezvousEnvironment(core: Env): RendezvousEnv {
     RENDEZVOUS_HOSTNAME: "rendezvous.meta.atrinik.org",
     RENDEZVOUS_ENABLED: "enabled",
     ROUTE_DISABLED_RETRY_SECONDS: "300",
-    SOURCE_TAG_KEY_CURRENT_ID: "2026-08-a",
-    SOURCE_TAG_KEY_PREVIOUS_ID: "2026-07-a",
-    SOURCE_TAG_KEY_CURRENT: CURRENT_SECRET,
-    SOURCE_TAG_KEY_PREVIOUS: PREVIOUS_SECRET,
   } satisfies RendezvousEnv;
   return override(base, { RENDEZVOUS_ENABLED: "enabled" });
 }

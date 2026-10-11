@@ -17,14 +17,22 @@
   add candidate persistence or per-session timers.
 - `wrangler.jsonc` is the sole state-owning core configuration. It deliberately
   uses declarative `exports` for both SQLite Durable Objects and the narrow
-  publisher/rendezvous and private `RendezvousHealth` Worker entrypoints, and
-  contains a placeholder D1 ID. `RendezvousHealth` is the only owner of the
+  publisher/rendezvous and private `RendezvousHealth` and
+  `DirectoryReconciliation` Worker entrypoints, and
+  contains a placeholder D1 ID. `DirectoryReconciliation` accepts only the fixed
+  empty POST `https://internal.atrinik.invalid/v1/directory-reconciliation` through
+  a deployment-owned Service Binding; it reconciles only the two fixed current
+  profiles and verifies authoritative publication receipts without exposing
+  private revisions. Never give it a public route or caller binding, a default
+  fetch handler, or supplied profile/object/URL authority.
+  `RendezvousHealth` is the only owner of the
   versioned, bounded rendezvous-health aggregate; its exact private URL,
   required token secret, canary envelope, and redacted response are documented
   in `docs/rendezvous-health.md`. It has no public route or default fetch path.
   `wrangler.publisher.jsonc` and `wrangler.rendezvous.jsonc` are stateless,
   domainless public-edge configurations with one named service binding each;
-  never add D1, R2, Durable Object, cron, or cross-service authority to them.
+  never add D1, R2, Durable Object, cron, signing secrets/key IDs, or cross-service
+  authority to them. All grant/ticket HMACs and admission signatures belong to core.
   Do not add legacy Durable Object migration configuration alongside
   `exports`. Apply every pending D1 migration before deploying this provider;
   then deploy the core before either caller. Lifecycle changes require a direct
@@ -71,6 +79,11 @@
   receipts and reserved revocation capacity in one D1 transaction. Retained
   receipts plus nonterminal routes cannot exceed 4096 per identity or 65536
   globally; existing-record revocation must work at capacity.
+  Publisher nonce replay rows plus reserved nonterminal-route revocation slots
+  have one atomic global ceiling of 131072. Both authenticated writers reclaim
+  at most 32 expired nonces in their transaction; never erase a live 24-hour
+  replay row early. Migration 0016 preserves populated overflow and existing
+  revocation reservations; ordinary admissions fail closed while it drains.
   Grants are single-use, fifteen seconds, purpose-HMAC tagged in D1, and bound to
   identity, generation, token revision and client nonce. Require blind stateless
   admission-v1 HMAC challenges and fixed 24-bit work before any client room lookup;

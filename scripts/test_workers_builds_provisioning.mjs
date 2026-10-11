@@ -5838,6 +5838,12 @@ test("materializes bounded production documents only from live private coordinat
     (values) => values[0].settings.result.bindings.push({
       name: "UNREVIEWED_DB", type: "d1", id: resourceUuid,
     }),
+    (values) => values[1].settings.result.bindings.push({
+      name: "SOURCE_TAG_KEY_CURRENT", type: "secret_text",
+    }),
+    (values) => values[2].settings.result.bindings.push({
+      name: "SOURCE_TAG_KEY_CURRENT_ID", type: "plain_text", text: "unexpected",
+    }),
     (values) => one(values[0].settings.result.bindings, "PUBLISH_ENABLED").text = "typo",
     (values) => one(values[0].settings.result.bindings, "RENDEZVOUS").class_name = "WrongRoom",
     (values) => one(values[0].settings.result.bindings, "DB").id = "not-a-uuid",

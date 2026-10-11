@@ -71,6 +71,12 @@
         "enabled": false
       }
     },
+    "DirectoryReconciliation": {
+      "type": "worker",
+      "cache": {
+        "enabled": false
+      }
+    },
     "RendezvousHealth": {
       "type": "worker",
       "cache": {

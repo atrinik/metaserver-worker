@@ -302,20 +302,20 @@
         "workersDevPrivateSubdomain": "exact-dedicated-live-account-subdomain-readback"
       },
       "sources": [
-        { "role": "core", "path": "wrangler.jsonc", "sha256": "d74f963f3e167563661a78c9f9c0972431940e69f2a6b24f302be44cc3de28d1" },
-        { "role": "publisher", "path": "wrangler.publisher.jsonc", "sha256": "82fb0f0e69c773c0346bc787df6772da1eae8826a7d667dc3c7209e04a33f678" },
-        { "role": "rendezvous", "path": "wrangler.rendezvous.jsonc", "sha256": "13b2ad49c5f5bb548b1ef53615cf9c5c712d76109c4c6cb3307bfa60cf1efe07" }
+        { "role": "core", "path": "wrangler.jsonc", "sha256": "1f7566c98f27258f875fdfb845a82c702ba4d8a129bf7d3fe658e5a7b6d33731" },
+        { "role": "publisher", "path": "wrangler.publisher.jsonc", "sha256": "aa33ab454fbdc3ce8b8894fefe7d45d959f2cfbf667a03e977a94e6a6fc23bbe" },
+        { "role": "rendezvous", "path": "wrangler.rendezvous.jsonc", "sha256": "8c015eaff5b80a3e4ad74631e50b9f912d740940aa7a2ebcf15a394245958b39" }
       ],
       "common": {
         "workersDev": true,
         "previewUrls": false,
         "routes": [],
         "observabilityDestinations": [],
-        "sourceTagCurrentId": "review-canary-current",
-        "sourceTagPreviousId": "review-canary-previous",
         "routeDisabledRetrySeconds": "60"
       },
       "core": {
+        "sourceTagCurrentId": "review-canary-current",
+        "sourceTagPreviousId": "review-canary-previous",
         "name": "atrinik-metaserver-review-canary",
         "d1DatabaseName": "atrinik-metaserver-review-canary",
         "d1DatabaseId": "<provider-issued-review-d1-uuid>",
@@ -499,7 +499,7 @@
         "productionNamespaceReuse": false
       },
       "secrets": {
-        "owner": "canary-cohort-only",
+        "owner": "core",
         "names": ["DIRECTORY_CACHE_PURGE_TOKEN", "RENDEZVOUS_HEALTH_EXPORT_TOKEN", "SOURCE_TAG_KEY_CURRENT", "SOURCE_TAG_KEY_PREVIOUS"],
         "epochIds": ["review-canary-current", "review-canary-previous"],
         "productionValueReuse": false,

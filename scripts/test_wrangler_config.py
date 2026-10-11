@@ -178,6 +178,10 @@ class WranglerSecurityConfigurationTests(unittest.TestCase):
             {"type": "worker", "cache": {"enabled": False}},
         )
         self.assertEqual(
+            self.configuration["exports"]["DirectoryReconciliation"],
+            {"type": "worker", "cache": {"enabled": False}},
+        )
+        self.assertEqual(
             self.configuration["exports"]["RendezvousHealth"],
             {"type": "worker", "cache": {"enabled": False}},
         )
@@ -410,6 +414,7 @@ class DynamicServiceBoundaryConfigurationTests(unittest.TestCase):
                 "PublisherCoordinator",
                 "RendezvousCoordinator",
                 "RendezvousHealth",
+                "DirectoryReconciliation",
             },
         )
         self.assertNotIn("services", self.core)
@@ -487,14 +492,9 @@ class DynamicServiceBoundaryConfigurationTests(unittest.TestCase):
                 self.assertIs(configuration["logpush"], False)
                 self.assertEqual(configuration["tail_consumers"], [])
                 self.assertEqual(configuration["streaming_tail_consumers"], [])
-                self.assertEqual(
-                    set(configuration["secrets"]["required"]),
-                    {"SOURCE_TAG_KEY_CURRENT", "SOURCE_TAG_KEY_PREVIOUS"},
-                )
-                self.assertNotIn(
-                    "DIRECTORY_CACHE_PURGE_TOKEN",
-                    configuration["secrets"]["required"],
-                )
+                self.assertEqual(configuration.get("secrets", {}).get("required", []), [])
+                self.assertFalse(any(name.startswith("SOURCE_TAG_KEY_")
+                                     for name in configuration["vars"]))
                 self.assertNotIn("DIRECTORY_CACHE_ZONE_ID", configuration["vars"])
                 self.assertNotIn(
                     "CLASSIC_DIRECTORY_PUBLIC_ORIGIN", configuration["vars"]
@@ -596,7 +596,7 @@ class DynamicServiceBoundaryConfigurationTests(unittest.TestCase):
                 self.assertIn("--dry-run", dry_run)
                 self.assertIn(f"-c {config}", dry_run)
 
-    def test_runbook_pins_isolated_canary_and_three_service_rotation(self) -> None:
+    def test_runbook_pins_isolated_canary_and_core_only_rotation(self) -> None:
         guide = DEPLOYMENT_GUIDE.read_text(encoding="utf-8")
         normalized = " ".join(guide.split())
         self.assertIn("Classic v5.9.0", guide)
@@ -605,7 +605,8 @@ class DynamicServiceBoundaryConfigurationTests(unittest.TestCase):
         rotation = guide[guide.index("## Rotate source-tag keys"):]
         self.assertIn("atrinik-metaserver-publisher", rotation)
         self.assertIn("atrinik-metaserver-rendezvous", rotation)
-        self.assertIn("no cross-Worker atomic deploy", rotation)
+        self.assertIn("core-only", rotation)
+        self.assertIn("receive no signing secrets or key IDs", rotation)
 
 
 if __name__ == "__main__":

@@ -43,6 +43,7 @@ review environments. No Worker limiter can undo the invocation that reached it.
 | Eligible private resolves | covered by shared resolve ceiling | 60/server/minute |
 | Live access grants | n/a | 32/server; 32,768 global; 15-second expiry |
 | Accepted client sessions per server | n/a | no ordinary daily quota; 24-hour replay horizon |
+| Publisher nonces plus reserved route revocation slots | n/a | 131,072 globally |
 
 These shared ceilings cover the reviewed recovery cohort without adding a
 source identifier:
@@ -150,8 +151,9 @@ per-guess ledger is permitted. Canary at multiple locations when possible and
 prove rejected work stops before D1/room mutation. A shared counter is not a
 client identity or permission to disclose candidates.
 
-Historical `SOURCE_TAG_KEY_*` names and key-ring classes serve only grant/ticket
-replay HMACs. Consecutive `A/Z` then `B/A` key pairs must share the exact `A`
+Historical `SOURCE_TAG_KEY_*` names and key-ring classes serve core-only grant/ticket
+replay HMACs and separately domain-separated admission signatures. Public edges
+have no signing-secret or key-ID bindings. Consecutive `A/Z` then `B/A` key pairs must share the exact `A`
 material, namespace, and purpose for strictly more than 24 hours after all
 old-pair writers stop. Both aliases are checked atomically; disjoint or premature
 rotation loses replay comparison and must fail deployment closed.
@@ -170,3 +172,14 @@ or replayed work returns fixed `403 Forbidden`. All are noncacheable. Work raise
 computational cost but cannot guarantee fairness against an anonymous attacker.
 The native solver is bounded to 2^27 trials and ten seconds within the original
 attempt deadline. Slower devices may time out; there is no difficulty downgrade.
+
+Authenticated access-route writes and ordinary publication share the atomic
+131,072 ceiling for `publisher_nonces` plus nonterminal-route revocation
+reservations. A new route reserve needs two slots, an ordinary access or
+publication write needs one, and first effective owned revocation has zero
+combined growth because its reservation becomes its nonce row. Both writers
+reclaim at most 32 expired nonces in the same transaction before admission.
+Live 24-hour replay rows are never removed early. Migration 0016 preserves
+populated overflow and reserves every existing live route's revocation slot;
+ordinary admissions stay blocked above the ceiling until natural expiry drains
+the excess. Existing-record revocation remains available at capacity.
