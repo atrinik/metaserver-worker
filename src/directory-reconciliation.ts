@@ -183,7 +183,7 @@ async function verifyAliases(
         hex(await crypto.subtle.digest("SHA-256", bytes)) !== digest) {
         throw new Error("Directory manifest integrity failed");
       }
-      const manifest = JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(bytes)) as Record<string, unknown>;
+      const manifest = JSON.parse(new TextDecoder("utf-8", { fatal: true, ignoreBOM: true }).decode(bytes)) as Record<string, unknown>;
       if (manifest.schema !== MANIFEST_SCHEMA || manifest.profile !== profile ||
         manifest.directorySchema !== (profile === "classic-v3"
           ? CLASSIC_DIRECTORY_SCHEMA : GAME_DIRECTORY_SCHEMA) ||
