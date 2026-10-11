@@ -156,6 +156,39 @@ beforeEach(async () => {
 });
 
 describe("in-process service-boundary contract", () => {
+  it("carries a valid ordinary proof through edge, core and the actual room exactly once", async () => {
+    const v = admissionVector;
+    const stub = env.RENDEZVOUS.getByName(v.serverId);
+    await runInDurableObject(stub, async (_instance, state) => { await state.storage.deleteAll(); });
+    await evictDurableObject(stub);
+    vi.mocked(Date.now).mockReturnValue(Number(v.issuedAt) * 1000);
+    const now = Number(v.issuedAt), serverToken = "6".repeat(64);
+    await persistRendezvousPublication(env.DB, {
+      serverId: v.serverId, directoryProfile: "classic-v3", certificate: "AA==",
+      publisherSequence: "1", publisherNonce: "7".repeat(32), publisherNonceExpiresAt: now + 86400,
+      commitToken: "8".repeat(64), expectedGeneration: null, generation: "9".repeat(64),
+      tokenHash: await sha256Hex(serverToken), now, visibilityCutoff: now - 14400,
+      name: "Admission boundary vector", playersCount: 0, version: "5.9.0", textComment: "Synthetic fixture",
+      isPublic: true, quicHost: "", quicPort: 1, quicCertSha256: v.serverId,
+      authorizationRequired: false, directoryFingerprint: "a".repeat(64),
+    });
+    const core = override(coreEnvironment(), { ...admissionKeys, RENDEZVOUS_HOSTNAME: v.authority });
+    const edge = override(rendezvousEnvironment(core), { ...admissionKeys, RENDEZVOUS_HOSTNAME: v.authority });
+    const server = await rendezvousWorker.fetch(new Request(
+      `https://${v.authority}/v1/classic/servers/${v.serverId}?role=server`,
+      { headers: { Upgrade: "websocket", Authorization: `Bearer ${serverToken}` } }), edge);
+    expect(server.status).toBe(101); server.webSocket?.accept();
+    const clientRequest = () => new Request(`https://${v.authority}/v1/classic/servers/${v.serverId}?role=client`,
+      { headers: admissionHeaders() });
+    const client = await rendezvousWorker.fetch(clientRequest(), edge);
+    try {
+      expect(client.status).toBe(101); client.webSocket?.accept();
+      const replay = await rendezvousWorker.fetch(clientRequest(), edge);
+      expect(replay.status).toBe(403); expect(replay.webSocket).toBeNull();
+    } finally {
+      client.webSocket?.close(1000, "Test complete"); server.webSocket?.close(1000, "Test complete");
+    }
+  });
   it("uses the protected access route and rejects old client admission", async () => {
     const core = coreEnvironment();
     const edge = rendezvousEnvironment(core);
