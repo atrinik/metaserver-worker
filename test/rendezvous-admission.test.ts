@@ -145,6 +145,31 @@ describe("RendezvousAdmissionStore", () => {
     });
   });
 
+  it("atomically admits a ticket once across current and previous key rotation aliases", async () => {
+    const stub = admissionRoom("atomic-rotation");
+    await runInDurableObject(stub, (_instance, state) => {
+      const store = new RendezvousAdmissionStore(state.storage);
+      store.initialize();
+      const now = 2_000_000_000_000;
+      const current = `v1.current.${"A".repeat(43)}`;
+      const previous = `v1.previous.${"E".repeat(43)}`;
+      const admitted = store.consumeAndClaim(now, [current, previous]);
+      expect(admitted.accepted).toBe(true);
+      expect(store.consumeAndClaim(now + 1, [current, previous]))
+        .toEqual({ accepted: false, reason: "replay" });
+      expect(store.consumeAndClaim(now + 2, [`v1.next.${"I".repeat(43)}`, current]))
+        .toEqual({ accepted: false, reason: "replay" });
+      const restarted = new RendezvousAdmissionStore(state.storage);
+      restarted.initialize();
+      expect(restarted.consumeAndClaim(now + 3, [current, previous]))
+        .toEqual({ accepted: false, reason: "replay" });
+      expect(state.storage.sql.exec<{ count: number }>(
+        "SELECT count(*) AS count FROM rendezvous_admissions",
+      ).one().count).toBe(1);
+      if (admitted.accepted) expect(store.release(admitted.admissionId)).toBe(false);
+    });
+  });
+
   it("prunes at the exact rolling cutoff and updates the earliest alarm", async () => {
     const stub = admissionRoom("exact-prune");
     await runInDurableObject(stub, (_instance, state) => {
