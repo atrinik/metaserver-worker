@@ -1,7 +1,10 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { authorizeTransitionOperation, applyTransitionStep, createTransitionPlan, nextTransitionOperation,
-  normalizeTransitionTrigger, transitionDigest, validateProductionWriterFence,
+  normalizeTransitionTrigger, runTransitionCli, transitionDigest, validateProductionWriterFence,
   verifyTransitionJournal } from "./deployment-environment-transition.mjs";
 import { assertProductionPromotionWriterFence } from "./production-writer-fence.mjs";
 const id = (n) => `00000000-0000-4000-8000-${String(n).padStart(12, "0")}`;
@@ -188,4 +191,21 @@ test("rejects role swaps even with otherwise valid environment name sets", () =>
   [f.coordinates.workers.production[0].role, f.coordinates.workers.production[1].role] = ["publisher", "core"];
   f.snapshot.workers = clone(f.coordinates.workers);
   assert.throws(() => createTransitionPlan(f), /role identity/);
+});
+
+test("CLI concurrent intent emission has one winner and preserves immutable receipt on replay", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "metaserver-transition-test-"));
+  try {
+    const f = fixture(); f.now = Date.now(); f.snapshot.capturedAt = new Date(f.now - 1000).toISOString();
+    const plan = createTransitionPlan(f), input = join(directory, "input.json"), journalPath = join(directory, "journal");
+    await writeFile(input, JSON.stringify({ plan, snapshot: f.snapshot, journalPath, records: [] }), { mode: 0o600 });
+    const results = await Promise.allSettled([runTransitionCli(["--next", input, join(directory, "a.json")]),
+      runTransitionCli(["--next", input, join(directory, "b.json")])]);
+    assert.equal(results.filter((r) => r.status === "fulfilled").length, 1);
+    assert.equal(results.find((r) => r.status === "fulfilled").value.mutation, false);
+    const receipt = await readFile(`${journalPath}.0.json`, "utf8");
+    assert.equal(JSON.parse(receipt).event, "intent");
+    await assert.rejects(runTransitionCli(["--next", input, join(directory, "replay.json")]));
+    assert.equal(await readFile(`${journalPath}.0.json`, "utf8"), receipt);
+  } finally { await rm(directory, { recursive: true, force: true }); }
 });
