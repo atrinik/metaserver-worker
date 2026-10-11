@@ -51,6 +51,8 @@ jobs:
       - name: Verify main authority and deploy the development cohort
         env:
           GITHUB_TOKEN: ${{ github.token }}
+          ATRINIK_DELIVERY_RESOURCE_POLICY: ${{ secrets.ATRINIK_DELIVERY_RESOURCE_POLICY }}
+          ATRINIK_DELIVERY_RESOURCE_READ_TOKEN: ${{ secrets.ATRINIK_DELIVERY_RESOURCE_READ_TOKEN }}
           ATRINIK_DEVELOPMENT_SHA: ${{ github.event.workflow_run.head_sha }}
           ATRINIK_PRODUCTION_WRITER_FENCE_POLICY: ${{ vars.ATRINIK_PRODUCTION_WRITER_FENCE_POLICY }}
           ATRINIK_PRODUCTION_BUILDS_READ_TOKEN: ${{ secrets.ATRINIK_PRODUCTION_BUILDS_READ_TOKEN }}

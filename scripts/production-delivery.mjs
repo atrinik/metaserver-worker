@@ -6,6 +6,8 @@ import { dirname, isAbsolute, relative, resolve } from "node:path";
 import { setTimeout as wait } from "node:timers/promises";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
+import { parseResourcePolicy, resourcePolicyDigest as digestResourcePolicy, validateResourceConfigurations,
+  assertResourcePolicyLive, resourcePolicyReader } from "./delivery-resource-policy.mjs";
 import { developmentWorkerNames, promotionEnvironmentNames, targetContract, developmentFixture, deliveryTarget } from "./delivery-targets.mjs";
 
 const execFileAsync = promisify(execFile);
@@ -1333,6 +1335,7 @@ async function buildPlan(
   secretSets,
   stagedPaths = configPaths,
   stagedConfigs = configs,
+  resourcePolicy = null,
 ) {
   const migrations = await migrationLedger();
   const bundles = await bundleWorkers(configPaths);
@@ -1347,6 +1350,7 @@ async function buildPlan(
   const migrationDigest = sha256Json(migrations);
   const deploy = sha256Json({
     schemaVersion: contract.schemaVersion,
+    resourcePolicyDigest: resourcePolicy ? digestResourcePolicy(resourcePolicy) : null,
     provider: contract.provider,
     repository: contract.repository,
     productionBranch: contract.productionBranch,
@@ -1795,6 +1799,9 @@ export async function assertDirectoryBuildContext(config, environment = process.
       config.services?.[0]?.service !== contract.workers[0].name)
     fail("directory reconciliation execution account drift");
   const authority = await createDeliveryAuthority(contract, environment, { directory: true });
+  const policy = parseResourcePolicy(environment.ATRINIK_DELIVERY_RESOURCE_POLICY, target, config.account_id);
+  await assertResourcePolicyLive(policy, { target, accountId: config.account_id,
+    readWorker: resourcePolicyReader(environment) });
   await authority.fence();
 }
 
@@ -2254,10 +2261,12 @@ export async function runDelivery({ target = "production", sourceRoot, mode = "d
     try {
       const configs = await Promise.all(protectedInputs.configPaths.map(readJsonc));
       validateTopology(contract, configs, { production: true });
+      const policy = parseResourcePolicy(process.env.ATRINIK_DELIVERY_RESOURCE_POLICY, target, configs[0].account_id);
+      validateResourceConfigurations(policy, target, configs);
       const { stagedConfigs, stagedPaths } = await materializeStagedConfigurations(
         protectedInputs.directory, configs, contract.workers);
       const plan = await buildPlan(contract, protectedInputs.configPaths, configs,
-        contract.workers.map(({ requiredSecrets }) => sorted(requiredSecrets)), stagedPaths, stagedConfigs);
+        contract.workers.map(({ requiredSecrets }) => sorted(requiredSecrets)), stagedPaths, stagedConfigs, policy);
       const result = { outcome: "planned", mutation: false, environment: target, sourceSha,
         deployableDigest: plan.deploy, configDigest: plan.configDigest,
         migrationDigest: plan.migrationDigest, bundles: plan.bundles };
@@ -2287,6 +2296,11 @@ export async function runDelivery({ target = "production", sourceRoot, mode = "d
     contract.workers,
   );
   validateTopology(contract, stagedConfigs, { production: true });
+  const policy = parseResourcePolicy(process.env.ATRINIK_DELIVERY_RESOURCE_POLICY, target, configs[0].account_id);
+  validateResourceConfigurations(policy, target, configs);
+  validateResourceConfigurations(policy, target, stagedConfigs);
+  const resourceFence = () => assertResourcePolicyLive(policy, { target, accountId: configs[0].account_id,
+    readWorker: resourcePolicyReader(process.env) });
   for (const [index, config] of configs.entries()) {
     if (config.account_id !== process.env.CLOUDFLARE_ACCOUNT_ID)
       fail(`${contract.workers[index].role} account identity drift`);
@@ -2301,9 +2315,11 @@ export async function runDelivery({ target = "production", sourceRoot, mode = "d
     secretSets,
     stagedPaths,
     stagedConfigs,
+    policy,
   );
   failureEvidence.deployableDigest = plan.deploy;
   await authority.validatePlan(plan);
+  await resourceFence();
   await authority.fence();
   const remoteMigrations = await readRemoteMigrations(configPaths[0]);
   validateRemoteMigrations(
@@ -2340,7 +2356,7 @@ export async function runDelivery({ target = "production", sourceRoot, mode = "d
   const expectedActiveMessages = new Map();
   let finalReadback = [];
   let coreStaged = false;
-  const fence = () => authority.fence();
+  const fence = async () => { await resourceFence(); await authority.fence(); };
   const outcome = await orchestrateDelivery({
     workers: contract.workers,
     decision,
