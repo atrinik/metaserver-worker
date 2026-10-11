@@ -478,3 +478,25 @@ test("sealed environment validator rejects unnormalized metadata even with a mat
   policy.productionEnvironmentDigest = transitionDigest(input.environments[id(1)]);
   assert.throws(() => validateProductionWriterFence(input, policy), /redacted secret classifications/);
 });
+
+
+for (const created_on of [
+  "2026-02-30T12:00:00Z", "2026-02-29T12:00:00Z", "1900-02-29T12:00:00Z",
+  "2100-02-29T12:00:00Z", "2024-02-30T12:00:00Z", "2026-04-31T12:00:00Z",
+  "2026-01-00T12:00:00Z", "2026-00-01T12:00:00Z", "2026-12-32T12:00:00Z",
+  "2026-02-28T24:00:00Z", "2026-02-28T23:60:00Z", "2026-02-28T23:59:60Z",
+  "2026-02-28T23:59:59+24:00", "2026-02-28T23:59:59-00:60",
+  "2026-02-30T00:00:00+23:59", "2026-02-28T12:00:00.1234567890Z",
+]) test(`provider timestamp rejects impossible calendar or time components: ${created_on}`, () => {
+  assert.throws(() => normalizeBuildEnvironment({ SECRET: { is_secret: true, value: null, created_on } }),
+    error => error.message === "production writer fence could not be verified");
+});
+
+for (const created_on of [
+  "2024-02-29T23:59:59Z", "2000-02-29T00:00:00Z", "2400-02-29T12:00:00Z",
+  "1900-02-28T12:00:00Z", "2026-04-30T12:00:00Z", "2026-12-31T23:59:59.123456789Z",
+  "2024-02-29T00:00:00+23:59", "2024-02-29T23:59:59-23:59", "2026-02-28T12:00:00.1+05:30",
+]) test(`provider timestamp accepts exact Gregorian date and offset components: ${created_on}`, () => {
+  assert.deepEqual(normalizeBuildEnvironment({ SECRET: { is_secret: true, value: null, created_on } }),
+    { SECRET: { is_secret: true, value: null } });
+});

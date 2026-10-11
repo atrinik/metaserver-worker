@@ -3,6 +3,18 @@ import { transitionDigest, validateProductionWriterFence } from "./deployment-en
 
 const stop = () => { throw new Error("production writer fence could not be verified"); };
 const uuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/u;
+function validProviderTimestamp(value) {
+  if (typeof value !== "string") return false;
+  const parts = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})(?:\.\d{1,9})?(?:Z|[+-](\d{2}):(\d{2}))$/u.exec(value);
+  if (!parts) return false;
+  const [, year, month, day, hour, minute, second, offsetHour = "0", offsetMinute = "0"] = parts;
+  const leapYear = Number(year) % 4 === 0 && (Number(year) % 100 !== 0 || Number(year) % 400 === 0);
+  const monthDays = [31, leapYear ? 29 : 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31];
+  return Number(month) >= 1 && Number(month) <= 12 && Number(day) >= 1 &&
+    Number(day) <= monthDays[Number(month) - 1] && Number(hour) <= 23 &&
+    Number(minute) <= 59 && Number(second) <= 59 && Number(offsetHour) <= 23 && Number(offsetMinute) <= 59;
+}
+
 // Provider observation metadata is not part of the sealed build environment.
 // GET environment_variables documents created_on; preserve only governed fields.
 export function normalizeBuildEnvironment(environment) {
@@ -12,10 +24,7 @@ export function normalizeBuildEnvironment(environment) {
         Object.keys(entry).some(key => !["created_on", "is_secret", "value"].includes(key)) ||
         typeof entry.is_secret !== "boolean" ||
         (entry.is_secret ? entry.value !== null : typeof entry.value !== "string") ||
-        (Object.hasOwn(entry, "created_on") &&
-          (typeof entry.created_on !== "string" ||
-           !/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,9})?(?:Z|[+-]\d{2}:\d{2})$/u.test(entry.created_on) ||
-           !Number.isFinite(Date.parse(entry.created_on))))) stop();
+        (Object.hasOwn(entry, "created_on") && !validProviderTimestamp(entry.created_on))) stop();
     return [name, { is_secret: entry.is_secret, value: entry.value }];
   }));
 }
