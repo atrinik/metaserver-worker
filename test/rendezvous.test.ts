@@ -1030,6 +1030,95 @@ describe("RendezvousRoom access grants", () => {
       expect((await denied).code).toBe(4005);
     } finally { closeForCleanup(f.client,f.server); }
   });
+  it("does not forward a client candidate revoked during hashing without a room notification", async () => {
+    const f = await fixture();
+    try {
+      const ready = nextJson(f.client);
+      f.client.send(f.init);
+      await ready;
+      const denied = nextClose(f.client);
+      await runInDurableObject(f.stub, async (instance, state) => {
+        const client = state.getWebSockets("client")[0]!;
+        const server = state.getWebSockets("server")[0]!;
+        const original = (Reflect.get(instance, "digestTicket") as
+          (rawTicket: string) => Promise<string>).bind(instance);
+        let release: () => void = () => {};
+        const gate = new Promise<void>((resolve) => { release = resolve; });
+        let entered = false;
+        const send = vi.spyOn(server, "send");
+        Reflect.set(instance, "digestTicket", async (rawTicket: string) => {
+          entered = true;
+          await gate;
+          return original(rawTicket);
+        });
+        try {
+          const pending = instance.webSocketMessage(client, clientCandidate(f.grant));
+          await vi.waitFor(() => expect(entered).toBe(true));
+          await env.DB.prepare(
+            "UPDATE access_routes SET state='revoked',revoked_at=? WHERE route_index=?",
+          ).bind(Math.floor(Date.now() / 1000), f.serverId).run();
+          await env.DB.prepare("DELETE FROM access_grants WHERE route_index=?")
+            .bind(f.serverId).run();
+          // Deliberately omit INTERNAL_ACCESS_REVOKE: D1 must fence dispatch.
+          release();
+          await pending;
+          expect(send).not.toHaveBeenCalled();
+          expect(decodeRendezvousAttachment(client.deserializeAttachment()))
+            .toMatchObject({ stage: "terminal", accessGrant: null, accessRedemption: null });
+        } finally {
+          release();
+          Reflect.set(instance, "digestTicket", original);
+          send.mockRestore();
+        }
+      });
+      expect((await denied).code).toBe(4005);
+    } finally { closeForCleanup(f.client, f.server); }
+  });
+  it.each([
+    ["expiry", 4001],
+    ["server teardown", 4003],
+    ["liveness failure", 4003],
+  ] as const)("does not forward a client candidate after %s during the final liveness read", async (change, code) => {
+    const f = await fixture();
+    try {
+      const ready = nextJson(f.client);
+      f.client.send(f.init);
+      await ready;
+      const denied = nextClose(f.client);
+      await runInDurableObject(f.stub, async (instance, state) => {
+        const client = state.getWebSockets("client")[0]!;
+        const server = state.getWebSockets("server")[0]!;
+        const original = (Reflect.get(instance, "accessStillLive") as
+          (value: unknown) => Promise<boolean>).bind(instance);
+        const start = Date.now();
+        const clock = vi.spyOn(Date, "now");
+        const send = vi.spyOn(server, "send");
+        let reads = 0;
+        Reflect.set(instance, "accessStillLive", async (value: unknown) => {
+          const live = await original(value);
+          if (++reads === 2) {
+            if (change === "expiry") clock.mockReturnValue(start + 16_000);
+            else if (change === "server teardown") {
+              await instance.webSocketError(server, new Error("Injected control failure"));
+            } else throw new Error("Injected liveness read failure");
+          }
+          return live;
+        });
+        try {
+          await instance.webSocketMessage(client, clientCandidate(f.grant));
+          expect(reads).toBe(2);
+          expect(send).not.toHaveBeenCalled();
+          expect(decodeRendezvousAttachment(client.deserializeAttachment()))
+            .toMatchObject({ stage: "terminal", accessGrant: null, accessRedemption: null });
+        } finally {
+          Reflect.set(instance, "accessStillLive", original);
+          clock.mockRestore();
+          send.mockRestore();
+        }
+      });
+      expect((await denied).code).toBe(code);
+    } finally { closeForCleanup(f.client, f.server); }
+  });
   it.each(["closeSocketsForInitializationFailure","closeSocketsForTeardownRecovery"])("scrubs raw grants when %s cannot close the transport",async(method)=>{
     const f=await fixture();
     try {

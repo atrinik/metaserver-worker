@@ -1161,11 +1161,26 @@ export class RendezvousRoom extends DurableObject<CoreEnv> {
       ),
     ]);
 
+    // Hashing yields to revocation even when its room notification is lost.
+    // Recheck D1 last, then refresh every local dispatch fence after that await.
+    const accessLive = !attachment.accessRedemption ||
+      await this.accessStillLive(attachment);
     const current = readClientAttachment(socket);
     const server = this.reconcileActiveServer();
     const currentNow = Date.now();
     if (current === null) {
       closeSocket(socket, RENDEZVOUS_CLOSE.internalError);
+      return;
+    }
+    if (!accessLive || (attachment.accessRedemption &&
+        (current.accessRedemption !== attachment.accessRedemption ||
+         current.accessGrant !== parsed.signal.ticket))) {
+      this.failClient(
+        socket,
+        current,
+        "authorization_failed",
+        RENDEZVOUS_CLOSE.authorizationFailed,
+      );
       return;
     }
     if (socket.readyState !== WebSocket.OPEN) {
@@ -1210,7 +1225,8 @@ export class RendezvousRoom extends DurableObject<CoreEnv> {
     if (
       server === null ||
       server.attachment.controlId !== current.controlId ||
-      server.attachment.generation !== current.generation
+      server.attachment.generation !== current.generation ||
+      current.generation !== this.currentGeneration
     ) {
       this.failClient(
         socket,
