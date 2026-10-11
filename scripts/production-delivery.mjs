@@ -2338,6 +2338,7 @@ export async function runDelivery({ target = "production", sourceRoot, mode = "d
   );
   const expectedStagedMessages = new Map();
   const expectedActiveMessages = new Map();
+  let finalReadback = [];
   let coreStaged = false;
   const fence = () => authority.fence();
   const outcome = await orchestrateDelivery({
@@ -2418,14 +2419,12 @@ export async function runDelivery({ target = "production", sourceRoot, mode = "d
     },
     verifyFinal: async (finalDecision) => {
       const finalAnnotations = [];
+      const observed = [];
       for (const [index, worker] of contract.workers.entries()) {
-        finalAnnotations.push(
-          validateReadback(
-            worker,
-            configs[index],
-            await readActive(configPaths[index]),
-          ),
-        );
+        const active = await readActive(configPaths[index]);
+        const annotation = validateReadback(worker, configs[index], active);
+        finalAnnotations.push(annotation);
+        observed.push({ role: worker.role, versionId: active.versionId, sourceSha: annotation?.source });
         validateLiveControlPlane(
           worker,
           configs[index],
@@ -2436,6 +2435,7 @@ export async function runDelivery({ target = "production", sourceRoot, mode = "d
       if (finalDecision === "deploy" || target === "production")
         assertCoherentTopology(finalAnnotations, plan, sourceSha);
       else assertDeployableTopology(finalAnnotations, plan);
+      finalReadback = observed;
     },
     reconcileDirectories: async () => {
       failureEvidence.failedRole = "directory-reconciliation";
@@ -2501,6 +2501,7 @@ export async function runDelivery({ target = "production", sourceRoot, mode = "d
       environment: target,
       buildUuid: failureEvidence.buildUuid,
       sourceSha: checkoutHead,
+      workers: finalReadback,
       deployableDigest: plan.deploy,
       ...(decision === "deploy"
         ? { order: contract.invariants.deploymentOrder }
