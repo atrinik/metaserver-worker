@@ -6,7 +6,7 @@ import { join } from "node:path";
 import { authorizeTransitionOperation, applyTransitionStep, createTransitionPlan, nextTransitionOperation,
   normalizeTransitionTrigger, productionFencePatchBody, runTransitionCli, transitionDigest, validateProductionWriterFence,
   verifyTransitionJournal } from "./deployment-environment-transition.mjs";
-import { assertProductionPromotionWriterFence } from "./production-writer-fence.mjs";
+import { assertProductionPromotionWriterFence, normalizeBuildEnvironment } from "./production-writer-fence.mjs";
 const id = (n) => `00000000-0000-4000-8000-${String(n).padStart(12, "0")}`;
 const now = Date.parse("2026-10-11T12:00:00Z");
 const clone = structuredClone;
@@ -316,7 +316,9 @@ test("HTTP read-only adapter retains the explicit inert disposition", async () =
     let result;
     if (url.includes("/workers/scripts")) result = [...policy.workers, ...policy.developmentWorkers].map(w => ({ id: w.name, tag: w.tag }));
     else if (url.endsWith(`/workers/${policy.externalScriptId}/triggers`)) result = input.triggers;
-    else if (url.includes("/environment_variables")) result = input.environments[url.split("/").at(-2)];
+    else if (url.includes("/environment_variables")) result = Object.fromEntries(
+      Object.entries(input.environments[url.split("/").at(-2)]).map(([name, value]) =>
+        [name, { ...value, created_on: "2026-10-11T12:00:00Z" }]));
     else result = [];
     return new Response(JSON.stringify({ success: true, errors: [], result }));
   };
@@ -441,4 +443,60 @@ test("retained inert planning is explicit, rejects active predecessors and unsaf
   f.snapshot.productionBuilds = [];
   f.snapshot.environments[id(2)].NODE_OPTIONS = { is_secret: true, value: null };
   assert.throws(() => createTransitionPlan(f), /environment/);
+});
+
+
+test("provider environment normalization strips only documented observation metadata", () => {
+  const canonical = { SECRET: { is_secret: true, value: null }, PLAIN: { is_secret: false, value: "1" } };
+  const response = Object.fromEntries(Object.entries(canonical).map(([name, item]) =>
+    [name, { created_on: "2026-10-11T12:00:00.123456Z", ...item }]));
+  assert.deepEqual(normalizeBuildEnvironment(response), canonical);
+  assert.equal(transitionDigest(normalizeBuildEnvironment(response)), transitionDigest(canonical));
+  assert.equal(response.SECRET.created_on, "2026-10-11T12:00:00.123456Z");
+  response.PLAIN.value = "unexpected-new-value";
+  assert.notEqual(transitionDigest(normalizeBuildEnvironment(response)), transitionDigest(canonical));
+});
+
+for (const [name, entry] of Object.entries({
+  unknown: { is_secret: true, value: null, unexpected: true },
+  undocumentedModified: { is_secret: true, value: null, modified_on: "2026-10-11T12:00:00Z" },
+  malformedDate: { is_secret: true, value: null, created_on: "yesterday" },
+  impossibleDate: { is_secret: true, value: null, created_on: "2026-13-01T12:00:00Z" },
+  nullDate: { is_secret: true, value: null, created_on: null },
+  secretExposure: { is_secret: true, value: "private-secret" },
+  wrongClassification: { is_secret: "true", value: null },
+  absentValue: { is_secret: true },
+  nonstringPlain: { is_secret: false, value: 1 },
+})) test(`environment normalization fails closed for ${name}`, () => {
+  assert.throws(() => normalizeBuildEnvironment({ SECRET: entry }),
+    error => error.message === "production writer fence could not be verified");
+});
+
+test("sealed environment validator rejects unnormalized metadata even with a matching digest", () => {
+  const { input, policy } = inertFixture();
+  input.environments[id(1)].SKIP_DEPENDENCY_INSTALL.created_on = "2026-10-11T12:00:00Z";
+  policy.productionEnvironmentDigest = transitionDigest(input.environments[id(1)]);
+  assert.throws(() => validateProductionWriterFence(input, policy), /redacted secret classifications/);
+});
+
+
+for (const created_on of [
+  "2026-02-30T12:00:00Z", "2026-02-29T12:00:00Z", "1900-02-29T12:00:00Z",
+  "2100-02-29T12:00:00Z", "2024-02-30T12:00:00Z", "2026-04-31T12:00:00Z",
+  "2026-01-00T12:00:00Z", "2026-00-01T12:00:00Z", "2026-12-32T12:00:00Z",
+  "2026-02-28T24:00:00Z", "2026-02-28T23:60:00Z", "2026-02-28T23:59:60Z",
+  "2026-02-28T23:59:59+24:00", "2026-02-28T23:59:59-00:60",
+  "2026-02-30T00:00:00+23:59", "2026-02-28T12:00:00.1234567890Z",
+]) test(`provider timestamp rejects impossible calendar or time components: ${created_on}`, () => {
+  assert.throws(() => normalizeBuildEnvironment({ SECRET: { is_secret: true, value: null, created_on } }),
+    error => error.message === "production writer fence could not be verified");
+});
+
+for (const created_on of [
+  "2024-02-29T23:59:59Z", "2000-02-29T00:00:00Z", "2400-02-29T12:00:00Z",
+  "1900-02-28T12:00:00Z", "2026-04-30T12:00:00Z", "2026-12-31T23:59:59.123456789Z",
+  "2024-02-29T00:00:00+23:59", "2024-02-29T23:59:59-23:59", "2026-02-28T12:00:00.1+05:30",
+]) test(`provider timestamp accepts exact Gregorian date and offset components: ${created_on}`, () => {
+  assert.deepEqual(normalizeBuildEnvironment({ SECRET: { is_secret: true, value: null, created_on } }),
+    { SECRET: { is_secret: true, value: null } });
 });

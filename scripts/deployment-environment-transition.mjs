@@ -44,7 +44,9 @@ function secretManifest(environment) {
   if (!environment || typeof environment !== "object" || Array.isArray(environment))
     fail("missing environment inventory");
   for (const [name, item] of Object.entries(environment)) {
-    if (!/^[A-Z][A-Z0-9_]*$/u.test(name) || typeof item?.is_secret !== "boolean" ||
+    if (!/^[A-Z][A-Z0-9_]*$/u.test(name) || !item || typeof item !== "object" || Array.isArray(item) ||
+        Object.keys(item).some(key => !["is_secret", "value"].includes(key)) ||
+        typeof item.is_secret !== "boolean" ||
         (item.is_secret ? item.value !== null : typeof item.value !== "string"))
       fail("environment must contain redacted secret classifications");
   }
