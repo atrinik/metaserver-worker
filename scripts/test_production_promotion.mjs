@@ -197,6 +197,23 @@ test("dispatch expiry during writer inventory stops initial and subsequent autho
   assert.equal(mutations, 0);
 });
 
+for (const [name, change] of [
+  ["tag moved", (f) => { f.evidence.tagSha = controller; }],
+  ["run cancelled", (f) => { f.evidence.run.status = "completed"; f.evidence.run.conclusion = "cancelled"; }],
+  ["operator permission revoked", (f) => { f.evidence.actorPermission.permission = "read"; }],
+]) test(`refreshes GitHub authority after writer sweep: ${name}`, async () => {
+  const f = fixture();
+  let mutateDuringSweep = false;
+  const options = { environment: f.environment, checkoutHead: source, dirty: false,
+    readEvent: async () => JSON.stringify(f.event), fetcher: fakeFetch(f), now: () => now,
+    writerFence: async () => { if (mutateDuringSweep) change(f); } };
+  const authority = await createProductionAuthority(options);
+  mutateDuringSweep = true;
+  let mutations = 0;
+  await assert.rejects(async () => { await authority.fence(); mutations += 1; });
+  assert.equal(mutations, 0);
+});
+
 test("writer fence failure denies authority before delivery", async () => {
   const f = fixture();
   await assert.rejects(createProductionAuthority({ environment: f.environment, checkoutHead: source, dirty: false,
@@ -278,7 +295,7 @@ test("workflow has a single manual serialized writer and credentials only in exe
   assert.doesNotMatch(validation, /secrets\.|CLOUDFLARE_API_TOKEN/u);
   const [preparation, execution] = promotion.split("      - name: Verify authority and promote");
   assert.doesNotMatch(preparation, /secrets\./u);
-  assert.match(execution, /ATRINIK_DELIVERY_RESOURCE_POLICY: \$\{\{ vars\.ATRINIK_DELIVERY_RESOURCE_POLICY \}\}/u);
+  assert.match(execution, /ATRINIK_DELIVERY_RESOURCE_POLICY: \$\{\{ secrets\.ATRINIK_DELIVERY_RESOURCE_POLICY \}\}/u);
   assert.match(execution, /ATRINIK_DELIVERY_RESOURCE_READ_TOKEN: \$\{\{ secrets\.ATRINIK_DELIVERY_RESOURCE_READ_TOKEN \}\}/u);
   assert.match(execution, /node scripts\/production-promotion.mjs --execute/u);
   assert.doesNotMatch(execution, /npm (?:ci|run check)/u);
