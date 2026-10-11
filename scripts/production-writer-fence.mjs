@@ -3,6 +3,23 @@ import { transitionDigest, validateProductionWriterFence } from "./deployment-en
 
 const stop = () => { throw new Error("production writer fence could not be verified"); };
 const uuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/u;
+// Provider observation metadata is not part of the sealed build environment.
+// GET environment_variables documents created_on; preserve only governed fields.
+export function normalizeBuildEnvironment(environment) {
+  if (!environment || typeof environment !== "object" || Array.isArray(environment)) stop();
+  return Object.fromEntries(Object.entries(environment).map(([name, entry]) => {
+    if (!/^[A-Z][A-Z0-9_]*$/u.test(name) || !entry || typeof entry !== "object" || Array.isArray(entry) ||
+        Object.keys(entry).some(key => !["created_on", "is_secret", "value"].includes(key)) ||
+        typeof entry.is_secret !== "boolean" ||
+        (entry.is_secret ? entry.value !== null : typeof entry.value !== "string") ||
+        (Object.hasOwn(entry, "created_on") &&
+          (typeof entry.created_on !== "string" ||
+           !/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,9})?(?:Z|[+-]\d{2}:\d{2})$/u.test(entry.created_on) ||
+           !Number.isFinite(Date.parse(entry.created_on))))) stop();
+    return [name, { is_secret: entry.is_secret, value: entry.value }];
+  }));
+}
+
 export async function assertProductionPromotionWriterFence({ environment, fetcher = fetch }) {
   try {
     const account = environment.CLOUDFLARE_ACCOUNT_ID;
@@ -97,7 +114,7 @@ export async function assertProductionPromotionWriterFence({ environment, fetche
       const triggers = await staticList(`/builds/workers/${policy.externalScriptId}/triggers`, (r) => r.trigger_uuid, 2);
       const environments = {};
       for (const id of [policy.productionTriggerUuid, policy.reviewTriggerUuid])
-        environments[id] = (await get(`/builds/triggers/${id}/environment_variables`)).result;
+        environments[id] = normalizeBuildEnvironment((await get(`/builds/triggers/${id}/environment_variables`)).result);
       const builds = await list(`/builds/workers/${policy.externalScriptId}/builds`, (r) => r.build_uuid);
       return { triggers, environments, builds, peers };
     };
