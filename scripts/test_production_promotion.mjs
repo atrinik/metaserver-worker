@@ -6,7 +6,7 @@ import test from "node:test";
 import {
   createProductionAuthority, promotionDigest, readPromotionEvidence,
   validatePromotionContext, validatePromotionEvidence, validatePromotionInputs,
-  validatePromotionPlan, validatePromotionPredecessor,
+  validatePromotionPlan, validatePromotionPredecessor, validatePromotionSource, runPromotionDelivery,
 } from "./production-promotion.mjs";
 
 const source = "a".repeat(40);
@@ -276,6 +276,59 @@ for (const path of ["/actions/workflows/check.yml/runs", "/actions/runs/1234/att
         fakeFetch(f, (actualPath, value) => actualPath === path ? { ...value, total_count: count } : value)), /incomplete/);
     });
 
+test("source preflight authenticates immutable source before selected checkout or execution", async () => {
+  const f = fixture();
+  // The selected source has not been checked out or executed; its validation
+  // job is currently in progress. No deployment secret is required here.
+  delete f.environment.ATRINIK_DELIVERY_SOURCE_ROOT;
+  f.evidence.jobs[0].status = "in_progress";
+  f.evidence.jobs[0].conclusion = null;
+  f.evidence.approvals = [];
+  assert.equal(await validatePromotionSource({ environment: f.environment,
+    readEvent: async () => JSON.stringify(f.event), fetcher: fakeFetch(f), now: () => now }), source);
+});
+
+for (const [name, modify] of [
+  ["arbitrary PR revision", (f) => { f.evidence.sourceComparison.status = "diverged"; }],
+  ["mutable release", (f) => { f.evidence.release.immutable = false; }],
+  ["missing source validation", (f) => { f.evidence.checks = []; }],
+  ["tag and input mismatch", (f) => { f.evidence.tagSha = controller; }],
+  ["unauthorized operator", (f) => { f.evidence.actorPermission.permission = "read"; }],
+]) test(`source preflight denies untrusted dispatch before npm execution: ${name}`, async () => {
+  const f = fixture(); modify(f);
+  await assert.rejects(validatePromotionSource({ environment: f.environment,
+    readEvent: async () => JSON.stringify(f.event), fetcher: fakeFetch(f), now: () => now }));
+});
+
+test("promotion wrapper preserves bounded engine failure and recovery evidence", async () => {
+  const records = [];
+  const underlying = new Error("SECRET-CREDENTIAL private-provider-id raw command output");
+  const safe = { outcome: "production-delivery-stopped", reason: "unexpected-internal-error",
+    sourceSha: source, deployableDigest: digest, failedRole: "active:publisher",
+    completedRoles: ["staged:core", "staged:publisher", "staged:rendezvous"], recoveryOutcome: "disabled-core-proven" };
+  const exitCode = await runPromotionDelivery({ environment: { ATRINIK_DELIVERY_SOURCE_ROOT: "/selected" },
+    loadDelivery: async () => ({
+      runDelivery: async (options) => {
+        assert.deepEqual(options, { target: "production", sourceRoot: "/selected", mode: "deploy" });
+        throw underlying;
+      },
+      currentDeliveryFailureRecord: (error) => { assert.equal(error, underlying); return safe; },
+    }), reportFailure: (record) => records.push(record) });
+  assert.equal(exitCode, 1);
+  assert.deepEqual(records.map((record) => JSON.parse(record)), [safe]);
+  assert.doesNotMatch(records[0], /SECRET|private-provider|raw command/u);
+});
+
+test("promotion wrapper fails closed without a trusted engine failure reporter", async () => {
+  let deliveries = 0; const records = [];
+  assert.equal(await runPromotionDelivery({ loadDelivery: async () => ({ runDelivery: () => { deliveries += 1; } }),
+    reportFailure: (record) => records.push(JSON.parse(record)) }), 1);
+  assert.equal(deliveries, 0);
+  assert.equal(records[0].reason, "authority-or-delivery-verification-failed");
+  assert.equal(await runPromotionDelivery({ loadDelivery: async () => { throw new Error("SECRET import failure"); },
+    reportFailure: (record) => assert.doesNotMatch(record, /SECRET/u) }), 1);
+});
+
 test("dry run is credential-free and cannot invoke deployment or network", () => {
   const f = fixture();
   const env = Object.fromEntries(Object.entries(f.environment).filter(([name]) => name.startsWith("ATRINIK_PROMOTION_")));
@@ -301,5 +354,13 @@ test("workflow has a single manual serialized writer and credentials only in exe
   assert.doesNotMatch(execution, /npm (?:ci|run check)/u);
   assert.match(promotion, /path: controller/u);
   assert.match(promotion, /path: selected/u);
+  assert.doesNotMatch(workflow, /ref: \$\{\{ inputs\.source_sha \}\}/u);
+  for (const job of [validation, promotion]) {
+    assert.match(job, /package-manager-cache: false/u);
+    assert.match(job, /ref: \$\{\{ steps\.source\.outputs\.source_sha \}\}/u);
+    const preflight = job.indexOf("run: node controller/scripts/production-promotion.mjs --validate-source");
+    assert(preflight >= 0 && preflight < job.indexOf("path: selected"));
+    assert(preflight < job.indexOf("run: npm install"));
+  }
   assert.doesNotMatch(promotion, /contents: write|id-token: write/u);
 });

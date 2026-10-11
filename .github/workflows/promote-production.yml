@@ -43,6 +43,9 @@ jobs:
     if: github.repository == 'atrinik/metaserver-worker' && github.ref == 'refs/heads/main' && github.run_attempt == 1
     runs-on: ubuntu-24.04
     timeout-minutes: 30
+    permissions:
+      contents: read
+      actions: read
     steps:
       - name: Check out trusted controller
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -50,15 +53,27 @@ jobs:
           ref: ${{ github.sha }}
           path: controller
           persist-credentials: false
-      - name: Check out selected source
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          ref: ${{ inputs.source_sha }}
-          path: selected
-          persist-credentials: false
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version-file: controller/.nvmrc
+          package-manager-cache: false
+      - name: Authenticate selected release before checkout or execution
+        id: source
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          ATRINIK_PROMOTION_TAG: ${{ inputs.tag }}
+          ATRINIK_PROMOTION_SHA: ${{ inputs.source_sha }}
+          ATRINIK_PROMOTION_ARTIFACT_DIGEST: ${{ inputs.artifact_digest }}
+          ATRINIK_PROMOTION_CONFIG_DIGEST: ${{ inputs.configuration_digest }}
+          ATRINIK_PROMOTION_MIGRATION_DIGEST: ${{ inputs.migration_digest }}
+          ATRINIK_PROMOTION_PREDECESSOR: ${{ inputs.expected_predecessor }}
+        run: node controller/scripts/production-promotion.mjs --validate-source
+      - name: Check out authenticated selected source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ steps.source.outputs.source_sha }}
+          path: selected
+          persist-credentials: false
       - name: Select pinned npm
         run: npm install --global --ignore-scripts npm@11.16.0
       - name: Validate selected source without deployment credentials
@@ -84,15 +99,27 @@ jobs:
           ref: ${{ github.sha }}
           path: controller
           persist-credentials: false
-      - name: Check out immutable selected source separately
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          ref: ${{ inputs.source_sha }}
-          path: selected
-          persist-credentials: false
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version-file: controller/.nvmrc
+          package-manager-cache: false
+      - name: Authenticate selected release before checkout or execution
+        id: source
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          ATRINIK_PROMOTION_TAG: ${{ inputs.tag }}
+          ATRINIK_PROMOTION_SHA: ${{ inputs.source_sha }}
+          ATRINIK_PROMOTION_ARTIFACT_DIGEST: ${{ inputs.artifact_digest }}
+          ATRINIK_PROMOTION_CONFIG_DIGEST: ${{ inputs.configuration_digest }}
+          ATRINIK_PROMOTION_MIGRATION_DIGEST: ${{ inputs.migration_digest }}
+          ATRINIK_PROMOTION_PREDECESSOR: ${{ inputs.expected_predecessor }}
+        run: node controller/scripts/production-promotion.mjs --validate-source
+      - name: Check out authenticated selected source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ steps.source.outputs.source_sha }}
+          path: selected
+          persist-credentials: false
       - name: Select pinned npm
         run: npm install --global --ignore-scripts npm@11.16.0
       - name: Install integrity-pinned controller dependencies

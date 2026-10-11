@@ -2,7 +2,7 @@
 // The trusted main controller consumes GitHub's dispatch event; no local approval file
 // or caller-selected module can grant production authority.
 import { createHash } from "node:crypto";
-import { readFile } from "node:fs/promises";
+import { appendFile, readFile } from "node:fs/promises";
 import { resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -32,7 +32,7 @@ export function validatePromotionInputs(inputs) {
   return inputs;
 }
 
-export function validatePromotionContext(environment, event, checkoutHead, dirty) {
+export function validatePromotionDispatch(environment, event) {
   const inputs = validatePromotionInputs(event?.inputs);
   if (environment.GITHUB_ACTIONS !== "true" || environment.GITHUB_EVENT_NAME !== "workflow_dispatch" ||
       environment.GITHUB_REPOSITORY !== repository || environment.GITHUB_REF !== "refs/heads/main" ||
@@ -40,13 +40,18 @@ export function validatePromotionContext(environment, event, checkoutHead, dirty
       !shaPattern.test(environment.GITHUB_SHA ?? "") ||
       environment.GITHUB_WORKFLOW_SHA !== environment.GITHUB_SHA ||
       environment.GITHUB_WORKFLOW_REF !== `${repository}/${workflow}@refs/heads/main` ||
-      checkoutHead !== inputs.source_sha || dirty !== false ||
       event.repository?.full_name !== repository || event.ref !== "refs/heads/main" ||
-      !Number.isSafeInteger(event.sender?.id) || event.sender.id < 1 ||
-      !environment.ATRINIK_DELIVERY_SOURCE_ROOT)
-    fail("requires a clean selected checkout and first-attempt protected main dispatch");
+      !Number.isSafeInteger(event.sender?.id) || event.sender.id < 1)
+    fail("requires a first-attempt protected main dispatch");
   for (const [key, name] of Object.entries(fields))
     if (environment[name] !== inputs[key]) fail("dispatch input differs from execution input");
+  return inputs;
+}
+
+export function validatePromotionContext(environment, event, checkoutHead, dirty) {
+  const inputs = validatePromotionDispatch(environment, event);
+  if (checkoutHead !== inputs.source_sha || dirty !== false || !environment.ATRINIK_DELIVERY_SOURCE_ROOT)
+    fail("requires a clean selected source checkout");
   return inputs;
 }
 
@@ -54,8 +59,8 @@ function ancestor(comparison, sha) {
   return ["ahead", "identical"].includes(comparison?.status) && comparison?.merge_base_commit?.sha === sha;
 }
 
-export function validatePromotionEvidence({ environment, event, inputs, evidence, now = Date.now() }) {
-  const { repo, branch, run, release, tagSha, sourceComparison, controllerComparison, checks, protection, jobs, approvals, actorPermission } = evidence;
+export function validatePromotionSourceEvidence({ environment, event, inputs, evidence, now = Date.now() }) {
+  const { repo, branch, run, release, tagSha, sourceComparison, controllerComparison, checks, actorPermission } = evidence;
   const created = Date.parse(run?.created_at);
   if (repo?.full_name !== repository || repo.default_branch !== "main" || repo.fork !== false ||
       branch?.name !== "main" || branch.protected !== true ||
@@ -83,6 +88,11 @@ export function validatePromotionEvidence({ environment, event, inputs, evidence
     check.status === "completed" && check.conclusion === "success" &&
     Number.isFinite(Date.parse(check.updated_at)) && Date.parse(check.updated_at) <= created))
     fail("selected source lacks successful protected-main Check before dispatch");
+}
+
+export function validatePromotionEvidence(context) {
+  validatePromotionSourceEvidence(context);
+  const { environment, event, evidence: { protection, jobs, approvals, run } } = context;
   if (protection?.name !== "production" || !Number.isSafeInteger(protection.id) ||
       protection.deployment_branch_policy?.protected_branches !== true ||
       protection.deployment_branch_policy?.custom_branch_policies !== false ||
@@ -192,6 +202,19 @@ export async function readPromotionEvidence(environment, inputs, fetcher = fetch
     approvals, actorPermission };
 }
 
+// Run from the trusted controller before checkout or execution of a dispatch-selected
+// revision. This is source validation only; it cannot grant deployment authority.
+export async function validatePromotionSource({ environment = process.env, fetcher = fetch,
+  readEvent = (path) => readFile(path, "utf8"), now = () => Date.now() } = {}) {
+  let event;
+  try { event = JSON.parse(await readEvent(environment.GITHUB_EVENT_PATH)); }
+  catch { fail("GitHub dispatch event is missing or invalid"); }
+  const inputs = validatePromotionDispatch(environment, event);
+  const evidence = await readPromotionEvidence(environment, inputs, fetcher);
+  validatePromotionSourceEvidence({ environment, event, inputs, evidence, now: now() });
+  return inputs.source_sha;
+}
+
 export async function createProductionAuthority({ environment = process.env, checkoutHead, dirty,
   fetcher = fetch, readEvent = (path) => readFile(path, "utf8"), now = () => Date.now(),
   writerFence = assertProductionWriterFence } = {}) {
@@ -223,19 +246,42 @@ export async function assertProductionWriterFence(environment, fetcher = fetch) 
   await assertProductionPromotionWriterFence({ environment, fetcher });
 }
 
+const promotionFailure = () => ({ outcome: "production-promotion-stopped", reason: "authority-or-delivery-verification-failed" });
+
+export async function runPromotionDelivery({ environment = process.env, mode = "deploy",
+  loadDelivery = () => import("./production-delivery.mjs"), reportFailure = (record) => console.error(record) } = {}) {
+  let failureRecord = promotionFailure;
+  try {
+    const engine = await loadDelivery();
+    if (typeof engine.currentDeliveryFailureRecord !== "function") fail("delivery failure reporter is unavailable");
+    failureRecord = engine.currentDeliveryFailureRecord;
+    await engine.runDelivery({ target: "production", sourceRoot: environment.ATRINIK_DELIVERY_SOURCE_ROOT, mode });
+    return 0;
+  } catch (error) {
+    // Only the fixed trusted engine formats delivery evidence. Never print raw
+    // error messages, command output, provider response bodies or credentials.
+    reportFailure(JSON.stringify(failureRecord(error)));
+    return 1;
+  }
+}
+
 async function main() {
-  if (process.argv.length !== 3 || !["--dry-run", "--plan", "--execute"].includes(process.argv[2]))
-    fail("usage: production-promotion.mjs --dry-run|--plan|--execute");
+  if (process.argv.length !== 3 || !["--dry-run", "--plan", "--execute", "--validate-source"].includes(process.argv[2]))
+    fail("usage: production-promotion.mjs --dry-run|--plan|--execute|--validate-source");
+  if (process.argv[2] === "--validate-source") {
+    if (!process.env.GITHUB_OUTPUT) fail("GitHub step output path is missing");
+    const sourceSha = await validatePromotionSource();
+    await appendFile(process.env.GITHUB_OUTPUT, `source_sha=${sourceSha}\n`);
+    return;
+  }
   if (process.argv[2] === "--dry-run") {
     const inputs = Object.fromEntries(Object.entries(fields).map(([key, name]) => [key, process.env[name]]));
     validatePromotionInputs(inputs);
     console.log(JSON.stringify({ outcome: "promotion-inputs-valid", mutation: false, ...inputs }));
     return;
   }
-  const { runDelivery } = await import("./production-delivery.mjs");
-  await runDelivery({ target: "production", sourceRoot: process.env.ATRINIK_DELIVERY_SOURCE_ROOT,
-    ...(process.argv[2] === "--plan" ? { mode: "plan" } : {}) });
+  process.exitCode = await runPromotionDelivery({ mode: process.argv[2] === "--plan" ? "plan" : "deploy" });
 }
 
 if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url))
-  main().catch(() => { console.error("production promotion stopped; authority or delivery verification failed"); process.exitCode = 1; });
+  main().catch(() => { console.error(JSON.stringify(promotionFailure())); process.exitCode = 1; });
