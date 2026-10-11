@@ -1,0 +1,67 @@
+name: Deploy development
+run-name: Deploy development at ${{ github.event.workflow_run.head_sha }}
+
+on:
+  workflow_run:
+    workflows: [Check]
+    types: [completed]
+    branches: [main]
+
+# Queue writers; a newer eligible source fences older work at every phase.
+concurrency:
+  group: metaserver-development-delivery
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  validate:
+    if: github.repository == 'atrinik/metaserver-worker' && github.event.workflow_run.event == 'push' && github.event.workflow_run.conclusion == 'success' && github.event.workflow_run.head_repository.full_name == 'atrinik/metaserver-worker' && github.event.workflow_run.head_sha == github.sha && github.run_attempt == 1
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - name: Record eligible source without deployment credentials
+        env:
+          SOURCE_SHA: ${{ github.event.workflow_run.head_sha }}
+        run: |
+          test "$SOURCE_SHA" = "$GITHUB_SHA"
+          printf 'Validated main source: %s\n' "$SOURCE_SHA" >> "$GITHUB_STEP_SUMMARY"
+
+  deploy:
+    needs: validate
+    if: github.repository == 'atrinik/metaserver-worker' && github.run_attempt == 1
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    environment: development
+    steps:
+      - name: Check out the exact validated main revision
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.workflow_run.head_sha }}
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version-file: .nvmrc
+      - name: Select pinned npm
+        run: npm install --global --ignore-scripts npm@11.16.0
+      - name: Install integrity-pinned dependencies
+        run: npm ci --ignore-scripts
+      - name: Verify main authority and deploy the development cohort
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          ATRINIK_DELIVERY_RESOURCE_POLICY: ${{ secrets.ATRINIK_DELIVERY_RESOURCE_POLICY }}
+          ATRINIK_DELIVERY_RESOURCE_READ_TOKEN: ${{ secrets.ATRINIK_DELIVERY_RESOURCE_READ_TOKEN }}
+          ATRINIK_DEVELOPMENT_SHA: ${{ github.event.workflow_run.head_sha }}
+          ATRINIK_PRODUCTION_WRITER_FENCE_POLICY: ${{ vars.ATRINIK_PRODUCTION_WRITER_FENCE_POLICY }}
+          ATRINIK_PRODUCTION_BUILDS_READ_TOKEN: ${{ secrets.ATRINIK_PRODUCTION_BUILDS_READ_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          ATRINIK_DEVELOPMENT_CORE_CONFIG: ${{ secrets.ATRINIK_DEVELOPMENT_CORE_CONFIG }}
+          ATRINIK_DEVELOPMENT_PUBLISHER_CONFIG: ${{ secrets.ATRINIK_DEVELOPMENT_PUBLISHER_CONFIG }}
+          ATRINIK_DEVELOPMENT_RENDEZVOUS_CONFIG: ${{ secrets.ATRINIK_DEVELOPMENT_RENDEZVOUS_CONFIG }}
+        run: |
+          node scripts/production-delivery.mjs --environment development > "$RUNNER_TEMP/development-delivery-result.json"
+          cat "$RUNNER_TEMP/development-delivery-result.json" >> "$GITHUB_STEP_SUMMARY"
+          cat "$RUNNER_TEMP/development-delivery-result.json"

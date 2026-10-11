@@ -1,0 +1,151 @@
+name: Promote production
+run-name: Promote ${{ inputs.tag }} at ${{ inputs.source_sha }}
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Immutable published release tag (vN.N.N)
+        required: true
+        type: string
+      source_sha:
+        description: Exact 40-character commit resolved from that tag
+        required: true
+        type: string
+      artifact_digest:
+        description: Approved production deployable SHA-256
+        required: true
+        type: string
+      configuration_digest:
+        description: Approved materialized production configuration SHA-256
+        required: true
+        type: string
+      migration_digest:
+        description: Approved ordered migration ledger SHA-256
+        required: true
+        type: string
+      expected_predecessor:
+        description: SHA-256 of JSON array of core, publisher, rendezvous version IDs
+        required: true
+        type: string
+
+# One production writer across every tag, operator and queued request. A fresh
+# dispatch is required after cancellation/failure; reruns never receive authority.
+concurrency:
+  group: metaserver-production-promotion
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    if: github.repository == 'atrinik/metaserver-worker' && github.ref == 'refs/heads/main' && github.run_attempt == 1
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      actions: read
+    steps:
+      - name: Check out trusted controller
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.sha }}
+          path: controller
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version-file: controller/.nvmrc
+          package-manager-cache: false
+      - name: Authenticate selected release before checkout or execution
+        id: source
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          ATRINIK_PROMOTION_TAG: ${{ inputs.tag }}
+          ATRINIK_PROMOTION_SHA: ${{ inputs.source_sha }}
+          ATRINIK_PROMOTION_ARTIFACT_DIGEST: ${{ inputs.artifact_digest }}
+          ATRINIK_PROMOTION_CONFIG_DIGEST: ${{ inputs.configuration_digest }}
+          ATRINIK_PROMOTION_MIGRATION_DIGEST: ${{ inputs.migration_digest }}
+          ATRINIK_PROMOTION_PREDECESSOR: ${{ inputs.expected_predecessor }}
+        run: node controller/scripts/production-promotion.mjs --validate-source
+      - name: Check out authenticated selected source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ steps.source.outputs.source_sha }}
+          path: selected
+          persist-credentials: false
+      - name: Select pinned npm
+        run: npm install --global --ignore-scripts npm@11.16.0
+      - name: Validate selected source without deployment credentials
+        working-directory: selected
+        run: |
+          npm ci
+          npm run check
+          test -z "$(git status --porcelain)"
+
+  promote:
+    needs: validate
+    if: github.repository == 'atrinik/metaserver-worker' && github.ref == 'refs/heads/main' && github.run_attempt == 1
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    environment: production
+    permissions:
+      contents: read
+      actions: read
+    steps:
+      - name: Check out trusted controller
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.sha }}
+          path: controller
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version-file: controller/.nvmrc
+          package-manager-cache: false
+      - name: Authenticate selected release before checkout or execution
+        id: source
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          ATRINIK_PROMOTION_TAG: ${{ inputs.tag }}
+          ATRINIK_PROMOTION_SHA: ${{ inputs.source_sha }}
+          ATRINIK_PROMOTION_ARTIFACT_DIGEST: ${{ inputs.artifact_digest }}
+          ATRINIK_PROMOTION_CONFIG_DIGEST: ${{ inputs.configuration_digest }}
+          ATRINIK_PROMOTION_MIGRATION_DIGEST: ${{ inputs.migration_digest }}
+          ATRINIK_PROMOTION_PREDECESSOR: ${{ inputs.expected_predecessor }}
+        run: node controller/scripts/production-promotion.mjs --validate-source
+      - name: Check out authenticated selected source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ steps.source.outputs.source_sha }}
+          path: selected
+          persist-credentials: false
+      - name: Select pinned npm
+        run: npm install --global --ignore-scripts npm@11.16.0
+      - name: Install integrity-pinned controller dependencies
+        working-directory: controller
+        run: npm ci --ignore-scripts
+      - name: Install integrity-pinned selected dependencies
+        working-directory: selected
+        run: npm ci --ignore-scripts
+      - name: Verify authority and promote the approved cohort
+        working-directory: controller
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          ATRINIK_DELIVERY_SOURCE_ROOT: ${{ github.workspace }}/selected
+          ATRINIK_PROMOTION_TAG: ${{ inputs.tag }}
+          ATRINIK_PROMOTION_SHA: ${{ inputs.source_sha }}
+          ATRINIK_PROMOTION_ARTIFACT_DIGEST: ${{ inputs.artifact_digest }}
+          ATRINIK_PROMOTION_CONFIG_DIGEST: ${{ inputs.configuration_digest }}
+          ATRINIK_PROMOTION_MIGRATION_DIGEST: ${{ inputs.migration_digest }}
+          ATRINIK_PROMOTION_PREDECESSOR: ${{ inputs.expected_predecessor }}
+          ATRINIK_DELIVERY_RESOURCE_POLICY: ${{ secrets.ATRINIK_DELIVERY_RESOURCE_POLICY }}
+          ATRINIK_DELIVERY_RESOURCE_READ_TOKEN: ${{ secrets.ATRINIK_DELIVERY_RESOURCE_READ_TOKEN }}
+          ATRINIK_PRODUCTION_WRITER_FENCE_POLICY: ${{ vars.ATRINIK_PRODUCTION_WRITER_FENCE_POLICY }}
+          ATRINIK_PRODUCTION_BUILDS_READ_TOKEN: ${{ secrets.ATRINIK_PRODUCTION_BUILDS_READ_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          ATRINIK_PRODUCTION_CORE_CONFIG: ${{ secrets.ATRINIK_PRODUCTION_CORE_CONFIG }}
+          ATRINIK_PRODUCTION_PUBLISHER_CONFIG: ${{ secrets.ATRINIK_PRODUCTION_PUBLISHER_CONFIG }}
+          ATRINIK_PRODUCTION_RENDEZVOUS_CONFIG: ${{ secrets.ATRINIK_PRODUCTION_RENDEZVOUS_CONFIG }}
+        run: node scripts/production-promotion.mjs --execute

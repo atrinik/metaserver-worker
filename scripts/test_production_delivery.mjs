@@ -13,12 +13,17 @@ import {
   currentMainGitUrl,
   disabledCircuitConfiguration,
   deliveryFailureRecord,
+  currentDeliveryFailureRecord,
+  publicDeliveryWorkers,
+  retainPrivateDeliveryEvidence,
+  verifyPredecessorHandoff,
   describeSubprocessFailure,
   deliveryDecision,
   directoryReconciliationProxyConfiguration,
   validateDirectoryReconciliationProof,
   deployStagedWithRecoveryIntent,
   executeOrderedStages,
+  executeTrustedWrangler,
   orchestrateDelivery,
   materializeProtectedInputs,
   parseLiveVersionMessage,
@@ -33,6 +38,8 @@ import {
   validateBuildTrigger,
   validateBuildEnvironment,
   validateContract,
+  validateDeliveryContract,
+  runDelivery,
   validateLiveControlPlane,
   validateProtectedDocument,
   validateRemoteMigrations,
@@ -43,12 +50,13 @@ import {
   wranglerDeployArguments,
 } from "./production-delivery.mjs";
 
+import { developmentFixture, developmentWorkerNames } from "./delivery-targets.mjs";
 import { invokeDirectoryProxy, validateDirectoryProxyInput } from "./production-directory-reconciliation.mjs";
 
 const root = resolve(import.meta.dirname, "..");
 const contract = JSON.parse(
   await readFile(
-    resolve(root, "deployment/workers-builds-production.json"),
+    resolve(root, "deployment/historical/workers-builds-production-v1.json"),
     "utf8",
   ),
 );
@@ -1584,6 +1592,8 @@ function directoryProof(core, now = 2_000_000_000) {
 
 function proxyEnvironment() {
   return {
+    ATRINIK_DELIVERY_ENVIRONMENT: "production", GITHUB_ACTIONS: "true",
+    GITHUB_EVENT_NAME: "workflow_dispatch", ATRINIK_PROMOTION_SHA: "a".repeat(40),
     WORKERS_CI: "1", WORKERS_CI_BRANCH: "main",
     WORKERS_CI_COMMIT_SHA: "a".repeat(40),
     WORKERS_CI_BUILD_UUID: "11111111-1111-1111-1111-111111111111",
@@ -1825,4 +1835,156 @@ test("directory proxy bounds hanging fetch, read, cancellation and disposal", as
   completeInitialization();
   await new Promise((resolveNext) => setImmediate(resolveNext));
   assert.equal(disposed, true);
+});
+
+
+test("live contracts authorize only automatic DEV and explicit production promotion", async () => {
+  for (const target of ["production", "development"]) {
+    const live = JSON.parse(await readFile(resolve(root, `deployment/workers-builds-${target}.json`), "utf8"));
+    await assert.doesNotReject(validateDeliveryContract(live));
+    const changed = structuredClone(live);
+    changed.automaticPush = !changed.automaticPush;
+    await assert.rejects(validateDeliveryContract(changed), /contract drift/u);
+    assert.equal(live.invariants.migrationPolicy, "exact-ledger-no-automatic-apply");
+  }
+  await assert.rejects(validateDeliveryContract(contract), /unknown delivery target/u);
+});
+
+test("DEV requires existing names, private maintenance DO, exact origins and no cron", async () => {
+  const live = JSON.parse(await readFile(resolve(root, "deployment/workers-builds-development.json"), "utf8"));
+  const development = configs.map(developmentFixture);
+  assert.doesNotThrow(() => validateTopology(live, development));
+  assert.equal(development[0].main, "development/core.ts");
+  assert.deepEqual(development.map(({ name }) => name), developmentWorkerNames);
+  for (const change of [
+    (value) => { value[0].vars.DEVELOPMENT_MAINTENANCE = "other"; },
+    (value) => { value[0].triggers.crons = ["*/5 * * * *"]; },
+    (value) => { value[0].durable_objects.bindings.pop(); },
+    (value) => { value[0].main = "src/index.ts"; },
+    (value) => { value[1].services[0].service = "atrinik-metaserver"; },
+  ]) {
+    const changed = structuredClone(development);
+    change(changed);
+    assert.throws(() => validateTopology(live, changed));
+  }
+  assert.throws(() => validateTopology(live, configs), /name drift|entrypoint drift/u);
+  const proxy = directoryReconciliationProxyConfiguration({ ...development[0], account_id: "a".repeat(32) });
+  const environment = { ...proxyEnvironment(), ATRINIK_DELIVERY_ENVIRONMENT: "development",
+    GITHUB_EVENT_NAME: "workflow_run", ATRINIK_DEVELOPMENT_SHA: "a".repeat(40) };
+  assert.doesNotThrow(() => validateDirectoryProxyInput(proxy, environment));
+  assert.throws(() => validateDirectoryProxyInput(proxy, proxyEnvironment()), /authority rejected/u);
+});
+
+test("production exact-tag no-op refuses an equivalent different source", () => {
+  const plan = { deploy: "d", migrationDigest: "m", migrations: ["one"], controls: ["a", "b", "c"] };
+  const annotations = ["core", "publisher", "rendezvous"].map((role, index) => ({
+    role, source: "a".repeat(40), deploy: "d", migration: "m", migrationHorizon: 1,
+    control: plan.controls[index], phase: "active",
+  }));
+  assert.equal(deliveryDecision(annotations, plan), "no-op");
+  assert.equal(deliveryDecision(annotations, plan, { sourceSha: "a".repeat(40) }), "no-op");
+  assert.equal(deliveryDecision(annotations, plan, { sourceSha: "b".repeat(40) }), "deploy");
+});
+
+test("promotion credentials reach only the independently authorized reconciliation child", () => {
+  const environment = { GITHUB_TOKEN: "github-secret", ATRINIK_PRODUCTION_BUILDS_READ_TOKEN: "provider-secret",
+    ATRINIK_PRODUCTION_WRITER_FENCE_POLICY: "policy", ATRINIK_DELIVERY_ENVIRONMENT: "production",
+    ATRINIK_DELIVERY_SOURCE_ROOT: "/selected", ATRINIK_PRODUCTION_CORE_CONFIG: "private-config" };
+  for (const policy of ["public", "deployment"]) assert.deepEqual(childEnvironment(environment, policy), {});
+  assert.deepEqual(childEnvironment(environment, "directory-reconciliation"), {
+    GITHUB_TOKEN: "github-secret", ATRINIK_PRODUCTION_BUILDS_READ_TOKEN: "provider-secret",
+    ATRINIK_PRODUCTION_WRITER_FENCE_POLICY: "policy", ATRINIK_DELIVERY_ENVIRONMENT: "production",
+    ATRINIK_DELIVERY_SOURCE_ROOT: "/selected",
+  });
+});
+
+test("ordinary local production invocation fails before selected source or provider access", async () => {
+  await assert.rejects(runDelivery(), /explicit selected source checkout/u);
+  await assert.rejects(runDelivery({ target: "review" }), /invalid delivery invocation/u);
+});
+
+
+test("authenticated Wrangler and bundle tooling stay anchored to the trusted controller", async () => {
+  const observed = [];
+  const selected = "/untrusted-selected-release";
+  const execute = async (program, args, options) => {
+    assert.notEqual(program, `${selected}/node_modules/.bin/wrangler`);
+    observed.push({ program, args, options });
+    return { stdout: "{}" };
+  };
+  await executeTrustedWrangler(["deploy", "--dry-run"], { cwd: selected }, execute);
+  await executeTrustedWrangler(["versions", "view", "existing"],
+    { cwd: selected, environmentPolicy: "deployment" }, execute);
+  await executeTrustedWrangler(["deploy", "--strict"],
+    { cwd: selected, environmentPolicy: "deployment" }, execute);
+  assert.equal(observed.length, 3);
+  assert.ok(observed.every((call) => call.program === resolve(root, "node_modules/.bin/wrangler")));
+  assert.ok(observed.every((call) => call.options.cwd === root),
+    "selected cwd must not load a release-owned .env with CLOUDFLARE_API_BASE_URL");
+});
+
+
+test("first mutation rechecks every approved predecessor after slow authority fences", async () => {
+  for (let changedRole = 0; changedRole < 3; changedRole++) {
+    const approved = ["private-core-version", "private-publisher-version", "private-rendezvous-version"];
+    let active = [...approved];
+    const events = [];
+    await assert.rejects(orchestrateDelivery({
+      workers: ["core", "publisher", "rendezvous"], decision: "deploy",
+      fence: async () => { events.push("fence"); active[changedRole] = "unapproved-version"; },
+      verifyPredecessor: () => verifyPredecessorHandoff(approved,
+        async () => { events.push("read-all-predecessors"); return { versions: active, annotations: [] }; },
+        async () => events.push("approved")),
+      deployStaged: async () => events.push("MUTATION"),
+      recover: async () => events.push("no-core-mutation-to-recover"),
+    }), /active predecessor changed/u);
+    assert.deepEqual(events, ["fence", "read-all-predecessors", "no-core-mutation-to-recover"]);
+  }
+});
+
+test("unchanged predecessor is reauthorized once before core staging, not against intermediate cohort", async () => {
+  const versions = ["core-before", "publisher-before", "rendezvous-before"];
+  let validations = 0;
+  const events = [];
+  await orchestrateDelivery({
+    workers: ["core", "publisher", "rendezvous"], decision: "deploy",
+    fence: async () => events.push("fence"),
+    verifyPredecessor: () => verifyPredecessorHandoff(versions,
+      async () => { events.push("predecessor"); return { versions: [...versions], annotations: ["approved"] }; },
+      async (annotations, observed) => {
+        validations++; assert.deepEqual(annotations, ["approved"]); assert.deepEqual(observed.versions, versions);
+      }),
+    deployStaged: async (role) => events.push(`deploy:${role}`),
+    readbackStaged: async () => {}, verifyStaged: async () => {}, deployActive: async () => {},
+    readbackActive: async () => {}, verifyFinal: async () => {}, reconcileDirectories: async () => {},
+    canaries: async () => {}, recover: async () => assert.fail("unexpected recovery"),
+  });
+  assert.equal(validations, 1);
+  assert.deepEqual(events.slice(0, 3), ["fence", "predecessor", "deploy:core"]);
+});
+
+test("success reports omit provider IDs while owner-only receipt retains exact versions", async () => {
+  const workers = ["core", "publisher", "rendezvous"].map(role => ({
+    role, sourceSha: "a".repeat(40), versionId: `private-${role}-version`, unexpected: "private-config",
+  }));
+  const publicWorkers = publicDeliveryWorkers(workers);
+  assert.deepEqual(publicWorkers, workers.map(({ role, sourceSha }) => ({ role, sourceSha })));
+  assert.equal(JSON.stringify(publicWorkers).includes("private"), false);
+  const path = await retainPrivateDeliveryEvidence({ workers });
+  try {
+    assert.deepEqual(JSON.parse(await readFile(path, "utf8")), { workers });
+    assert.equal((await stat(path)).mode & 0o777, 0o600);
+    assert.equal((await stat(resolve(path, ".."))).mode & 0o777, 0o700);
+  } finally { await rm(resolve(path, ".."), { recursive: true, force: true }); }
+});
+
+test("failure accessor and formatter do not publish private provider identity fields", () => {
+  const evidence = { sourceSha: "a".repeat(40), deployableDigest: null, failedRole: "staged:core",
+    completedRoles: ["staged:core"], recoveryOutcome: "failed", buildUuid: "private-build-id",
+    workers: [{ versionId: "private-worker-version" }], privateEvidencePath: "/private/receipt" };
+  const record = deliveryFailureRecord(new Error("private provider response"), evidence);
+  assert.equal(JSON.stringify(record).includes("private"), false);
+  assert.deepEqual(record.completedRoles, ["staged:core"]);
+  assert.notEqual(record.completedRoles, evidence.completedRoles);
+  assert.equal(currentDeliveryFailureRecord(new Error("private")).reason, "unexpected-internal-error");
 });

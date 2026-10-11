@@ -15,7 +15,7 @@ import {
 import { validateCheckedInContract as validateReviewContract } from "./review-environment.mjs";
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
-const productionPath = resolve(root, "deployment/workers-builds-production.json");
+const productionPath = resolve(root, "deployment/historical/workers-builds-production-v1.json");
 const reviewPath = resolve(root, "deployment/workers-builds-review.json");
 const accountIdPattern = /^[0-9a-f]{32}$/u;
 const scriptTagPattern = /^[0-9a-f]{32}$/u;

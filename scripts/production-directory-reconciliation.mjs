@@ -1,6 +1,7 @@
 import { readFile } from "node:fs/promises";
 import { resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { developmentWorkerNames, promotionEnvironmentNames } from "./delivery-targets.mjs";
 import { assertDirectoryBuildContext } from "./production-delivery.mjs";
 
 const INTERNAL_URL = "https://internal.atrinik.invalid/v1/directory-reconciliation";
@@ -11,23 +12,28 @@ const STAGE_TIMEOUT_MS = 90_000;
 // proxy bindings; the token is removed from the process environment before Wrangler.
 const CLEANUP_TIMEOUT_MS = 10_000;
 export function validateDirectoryProxyInput(config, environment) {
-  if (environment.WORKERS_CI !== "1" || environment.WORKERS_CI_BRANCH !== "main" ||
-      !/^[0-9a-f]{40}$/u.test(environment.WORKERS_CI_COMMIT_SHA ?? "") ||
-      !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/u
-        .test(environment.WORKERS_CI_BUILD_UUID ?? "") ||
+  const target = environment.ATRINIK_DELIVERY_ENVIRONMENT;
+  const coordinatesValid = target === "development"
+    ? environment.GITHUB_ACTIONS === "true" && environment.GITHUB_EVENT_NAME === "workflow_run" &&
+      /^[0-9a-f]{40}$/u.test(environment.ATRINIK_DEVELOPMENT_SHA ?? "")
+    : target === "production" && environment.GITHUB_ACTIONS === "true" &&
+      environment.GITHUB_EVENT_NAME === "workflow_dispatch" &&
+      /^[0-9a-f]{40}$/u.test(environment.ATRINIK_PROMOTION_SHA ?? "");
+  if (!coordinatesValid ||
       !environment.CLOUDFLARE_API_TOKEN ||
       !/^[0-9a-f]{32}$/u.test(config?.account_id ?? "") ||
       config.account_id !== environment.CLOUDFLARE_ACCOUNT_ID ||
       typeof config.compatibility_date !== "string" ||
       !/^\d{4}-\d{2}-\d{2}$/u.test(config.compatibility_date) ||
       JSON.stringify(config) !== JSON.stringify({
-        name: "atrinik-production-directory-reconciliation",
+        name: `atrinik-${target}-directory-reconciliation`,
         account_id: config.account_id,
         compatibility_date: config.compatibility_date,
         workers_dev: false,
         preview_urls: false,
         services: [{
-          binding: "DIRECTORY_RECONCILIATION", service: "atrinik-metaserver",
+          binding: "DIRECTORY_RECONCILIATION", service: target === "development"
+            ? developmentWorkerNames[0] : "atrinik-metaserver",
           entrypoint: "DirectoryReconciliation", remote: true,
         }],
       })) throw new Error("directory proxy authority rejected");
@@ -131,6 +137,8 @@ async function main() {
   // The read-only authority checker retains this credential in its private
   // closure; Wrangler and its remote-binding subprocesses cannot inherit it.
   delete process.env.ATRINIK_WORKERS_BUILDS_API_TOKEN;
+  delete process.env.ATRINIK_DEVELOPMENT_WORKERS_BUILDS_API_TOKEN;
+  for (const name of promotionEnvironmentNames) delete process.env[name];
   process.env.WRANGLER_LOG = "error";
   const receipt = await invokeDirectoryProxy({
     configPath, config, environment,

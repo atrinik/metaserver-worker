@@ -1,11 +1,13 @@
 {
-  "schemaVersion": 1,
-  "provider": "cloudflare-workers-builds",
+  "schemaVersion": 2,
+  "provider": "github-actions",
   "repository": "atrinik/metaserver-worker",
   "rootDirectory": "",
   "productionBranch": "main",
-  "automaticPush": true,
-  "pathIncludes": ["*"],
+  "automaticPush": false,
+  "pathIncludes": [
+    "*"
+  ],
   "pathExcludes": [],
   "installCommand": "env -i HOME=\"$HOME\" PATH=\"$PATH\" npm_config_cache=/tmp/atrinik-npm-cache npm install --global --ignore-scripts npm@11.16.0 && env -i HOME=\"$HOME\" PATH=\"$PATH\" npm_config_cache=/tmp/atrinik-npm-cache npm ci --ignore-scripts",
   "validationCommand": "npm run check",
@@ -84,17 +86,16 @@
     "lockfile": "package-lock.json"
   },
   "source": {
-    "branchVariable": "WORKERS_CI_BRANCH",
-    "commitVariable": "WORKERS_CI_COMMIT_SHA",
-    "buildVariable": "WORKERS_CI_BUILD_UUID",
-    "currentMainUrl": "https://api.github.com/repos/atrinik/metaserver-worker/commits/main"
+    "kind": "immutable-release-tag",
+    "repository": "atrinik/metaserver-worker",
+    "workflow": "promote-production.yml",
+    "controllerBranch": "main"
   },
   "protectedInputs": {
     "accountVariable": "CLOUDFLARE_ACCOUNT_ID",
     "coreConfigVariable": "ATRINIK_PRODUCTION_CORE_CONFIG",
     "publisherConfigVariable": "ATRINIK_PRODUCTION_PUBLISHER_CONFIG",
-    "rendezvousConfigVariable": "ATRINIK_PRODUCTION_RENDEZVOUS_CONFIG",
-    "buildsApiTokenVariable": "ATRINIK_WORKERS_BUILDS_API_TOKEN"
+    "rendezvousConfigVariable": "ATRINIK_PRODUCTION_RENDEZVOUS_CONFIG"
   },
   "initialBootstrapPredecessor": {
     "requiredPhase": "all-builds-triggers-absent",
@@ -208,15 +209,21 @@
       "configuration": "ATRINIK_PRODUCTION_PUBLISHER_CONFIG",
       "order": 2,
       "directDeploy": true,
-      "customDomains": ["publish.meta.atrinik.org"],
+      "customDomains": [
+        "publish.meta.atrinik.org"
+      ],
       "requiredVariables": [
         "GAME_PUBLISH_ENABLED",
         "PUBLISH_ENABLED",
         "PUBLISH_HOSTNAME",
         "ROUTE_DISABLED_RETRY_SECONDS"
       ],
-      "state": ["RateLimit:GLOBAL_RATE_LIMITER"],
-      "serviceBindings": ["COORDINATOR:atrinik-metaserver#PublisherCoordinator"],
+      "state": [
+        "RateLimit:GLOBAL_RATE_LIMITER"
+      ],
+      "serviceBindings": [
+        "COORDINATOR:atrinik-metaserver#PublisherCoordinator"
+      ],
       "requiredSecrets": []
     },
     {
@@ -225,7 +232,9 @@
       "configuration": "ATRINIK_PRODUCTION_RENDEZVOUS_CONFIG",
       "order": 3,
       "directDeploy": true,
-      "customDomains": ["rendezvous.meta.atrinik.org"],
+      "customDomains": [
+        "rendezvous.meta.atrinik.org"
+      ],
       "requiredVariables": [
         "RENDEZVOUS_ENABLED",
         "RENDEZVOUS_HOSTNAME",
@@ -235,7 +244,9 @@
         "RateLimit:GLOBAL_RATE_LIMITER",
         "RateLimit:RENDEZVOUS_CLIENT_RATE_LIMITER"
       ],
-      "serviceBindings": ["COORDINATOR:atrinik-metaserver#RendezvousCoordinator"],
+      "serviceBindings": [
+        "COORDINATOR:atrinik-metaserver#RendezvousCoordinator"
+      ],
       "requiredSecrets": []
     }
   ],
@@ -243,12 +254,17 @@
     "productionWorkersDev": false,
     "productionPreviewUrls": false,
     "migrationPolicy": "exact-ledger-no-automatic-apply",
-    "controlPlanePolicy": "automatic-after-live-preflight",
-    "deploymentOrder": ["core", "publisher", "rendezvous"],
+    "controlPlanePolicy": "explicit-immutable-tag-promotion",
+    "deploymentOrder": [
+      "core",
+      "publisher",
+      "rendezvous"
+    ],
     "deploymentMode": "direct-100-percent-strict",
     "initialApiHandoff": "automatic-unannotated-api-managed-source-only",
-    "buildSerialization": "newest-current-main-build-owns-one-topology-entrypoint",
-    "noOp": "matching-bundles-config-migrations-and-command-contract",
-    "recovery": "disabled-circuit-fix-forward-and-exact-current-main-retry"
-  }
+    "buildSerialization": "github-actions-production-concurrency",
+    "noOp": "selected-source-and-matching-bundles-config-migrations",
+    "recovery": "disabled-circuit-fix-forward-and-fresh-tag-promotion"
+  },
+  "target": "production"
 }

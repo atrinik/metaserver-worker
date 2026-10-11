@@ -176,7 +176,7 @@ import { validateBuildEnvironment } from "./production-delivery.mjs";
 
 const root = resolve(import.meta.dirname, "..");
 const production = JSON.parse(await readFile(resolve(root,
-  "deployment/workers-builds-production.json"), "utf8"));
+  "deployment/historical/workers-builds-production-v1.json"), "utf8"));
 const review = JSON.parse(await readFile(resolve(root,
   "deployment/workers-builds-review.json"), "utf8"));
 const bases = await Promise.all([

@@ -34,7 +34,8 @@
   never add D1, R2, Durable Object, cron, signing secrets/key IDs, or cross-service
   authority to them. All grant/ticket HMACs and admission signatures belong to core.
   Do not add legacy Durable Object migration configuration alongside
-  `exports`. Apply every pending D1 migration before deploying this provider;
+  `exports`. After reviewed backups and explicit migration authorization, apply
+  every pending D1 migration before deploying this provider;
   then deploy the core before either caller. Lifecycle changes require a direct
   100% `wrangler deploy`; `versions upload`, gradual rollout, and rollback
   across that lifecycle boundary are unsupported.
@@ -44,21 +45,36 @@
   `rendezvous_health_observations` singleton is bounded rolling aggregate state;
   it must never gain server, room, connection, ticket, candidate, credential,
   or source-address columns.
-- `deployment/workers-builds-production.json` is the sole checked-in automatic
-  production-delivery contract. Workers Builds skips implicit installation,
-  selects the pinned npm, runs `npm ci`, and then `npm run deploy:production`
-  for every accepted `main` push. Keep its exact
-  Node/npm pins and lockfile-resolved Wrangler, all-path trigger, protected-input names, migration
-  prefix proof, no-op digest, newest-current-main lease, strict disabled-circuit
-  core/publisher/rendezvous staging, caller-before-core restoration, coherent
-  phase readback, prefix-proven migration horizons, positive-allowlist child
-  environments, live-trigger reconciliation, and bounded static plus
-  canonical-envelope Service Binding canaries synchronized with the
-  implementation and runbook. `npm run deploy:production:dry-run` must retain zero remote
-  mutation paths.
-  An accepted `main` push proceeds automatically after those preflights. The
-  former control-plane-ready secret is optional, inert transition state and
-  must never influence a delivery decision.
+- `deployment/workers-builds-development.json` owns automatic reviewed-`main`
+  delivery to the existing persistent DEV cohort, activated only after owner-approved
+  merge of the concrete source PR. Retain DEV `DevelopmentMaintenance` alarm
+  scheduling and constant object identity/state; do not add cron or change PROD
+  scheduling. Run `npm run deploy:development`
+  only inside the exact automatic GitHub Actions main workflow. Keep pinned tools, all-path
+  triggers, exact-current-main fencing, protected DEV inputs, no-op digests,
+  exact migration ledgers, ordered disabled staging and caller-before-core
+  restoration synchronized with the implementation and
+  `docs/deployment-environments.md`. Automatic delivery never applies SQL.
+- `deployment/workers-builds-production.json` owns explicit GitHub Actions
+  production promotion. A main push or release event grants no production
+  mutation. Require an owner-approved immutable exact tag/SHA, verified release
+  provenance and artifact/configuration/migration digests, expected predecessor,
+  fixed production concurrency, and a one-use attempt. Reject workflow reruns.
+  Fence and drain the old automatic production writer before publication.
+  Retain its v1 contract under `deployment/historical/` solely for historical
+  incident verification; never reactivate it as routine policy. Stop before
+  promotion until the owner reviews and approves the exact tag. Both environment
+  dry runs must retain zero remote mutation paths.
+- Both GitHub execution environments require protected
+  `ATRINIK_DELIVERY_RESOURCE_POLICY` and
+  `ATRINIK_DELIVERY_RESOURCE_READ_TOKEN`. The bounded private policy pins exact
+  resource ownership/configuration for PROD, DEV and any provisioned live-review
+  cohort. Re-read every cohort at each engine phase and private reconciliation;
+  reject binding/resource/configuration drift. Bind the resource-policy digest
+  into the approved deployable digest. Target public callers must have zero
+  provider secrets; pin unchanged non-target legacy secret names without cleanup
+  authority. Provider readback exposes names, never secret values: disjoint key
+  generation requires separate provisioning-receipt proof.
 - Treat `server_presence` plus the profile-discriminated `directory_entries`
   as authoritative, profile-scoped publication state. Active profiles are Classic
   publisher v3/directory v6 and Game publisher v2/directory v2. Private presence
@@ -145,17 +161,25 @@
   Rate Limiting namespace IDs for canaries; reused namespace IDs share
   counters across Workers. Admission work is a computational cost gate, not
   anonymous-attacker fairness; bounded native solvers may time out on slower devices.
-- `deployment/workers-builds-review.json` owns the non-`main` review design.
-  Same-repository branch automation is build-only, has no bindings, protected
-  inputs, account/zone resource permission, upload, or URL, and must reject
-  `main`; fork refs remain outside the connected repository. The provider-native
-  preview trigger shares the production core Worker and repository connection
-  but has a distinct zero-resource token and a separate nonsecret environment;
-  no production trigger setting or protected input is available to review builds. The trusted setup/budget
-  operator's account-wide Builds control-plane reach (builds, tokens,
-  environment variables, connections, triggers, and manual builds) is an
-  explicit provider limitation; its user API token is never build-readable and
-  exact review trigger ID guards must reject production-trigger mutations.
+- Historical provisioning/rotation procedures below preserve immutable incident
+  evidence; references to the old production automatic trigger describe that
+  historical state and grant no current activation authority.
+- GitHub Actions is the sole active PR/source-validation path. Retain Cloudflare
+  review inactive: fresh readback includes an encrypted Builds secret and a
+  shared wrapper with unreadable policy, so never call it credential-free.
+  Both retained Cloudflare triggers require literal `exit 1` build/deploy,
+  `SKIP_DEPENDENCY_INSTALL=1`, preserved valid selectors (production main/no
+  exclusions; review wildcard/exclude-main), sealed bounded startup environment/
+  configuration digests and every Build stopped at each fence, including review.
+  Apply only the documented two-field commands PATCH. Builds may still enqueue
+  or start and fail immediately; never claim that branch pushes are disabled.
+  Branch pause alone cannot fence manual/retried Builds. Retain unknown
+  credentials unread and uncalled; this policy authorizes no authentication
+  removal, secret copying or new PROD deployment. A rejected partial PATCH is
+  no transition proof. Restoring credential-free review needs separate current
+  authorization and policy proof. The historical
+  `deployment/workers-builds-review.json` design and incident procedures below
+  remain evidence, never current credential-boundary or activation proof.
   Branch builds create no Worker version. Live review is an operator-supervised exact-SHA run in a dedicated
   account with no GitHub connection or zone. Its production-disjoint resources, disabled
   circuits, exact-duration lease, quiescing/terminal teardown fence, logical
@@ -277,9 +301,10 @@
   three dry-run configurations together.
 - Never deploy, run remote D1 migrations, reset ownership, or mutate Cloudflare
   resources merely to validate a change. Those external actions require
-  explicit authorization and reviewed production bindings. The automatic
-  entrypoint is authorized only inside the configured Workers Builds `main`
-  trigger; local execution without `--dry-run` must fail before remote access.
+  explicit authorization and reviewed environment bindings. The automatic DEV
+  entrypoint is authorized only inside its configured GitHub Actions `main`
+  workflow; PROD requires the separately approved exact-tag workflow dispatch.
+  Local live execution must fail before remote access.
 - Commits and pull-request titles use Conventional Commits. Every squash merge
   is released by semantic-release.
 - Preserve unrelated work and finish with `git diff --check`.
