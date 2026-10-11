@@ -9,146 +9,44 @@ work is append-only. The core owns D1, R2, schedules, Analytics Engine,
 `RendezvousRoom`, and `DirectoryBuilder`. The publisher and rendezvous Workers
 are stateless public edges with one named Service Binding each.
 
-## Automatic protected-main delivery
+## DEV delivery and explicit PROD promotion
 
-Routine delivery uses one Cloudflare Workers Builds connection to
-`atrinik/metaserver-worker`. Configure it exactly from
-`deployment/workers-builds-production.json`: repository root, production
-branch `main`, every push included with no watch-path exclusion, build command
-`env -i PATH="$PATH" npm_config_cache=/tmp/atrinik-npm-cache npm install
---global --ignore-scripts npm@11.16.0 && env -i PATH="$PATH"
-npm_config_cache=/tmp/atrinik-npm-cache npm ci --ignore-scripts`, deploy command
-`npm run deploy:production`, `SKIP_DEPENDENCY_INSTALL=1`, and the pinned
-Node/npm versions and lockfile-resolved Wrangler. An accepted pull-request merge into protected
-`main` is the routine authorization. Do not add another production branch,
-tag/release gate, GitHub environment approval, deploy hook, Actions deployment
-workflow/secret, or local Wrangler step. Semantic Release independently
-consumes the same accepted SHA and does not gate deployment.
+The current policy and operator checklist are in
+[deployment environments](docs/deployment-environments.md). Reviewed `main`
+pushes use `deployment/workers-builds-development.json` and
+`npm run deploy:development` against the existing persistent DEV cohort.
+`deployment/workers-builds-production.json` describes explicit GitHub Actions
+promotion of an approved immutable tag/SHA. No accepted `main` push, release
+event, review build or local invocation authorizes a production write.
 
-Cloudflare-owned secret build variables contain three minified JSONC
-configurations, each below the provider's 5 KiB variable limit:
+Credential-free local inspection:
 
-```text
-ATRINIK_PRODUCTION_CORE_CONFIG
-ATRINIK_PRODUCTION_PUBLISHER_CONFIG
-ATRINIK_PRODUCTION_RENDEZVOUS_CONFIG
-ATRINIK_WORKERS_BUILDS_API_TOKEN
-CLOUDFLARE_ACCOUNT_ID
+```sh
+npm run deploy:development:validate
+npm run deploy:development:dry-run
+npm run deploy:production:validate
+npm run deploy:production:dry-run
 ```
 
-`ATRINIK_PRODUCTION_CONTROL_PLANE_READY` may remain temporarily as an encrypted
-legacy build variable while the provider configuration converges. The build
-accepts only its hidden secret classification and ignores its value; it is not
-part of the current contract and may be deleted after this source is live.
+Both paths retain exact remote-ledger verification without automatic SQL,
+digest-bound no-ops, strict direct 100% deployment, core/publisher/rendezvous
+staging with public circuits disabled, publisher/rendezvous/core restoration,
+phase readback, private directory reconciliation and bounded public canaries.
+PROD replaces newest-main build authority with the exact promotion attempt,
+approved tag/SHA, release provenance, digests and expected predecessor.
+Never print private configurations, IDs, credentials or raw provider responses.
 
-The entrypoint materializes the configurations as owner-only temporary files
-outside the checkout, resolves only repository-contained entrypoints, and
-removes the files on every exit. The Builds API token is a separate
-user-scoped secret with Workers CI Write only; it arbitrates this production
-trigger by retaining the newest eligible current-main build, making every
-older build relinquish, and cancelling only older competitors before any
-Worker mutation. It also reconciles the live GitHub repository, root, core
-project tag, branch/watch filters, build/deploy commands, and exact protected
-environment inventory/classification with the checked-in contract. Every fence
-fetches the current trigger rather than trusting the build-start snapshot. Use
-the accepted `main` source plus the live preflights as the delivery authority;
-no variable carries a second approval. Separately authorized
-DNS/WAF/domain/route/trigger, secret-rotation, resource, or ownership work still
-requires its own reviewed operation before the source delivery observes it.
-Never print a protected file, identifier, secret value, recovery
-coordinate, or raw provider response. Routine deploys inherit already
-provisioned encrypted runtime secrets by name and never read, upload, rotate,
-or delete their values.
-For the first provider connection, a Worker that reports
-`last_deployed_from=api` and has no valid repository delivery annotation may
-perform the one-time API-to-Workers-Builds handoff automatically. It omits
-Wrangler's interactive `--strict` conflict prompt only for that unannotated
-Worker, after the normal live control-plane, lease, configuration, migration
-ledger, and readback preflights. Dashboard-managed or already annotated
-Workers remain strict, and malformed Atrinik delivery annotations stop the
-build. Subsequent ordinary builds remain strict.
+## Historical Workers Builds provisioning and recovery
 
-The entrypoint performs this fail-closed sequence:
-
-1. Require Workers Builds on `main`, a build UUID, the expected connected core
-   project/tag, a clean `HEAD` equal to `WORKERS_CI_COMMIT_SHA`, and the
-   intended account. The provider install command starts with an empty
-   environment and disables dependency lifecycle scripts. Before repository
-   code runs, reconcile the live trigger and protected environment. Repository
-   checks and public canaries receive a positive allowlist of non-secret process
-   settings only; Wrangler additionally receives only deployment authentication
-   and its private configuration path; the lease token remains in the parent
-   process. This allowlist prevents inheritance and accidental tool exposure;
-   trusted merged repository code remains in the same-UID build trust boundary.
-   Materialize private configurations only after repository checks.
-2. Run the complete repository check; then validate all three protected configs,
-   bounded runtime policies, coherent circuit values, exact Custom Domains and
-   their shared `atrinik.org` zone ID, bindings, variables, secret names, unique
-   rate namespaces, disabled alternate URLs, observability, cron schedules, and
-   the ordered D1 ledger against live readback.
-3. Resolve the desired and disabled-circuit strict dry-run bundles before
-   mutation and hash them with the configs, migrations, lockfile, commands,
-   canaries, and contract.
-4. Read back one active 100% version per Worker. If the complete deployable
-   digest is already active, upload nothing, avoiding a Durable Object restart.
-   Run the same bounded directory reconciliation and canaries below before
-   reporting `no-deployment-required`. A directory refresh may publish aliases;
-   the no-op decision skips Worker uploads, not directory maintenance.
-5. Recheck current `main` before the first upload and before and after every
-   stage; cancel and wait for every stale main build, repeat the inventory until
-   the sole exact-SHA Builds lease converges, and make current `main` the final
-   remote proof. Deploy and read back core, publisher, then rendezvous with every
-   public circuit forced disabled.
-6. Prove the staged three-role cohort is coherent. Restore the desired caller
-   configs in publisher/rendezvous order while core remains disabled, restore
-   core last, and validate every normal direct `wrangler deploy --strict` at
-   100%. The one-time unannotated API-managed handoff above is selected from
-   live provenance and is not a general deployment mode.
-   Thus any pre-final failure leaves or restores the core breakers disabled.
-7. Record exact source, deployable, migration digest/horizon, control-plane,
-   role, and phase
-   in each version. Re-read exports, bindings, routes, Custom Domains,
-   subdomain, schedules, runtime, and observability after each stage; reread
-   one coherent active topology. Before static canaries, explicitly reconcile
-   both fixed directory profiles through the private `DirectoryReconciliation`
-   Service Binding entrypoint. The temporary service-only proxy selects the
-   verified core Worker and account, has no public URL or state bindings, and
-   uses the pinned Wrangler `getPlatformProxy` API with `persist: false` and
-   `remoteBindings: true`. The proxy child receives only deployment authentication
-   and exact nonsecret CI coordinates. The existing lease token passes only
-   to the child's read-only build-authority observer and is removed from its
-   process environment before Wrangler loads; protected configurations stay
-   in the parent. The child independently checks clean local `HEAD`, account,
-   current `main`, the authenticated running build, live trigger/environment
-   and sole exact-SHA lease before import, again after proxy initialization
-   immediately before the request, and after its receipt. It never cancels builds.
-   Bound authority checks, initialization and invocation to 90 seconds, then
-   bound request abort, receipt cancellation and proxy disposal to 10 seconds,
-   with a 120-second parent subprocess ceiling,
-   and accept only a bounded, fresh receipt for both positive publication
-   generations, selected cutover modes and exact origins. Generation zero,
-   stale or absent alias cohorts, failed reconciliation, and pending purge stop
-   before any static canary. Recheck the exact active topology and current-main
-   lease after reconciliation, then run bounded Classic/Game static-origin
-   canaries. The publisher and rendezvous canaries use credential-free probes
-   inside the exact governed non-retirable Classic v2 `POST .../publish` and
-   Classic `GET ...?role=server` envelopes: an enabled circuit must return the
-   coordinator's fixed closed rejection across the Service Binding, while a
-   disabled circuit must return its exact local closed response and retry
-   policy. No health-route or WAF exception exists. A canary/final-readback
-   failure also restores and proves the disabled core configuration.
-
-The build token needs read access to current Worker configuration and the D1
-migration ledger plus exact deployment authority for these three Workers. The
-separate lease token needs Workers CI Write solely to inspect this trigger and
-cancel competing builds.
-It must not receive D1 migration, DNS, WAF, general account administration,
-secret-read, or destructive-resource authority.
-
-`npm run deploy:production:dry-run` validates the checked-in fixtures, resolves
-all bundles, and prints only safe digests, names and the reconciliation plan.
-It never reads GitHub or Cloudflare, opens no remote binding, and has no upload
-or reconciliation mutation path.
+The following provisioning/rotation procedures record the previous
+production-plus-review trigger topology and accepted historical authorities.
+They remain evidence for the exact incident verifier and are not current
+instructions to enable automatic production deployment. The immutable former
+contract is `deployment/historical/workers-builds-production-v1.json`.
+Any retained historical reference to automatic production, accepted-main
+activation, or its protected inputs applies only to that historical contract.
+New provider changes follow the environment policy above. Historical applied
+migrations, receipts, authorities and incident journals must not be rewritten.
 
 ### Workers Builds provisioning preflight
 
@@ -1130,42 +1028,17 @@ closed. Local manual escape is limited to `npm ci --ignore-scripts`,
 It does not prove live behavior. A provider outage or build failure never falls
 through to the production command or blocks unrelated GitHub validation.
 
-### Pauses, retries, outages, and manual escape
+### Current pauses, retries and outages
 
-A pending/divergent migration, unmet external control-plane prerequisite,
-placeholder/missing input, wrong account, route/binding/secret drift, stale SHA, or failed
-validation/upload/readback/canary stops the build. The command never applies a
-migration or changes external control-plane state incidentally. Preserve the
-safest circuit state and private recovery evidence, perform only the separately
-authorized prerequisite from the same revision, verify it, and manually retry
-that exact SHA through Workers Builds. The retry must still be current `main`;
-never create an empty commit or deploy from a local checkout.
-
-After separately authorized SQL application, an append-only migration source
-change proceeds automatically only when the active annotation's prior horizon
-hashes to an exact prefix of the new checked-in ledger and the remote name
-ledger already equals the new ledger. Rewriting, reordering, deleting, or
-inserting into the prior horizon remains divergent; the build never applies SQL.
-An interrupted staged cohort is internal recovery state, not external control
-drift, so the newest routine build can safely finish it. Failure evidence keeps
-the original phase/role and separately records disabled-core recovery as
-`not-needed`, `proven`, or `failed`.
-
-After a partial deployment, record the read-back phase/role prefix and the
-disabled-core recovery result, then fix forward from exact current `main`;
-never roll back across exports or schema. During a
-provider outage, repository validation and Semantic Release remain independent
-and the Workers Build is retried only after readback is reliable. An emergency
-manual escape requires explicit incident authorization and the exact clean
-current-main tree, contract, protected inputs, strict order, readback, and
-canaries; record why Workers Builds was unavailable and restore it as the sole
-routine path.
-
-To disconnect, an organization owner disables the trigger, verifies no build
-or upload remains active, revokes the build token and metaserver repository
-selection without disturbing the website connection, and retains the last
-source/version/digest evidence privately. A disconnected repository has no
-automatic production path and fails closed.
+Use the environment-specific recovery checklist in
+[deployment environments](docs/deployment-environments.md#failure-and-recovery).
+DEV may retry only the exact current-main build after its separately authorized
+prerequisite is proven. PROD must use a newly approved attempt; workflow reruns
+and silent automatic retries are rejected. A partial phase is evidence to
+reconcile, never permission to replay an ambiguous write. Keep core circuits
+disabled until the staged cohort, predecessor and schema are coherent. During
+provider outages, preserve evidence and continue unrelated repository checks.
+Any emergency manual production action needs separate incident authorization.
 
 ## Prepare
 
@@ -1186,8 +1059,8 @@ publisher/rendezvous callers receive no secret file, signing keys or key IDs.
 Do not use sequential `secret put` operations or an incomplete file that would
 create an unreviewed intermediate version.
 
-1. For a separately authorized exceptional gate, work from the exact clean
-   current `main` commit selected by Workers Builds. Record the commit,
+1. Work from the exact clean reviewed current-main DEV SHA or, for production,
+   the owner-approved immutable release tag/SHA and promotion attempt. Record the commit,
    Wrangler version, account, zone, database, buckets, Durable Object
    namespaces, service names, routes/domains, active version IDs, configuration
    digests, secret names, and enabled edge-rule IDs in an owner-only private
@@ -1264,7 +1137,7 @@ python3 scripts/static_origin_canary.py \
   --alias-prefix canary-v2 --json
 ```
 
-The automatic delivery contract derives each canary prefix from the exact core
+The environment delivery contract derives each canary prefix from the exact core
 configuration; the same checked configuration drives builder and purge targets.
 Migration 0013 leaves `classic-v3` and `game-v2` publication checkpoints at
 generation zero with no new aliases. The explicit pre-canary reconciliation

@@ -90,6 +90,7 @@ Use the Node and npm versions pinned by `.nvmrc` and `packageManager`:
 ```sh
 npm ci
 npm run check
+npm run deploy:development:dry-run
 npm run deploy:production:dry-run
 ```
 
@@ -99,77 +100,32 @@ tests, the Python administrative tests, and one distinct Wrangler dry run per
 deployable. Generated declarations and `dist/` output are untracked and must
 not be edited.
 
-Every accepted push to protected `main` is the routine production
-authorization. Cloudflare Workers Builds disables its implicit dependency
-install, selects npm 11.16.0, installs with `npm ci`, and invokes the one
-checked-in `npm run deploy:production` entrypoint; it does not wait for
-a tag, release, second branch, GitHub environment, workflow dispatch, deploy
-hook, or local operator command. The machine contract is
-[`deployment/workers-builds-production.json`](deployment/workers-builds-production.json).
-It validates protected production inputs and live control-plane state, refuses
-migration divergence, resolves all bundles before mutation, returns a verified no-op for
-identical deployable input, rejects stale or competing builds, deploys directly
-and strictly through a core/publisher/rendezvous cohort,
-restores callers before core, reads back each exact 100% phase and the final
-coherent active topology, and runs bounded credential-free static and canonical
-dynamic-envelope canaries. The publisher probe uses the non-retirable Classic
-v2 envelope. Enabled dynamic probes prove the named Service Binding through a
-fixed closed coordinator rejection; disabled probes prove the exact circuit
-response without adding a health route or WAF exception. Newer
-eligible builds always supersede older ones, and child
-processes receive only a positive allowlist plus the credentials required for
-their role. Append-only migration evolution is prefix-proven after exact remote
-ledger readback; staged partial cohorts remain automatic fix-forward state.
+Reviewed pushes to protected `main` automatically deploy to the persistent
+DEV cohort through Cloudflare Workers Builds and `npm run deploy:development`.
+The machine contract is
+[`deployment/workers-builds-development.json`](deployment/workers-builds-development.json).
+DEV uses the existing `atrinik-metaserver-development` core and its
+`-publisher` and `-rendezvous` callers; production resources are disjoint.
+Delivery checks the exact D1 ledger without applying migrations, fences stale
+builds, stages all three Workers with circuits disabled, restores callers before
+core, and reads back the coherent 100% cohort before bounded canaries.
 
-Production identifiers stay in bounded Cloudflare-owned secret configuration
-documents, never in Git or logs. Runtime secret values remain provisioned in
-Cloudflare and are not available to the routine build.
-The fail-closed composition historically delivered by #56 and now executed
-under replacement authority #66 can be checked without credentials using
-`npm run provision:workers-builds:validate` and
-`npm run provision:workers-builds:dry-run`. The value-free
-`npm run provision:workers-builds:plan-setup` output additionally pins inert
-production staging, distinct review/production activation gates, and rollback
-order without an apply path. Staging uses one private random, freshly absent
-production GitHub ref with the zero-resource review token while the review
-trigger remains absent; the
-production selector and token change
-together only at activation. Its separately credentialed exhaustive provider
-readback, D1-ledger proof, and local materializer first consume a fresh
-owner-only current-`main` proof captured through authenticated `gh api` outside
-the sandbox; they perform no direct GitHub request. They write only private mode-`0600` provider
-snapshots/configurations and have no remote mutation path. A post-setup
-`npm run provision:workers-builds:verify-staged` gate proves the production
-trigger is private-sentinel-only on the zero-resource review token and the
-review trigger remains absent before review activation. The review gate creates
-one digest-bound 30-minute phase authority from fresh owner, sentinel, token,
-usage, and staged evidence whose capture and provider-sweep start/completion
-times are exact and freshness-checked, while retaining a new five-minute
-authenticated current-`main` proof before every credentialed command. Each
-bounded command checkpoints the phase budget at entry and must finish before
-authority expiry. It then creates
-the provider preview role against a freshly proven absent private root with
-fixed inert commands, writes its nonsecret environment, and only then atomically
-switches to and validates the documented final preview trigger before any
-disposable branch proof. A separately authorized, journaled token-rotation gate
-can then create one replacement zero-resource review wrapper, change only the
-two journaled triggers' token references, prove the old wrapper unreferenced,
-and retire it. The gate binds a fresh accepted account-member observation for
-the new token owner, checks the complete account trigger inventory, and preserves
-the full non-token production control plane through exact phase readbacks and
-restart-safe request/reconciliation tombstones. Its terminal proof/journal
-supersede the old wrapper only for
-live identity checks; the immutable setup and activation records remain provenance.
-The disposable proof uses a separate 60-minute authority minted
-from a fresh exact review-active snapshot, with only exact disposable-ref
-push/delete and journal-owned automatic-build cleanup writes. It binds the exact
-disposable journal/branch/commit and requires one-use receipts with 40 minutes
-remaining at push plus five minutes at exact-SHA deletion. A post-activation
-`npm run provision:workers-builds:verify-configured` check proves the serialized
-production/preview trigger pair, distinct fresh provider-token policies,
-environment-classification, and no-Deploy-Hook
-boundaries from those private snapshots. Exact invocation and authorization
-boundaries are in [DEPLOYMENT.md](DEPLOYMENT.md).
+Production changes require an explicit GitHub Actions workflow dispatch for an
+owner-approved immutable tag and exact SHA. Main pushes and release events
+cannot promote. Release provenance, artifact/configuration/migration digests,
+expected predecessor, fixed concurrency, and one-use attempts fence the write;
+workflow reruns are rejected. The old automatic-production writer must be
+fenced and drained before publishing the replacement policy. See
+[deployment environments](docs/deployment-environments.md) for prerequisites,
+DEV schema preparation, promotion phases and recovery. This source change
+proves no deployment or provider activation.
+
+Private resource identifiers and credentials remain in owner-only protected
+configuration and provider secrets. Routine builds inherit encrypted core
+runtime secrets by name; public callers receive no signing keys or key IDs.
+Historical provisioning and token-rotation records remain immutable evidence,
+and their former production activation procedure is superseded by the current
+environment policy in [DEPLOYMENT.md](DEPLOYMENT.md).
 
 The accepted [review-environment design](docs/review-environment.md) gives
 eligible same-repository non-`main` branches an automatic build-only check
