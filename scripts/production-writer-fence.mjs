@@ -104,10 +104,10 @@ export async function assertProductionPromotionWriterFence({ environment, fetche
     const first = await capture();
     validateProductionWriterFence(first, policy);
     const second = await capture();
-    validateProductionWriterFence(second, policy);
+    const validation = validateProductionWriterFence(second, policy);
     // Build status changes in the review trigger do not own PROD; control-plane equality is exact.
     if (transitionDigest({ triggers: first.triggers, environments: first.environments, peers: first.peers }) !==
         transitionDigest({ triggers: second.triggers, environments: second.environments, peers: second.peers })) stop();
-    return { outcome: "production-writer-fenced", mutation: false };
+    return validation;
   } catch { stop(); }
 }

@@ -82,23 +82,34 @@ function activeBuilds(builds, policy) {
     return build.trigger.trigger_uuid === policy.productionTriggerUuid && build.status !== "stopped";
   });
 }
+function validateRetainedInertEnvironment(environment, role) {
+  const allowedSecrets = role === "production" ? [
+    "ATRINIK_PRODUCTION_CONTROL_PLANE_READY", "ATRINIK_PRODUCTION_CORE_CONFIG",
+    "ATRINIK_PRODUCTION_PUBLISHER_CONFIG", "ATRINIK_PRODUCTION_RENDEZVOUS_CONFIG",
+    "ATRINIK_WORKERS_BUILDS_API_TOKEN", "CLOUDFLARE_ACCOUNT_ID",
+  ] : ["ATRINIK_WORKERS_BUILDS_API_TOKEN"];
+  secretManifest(environment);
+  if (!environment.SKIP_DEPENDENCY_INSTALL ||
+      !same(environment.SKIP_DEPENDENCY_INSTALL, { is_secret: false, value: "1" }) ||
+      Object.entries(environment).some(([name, value]) => name !== "SKIP_DEPENDENCY_INSTALL" &&
+        (!allowedSecrets.includes(name) || value.is_secret !== true || value.value !== null)))
+    fail("retained inert Builds environment is unsafe");
+}
+
 export function validateProductionWriterFence({ triggers, builds, environments }, policy) {
+  const disposition = policy.disposition ?? "credential-free-review";
+  if (!["credential-free-review", "retained-inert-builds"].includes(disposition))
+    fail("unknown production writer fence disposition");
   const rows = normalizedTriggers(triggers);
   if (rows.length !== 2) fail("unexpected production trigger count");
   const production = selected(rows, policy.productionTriggerUuid);
   const review = selected(rows, policy.reviewTriggerUuid);
   if (production.external_script_id !== policy.externalScriptId ||
       review.external_script_id !== policy.externalScriptId ||
+      !uuid.test(production.build_token_uuid) || !uuid.test(review.build_token_uuid) ||
       !same(production.branch_includes, ["main"]) ||
       !same(production.branch_excludes, ["*"]) ||
-      !same(review.branch_includes, ["*"]) || !same(review.branch_excludes, ["main"]) ||
-      review.build_command !== "npm run build" || review.deploy_command !== "npm run validate" ||
-      review.root_directory !== "/deployment/review-check" ||
-      !same(review.path_includes, ["*"]) || !same(review.path_excludes, []) ||
-      review.build_caching_enabled !== false ||
-      !same(environments?.[policy.reviewTriggerUuid],
-        { SKIP_DEPENDENCY_INSTALL: { is_secret: false, value: "1" } }) ||
-      production.build_token_uuid === review.build_token_uuid ||
+      !same(review.branch_includes, ["*"]) ||
       !hash.test(policy.productionTriggerDigest) || !hash.test(policy.reviewTriggerDigest) ||
       transitionDigest(production) !== policy.productionTriggerDigest ||
       transitionDigest(review) !== policy.reviewTriggerDigest)
@@ -108,8 +119,32 @@ export function validateProductionWriterFence({ triggers, builds, environments }
     if (!hash.test(expected) || transitionDigest(secretManifest(environments?.[id])) !== expected)
       fail("production environment drift");
   }
+  if (disposition === "retained-inert-builds") {
+    // Cloudflare retry uses current build configuration. Exclusion alone cannot stop manual retries.
+    // https://developers.cloudflare.com/workers/ci-cd/builds/configuration/#build-settings
+    // This disposition validates an operator-established state; it never creates or restores authority.
+    for (const trigger of [production, review]) {
+      if (!same(trigger.branch_excludes, ["*"]) || trigger.build_command !== "exit 1" ||
+          trigger.deploy_command !== "exit 1" || trigger.build_caching_enabled !== false)
+        fail("retained Builds trigger is executable or not excluded");
+    }
+    validateRetainedInertEnvironment(environments[policy.productionTriggerUuid], "production");
+    validateRetainedInertEnvironment(environments[policy.reviewTriggerUuid], "review");
+    if (!Array.isArray(builds) || builds.some(build => build.status !== "stopped"))
+      fail("retained Builds writer still in flight");
+  } else {
+    if (!same(review.branch_excludes, ["main"]) ||
+        review.build_command !== "npm run build" || review.deploy_command !== "npm run validate" ||
+        review.root_directory !== "/deployment/review-check" ||
+        !same(review.path_includes, ["*"]) || !same(review.path_excludes, []) ||
+        review.build_caching_enabled !== false ||
+        !same(environments?.[policy.reviewTriggerUuid],
+          { SKIP_DEPENDENCY_INSTALL: { is_secret: false, value: "1" } }) ||
+        production.build_token_uuid === review.build_token_uuid)
+      fail("production writer fence or review trigger drift");
+  }
   if (activeBuilds(builds, { ...policy, reviewTrigger: review }).length) fail("production writer still in flight");
-  return { outcome: "production-writer-fenced", mutation: false };
+  return { outcome: "production-writer-fenced", disposition, mutation: false };
 }
 
 function snapshotCheck(snapshot, coordinates, now) {

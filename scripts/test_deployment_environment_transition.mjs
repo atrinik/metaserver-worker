@@ -224,3 +224,100 @@ test("normalization accepts null tombstones but rejects deleted repository conne
     builds: [], environments: f.snapshot.environments }, policy), /deleted repository connection/);
   assert.throws(() => createTransitionPlan(f), /deleted repository connection/);
 });
+
+function inertFixture() {
+  const f = fixture(), plan = createTransitionPlan(f), policy = fencePolicy(plan);
+  policy.disposition = "retained-inert-builds";
+  for (const trigger of f.snapshot.productionTriggers) {
+    trigger.build_command = "exit 1";
+    trigger.deploy_command = "exit 1";
+    trigger.branch_excludes = ["*"];
+    trigger.build_token_uuid = id(3);
+  }
+  f.snapshot.environments[id(1)] = {
+    SKIP_DEPENDENCY_INSTALL: { is_secret: false, value: "1" },
+    CLOUDFLARE_ACCOUNT_ID: { is_secret: true, value: null },
+    ATRINIK_PRODUCTION_CORE_CONFIG: { is_secret: true, value: null },
+    ATRINIK_PRODUCTION_PUBLISHER_CONFIG: { is_secret: true, value: null },
+    ATRINIK_PRODUCTION_RENDEZVOUS_CONFIG: { is_secret: true, value: null },
+    ATRINIK_PRODUCTION_CONTROL_PLANE_READY: { is_secret: true, value: null },
+    ATRINIK_WORKERS_BUILDS_API_TOKEN: { is_secret: true, value: null },
+  };
+  f.snapshot.environments[id(2)].ATRINIK_WORKERS_BUILDS_API_TOKEN = { is_secret: true, value: null };
+  const input = { triggers: f.snapshot.productionTriggers, builds: [], environments: f.snapshot.environments };
+  const bind = () => {
+    policy.productionTriggerDigest = transitionDigest(normalizeTransitionTrigger(input.triggers[0]));
+    policy.reviewTriggerDigest = transitionDigest(normalizeTransitionTrigger(input.triggers[1]));
+    policy.productionEnvironmentDigest = transitionDigest(input.environments[id(1)]);
+    policy.reviewEnvironmentDigest = transitionDigest(input.environments[id(2)]);
+  };
+  bind();
+  return { input, policy, bind };
+}
+test("explicit retained inert disposition accepts shared wrapper and only bounded encrypted legacy inputs", () => {
+  const { input, policy } = inertFixture();
+  assert.equal(input.triggers[0].build_token_uuid, input.triggers[1].build_token_uuid);
+  assert.deepEqual(validateProductionWriterFence(input, policy), {
+    outcome: "production-writer-fenced", disposition: "retained-inert-builds", mutation: false,
+  });
+  assert.throws(() => validateProductionWriterFence(input, { ...policy, disposition: undefined }));
+  assert.throws(() => validateProductionWriterFence(input, { ...policy, disposition: "branch-only-paused" }), /unknown/);
+});
+for (const role of [0, 1]) {
+  for (const command of ["build_command", "deploy_command"]) {
+    for (const value of ["npm run validate", "exit 0", "exit 1; npm run deploy:production", " exit 1", "exit 1\nnpm ci"])
+      test(`inert ${role} ${command} rejects ${JSON.stringify(value)} even with matching operator digest`, () => {
+        const { input, policy, bind } = inertFixture(); input.triggers[role][command] = value; bind();
+        assert.throws(() => validateProductionWriterFence(input, policy), /executable/);
+      });
+  }
+  test(`inert ${role} rejects branch-only pause and caching`, () => {
+    const { input, policy, bind } = inertFixture(); input.triggers[role].branch_excludes = ["main"]; bind();
+    assert.throws(() => validateProductionWriterFence(input, policy));
+    input.triggers[role].branch_excludes = ["*"]; input.triggers[role].build_caching_enabled = true; bind();
+    assert.throws(() => validateProductionWriterFence(input, policy), /executable/);
+  });
+  test(`inert ${role} requires exact nonsecret dependency skip`, () => {
+    const { input, policy, bind } = inertFixture(), environment = input.environments[id(role + 1)];
+    for (const value of [undefined, { is_secret: true, value: null }, { is_secret: false, value: "0" }]) {
+      if (value) environment.SKIP_DEPENDENCY_INSTALL = value; else delete environment.SKIP_DEPENDENCY_INSTALL;
+      bind(); assert.throws(() => validateProductionWriterFence(input, policy), /environment/);
+    }
+  });
+  for (const name of ["BASH_ENV", "ENV", "NODE_OPTIONS", "LD_PRELOAD", "PATH", "SHELL", "UNKNOWN_SECRET"])
+    test(`inert ${role} rejects environment name ${name} even when encrypted and digest-bound`, () => {
+      const { input, policy, bind } = inertFixture();
+      input.environments[id(role + 1)][name] = { is_secret: true, value: null }; bind();
+      assert.throws(() => validateProductionWriterFence(input, policy), /environment/);
+    });
+  test(`inert ${role} rejects queued, initializing or running work`, () => {
+    const { input, policy } = inertFixture();
+    for (const status of ["queued", "initializing", "running"])
+      assert.throws(() => validateProductionWriterFence({ ...input, builds: [
+        { build_uuid: id(200), status, trigger: input.triggers[role] },
+      ] }, policy), /in flight/);
+  });
+}
+test("inert disposition keeps exact trigger and environment digest checks", () => {
+  const { input, policy } = inertFixture();
+  input.triggers[0].trigger_name = "drift";
+  assert.throws(() => validateProductionWriterFence(input, policy), /drift/);
+  input.triggers[0].trigger_name = "Production";
+  delete input.environments[id(1)].ATRINIK_PRODUCTION_CONTROL_PLANE_READY;
+  assert.throws(() => validateProductionWriterFence(input, policy), /environment drift/);
+});
+test("HTTP read-only adapter retains the explicit inert disposition", async () => {
+  const { input, policy } = inertFixture();
+  const environment = { CLOUDFLARE_ACCOUNT_ID: policy.accountId, ATRINIK_PRODUCTION_BUILDS_READ_TOKEN: "test-token",
+    ATRINIK_PRODUCTION_WRITER_FENCE_POLICY: JSON.stringify(policy) };
+  const fetcher = async (url, options) => {
+    assert.equal(options.method, undefined);
+    let result;
+    if (url.includes("/workers/scripts")) result = [...policy.workers, ...policy.developmentWorkers].map(w => ({ id: w.name, tag: w.tag }));
+    else if (url.endsWith(`/workers/${policy.externalScriptId}/triggers`)) result = input.triggers;
+    else if (url.includes("/environment_variables")) result = input.environments[url.split("/").at(-2)];
+    else result = [];
+    return new Response(JSON.stringify({ success: true, errors: [], result }));
+  };
+  assert.equal((await assertProductionPromotionWriterFence({ environment, fetcher })).disposition, "retained-inert-builds");
+});
