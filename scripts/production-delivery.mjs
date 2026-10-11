@@ -6,10 +6,13 @@ import { dirname, isAbsolute, relative, resolve } from "node:path";
 import { setTimeout as wait } from "node:timers/promises";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
+import { developmentWorkerNames, promotionEnvironmentNames, targetContract, developmentFixture, deliveryTarget } from "./delivery-targets.mjs";
 
 const execFileAsync = promisify(execFile);
-const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
-const contractPath = resolve(root, "deployment/workers-builds-production.json");
+const controllerRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
+let root = controllerRoot;
+let contractPath = resolve(controllerRoot, "deployment/workers-builds-production.json");
+let deliveryRunning = false;
 const shaPattern = /^[0-9a-f]{40}$/u;
 const uuidPattern = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/u;
 const placeholderPattern = /(?:^0{16,}$|\.example(?:\.|$)|placeholder)/iu;
@@ -407,6 +410,14 @@ export function validateContract(contract) {
     fail("production safety invariant drift");
 }
 
+export async function validateDeliveryContract(contract) {
+  const historical = await readJson(resolve(controllerRoot,
+    "deployment/historical/workers-builds-production-v1.json"));
+  validateContract(historical);
+  if (!sameJson(contract, targetContract(historical, contract.target)))
+    fail("live delivery contract drift");
+}
+
 function names(config, key, field = "binding") {
   return (config[key] ?? []).map((value) => value[field]);
 }
@@ -446,7 +457,7 @@ function validateConfigurationAuthority(worker, config) {
     `${worker.role} configuration`,
   );
   const expectedEntrypoints = {
-    core: "src/index.ts",
+    core: worker.name === developmentWorkerNames[0] ? "development/core.ts" : "src/index.ts",
     publisher: "src/publisher-worker.ts",
     rendezvous: "src/rendezvous-worker.ts",
   };
@@ -533,6 +544,8 @@ function validateConfigurationAuthority(worker, config) {
     RendezvousHealth: { type: "worker", cache: { enabled: false } },
     DirectoryReconciliation: { type: "worker", cache: { enabled: false } },
   } : {};
+  if (worker.name === developmentWorkerNames[0])
+    expectedExports.DevelopmentMaintenance = { type: "durable-object", storage: "sqlite" };
   if (!sameJson(config.exports ?? {}, expectedExports))
     fail(`${worker.role} exports authority drift`);
 }
@@ -599,6 +612,9 @@ export function validateTopology(contract, configs, { production = false } = {})
   }
 
   const [core, publisher, rendezvous] = configs;
+  const development = contract.target === "development";
+  if (development && core.vars?.DEVELOPMENT_MAINTENANCE !== "classic-development-alarms-v1")
+    fail("development maintenance authority drift");
   const circuits = [
     [core, publisher, "PUBLISH_ENABLED"],
     [core, publisher, "GAME_PUBLISH_ENABLED"],
@@ -651,8 +667,8 @@ export function validateTopology(contract, configs, { production = false } = {})
     production &&
     (!/^[0-9a-f]{32}$/u.test(core.vars?.DIRECTORY_CACHE_ZONE_ID ?? "") ||
       core.vars?.CLASSIC_DIRECTORY_PUBLIC_ORIGIN !==
-        "https://classic.meta.atrinik.org" ||
-      core.vars?.GAME_DIRECTORY_PUBLIC_ORIGIN !== "https://meta.atrinik.org" ||
+        (contract.target === "development" ? "https://classic.dev.meta.atrinik.org" : "https://classic.meta.atrinik.org") ||
+      core.vars?.GAME_DIRECTORY_PUBLIC_ORIGIN !== (contract.target === "development" ? "https://game.dev.meta.atrinik.org" : "https://meta.atrinik.org") ||
       core.vars?.PUBLISH_HOSTNAME !== publisher.vars?.PUBLISH_HOSTNAME ||
       publisher.vars?.PUBLISH_HOSTNAME !==
         contract.workers[1].customDomains[0] ||
@@ -688,14 +704,15 @@ export function validateTopology(contract, configs, { production = false } = {})
     ]) ||
     !sameValues(
       (core.durable_objects?.bindings ?? []).map(({ name }) => name),
-      ["RENDEZVOUS", "DIRECTORY_BUILDER"],
+      development ? ["RENDEZVOUS", "DIRECTORY_BUILDER", "DEVELOPMENT_MAINTENANCE_DO"]
+        : ["RENDEZVOUS", "DIRECTORY_BUILDER"],
     ) ||
     !sameValues(names(core, "ratelimits", "name"), [
       "ACCESS_ROUTE_RATE_LIMITER",
       "PUBLISH_IDENTITY_RATE_LIMITER",
       "RENDEZVOUS_SERVER_RATE_LIMITER",
     ]) ||
-    !sameValues(core.triggers?.crons ?? [], ["*/5 * * * *", "17 * * * *"])
+    !sameValues(core.triggers?.crons ?? [], development ? [] : ["*/5 * * * *", "17 * * * *"])
   )
     fail("core state/trigger authority drift");
   for (const [role, config] of [
@@ -753,7 +770,7 @@ export function activeVersionId(deployment) {
   return versionId;
 }
 
-export function validateSourceCoordinates(coordinates) {
+export function validateSourceCoordinates(coordinates, { workerName = expectedWorkerNames[0] } = {}) {
   if (coordinates.workersCi !== "1" || coordinates.branch !== "main")
     fail("production delivery is restricted to Workers Builds on main");
   if (!shaPattern.test(coordinates.sourceSha))
@@ -764,7 +781,7 @@ export function validateSourceCoordinates(coordinates) {
   if (!uuidPattern.test(coordinates.buildUuid))
     fail("WORKERS_CI_BUILD_UUID is missing or invalid");
   if (
-    coordinates.overrideName !== expectedWorkerNames[0] ||
+    coordinates.overrideName !== workerName ||
     typeof coordinates.matchTag !== "string" ||
     coordinates.matchTag.length === 0
   )
@@ -780,7 +797,7 @@ export function validateRemoteMigrations(actual, expected) {
     fail("production D1 migration ledger is pending, missing, or divergent");
 }
 
-export function deliveryDecision(annotations, plan) {
+export function deliveryDecision(annotations, plan, { sourceSha } = {}) {
   for (const value of annotations) {
     if (!value) continue;
     if (
@@ -806,7 +823,8 @@ export function deliveryDecision(annotations, plan) {
       value.phase === "active",
   );
   const activeSources = new Set(annotations.map((value) => value?.source));
-  if (coherentNoOp && activeSources.size === 1) return "no-op";
+  if (coherentNoOp && activeSources.size === 1 &&
+      (sourceSha === undefined || annotations.every((value) => value.source === sourceSha))) return "no-op";
   return "deploy";
 }
 
@@ -974,7 +992,9 @@ export function childEnvironment(input, policy = "public") {
     if (policy === "directory-reconciliation") {
       for (const name of ["WORKERS_CI", "WORKERS_CI_BRANCH",
         "WORKERS_CI_COMMIT_SHA", "WORKERS_CI_BUILD_UUID", "WRANGLER_CI_MATCH_TAG",
-        "WRANGLER_CI_OVERRIDE_NAME", "ATRINIK_WORKERS_BUILDS_API_TOKEN"])
+        "WRANGLER_CI_OVERRIDE_NAME", "ATRINIK_WORKERS_BUILDS_API_TOKEN",
+        "ATRINIK_DEVELOPMENT_WORKERS_BUILDS_API_TOKEN", "ATRINIK_DELIVERY_ENVIRONMENT",
+        ...promotionEnvironmentNames])
         if (typeof input[name] === "string") environment[name] = input[name];
     }
   } else if (policy !== "public") {
@@ -1357,6 +1377,7 @@ async function buildPlan(
     stagedBundles,
     migrations,
     migrationDigest,
+    configDigest: sha256Json(configurations),
   };
 }
 
@@ -1740,27 +1761,41 @@ async function assertBuildLease(
 // A child cannot turn syntax-valid CI variables into live authority. Independently
 // authenticate the same exact running build and current-main exclusive lease.
 // This path only observes provider state; it never cancels competing builds.
+export async function createDeliveryAuthority(contract, environment = process.env,
+  { directory = false } = {}) {
+  const checkoutHead = await git("rev-parse", "HEAD");
+  const dirty = (await git("status", "--porcelain")) !== "";
+  if (contract.target === "production") {
+    const { createProductionAuthority } = await import("./production-promotion-authority.mjs");
+    const authority = await createProductionAuthority({ environment, checkoutHead, dirty });
+    if (!shaPattern.test(authority?.sourceSha ?? "") ||
+        typeof authority.executionId !== "string" ||
+        typeof authority.fence !== "function" ||
+        typeof authority.validatePlan !== "function" ||
+        typeof authority.validatePredecessor !== "function")
+      fail("production promotion authority interface rejected");
+    await authority.fence();
+    return authority;
+  }
+  if (contract.target !== "development") fail("historical contract cannot authorize delivery");
+  const { createDevelopmentAuthority } = await import("./development-actions-authority.mjs");
+  return createDevelopmentAuthority({ environment, checkoutHead, dirty });
+}
+
 export async function assertDirectoryBuildContext(config, environment = process.env) {
-  const contract = await readJson(contractPath);
-  validateContract(contract);
+  const target = deliveryTarget(environment);
+  const contract = await readJson(resolve(controllerRoot, `deployment/workers-builds-${target}.json`));
+  await validateDeliveryContract(contract);
+  if (target === "production") {
+    if (!isAbsolute(environment.ATRINIK_DELIVERY_SOURCE_ROOT ?? ""))
+      fail("production selected source root missing");
+    root = resolve(environment.ATRINIK_DELIVERY_SOURCE_ROOT);
+  }
   if (config.account_id !== environment.CLOUDFLARE_ACCOUNT_ID ||
       config.services?.[0]?.service !== contract.workers[0].name)
     fail("directory reconciliation execution account drift");
-  validateSourceCoordinates({
-    workersCi: environment.WORKERS_CI,
-    branch: environment.WORKERS_CI_BRANCH,
-    sourceSha: environment.WORKERS_CI_COMMIT_SHA,
-    head: await git("rev-parse", "HEAD"),
-    dirty: (await git("status", "--porcelain")) !== "",
-    buildUuid: environment.WORKERS_CI_BUILD_UUID,
-    overrideName: environment.WRANGLER_CI_OVERRIDE_NAME,
-    matchTag: environment.WRANGLER_CI_MATCH_TAG,
-    accountId: environment.CLOUDFLARE_ACCOUNT_ID,
-    currentMain: await currentMainSha(contract),
-  });
-  await assertBuildLease(contract, environment.WORKERS_CI_COMMIT_SHA,
-    environment.WORKERS_CI_BUILD_UUID,
-    { arbitrate: false, exclusiveReadOnly: true, environment });
+  const authority = await createDeliveryAuthority(contract, environment, { directory: true });
+  await authority.fence();
 }
 
 async function readLiveControlPlane(worker, accountId) {
@@ -2064,11 +2099,12 @@ export function resolveProductionCanaryCommand(canary, configs) {
 
 // The temporary proxy owns no remote resources and exposes no public route.
 export function directoryReconciliationProxyConfiguration(core) {
-  if (core.name !== expectedWorkerNames[0] ||
+  if (![expectedWorkerNames[0], developmentWorkerNames[0]].includes(core.name) ||
       !/^[0-9a-f]{32}$/u.test(core.account_id ?? ""))
     fail("directory reconciliation target identity drift");
   return {
-    name: "atrinik-production-directory-reconciliation",
+    name: core.name === developmentWorkerNames[0]
+      ? "atrinik-development-directory-reconciliation" : "atrinik-production-directory-reconciliation",
     account_id: core.account_id,
     compatibility_date: core.compatibility_date,
     workers_dev: false,
@@ -2124,7 +2160,7 @@ async function reconcileProductionDirectories(core, directory) {
     JSON.stringify(directoryReconciliationProxyConfiguration(core)), { mode: 0o600 });
   const startedAt = Math.floor(Date.now() / 1_000);
   const { stdout } = await command(process.execPath, [
-    "scripts/production-directory-reconciliation.mjs", configPath,
+    resolve(controllerRoot, "scripts/production-directory-reconciliation.mjs"), configPath,
   ], { environmentPolicy: "directory-reconciliation", timeout: 120_000, maxBuffer: 8_192 });
   let proof;
   try { proof = JSON.parse(stdout); } catch {
@@ -2137,7 +2173,7 @@ async function reconcileProductionDirectories(core, directory) {
 async function runProductionCanaries(contract, configs) {
   for (const canary of contract.productionCanaries) {
     const [program, ...args] = resolveProductionCanaryCommand(canary, configs);
-    await command(program, args, { timeout: 120_000 });
+    await command(program, [resolve(controllerRoot, args[0]), ...args.slice(1)], { timeout: 120_000 });
   }
 }
 
@@ -2148,21 +2184,29 @@ async function validateCheckedIn(contract) {
     resolve(root, "wrangler.publisher.jsonc"),
     resolve(root, "wrangler.rendezvous.jsonc"),
   ];
-  const configs = await Promise.all(paths.map(readJsonc));
+  let configs = await Promise.all(paths.map(readJsonc));
+  if (contract.target === "development") configs = configs.map(developmentFixture);
   validateTopology(contract, configs);
   await migrationLedger();
   return { paths, configs };
 }
 
-async function main() {
-  const flags = new Set(process.argv.slice(2));
-  if ([...flags].some((flag) => !["--dry-run", "--validate-only"].includes(flag)))
-    fail("usage: production-delivery.mjs [--dry-run|--validate-only]");
-  if (flags.has("--dry-run") && flags.has("--validate-only"))
-    fail("choose only one production-delivery mode");
-
+export async function runDelivery({ target = "production", sourceRoot, mode = "deploy" } = {}) {
+  if (deliveryRunning) fail("delivery engine is already running");
+  if (!["development", "production"].includes(target) ||
+      !["deploy", "dry-run", "validate-only", "plan"].includes(mode)) fail("invalid delivery invocation");
+  if (target === "production" && ["deploy", "plan"].includes(mode) && !isAbsolute(sourceRoot ?? ""))
+    fail("production requires an explicit selected source checkout");
+  deliveryRunning = true;
+  root = sourceRoot ? resolve(sourceRoot) : controllerRoot;
+  contractPath = resolve(controllerRoot, `deployment/workers-builds-${target}.json`);
+  process.env.ATRINIK_DELIVERY_ENVIRONMENT = target;
+  if (target === "production" && sourceRoot) process.env.ATRINIK_DELIVERY_SOURCE_ROOT = root;
+  try {
+  const flags = new Set(mode === "deploy" ? [] : [`--${mode}`]);
   const contract = await readJson(contractPath);
-  validateContract(contract);
+  await validateDeliveryContract(contract);
+  const authority = mode === "deploy" ? await createDeliveryAuthority(contract) : null;
   const checkedIn = await validateCheckedIn(contract);
   if (flags.has("--validate-only")) {
     console.log("production delivery contract valid");
@@ -2170,12 +2214,18 @@ async function main() {
   }
 
   if (flags.has("--dry-run")) {
-    const plan = await buildPlan(
-      contract,
-      checkedIn.paths,
-      checkedIn.configs,
-      contract.workers.map(({ requiredSecrets }) => sorted(requiredSecrets)),
-    );
+    const fixtureDirectory = await mkdtemp(resolve(tmpdir(), "atrinik-delivery-fixtures-"));
+    let plan;
+    try {
+      const fixturePaths = [];
+      for (const [index, config] of checkedIn.configs.entries()) {
+        const path = resolve(fixtureDirectory, `${index}.json`);
+        await writeFile(path, JSON.stringify({ ...config, main: resolve(root, config.main) }), { mode: 0o600 });
+        fixturePaths.push(path);
+      }
+      plan = await buildPlan(contract, fixturePaths, checkedIn.configs,
+        contract.workers.map(({ requiredSecrets }) => sorted(requiredSecrets)));
+    } finally { await rm(fixtureDirectory, { recursive: true, force: true }); }
     console.log(
       JSON.stringify({
         outcome: "dry-run",
@@ -2195,31 +2245,38 @@ async function main() {
     return;
   }
 
-  const sourceSha = process.env.WORKERS_CI_COMMIT_SHA ?? "";
-  const buildUuid = process.env.WORKERS_CI_BUILD_UUID ?? "";
-  const checkoutHead = await git("rev-parse", "HEAD");
-  failureEvidence.sourceSha = shaPattern.test(sourceSha) ? sourceSha : null;
-  failureEvidence.buildUuid = uuidPattern.test(buildUuid) ? buildUuid : null;
-  validateSourceCoordinates({
-    workersCi: process.env.WORKERS_CI,
-    branch: process.env.WORKERS_CI_BRANCH,
-    sourceSha,
-    head: checkoutHead,
-    dirty: (await git("status", "--porcelain")) !== "",
-    buildUuid,
-    overrideName: process.env.WRANGLER_CI_OVERRIDE_NAME,
-    matchTag: process.env.WRANGLER_CI_MATCH_TAG,
-    accountId: process.env.CLOUDFLARE_ACCOUNT_ID ?? "",
-    currentMain: await currentMainSha(contract),
-  });
+  if (mode === "plan") {
+    const sourceSha = await git("rev-parse", "HEAD");
+    if ((await git("status", "--porcelain")) !== "") fail("selected planning checkout is dirty");
+    if (target === "production" && sourceSha !== process.env.ATRINIK_PROMOTION_SHA)
+      fail("planning checkout differs from selected tag SHA");
+    const protectedInputs = await materializeProtectedInputs(contract.protectedInputs);
+    try {
+      const configs = await Promise.all(protectedInputs.configPaths.map(readJsonc));
+      validateTopology(contract, configs, { production: true });
+      const { stagedConfigs, stagedPaths } = await materializeStagedConfigurations(
+        protectedInputs.directory, configs, contract.workers);
+      const plan = await buildPlan(contract, protectedInputs.configPaths, configs,
+        contract.workers.map(({ requiredSecrets }) => sorted(requiredSecrets)), stagedPaths, stagedConfigs);
+      const result = { outcome: "planned", mutation: false, environment: target, sourceSha,
+        deployableDigest: plan.deploy, configDigest: plan.configDigest,
+        migrationDigest: plan.migrationDigest, bundles: plan.bundles };
+      console.log(JSON.stringify(result));
+      return result;
+    } finally { await rm(protectedInputs.directory, { recursive: true, force: true }); }
+  }
 
-  const input = contract.protectedInputs;
-  await assertBuildLease(contract, sourceSha, buildUuid, { arbitrate: false });
-  await command("npm", ["run", "check"]);
+  const sourceSha = authority.sourceSha;
+  const buildUuid = authority.executionId;
+  const checkoutHead = await git("rev-parse", "HEAD");
+  failureEvidence.sourceSha = sourceSha;
+  failureEvidence.buildUuid = buildUuid;
+  await authority.fence();
+  // The authority adapter proves successful isolated validation before credentials enter this job.
   if ((await git("status", "--porcelain")) !== "")
     fail("repository validation changed tracked or untracked input");
 
-  const protectedInputs = await materializeProtectedInputs(input);
+  const protectedInputs = await materializeProtectedInputs(contract.protectedInputs);
   try {
   const { configPaths } = protectedInputs;
   const configs = await Promise.all(configPaths.map(readJsonc));
@@ -2246,13 +2303,15 @@ async function main() {
     stagedConfigs,
   );
   failureEvidence.deployableDigest = plan.deploy;
-  await assertBuildLease(contract, sourceSha, buildUuid);
+  await authority.validatePlan(plan);
+  await authority.fence();
   const remoteMigrations = await readRemoteMigrations(configPaths[0]);
   validateRemoteMigrations(
     remoteMigrations,
     plan.migrations.map(({ name }) => name),
   );
   const annotations = [];
+  const predecessorVersions = [];
   const liveControlPlanes = [];
   for (const [index, worker] of contract.workers.entries()) {
     const live = await readLiveControlPlane(
@@ -2265,11 +2324,13 @@ async function main() {
       expectedZoneId: configs[0].vars.DIRECTORY_CACHE_ZONE_ID,
     });
     const value = await readActive(configPaths[index]);
+    predecessorVersions.push(value.versionId);
     annotations.push(
       validateReadback(worker, configs[index], value, null, { exact: false }),
     );
   }
-  const decision = deliveryDecision(annotations, plan);
+  await authority.validatePredecessor(annotations, { versions: predecessorVersions, workers: contract.workers });
+  const decision = deliveryDecision(annotations, plan, target === "production" ? { sourceSha } : {});
   const apiHandoffRoles = selectApiHandoffRoles(
     contract.workers,
     liveControlPlanes,
@@ -2278,9 +2339,7 @@ async function main() {
   const expectedStagedMessages = new Map();
   const expectedActiveMessages = new Map();
   let coreStaged = false;
-  const fence = async () => {
-    await assertBuildLease(contract, sourceSha, buildUuid);
-  };
+  const fence = () => authority.fence();
   const outcome = await orchestrateDelivery({
     workers: contract.workers,
     decision,
@@ -2374,7 +2433,7 @@ async function main() {
           { expectedZoneId: configs[0].vars.DIRECTORY_CACHE_ZONE_ID },
         );
       }
-      if (finalDecision === "deploy")
+      if (finalDecision === "deploy" || target === "production")
         assertCoherentTopology(finalAnnotations, plan, sourceSha);
       else assertDeployableTopology(finalAnnotations, plan);
     },
@@ -2439,6 +2498,7 @@ async function main() {
   console.log(
     JSON.stringify({
       outcome,
+      environment: target,
       buildUuid: failureEvidence.buildUuid,
       sourceSha: checkoutHead,
       deployableDigest: plan.deploy,
@@ -2451,6 +2511,18 @@ async function main() {
   } finally {
     await rm(protectedInputs.directory, { recursive: true, force: true });
   }
+  } finally { root = controllerRoot; deliveryRunning = false; }
+}
+
+async function main() {
+  const args = process.argv.slice(2);
+  let target = "production";
+  const targetIndex = args.indexOf("--environment");
+  if (targetIndex !== -1) { target = args[targetIndex + 1]; args.splice(targetIndex, 2); }
+  if (args.length > 1 || args.some((arg) => !["--dry-run", "--validate-only", "--plan"].includes(arg)))
+    fail("usage: production-delivery.mjs [--environment development|production] [--dry-run|--validate-only|--plan]");
+  await runDelivery({ target, sourceRoot: process.env.ATRINIK_DELIVERY_SOURCE_ROOT,
+    mode: args[0]?.slice(2) ?? "deploy" });
 }
 
 const invoked = process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url);

@@ -33,6 +33,8 @@ import {
   validateBuildTrigger,
   validateBuildEnvironment,
   validateContract,
+  validateDeliveryContract,
+  runDelivery,
   validateLiveControlPlane,
   validateProtectedDocument,
   validateRemoteMigrations,
@@ -43,12 +45,13 @@ import {
   wranglerDeployArguments,
 } from "./production-delivery.mjs";
 
+import { developmentFixture, developmentWorkerNames } from "./delivery-targets.mjs";
 import { invokeDirectoryProxy, validateDirectoryProxyInput } from "./production-directory-reconciliation.mjs";
 
 const root = resolve(import.meta.dirname, "..");
 const contract = JSON.parse(
   await readFile(
-    resolve(root, "deployment/workers-builds-production.json"),
+    resolve(root, "deployment/historical/workers-builds-production-v1.json"),
     "utf8",
   ),
 );
@@ -1584,6 +1587,8 @@ function directoryProof(core, now = 2_000_000_000) {
 
 function proxyEnvironment() {
   return {
+    ATRINIK_DELIVERY_ENVIRONMENT: "production", GITHUB_ACTIONS: "true",
+    GITHUB_EVENT_NAME: "workflow_dispatch", ATRINIK_PROMOTION_SHA: "a".repeat(40),
     WORKERS_CI: "1", WORKERS_CI_BRANCH: "main",
     WORKERS_CI_COMMIT_SHA: "a".repeat(40),
     WORKERS_CI_BUILD_UUID: "11111111-1111-1111-1111-111111111111",
@@ -1825,4 +1830,70 @@ test("directory proxy bounds hanging fetch, read, cancellation and disposal", as
   completeInitialization();
   await new Promise((resolveNext) => setImmediate(resolveNext));
   assert.equal(disposed, true);
+});
+
+
+test("live contracts authorize only automatic DEV and explicit production promotion", async () => {
+  for (const target of ["production", "development"]) {
+    const live = JSON.parse(await readFile(resolve(root, `deployment/workers-builds-${target}.json`), "utf8"));
+    await assert.doesNotReject(validateDeliveryContract(live));
+    const changed = structuredClone(live);
+    changed.automaticPush = !changed.automaticPush;
+    await assert.rejects(validateDeliveryContract(changed), /contract drift/u);
+    assert.equal(live.invariants.migrationPolicy, "exact-ledger-no-automatic-apply");
+  }
+  await assert.rejects(validateDeliveryContract(contract), /unknown delivery target/u);
+});
+
+test("DEV requires existing names, private maintenance DO, exact origins and no cron", async () => {
+  const live = JSON.parse(await readFile(resolve(root, "deployment/workers-builds-development.json"), "utf8"));
+  const development = configs.map(developmentFixture);
+  assert.doesNotThrow(() => validateTopology(live, development));
+  assert.equal(development[0].main, "development/core.ts");
+  assert.deepEqual(development.map(({ name }) => name), developmentWorkerNames);
+  for (const change of [
+    (value) => { value[0].vars.DEVELOPMENT_MAINTENANCE = "other"; },
+    (value) => { value[0].triggers.crons = ["*/5 * * * *"]; },
+    (value) => { value[0].durable_objects.bindings.pop(); },
+    (value) => { value[0].main = "src/index.ts"; },
+    (value) => { value[1].services[0].service = "atrinik-metaserver"; },
+  ]) {
+    const changed = structuredClone(development);
+    change(changed);
+    assert.throws(() => validateTopology(live, changed));
+  }
+  assert.throws(() => validateTopology(live, configs), /name drift|entrypoint drift/u);
+  const proxy = directoryReconciliationProxyConfiguration({ ...development[0], account_id: "a".repeat(32) });
+  const environment = { ...proxyEnvironment(), ATRINIK_DELIVERY_ENVIRONMENT: "development",
+    GITHUB_EVENT_NAME: "workflow_run", ATRINIK_DEVELOPMENT_SHA: "a".repeat(40) };
+  assert.doesNotThrow(() => validateDirectoryProxyInput(proxy, environment));
+  assert.throws(() => validateDirectoryProxyInput(proxy, proxyEnvironment()), /authority rejected/u);
+});
+
+test("production exact-tag no-op refuses an equivalent different source", () => {
+  const plan = { deploy: "d", migrationDigest: "m", migrations: ["one"], controls: ["a", "b", "c"] };
+  const annotations = ["core", "publisher", "rendezvous"].map((role, index) => ({
+    role, source: "a".repeat(40), deploy: "d", migration: "m", migrationHorizon: 1,
+    control: plan.controls[index], phase: "active",
+  }));
+  assert.equal(deliveryDecision(annotations, plan), "no-op");
+  assert.equal(deliveryDecision(annotations, plan, { sourceSha: "a".repeat(40) }), "no-op");
+  assert.equal(deliveryDecision(annotations, plan, { sourceSha: "b".repeat(40) }), "deploy");
+});
+
+test("promotion credentials reach only the independently authorized reconciliation child", () => {
+  const environment = { GITHUB_TOKEN: "github-secret", ATRINIK_PRODUCTION_BUILDS_READ_TOKEN: "provider-secret",
+    ATRINIK_PRODUCTION_WRITER_FENCE_POLICY: "policy", ATRINIK_DELIVERY_ENVIRONMENT: "production",
+    ATRINIK_DELIVERY_SOURCE_ROOT: "/selected", ATRINIK_PRODUCTION_CORE_CONFIG: "private-config" };
+  for (const policy of ["public", "deployment"]) assert.deepEqual(childEnvironment(environment, policy), {});
+  assert.deepEqual(childEnvironment(environment, "directory-reconciliation"), {
+    GITHUB_TOKEN: "github-secret", ATRINIK_PRODUCTION_BUILDS_READ_TOKEN: "provider-secret",
+    ATRINIK_PRODUCTION_WRITER_FENCE_POLICY: "policy", ATRINIK_DELIVERY_ENVIRONMENT: "production",
+    ATRINIK_DELIVERY_SOURCE_ROOT: "/selected",
+  });
+});
+
+test("ordinary local production invocation fails before selected source or provider access", async () => {
+  await assert.rejects(runDelivery(), /explicit selected source checkout/u);
+  await assert.rejects(runDelivery({ target: "review" }), /invalid delivery invocation/u);
 });
