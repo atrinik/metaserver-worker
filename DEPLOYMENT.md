@@ -90,8 +90,10 @@ The entrypoint performs this fail-closed sequence:
    mutation and hash them with the configs, migrations, lockfile, commands,
    canaries, and contract.
 4. Read back one active 100% version per Worker. If the complete deployable
-   digest is already active, report `no-deployment-required`, run the bounded
-   canaries, and upload nothing, avoiding a Durable Object restart.
+   digest is already active, upload nothing, avoiding a Durable Object restart.
+   Run the same bounded directory reconciliation and canaries below before
+   reporting `no-deployment-required`. A directory refresh may publish aliases;
+   the no-op decision skips Worker uploads, not directory maintenance.
 5. Recheck current `main` before the first upload and before and after every
    stage; cancel and wait for every stale main build, repeat the inventory until
    the sole exact-SHA Builds lease converges, and make current `main` the final
@@ -107,7 +109,20 @@ The entrypoint performs this fail-closed sequence:
    role, and phase
    in each version. Re-read exports, bindings, routes, Custom Domains,
    subdomain, schedules, runtime, and observability after each stage; reread
-   one coherent active topology, then run bounded Classic/Game static-origin
+   one coherent active topology. Before static canaries, explicitly reconcile
+   both fixed directory profiles through the private `DirectoryReconciliation`
+   Service Binding entrypoint. The temporary service-only proxy selects the
+   verified core Worker and account, has no public URL or state bindings, and
+   uses the pinned Wrangler `getPlatformProxy` API with `persist: false` and
+   `remoteBindings: true`. The proxy child receives only deployment authentication
+   and the four nonsecret build coordinates; the lease token and protected
+   configurations stay in the parent. Bound initialization and invocation to
+   90 seconds with a 120-second parent subprocess ceiling, dispose the proxy,
+   and accept only a bounded, fresh receipt for both positive publication
+   generations, selected cutover modes and exact origins. Generation zero,
+   stale or absent alias cohorts, failed reconciliation, and pending purge stop
+   before any static canary. Recheck the exact active topology and current-main
+   lease after reconciliation, then run bounded Classic/Game static-origin
    canaries. The publisher and rendezvous canaries use credential-free probes
    inside the exact governed non-retirable Classic v2 `POST .../publish` and
    Classic `GET ...?role=server` envelopes: an enabled circuit must return the
@@ -124,8 +139,9 @@ It must not receive D1 migration, DNS, WAF, general account administration,
 secret-read, or destructive-resource authority.
 
 `npm run deploy:production:dry-run` validates the checked-in fixtures, resolves
-all bundles, and prints only safe digests and names. It never reads GitHub or
-Cloudflare and has no upload path.
+all bundles, and prints only safe digests, names and the reconciliation plan.
+It never reads GitHub or Cloudflare, opens no remote binding, and has no upload
+or reconciliation mutation path.
 
 ### Workers Builds provisioning preflight
 
@@ -1197,7 +1213,7 @@ This source change grants no deployment, migration, activation or alias-cutover
 authority. Production state and existing open-server behavior remain unchanged
 until an operator authorizes an exact coordinated rollout.
 
-The current migration horizon is `0015_remove_ip_derived_pair_tracking.sql`. Apply every
+The current migration horizon is `0016_publisher_nonce_capacity.sql`. Apply every
 pending migration only inside the separately authorized closed-circuit rollout.
 Migration 0013 seeds Classic v3 replay from the maximum old v1/v2 lineage and
 Game v2 replay from Game v1, including the nonce union. It preserves historical
@@ -1205,7 +1221,9 @@ policy rows without interpreting them as access-token policy. New directories
 start empty, and fresh signed publication is required for new public/private
 presence. Migration 0014 holds owner-private routes, receipts, grants and limits.
 Migration 0015 removes the retired IP-derived cooldown tables while preserving
-replay and access-token state.
+replay and access-token state. Migration 0016 installs finite publisher nonce
+capacity while preserving populated replay records; authenticated writers use
+bounded expiry cleanup before admitting new replay state.
 The optional retirement SQL under [deployment/retirement](deployment/retirement/README.md)
 is excluded from automatic migrations and has separate proof and approval gates.
 
@@ -1241,6 +1259,22 @@ python3 scripts/static_origin_canary.py \
 
 The automatic delivery contract derives each canary prefix from the exact core
 configuration; the same checked configuration drives builder and purge targets.
+Migration 0013 leaves `classic-v3` and `game-v2` publication checkpoints at
+generation zero with no new aliases. The explicit pre-canary reconciliation
+stage builds valid empty cohorts even before the first cron or signed publication;
+it also verifies or refreshes the cohort for later deliveries. The private
+entrypoint accepts only an empty `POST` to
+`https://internal.atrinik.invalid/v1/directory-reconciliation`, selects only the
+two fixed profiles, and verifies checkpoints and complete alias integrity before
+returning the redacted `directory-reconciliation-v1` receipt. It has no public
+route, request-selected profile, resource key, generation or origin. The
+receipt binds completion time and actual cutover modes/origins; the parent
+binds the account, source, active topology and sole Builds lease around the
+stage. A receipt is not independent permission to invoke live maintenance.
+Cloudflare documents the supported [remote Service Binding pattern](https://developers.cloudflare.com/workers/local-development/#remote-bindings)
+and [Wrangler proxy API](https://developers.cloudflare.com/workers/wrangler/api/).
+This source change exercises only isolated fixtures; no live proxy, migration,
+Worker deployment or alias publication is authorized by its tests.
 Canaries verify canonical JSON/XML/HTML, `accessRequired` policy, fresh coherent
 cohorts, native validators, public/private separation and bounded rejection paths.
 Current publisher canaries use the protocol-owned Classic v3 signature envelope.

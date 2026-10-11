@@ -15,6 +15,8 @@ import {
   deliveryFailureRecord,
   describeSubprocessFailure,
   deliveryDecision,
+  directoryReconciliationProxyConfiguration,
+  validateDirectoryReconciliationProof,
   deployStagedWithRecoveryIntent,
   executeOrderedStages,
   orchestrateDelivery,
@@ -40,6 +42,8 @@ import {
   validateToolchain,
   wranglerDeployArguments,
 } from "./production-delivery.mjs";
+
+import { invokeDirectoryProxy, validateDirectoryProxyInput } from "./production-directory-reconciliation.mjs";
 
 const root = resolve(import.meta.dirname, "..");
 const contract = JSON.parse(
@@ -1183,6 +1187,7 @@ test("orchestrator fences every mutation, no-op, final readback, and canary boun
     deployActive: async (worker) => events.push(`deploy-active:${worker}`),
     readbackActive: async (worker) => events.push(`readback-active:${worker}`),
     verifyFinal: async () => events.push("final"),
+    reconcileDirectories: async () => events.push("reconcile"),
     canaries: async () => events.push("canaries"),
     recover: async () => events.push("unexpected-recovery"),
     completed: (stage) => events.push(`completed:${stage}`),
@@ -1196,7 +1201,8 @@ test("orchestrator fences every mutation, no-op, final readback, and canary boun
     "fence", "deploy-active:publisher", "fence", "readback-active:publisher", "completed:active:publisher",
     "fence", "deploy-active:rendezvous", "fence", "readback-active:rendezvous", "completed:active:rendezvous",
     "fence", "deploy-active:core", "fence", "readback-active:core", "completed:active:core",
-    "fence", "final", "canaries", "fence",
+    "fence", "final", "fence", "reconcile", "completed:directory-reconciliation",
+    "fence", "final", "fence", "canaries", "fence",
   ]);
 
   const noOpEvents = [];
@@ -1211,18 +1217,19 @@ test("orchestrator fences every mutation, no-op, final readback, and canary boun
       deployActive: async () => noOpEvents.push("unexpected-deploy"),
       readbackActive: async () => noOpEvents.push("unexpected-readback"),
       verifyFinal: async () => noOpEvents.push("final"),
+      reconcileDirectories: async () => noOpEvents.push("reconcile"),
       canaries: async () => noOpEvents.push("canaries"),
       recover: async () => noOpEvents.push("unexpected-recovery"),
     }),
     "no-deployment-required",
   );
-  assert.deepEqual(noOpEvents, ["fence", "final", "canaries", "fence"]);
+  assert.deepEqual(noOpEvents, ["fence", "final", "fence", "reconcile", "fence", "final", "fence", "canaries", "fence"]);
 });
 
 test("orchestrator recovers disabled circuits after every asynchronous boundary failure", async () => {
   const workers = ["core", "publisher", "rendezvous"];
   const targets = [
-    ...Array.from({ length: 15 }, (_, index) => `fence:${index + 1}`),
+    ...Array.from({ length: 18 }, (_, index) => `fence:${index + 1}`),
     ...workers.flatMap((worker) => [
       `deploy-staged:${worker}`, `readback-staged:${worker}`,
     ]),
@@ -1231,6 +1238,7 @@ test("orchestrator recovers disabled circuits after every asynchronous boundary 
       `deploy-active:${worker}`, `readback-active:${worker}`,
     ]),
     "final",
+    "reconcile",
     "canaries",
   ];
   for (const target of targets) {
@@ -1254,6 +1262,7 @@ test("orchestrator recovers disabled circuits after every asynchronous boundary 
         deployActive: async (worker) => record(`deploy-active:${worker}`),
         readbackActive: async (worker) => record(`readback-active:${worker}`),
         verifyFinal: async () => record("final"),
+        reconcileDirectories: async () => record("reconcile"),
         canaries: async () => record("canaries"),
         recover: async () => { recovered = true; },
         completed: (stage) => completed.push(stage),
@@ -1279,6 +1288,7 @@ test("preserves a bounded original deployment diagnostic when recovery fails", a
       deployActive: async () => {},
       readbackActive: async () => {},
       verifyFinal: async () => {},
+      reconcileDirectories: async () => {},
       canaries: async () => {},
       recover: async () => {
         throw new Error("recovery failed");
@@ -1307,6 +1317,7 @@ test("exact-source retry converges and a stale retry cannot mutate", async () =>
     },
     readbackActive: async () => {},
     verifyFinal: async () => {},
+    reconcileDirectories: async () => {},
     canaries: async () => {},
     recover: async () => {},
     completed: (stage) => completed.push(stage),
@@ -1553,4 +1564,173 @@ test("public callers reject signing secrets and key identifiers", () => {
       (value) => { value[index].vars.SOURCE_TAG_KEY_CURRENT_ID = "unexpected"; },
     ]) assert.throws(() => validateTopology(contract, changedConfigs(mutate)));
   }
+});
+function directoryProof(core, now = 2_000_000_000) {
+  return {
+    schema: "directory-reconciliation-v1",
+    completedAt: now,
+    configuration: {
+      classicCutoverMode: core.vars.CLASSIC_DIRECTORY_CUTOVER_MODE,
+      gameCutoverMode: core.vars.GAME_DIRECTORY_CUTOVER_MODE,
+      classicOrigin: core.vars.CLASSIC_DIRECTORY_PUBLIC_ORIGIN,
+      gameOrigin: core.vars.GAME_DIRECTORY_PUBLIC_ORIGIN,
+    },
+    profiles: ["classic-v3", "game-v2"].map((profile) => ({
+      profile, outcome: "published", generation: 1,
+      generatedAt: now, expiresAt: now + 14_400,
+    })),
+  };
+}
+
+function proxyEnvironment() {
+  return {
+    WORKERS_CI: "1", WORKERS_CI_BRANCH: "main",
+    WORKERS_CI_COMMIT_SHA: "a".repeat(40),
+    WORKERS_CI_BUILD_UUID: "11111111-1111-1111-1111-111111111111",
+    CLOUDFLARE_ACCOUNT_ID: "a".repeat(32), CLOUDFLARE_API_TOKEN: "test-only",
+  };
+}
+
+test("directory proxy is account-bound and grants only the private remote entrypoint", () => {
+  const core = productionConfigs()[0];
+  const proxy = directoryReconciliationProxyConfiguration(core);
+  assert.doesNotThrow(() => validateDirectoryProxyInput(proxy, proxyEnvironment()));
+  for (const change of [
+    (value) => { value.account_id = "b".repeat(32); },
+    (value) => { value.services[0].service = "other-core"; },
+    (value) => { value.services[0].entrypoint = "PublisherCoordinator"; },
+    (value) => { value.services[0].remote = false; },
+    (value) => { value.d1_databases = [{ binding: "DB" }]; },
+    (value) => { value.workers_dev = true; },
+  ]) {
+    const value = structuredClone(proxy);
+    change(value);
+    assert.throws(() => validateDirectoryProxyInput(value, proxyEnvironment()), /authority rejected/u);
+  }
+  assert.throws(() => validateDirectoryProxyInput(proxy, {}), /authority rejected/u);
+  assert.throws(() => directoryReconciliationProxyConfiguration({ ...core, name: "other-core" }),
+    /target identity/u);
+  const child = childEnvironment({ ...proxyEnvironment(),
+    ATRINIK_WORKERS_BUILDS_API_TOKEN: "parent-only", ATRINIK_PRODUCTION_CORE_CONFIG: "private",
+    UNREVIEWED_SECRET: "parent-only" }, "directory-reconciliation");
+  assert.deepEqual(child, proxyEnvironment());
+});
+
+test("directory proof binds fresh complete aliases to the selected environment", () => {
+  const core = productionConfigs()[0];
+  const now = 2_000_000_000;
+  const proof = directoryProof(core, now);
+  assert.equal(validateDirectoryReconciliationProof(proof, core, now, now), proof);
+  for (const change of [
+    (value) => { value.completedAt = now - 1; },
+    (value) => { value.completedAt = now + 1; },
+    (value) => { value.configuration.classicCutoverMode = "v6-production"; },
+    (value) => { value.configuration.gameOrigin = "https://other.example.org"; },
+    (value) => { value.profiles.reverse(); },
+    (value) => { value.profiles.pop(); },
+    (value) => { value.profiles[0].generation = 0; },
+    (value) => { value.profiles[0].outcome = "purge-pending"; },
+    (value) => { value.profiles[0].generatedAt = now + 1; },
+    (value) => { value.profiles[0].expiresAt = now; },
+    (value) => { value.profiles[0].revision = 0; },
+  ]) {
+    const value = structuredClone(proof); change(value);
+    assert.throws(() => validateDirectoryReconciliationProof(value, core, now, now), /directory reconciliation/u);
+  }
+  assert.throws(() => validateDirectoryReconciliationProof(proof, core, now - 121, now), /freshness/u);
+});
+
+test("first rollout builds generation-zero profiles before static canaries without cron", async () => {
+  for (const decision of ["deploy", "no-op"]) {
+    const now = 2_000_000_000;
+    const core = productionConfigs()[0];
+    const aliases = new Map();
+    const stages = [];
+    const callbacks = {
+      workers: ["core", "publisher", "rendezvous"], decision,
+      fence: async () => {}, deployStaged: async () => {}, readbackStaged: async () => {},
+      verifyStaged: async () => {}, deployActive: async () => {}, readbackActive: async () => {},
+      verifyFinal: async () => {}, recover: async () => {},
+      reconcileDirectories: async () => {
+        stages.push("reconcile");
+        for (const profile of ["classic-v3", "game-v2"]) {
+          // Simulate migration 0013: no checkpoint generation or aliases exist.
+          assert.equal(aliases.has(profile), false);
+          aliases.set(profile, 1);
+        }
+        validateDirectoryReconciliationProof(directoryProof(core, now), core, now, now);
+      },
+      canaries: async () => {
+        stages.push("canaries");
+        assert.deepEqual([...aliases.values()], [1, 1]);
+      },
+    };
+    await orchestrateDelivery(callbacks);
+    assert.deepEqual(stages, ["reconcile", "canaries"]);
+    // A later build still verifies the current cohort before probing it.
+    callbacks.reconcileDirectories = async () => {
+      const current = directoryProof(core, now + 1);
+      for (const record of current.profiles) record.outcome = "current";
+      validateDirectoryReconciliationProof(current, core, now + 1, now + 1);
+    };
+    await orchestrateDelivery(callbacks);
+  }
+});
+
+test("failed or stale reconciliation cannot reach static canaries", async () => {
+  const now = 2_000_000_000;
+  const core = productionConfigs()[0];
+  for (const decision of ["deploy", "no-op"]) {
+    for (const reconcileDirectories of [
+      async () => { throw new Error("builder unavailable"); },
+      async () => validateDirectoryReconciliationProof(directoryProof(core, now - 1), core, now, now),
+      async () => {
+        const proof = directoryProof(core, now); proof.profiles[0].generation = 0;
+        validateDirectoryReconciliationProof(proof, core, now, now);
+      },
+    ]) {
+      let probes = 0;
+      let recovered = 0;
+      await assert.rejects(orchestrateDelivery({
+        workers: ["core", "publisher", "rendezvous"], decision,
+        fence: async () => {}, deployStaged: async () => {}, readbackStaged: async () => {},
+        verifyStaged: async () => {}, deployActive: async () => {}, readbackActive: async () => {},
+        verifyFinal: async () => {}, reconcileDirectories,
+        canaries: async () => { probes += 1; }, recover: async () => { recovered += 1; },
+      }));
+      assert.equal(probes, 0);
+      assert.equal(recovered, decision === "deploy" ? 1 : 0);
+    }
+  }
+});
+
+test("directory proxy bounds initialization, failure, receipts and always disposes", async () => {
+  const config = directoryReconciliationProxyConfiguration(productionConfigs()[0]);
+  const options = { configPath: "/test/proxy.json", config, environment: proxyEnvironment() };
+  let disposed = 0;
+  const makeProxy = (response) => async (supplied) => {
+    assert.deepEqual(supplied, { configPath: options.configPath, persist: false, remoteBindings: true });
+    return { dispose: async () => { disposed += 1; }, env: {
+      DIRECTORY_RECONCILIATION: { fetch: async (request) => {
+        assert.equal(request.url, "https://internal.atrinik.invalid/v1/directory-reconciliation");
+        assert.equal(request.method, "POST"); assert.equal(request.body, null);
+        assert.deepEqual([...request.headers], []);
+        return response;
+      } },
+    } };
+  };
+  const headers = { "Content-Type": "application/json", "Cache-Control": "no-store" };
+  assert.deepEqual(await invokeDirectoryProxy({ ...options,
+    createProxy: makeProxy(new Response('{"ok":true}', { headers })) }), { ok: true });
+  await assert.rejects(invokeDirectoryProxy({ ...options,
+    createProxy: makeProxy(new Response("failure", { status: 503, headers })) }), /response rejected/u);
+  await assert.rejects(invokeDirectoryProxy({ ...options,
+    createProxy: makeProxy(new Response("x".repeat(4_097), { headers })) }), /too large/u);
+  assert.equal(disposed, 3);
+  let initialize = 0;
+  await assert.rejects(invokeDirectoryProxy({ ...options, environment: {},
+    createProxy: async () => { initialize += 1; } }), /authority rejected/u);
+  assert.equal(initialize, 0);
+  await assert.rejects(invokeDirectoryProxy({ ...options, timeoutMs: 5,
+    createProxy: async () => new Promise(() => {}) }), /deadline/u);
 });

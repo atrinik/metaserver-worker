@@ -530,6 +530,7 @@ function validateConfigurationAuthority(worker, config) {
     PublisherCoordinator: { type: "worker", cache: { enabled: false } },
     RendezvousCoordinator: { type: "worker", cache: { enabled: false } },
     RendezvousHealth: { type: "worker", cache: { enabled: false } },
+    DirectoryReconciliation: { type: "worker", cache: { enabled: false } },
   } : {};
   if (!sameJson(config.exports ?? {}, expectedExports))
     fail(`${worker.role} exports authority drift`);
@@ -663,8 +664,6 @@ export function validateTopology(contract, configs, { production = false } = {})
     "SOURCE_TAG_KEY_PREVIOUS_ID",
   ]) {
     if (
-      core.vars?.[key] !== publisher.vars?.[key] ||
-      core.vars?.[key] !== rendezvous.vars?.[key] ||
       typeof core.vars?.[key] !== "string" ||
       !core.vars[key]
     )
@@ -892,6 +891,7 @@ export async function orchestrateDelivery({
   deployActive,
   readbackActive,
   verifyFinal,
+  reconcileDirectories,
   canaries,
   recover,
   completed = () => {},
@@ -918,6 +918,12 @@ export async function orchestrateDelivery({
     }
     await fence();
     await verifyFinal(decision);
+    await fence();
+    await reconcileDirectories();
+    completed("directory-reconciliation");
+    await fence();
+    await verifyFinal(decision);
+    await fence();
     await canaries();
     await fence();
     return decision === "deploy"
@@ -959,11 +965,16 @@ export function childEnvironment(input, policy = "public") {
       .filter((name) => typeof input[name] === "string")
       .map((name) => [name, input[name]]),
   );
-  if (policy === "deployment") {
+  if (policy === "deployment" || policy === "directory-reconciliation") {
     if (input.CLOUDFLARE_ACCOUNT_ID)
       environment.CLOUDFLARE_ACCOUNT_ID = input.CLOUDFLARE_ACCOUNT_ID;
     if (input.CLOUDFLARE_API_TOKEN)
       environment.CLOUDFLARE_API_TOKEN = input.CLOUDFLARE_API_TOKEN;
+    if (policy === "directory-reconciliation") {
+      for (const name of ["WORKERS_CI", "WORKERS_CI_BRANCH",
+        "WORKERS_CI_COMMIT_SHA", "WORKERS_CI_BUILD_UUID"])
+        if (typeof input[name] === "string") environment[name] = input[name];
+    }
   } else if (policy !== "public") {
     fail("unknown subprocess environment policy");
   }
@@ -2015,6 +2026,78 @@ export function resolveProductionCanaryCommand(canary, configs) {
   return resolved;
 }
 
+// The temporary proxy owns no remote resources and exposes no public route.
+export function directoryReconciliationProxyConfiguration(core) {
+  if (core.name !== expectedWorkerNames[0] ||
+      !/^[0-9a-f]{32}$/u.test(core.account_id ?? ""))
+    fail("directory reconciliation target identity drift");
+  return {
+    name: "atrinik-production-directory-reconciliation",
+    account_id: core.account_id,
+    compatibility_date: core.compatibility_date,
+    workers_dev: false,
+    preview_urls: false,
+    services: [{
+      binding: "DIRECTORY_RECONCILIATION",
+      service: core.name,
+      entrypoint: "DirectoryReconciliation",
+      remote: true,
+    }],
+  };
+}
+
+export function validateDirectoryReconciliationProof(proof, core, startedAt, now) {
+  assertExactKeys(proof, ["schema", "completedAt", "configuration", "profiles"],
+    "directory reconciliation proof");
+  if (proof.schema !== "directory-reconciliation-v1" ||
+      !Number.isSafeInteger(startedAt) || !Number.isSafeInteger(now) ||
+      now < startedAt || now - startedAt > 120 ||
+      !Number.isSafeInteger(proof.completedAt) ||
+      proof.completedAt < startedAt || proof.completedAt > now)
+    fail("directory reconciliation proof freshness drift");
+  const expectedConfiguration = {
+    classicCutoverMode: core.vars.CLASSIC_DIRECTORY_CUTOVER_MODE,
+    gameCutoverMode: core.vars.GAME_DIRECTORY_CUTOVER_MODE,
+    classicOrigin: core.vars.CLASSIC_DIRECTORY_PUBLIC_ORIGIN,
+    gameOrigin: core.vars.GAME_DIRECTORY_PUBLIC_ORIGIN,
+  };
+  if (!sameJson(proof.configuration, expectedConfiguration))
+    fail("directory reconciliation environment binding drift");
+  if (!Array.isArray(proof.profiles) || proof.profiles.length !== 2)
+    fail("directory reconciliation profile cohort drift");
+  for (const [index, profile] of ["classic-v3", "game-v2"].entries()) {
+    const record = proof.profiles[index];
+    assertExactKeys(record,
+      ["profile", "outcome", "generation", "generatedAt", "expiresAt"],
+      "directory reconciliation profile proof");
+    if (record.profile !== profile ||
+        !["current", "published"].includes(record.outcome) ||
+        !Number.isSafeInteger(record.generation) || record.generation < 1 ||
+        !Number.isSafeInteger(record.generatedAt) || record.generatedAt < 0 ||
+        !Number.isSafeInteger(record.expiresAt) ||
+        record.generatedAt > proof.completedAt || record.generatedAt > now ||
+        record.expiresAt <= now)
+      fail("directory reconciliation publication proof is not current");
+  }
+  return proof;
+}
+
+async function reconcileProductionDirectories(core, directory) {
+  const configPath = resolve(directory, "directory-reconciliation-proxy.json");
+  await writeFile(configPath,
+    JSON.stringify(directoryReconciliationProxyConfiguration(core)), { mode: 0o600 });
+  const startedAt = Math.floor(Date.now() / 1_000);
+  const { stdout } = await command(process.execPath, [
+    "scripts/production-directory-reconciliation.mjs", configPath,
+  ], { environmentPolicy: "directory-reconciliation", timeout: 120_000, maxBuffer: 8_192 });
+  let proof;
+  try { proof = JSON.parse(stdout); } catch {
+    fail("directory reconciliation returned an invalid proof");
+  }
+  return validateDirectoryReconciliationProof(
+    proof, core, startedAt, Math.floor(Date.now() / 1_000));
+}
+
 async function runProductionCanaries(contract, configs) {
   for (const canary of contract.productionCanaries) {
     const [program, ...args] = resolveProductionCanaryCommand(canary, configs);
@@ -2062,6 +2145,10 @@ async function main() {
         outcome: "dry-run",
         mutation: false,
         deploymentOrder: contract.invariants.deploymentOrder,
+        directoryReconciliation: {
+          entrypoint: "DirectoryReconciliation", timeoutSeconds: 120,
+          profiles: ["classic-v3", "game-v2"],
+        },
         productionCanaries: contract.productionCanaries.map(({ name }) => name),
         deployableDigest: plan.deploy,
         migrationDigest: plan.migrationDigest,
@@ -2254,6 +2341,10 @@ async function main() {
       if (finalDecision === "deploy")
         assertCoherentTopology(finalAnnotations, plan, sourceSha);
       else assertDeployableTopology(finalAnnotations, plan);
+    },
+    reconcileDirectories: async () => {
+      failureEvidence.failedRole = "directory-reconciliation";
+      await reconcileProductionDirectories(configs[0], protectedInputs.directory);
     },
     canaries: async () => {
       failureEvidence.failedRole = "canaries";
