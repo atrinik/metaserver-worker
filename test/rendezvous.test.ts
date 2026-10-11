@@ -1367,7 +1367,7 @@ describe("RendezvousRoom access grants", () => {
           await Promise.resolve(); await Promise.resolve(); expect(delivered).toBe(false);
           release(); await confirmation; expect((await revoke).status).toBe(204);
           for (const socket of state.getWebSockets("client")) {
-            expect(socket.deserializeAttachment()).toMatchObject({ s: 2, u: null, e: null, w: null, l: null });
+            expect(socket.deserializeAttachment()).toMatchObject({ s: 2, u: null, e: null, w: null, l: null, ae: null });
           }
         } finally { release(); Reflect.set(instance, "accessStillLive", original); }
       });

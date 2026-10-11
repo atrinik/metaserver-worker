@@ -39,6 +39,7 @@ function awaitingClient(): ClientAttachment {
     role: "client",
     boundTicketHash: TICKET_DIGEST,
     accessClientNonce: null,
+    accessExpiresAt: null,
     accessGrant: null,
     accessRedemption: null,
     controlId: CONTROL_ID,
@@ -161,8 +162,8 @@ describe("rendezvous hibernation attachments", () => {
   });
 
   it("retains a grant only on a bounded admitted live client", () => {
-    const init = { ...awaitingClient(), accessGrant: RAW_TICKET, accessRedemption: TICKET_DIGEST, accessClientNonce: "c".repeat(64), authorization: "awaiting_init" } as const;
-    const admitted = { ...awaitingClient(), accessGrant: RAW_TICKET, accessRedemption: TICKET_DIGEST, accessClientNonce: "c".repeat(64) };
+    const init = { ...awaitingClient(), accessGrant: RAW_TICKET, accessRedemption: TICKET_DIGEST, accessClientNonce: "c".repeat(64), accessExpiresAt: OPENED_AT + MAX_SESSION_MS, expiresAt: OPENED_AT + 2_000, authorization: "awaiting_init" } as const;
+    const admitted = { ...awaitingClient(), accessGrant: RAW_TICKET, accessRedemption: TICKET_DIGEST, accessClientNonce: "c".repeat(64), accessExpiresAt: OPENED_AT + MAX_SESSION_MS };
     for (const attachment of [init,admitted]) {
       expect(decodeRendezvousAttachment(encodeRendezvousAttachment(attachment))).toEqual(attachment);
     }
