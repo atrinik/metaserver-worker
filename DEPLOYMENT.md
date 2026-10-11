@@ -1198,13 +1198,15 @@ This source change grants no deployment, migration, activation or alias-cutover
 authority. Production state and existing open-server behavior remain unchanged
 until an operator authorizes an exact coordinated rollout.
 
-The current migration horizon is `0014_access_token_routing.sql`. Apply every
+The current migration horizon is `0015_remove_ip_derived_pair_tracking.sql`. Apply every
 pending migration only inside the separately authorized closed-circuit rollout.
 Migration 0013 seeds Classic v3 replay from the maximum old v1/v2 lineage and
 Game v2 replay from Game v1, including the nonce union. It preserves historical
 policy rows without interpreting them as access-token policy. New directories
 start empty, and fresh signed publication is required for new public/private
 presence. Migration 0014 holds owner-private routes, receipts, grants and limits.
+Migration 0015 removes the retired IP-derived cooldown tables while preserving
+replay and access-token state.
 The optional retirement SQL under [deployment/retirement](deployment/retirement/README.md)
 is excluded from automatic migrations and has separate proof and approval gates.
 
