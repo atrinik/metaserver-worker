@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { applyTransitionStep, createTransitionPlan, nextTransitionOperation,
+import { authorizeTransitionOperation, applyTransitionStep, createTransitionPlan, nextTransitionOperation,
   normalizeTransitionTrigger, transitionDigest, validateProductionWriterFence,
   verifyTransitionJournal } from "./deployment-environment-transition.mjs";
 import { assertProductionPromotionWriterFence } from "./production-writer-fence.mjs";
@@ -142,4 +142,27 @@ test("promotion HTTP adapter reads stable exhaustive inventories and performs no
   await assert.rejects(assertProductionPromotionWriterFence({ environment,
     fetcher: async () => new Response(JSON.stringify({ success: true, result: [{ bad: true }] })) }),
     /production writer fence could not be verified/);
+});
+
+test("a slow durable append expires the operation before execution", async () => {
+  const f = fixture(), plan = createTransitionPlan(f), records = [];
+  let elapsed = 0;
+  await assert.rejects(applyTransitionStep({ plan, snapshot: f.snapshot, records, now, clock: () => elapsed,
+    append: async () => { elapsed = 31_000; }, execute: async () => assert.fail("expired execution") }), /freshness/);
+  assert.equal(records.length, 1);
+});
+test("fresh transport authorization rejects intervening provider and local drift", async () => {
+  const f = fixture(), plan = createTransitionPlan(f), op = nextTransitionOperation({ plan, snapshot: f.snapshot, now });
+  const current = clone(f.snapshot); current.capturedAt = new Date(now + 1000).toISOString();
+  assert.equal(authorizeTransitionOperation({ plan, operation: op, snapshot: current, now: now + 1000 }).mutation, false);
+  current.productionTriggers[1].deploy_command = "changed";
+  assert.throws(() => authorizeTransitionOperation({ plan, operation: op, snapshot: current, now: now + 1000 }), /peer/);
+  await assert.rejects(applyTransitionStep({ plan, snapshot: f.snapshot, records: [], now,
+    append: async () => { f.snapshot.productionTriggers[1].deploy_command = "changed"; },
+    execute: async () => assert.fail("changed execution") }), /peer/);
+});
+test("failed journal persistence prevents execution", async () => {
+  const f = fixture(), plan = createTransitionPlan(f);
+  await assert.rejects(applyTransitionStep({ plan, snapshot: f.snapshot, records: [], now,
+    append: async () => { throw new Error("fsync failed"); }, execute: async () => assert.fail("undurable execution") }), /fsync/);
 });

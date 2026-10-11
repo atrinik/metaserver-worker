@@ -187,9 +187,14 @@ function preservation(plan, snapshot, now) {
     fail("production predecessor drift");
   return { current, fenced };
 }
+function snapshotStateDigest(snapshot) {
+  const { capturedAt: _capturedAt, ...state } = snapshot;
+  return transitionDigest(state);
+}
 function operation(plan, snapshot, phase, method, suffix, body, extra = {}) {
   return { phase, method, path: `/accounts/${plan.coordinates.accountId}${suffix}`, body,
     planDigest: plan.planDigest, predecessorDigest: transitionDigest(snapshot),
+    predecessorStateDigest: snapshotStateDigest(snapshot),
     capturedAt: snapshot.capturedAt, expiresAt: new Date(Date.parse(snapshot.capturedAt) + 30_000).toISOString(), ...extra };
 }
 export function nextTransitionOperation({ plan, snapshot, now = Date.now() }) {
@@ -234,7 +239,22 @@ function applied(op, plan, snapshot) {
     b.build_uuid === op.buildUuid && b.status === "stopped");
   return false;
 }
-export async function applyTransitionStep({ plan, snapshot, records, append, execute, now = Date.now() }) {
+// A transport MUST call this against a new provider capture immediately before its HTTP write.
+// The CLI emits a request; it deliberately does not claim that file emission fences the provider.
+export function authorizeTransitionOperation({ plan, operation: op, snapshot, now = Date.now() }) {
+  preservation(plan, snapshot, now);
+  if (op.planDigest !== plan.planDigest || now > Date.parse(op.expiresAt) ||
+      Date.parse(snapshot.capturedAt) < Date.parse(op.capturedAt) ||
+      op.predecessorStateDigest !== snapshotStateDigest(snapshot))
+    fail("operation expired or predecessor changed before execution");
+  const current = nextTransitionOperation({ plan, snapshot, now });
+  if (!same([op.phase, op.method, op.path, op.body],
+      [current.phase, current.method, current.path, current.body])) fail("operation authorization drift");
+  return { outcome: "transition-operation-authorized", mutation: false };
+}
+export async function applyTransitionStep({ plan, snapshot, records, append, execute,
+  now = Date.now(), clock = Date.now }) {
+  const started = clock();
   preservation(plan, snapshot, now);
   const pending = verifyTransitionJournal(records, plan);
   const add = async (body) => {
@@ -253,6 +273,8 @@ export async function applyTransitionStep({ plan, snapshot, records, append, exe
   const op = nextTransitionOperation({ plan, snapshot, now });
   if (op.phase === "complete") return op;
   await add({ event: "intent", operation: op });
+  // A slow fsync or intervening local change cannot extend the provider observation's lifetime.
+  authorizeTransitionOperation({ plan, operation: op, snapshot, now: now + clock() - started });
   await execute(op);
   return { phase: "await-readback", operation: op.phase, mutation: true };
 }
@@ -275,6 +297,8 @@ async function writePrivate(path, value) {
     constants.O_NOFOLLOW, 0o600);
   try { await file.writeFile(`${JSON.stringify(value)}\n`); await file.sync(); }
   finally { await file.close(); }
+  const directory = await open(dirname(path), constants.O_RDONLY | constants.O_DIRECTORY);
+  try { await directory.sync(); } finally { await directory.close(); }
 }
 export async function runTransitionCli(args = process.argv.slice(2)) {
   const [mode, input, output] = args;
@@ -309,8 +333,10 @@ export async function runTransitionCli(args = process.argv.slice(2)) {
       for (let i = 0; i < records.length; ++i)
         if (!same(await privateJson(`${journalPath}.${i}.json`), records[i])) fail("journal receipt drift");
     }
-    return await applyTransitionStep({ plan: request.plan, snapshot: request.snapshot, records,
+    const result = await applyTransitionStep({ plan: request.plan, snapshot: request.snapshot, records,
       append, execute: async (op) => writePrivate(output, op) });
+    return result.phase === "complete" ? result :
+      { phase: "operation-emitted-await-provider-readback", mutation: false };
   } finally { await rmdir(lock); }
 }
 if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
