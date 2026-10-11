@@ -57,8 +57,9 @@ describe("mandatory rendezvous admission work", () => {
     const headers = admissionHeaders(true);
     expect(await verifyRendezvousAdmission(request(headers), admissionKeys, v.authority, v.serverId, true))
       .toEqual({ ticket: v.ticket, expiresAt: Number(v.expiresAt), clientNonce: "b".repeat(64) });
-    for (const change of [ { Authorization: `Bearer ${"3".repeat(64)}` },
-      { "X-Atrinik-Access-Client-Nonce": "B".repeat(64) }, { "X-Atrinik-Rendezvous-Ticket": v.ticket } ]) {
+    const substitutions: ReadonlyArray<Record<string, string>> = [{ Authorization: `Bearer ${"3".repeat(64)}` },
+      { "X-Atrinik-Access-Client-Nonce": "B".repeat(64) }, { "X-Atrinik-Rendezvous-Ticket": v.ticket }];
+    for (const change of substitutions) {
       expect(await verifyRendezvousAdmission(request({ ...headers, ...change }), admissionKeys,
         v.authority, v.serverId, true)).toBeNull();
     }
@@ -77,8 +78,9 @@ describe("mandatory rendezvous admission work", () => {
       expect(response.status).toBe(403);
       expect(await response.text()).toBe("Forbidden\n");
     }
-    for (const change of [{ "X-Atrinik-Rendezvous-Ticket": "3".repeat(64) },
-      { Authorization: `Bearer ${v.ticket}` }, { "X-Atrinik-Access-Client-Nonce": "b".repeat(64) }]) {
+    const substitutions: ReadonlyArray<Record<string, string>> = [{ "X-Atrinik-Rendezvous-Ticket": "3".repeat(64) },
+      { Authorization: `Bearer ${v.ticket}` }, { "X-Atrinik-Access-Client-Nonce": "b".repeat(64) }];
+    for (const change of substitutions) {
       expect((await handleRendezvousCoordinatorRequest(request({ ...admissionHeaders(), ...change }), core)).status)
         .toBeGreaterThanOrEqual(400);
     }

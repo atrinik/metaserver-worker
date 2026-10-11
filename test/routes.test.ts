@@ -67,9 +67,10 @@ describe("canonical dynamic route grammar", () => {
       { hasBody: false }, { target: target.replace(SERVER_ID, "A".repeat(64)) }]) {
       expect(() => classifyRendezvousChallengeRoute({ ...input, ...change }, RENDEZVOUS_AUTHORITY)).toThrow();
     }
-    for (const extra of [{ Cookie: "secret=value" }, { Authorization: "Bearer secret" },
+    const extraHeaders: ReadonlyArray<Record<string, string>> = [{ Cookie: "secret=value" }, { Authorization: "Bearer secret" },
       { "Content-Encoding": "gzip" }, { "Content-Length": "257" }, { Upgrade: "websocket" },
-      { "X-Atrinik-Rendezvous-Admission": "proof" }, { "X-Atrinik-Rendezvous-Ticket": "2".repeat(64) }]) {
+      { "X-Atrinik-Rendezvous-Admission": "proof" }, { "X-Atrinik-Rendezvous-Ticket": "2".repeat(64) }];
+    for (const extra of extraHeaders) {
       expect(() => classifyRendezvousChallengeRoute({ ...input,
         headers: new Headers({ "Content-Type": "application/json", ...extra }) }, RENDEZVOUS_AUTHORITY)).toThrow();
     }
