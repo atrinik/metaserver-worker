@@ -1152,9 +1152,11 @@ async function command(program, args, options = {}) {
 
 // Selected release dependencies are application inputs, never executable tooling
 // with deployment credentials. This path is anchored to the reviewed controller
-// module even while command cwd and bundle entrypoints point to selected source.
+// module. Keeping cwd here also prevents selected .env files from redirecting
+// authenticated API traffic; selected entrypoints remain explicit absolute paths.
 export async function executeTrustedWrangler(args, options = {}, execute = command) {
-  return execute(resolve(controllerRoot, "node_modules/.bin/wrangler"), args, options);
+  return execute(resolve(controllerRoot, "node_modules/.bin/wrangler"), args,
+    { ...options, cwd: controllerRoot });
 }
 
 async function git(...args) {
@@ -1162,22 +1164,24 @@ async function git(...args) {
 }
 
 async function assertToolchain(contract) {
-  const packageJson = await readJson(resolve(root, "package.json"));
-  const packageLock = await readJson(resolve(root, "package-lock.json"));
+  // Tooling declarations belong to the controller; selected lockfiles describe
+  // application dependencies and may legitimately name older unused dev tools.
+  const packageJson = await readJson(resolve(controllerRoot, "package.json"));
+  const packageLock = await readJson(resolve(controllerRoot, "package-lock.json"));
   const wranglerPackage = await readJson(
     resolve(controllerRoot, "node_modules/wrangler/package.json"),
   );
   const node = process.versions.node;
   const npm =
     /^npm\/([^ ]+)/u.exec(process.env.npm_config_user_agent ?? "")?.[1] ??
-    (await command("npm", ["--version"])).stdout.trim();
+    (await command("npm", ["--version"], { cwd: controllerRoot })).stdout.trim();
   validateToolchain(contract, {
     packageJson,
     packageLock,
     wranglerPackage,
     node,
     npm,
-    nodeVersionFile: (await readFile(resolve(root, ".nvmrc"), "utf8")).trim(),
+    nodeVersionFile: (await readFile(resolve(controllerRoot, ".nvmrc"), "utf8")).trim(),
   });
 }
 
@@ -1371,6 +1375,7 @@ async function buildPlan(
     workers: contract.workers,
     invariants: contract.invariants,
     packageLock: await sha256File(resolve(root, contract.toolchain.lockfile)),
+    controllerPackageLock: await sha256File(resolve(controllerRoot, contract.toolchain.lockfile)),
     contract: await sha256File(contractPath),
     migrations,
     configurations,

@@ -1915,4 +1915,6 @@ test("authenticated Wrangler and bundle tooling stay anchored to the trusted con
     { cwd: selected, environmentPolicy: "deployment" }, execute);
   assert.equal(observed.length, 3);
   assert.ok(observed.every((call) => call.program === resolve(root, "node_modules/.bin/wrangler")));
+  assert.ok(observed.every((call) => call.options.cwd === root),
+    "selected cwd must not load a release-owned .env with CLOUDFLARE_API_BASE_URL");
 });
