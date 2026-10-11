@@ -179,14 +179,39 @@ describe("private deployment directory reconciliation", () => {
     },
   );
 
+  it("rejects a BOM-prefixed manifest even when its size and hashes match", async () => {
+    const results = await seed();
+    const bucket = env.CLASSIC_DIRECTORY_PUBLIC;
+    const object = (await bucket.get("manifest.json"))!;
+    const bytes = new TextEncoder().encode("\uFEFF" + await object.text());
+    const checksum = await crypto.subtle.digest("SHA-256", bytes);
+    const digest = Array.from(new Uint8Array(checksum),
+      (byte) => byte.toString(16).padStart(2, "0")).join("");
+    // Keep the provider checksum, metadata and checkpoint coherent so the
+    // rejection exercises strict JSON decoding rather than hash validation.
+    await bucket.put("manifest.json", bytes, {
+      httpMetadata: object.httpMetadata,
+      customMetadata: { ...object.customMetadata, "body-sha256": digest },
+      sha256: checksum,
+    });
+    await env.DB.prepare(`UPDATE directory_artifact_publications
+      SET manifest_sha256 = ?, manifest_bytes = ? WHERE profile = ?`)
+      .bind(digest, bytes.byteLength, "classic-v3").run();
+    const fake = withReconcile(async (profile) => results.get(profile)!);
+    expect((await handleDirectoryReconciliationRequest(request(), fake)).status).toBe(503);
+  });
+
   it("cannot dispatch through the default, publisher or rendezvous fetch paths", async () => {
     const access = vi.fn(() => { throw new Error("Directory capability reached"); });
     const fake = { ...env, DIRECTORY_BUILDER: { getByName: access } } as unknown as CoreEnv;
     expect(worker).not.toHaveProperty("fetch");
     const edgeEnvironment = { ...env, COORDINATOR: { fetch: access } };
-    for (const edge of [publisher, rendezvous]) {
+    for (const [edge, hostname] of [
+      [publisher, env.PUBLISH_HOSTNAME],
+      [rendezvous, env.RENDEZVOUS_HOSTNAME],
+    ] as const) {
       const response = await edge.fetch(new Request(
-        `https://${env.RENDEZVOUS_HOSTNAME}/v1/directory-reconciliation`,
+        `https://${hostname}/v1/directory-reconciliation`,
         { method: "POST" },
       ), edgeEnvironment as unknown as PublisherEnv & RendezvousEnv);
       expect(response.status).toBe(404);
