@@ -14,19 +14,23 @@ import type { RendezvousRole } from "./routes";
  * rolling deployment, either version therefore fails closed instead of
  * silently entering the legacy broadcast implementation.
  */
-export const INTERNAL_RENDEZVOUS_URL = "https://rendezvous.internal/v4";
+export const INTERNAL_RENDEZVOUS_URL = "https://rendezvous.internal/v5";
 export const INTERNAL_RENDEZVOUS_PUBLISH_URL =
-  "https://rendezvous.internal/v4/publish";
+  "https://rendezvous.internal/v5/publish";
 export const INTERNAL_DIRECTORY_CHANGED_HEADER =
   "X-Atrinik-Directory-Changed";
 export const INTERNAL_RENDEZVOUS_ROLE_HEADER =
-  "X-Atrinik-Rendezvous-V4-Role";
+  "X-Atrinik-Rendezvous-V5-Role";
 export const INTERNAL_RENDEZVOUS_PROTOCOL_HEADER =
-  "X-Atrinik-Rendezvous-V4-Protocol";
+  "X-Atrinik-Rendezvous-V5-Protocol";
 export const INTERNAL_RENDEZVOUS_AUTHORIZATION_HEADER =
-  "X-Atrinik-Rendezvous-V4-Authorization";
+  "X-Atrinik-Rendezvous-V5-Authorization";
 export const INTERNAL_RENDEZVOUS_GENERATION_HEADER =
-  "X-Atrinik-Rendezvous-V4-Generation";
+  "X-Atrinik-Rendezvous-V5-Generation";
+export const INTERNAL_RENDEZVOUS_ADMISSION_HEADER = "X-Atrinik-Rendezvous-V5-Admission";
+export const INTERNAL_RENDEZVOUS_TICKET_HEADER = "X-Atrinik-Rendezvous-V5-Ticket";
+export const INTERNAL_RENDEZVOUS_EXPIRY_HEADER = "X-Atrinik-Rendezvous-V5-Admission-Expires";
+export const INTERNAL_RENDEZVOUS_NONCE_HEADER = "X-Atrinik-Rendezvous-V5-Client-Nonce";
 export const LEGACY_INTERNAL_RENDEZVOUS_ROLE_HEADER = "X-Atrinik-Role";
 export const LEGACY_INTERNAL_RENDEZVOUS_V1_ROLE_HEADER =
   "X-Atrinik-Rendezvous-V1-Role";
@@ -198,6 +202,7 @@ export interface InternalRendezvousUpgrade {
   readonly accessProtocol: boolean;
   readonly authorizationRequired: boolean;
   readonly generation: string;
+  readonly admission: import("./rendezvous-work").ValidatedAdmission | null;
 }
 
 interface InternalPublicationBase {
@@ -337,7 +342,30 @@ export function validateInternalRendezvousUpgrade(
   ) {
     return null;
   }
-  return { role, accessProtocol, authorizationRequired, generation };
+  const allowed = ["Upgrade", INTERNAL_RENDEZVOUS_ROLE_HEADER,
+    INTERNAL_RENDEZVOUS_PROTOCOL_HEADER, INTERNAL_RENDEZVOUS_AUTHORIZATION_HEADER,
+    INTERNAL_RENDEZVOUS_GENERATION_HEADER];
+  let admission: import("./rendezvous-work").ValidatedAdmission | null = null;
+  if (role === "client") {
+    allowed.push(INTERNAL_RENDEZVOUS_ADMISSION_HEADER, INTERNAL_RENDEZVOUS_TICKET_HEADER,
+      INTERNAL_RENDEZVOUS_EXPIRY_HEADER);
+    const ticket = request.headers.get(INTERNAL_RENDEZVOUS_TICKET_HEADER);
+    const expires = request.headers.get(INTERNAL_RENDEZVOUS_EXPIRY_HEADER) ?? "";
+    const now = Math.floor(Date.now() / 1000);
+    if (request.headers.get(INTERNAL_RENDEZVOUS_ADMISSION_HEADER) !== "work-v1-24" ||
+        ticket === null || !HEX_64.test(ticket) || !/^[1-9][0-9]{0,11}$/.test(expires) ||
+        Number(expires) <= now || Number(expires) > now + 60) return null;
+    let clientNonce: string | null = null;
+    if (authorizationRequired) {
+      allowed.push(INTERNAL_RENDEZVOUS_NONCE_HEADER);
+      clientNonce = request.headers.get(INTERNAL_RENDEZVOUS_NONCE_HEADER);
+      if (clientNonce === null || !HEX_64.test(clientNonce)) return null;
+    }
+    admission = { ticket, expiresAt: Number(expires), clientNonce };
+  }
+  const names = new Set(allowed.map(name => name.toLowerCase()));
+  if ([...request.headers.keys()].some(name => !names.has(name.toLowerCase()))) return null;
+  return { role, accessProtocol, authorizationRequired, generation, admission };
 }
 
 /**
@@ -541,7 +569,7 @@ export function parseRendezvousSignal(
     return { ok: false, error: "unsupported_signal" };
   }
 
-  // Removed invitation challenge/proof frames are never accepted by v4 rooms.
+  // Removed invitation challenge/proof frames are never accepted by v5 rooms.
   if (typeof parsed.type === "string" && parsed.type.startsWith("auth_")) {
     return { ok: false, error: "unsupported_signal" };
   }

@@ -1,3 +1,6 @@
+import { ADMISSION_HEADER, TICKET_HEADER, CLIENT_NONCE_HEADER, verifyRendezvousAdmission } from "./rendezvous-work";
+import { INTERNAL_RENDEZVOUS_ADMISSION_HEADER, INTERNAL_RENDEZVOUS_TICKET_HEADER,
+  INTERNAL_RENDEZVOUS_EXPIRY_HEADER, INTERNAL_RENDEZVOUS_NONCE_HEADER } from "./rendezvous-contract";
 import {
   INTERNAL_RENDEZVOUS_AUTHORIZATION_HEADER,
   INTERNAL_RENDEZVOUS_GENERATION_HEADER,
@@ -13,6 +16,8 @@ import type { RendezvousServerRecord } from "./types";
 
 const HEX_64 = /^[0-9a-f]{64}$/;
 const RENDEZVOUS_ERROR_DEFINITIONS = {
+  admission_required: { body: "Rendezvous admission required\n", status: 428 },
+  admission_invalid: { body: "Forbidden\n", status: 403 },
   invalid_server_id: {
     body: "Invalid server ID\n",
     status: 400,
@@ -81,6 +86,12 @@ export async function openRendezvous(
       !new URL(request.url).pathname.startsWith("/v1/access/rendezvous/classic/")) {
     return fixedError("invalid_websocket_subprotocol");
   }
+  if (role === "server" && [ADMISSION_HEADER, TICKET_HEADER, CLIENT_NONCE_HEADER]
+      .some(name => request.headers.has(name))) return fixedError("admission_invalid");
+  if (role === "client" && !request.headers.has(ADMISSION_HEADER)) return fixedError("admission_required");
+  const admission = role === "client" ? await verifyRendezvousAdmission(request, env,
+    env.RENDEZVOUS_HOSTNAME, serverId, accessProtocol) : null;
+  if (role === "client" && admission === null) return fixedError("admission_invalid");
   const cutoff = Math.floor(Date.now() / 1_000) - hooks.listingTtlSeconds;
   const server = await env.DB.prepare(
     `SELECT presence.access_required AS authorization_required,
@@ -125,6 +136,14 @@ export async function openRendezvous(
       method: "GET",
       headers: {
         Upgrade: "websocket",
+        ...(admission === null ? {} : {
+          [INTERNAL_RENDEZVOUS_ADMISSION_HEADER]: "work-v1-24",
+          [INTERNAL_RENDEZVOUS_TICKET_HEADER]: admission.ticket,
+          [INTERNAL_RENDEZVOUS_EXPIRY_HEADER]: String(admission.expiresAt),
+          ...(admission.clientNonce === null ? {} : {
+            [INTERNAL_RENDEZVOUS_NONCE_HEADER]: admission.clientNonce,
+          }),
+        }),
         [INTERNAL_RENDEZVOUS_ROLE_HEADER]: role,
         [INTERNAL_RENDEZVOUS_PROTOCOL_HEADER]: accessProtocol
           ? "access-tokens-v1"

@@ -1,3 +1,5 @@
+import { classifyRendezvousChallengeRoute } from "./routes";
+import { issueRendezvousChallenge } from "./rendezvous-work";
 import { classifyAccessRoute, ACCESS_RENDEZVOUS_SUBPROTOCOL } from "./routes";
 import { handleAccessRouteMutation, handleAccessResolve } from "./access-controller";
 import { consumeAccessResolveCoordinatorRequest } from "./internal-service";
@@ -187,6 +189,14 @@ export async function handleRendezvousCoordinatorRequest(
     const control = rendezvousCoordinatorConfiguration(env);
     const accessHeaders = new Headers(request.headers);
     accessHeaders.delete("Transfer-Encoding");
+    const challenge = classifyRendezvousChallengeRoute({ target: request.url, method: request.method,
+      headers: accessHeaders, hasBody: request.body !== null }, control.authority);
+    if (challenge !== null) {
+      diagnosticRoute = "rendezvous-client";
+      enforceCircuitBreaker(env.RENDEZVOUS_ENABLED, control.routeDisabledRetrySeconds);
+      return await issueRendezvousChallenge(consumeAccessResolveCoordinatorRequest(request),
+        env, control.authority, challenge);
+    }
     const access = classifyAccessRoute({ target: request.url, method: request.method,
       headers: accessHeaders, hasBody: request.body !== null }, control.authority, "rendezvous");
     if (access !== null) {

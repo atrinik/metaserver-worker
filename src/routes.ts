@@ -440,3 +440,24 @@ export function classifyAccessRoute(
   return { kind: "access-rendezvous", profile: match[1] as "classic" | "game",
     serverId: match[2], authority };
 }
+
+/** A blind challenge route: classification never looks up a server identity. */
+export function classifyRendezvousChallengeRoute(input: RouteInput, authority: string): string | null {
+  rejectAmbiguousCriticalHeaders(input.headers);
+  const target = parseTarget(input.target);
+  if (target.authority !== authority) throw new HttpError("misdirected_request");
+  enforceHostHeader(input.headers, authority);
+  if (!target.path.startsWith("/v1/rendezvous/challenge/")) return null;
+  enforceNoQuery(target.query);
+  const match = /^\/v1\/rendezvous\/challenge\/classic\/([0-9a-f]{64})$/.exec(target.path);
+  if (match === null) throw new HttpError("not_found");
+  enforceMethod(input.method, "POST");
+  enforceNoUpgrade(input.headers);
+  enforcePublisherBody(input);
+  if (input.headers.has("Cookie") || input.headers.has("Authorization") ||
+      input.headers.has("X-Atrinik-Rendezvous-Admission") ||
+      input.headers.has("X-Atrinik-Rendezvous-Ticket") ||
+      input.headers.has("X-Atrinik-Access-Client-Nonce")) throw new HttpError("bad_request");
+  if ((declaredContentLength(input.headers) ?? 0) > 256) throw new HttpError("payload_too_large");
+  return match[1];
+}

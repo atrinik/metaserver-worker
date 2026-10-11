@@ -12,7 +12,7 @@ import {
 } from "./rendezvous-contract";
 import type { RendezvousTerminalOutcome } from "./rendezvous-contract";
 
-export const ATTACHMENT_VERSION = 3;
+export const ATTACHMENT_VERSION = 4;
 // Tickets live only for the 15-second signaling attempt. This independent
 // attachment ceiling is not a player-facing daily admission quota.
 export const MAX_RETAINED_TICKETS = 50;
@@ -40,6 +40,8 @@ export interface ClientAttachment {
   readonly admissionId: number;
   readonly openedAt: number;
   expiresAt: number;
+  boundTicketHash: string | null;
+  accessClientNonce?: string | null;
   accessGrant?: string | null;
   accessRedemption?: string | null;
   ticket: string | null;
@@ -104,6 +106,8 @@ export interface StoredClientAttachment {
   readonly r: "c";
   readonly u: string | null;
   readonly e: string | null;
+  readonly l: string | null;
+  readonly w: string | null;
   readonly c: string;
   readonly g: string;
   readonly i: string;
@@ -230,12 +234,14 @@ function decodeClientAttachment(
   if (
     !hasExactKeys(value, [
       "v", "r", "c", "g", "i", "a", "o", "x", "t", "d", "s", "p", "h",
-      "j", "n", "q", "z", "b", "f", "m", "y", "k", "u", "e",
+      "j", "n", "q", "z", "b", "f", "m", "y", "k", "u", "e", "l", "w",
     ]) ||
     value.v !== ATTACHMENT_VERSION ||
     value.r !== "c" ||
-    !((value.u === null && value.e === null) || (isHex64(value.u) && isHex64(value.e))) ||
-    (value.s === 2 && (value.u !== null || value.e !== null)) ||
+    !((value.u === null && value.e === null && value.w === null) ||
+      (isHex64(value.u) && isHex64(value.e) && isHex64(value.w))) ||
+    (value.s === 2 && (value.u !== null || value.e !== null || value.w !== null)) ||
+    !(value.s === 2 ? value.l === null : isHex64(value.l)) ||
     !isConnectionId(value.c) ||
     !isHex64(value.g) ||
     !isConnectionId(value.i) ||
@@ -317,6 +323,8 @@ function decodeClientAttachment(
   return {
     v: ATTACHMENT_VERSION,
     role: "client",
+    boundTicketHash: value.l as string | null,
+    accessClientNonce: value.w as string | null,
     accessGrant: value.u as string | null,
     accessRedemption: value.e as string | null,
     controlId: value.c,
@@ -444,6 +452,8 @@ function encodeClientAttachment(
   return {
     v: ATTACHMENT_VERSION,
     r: "c",
+    l: attachment.boundTicketHash,
+    w: attachment.accessClientNonce ?? null,
     u: attachment.accessGrant ?? null,
     e: attachment.accessRedemption ?? null,
     c: attachment.controlId,

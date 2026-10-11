@@ -1,3 +1,5 @@
+import { classifyRendezvousChallengeRoute } from "./routes";
+import { validateChallengeServiceResponse } from "./internal-service";
 import { classifyAccessRoute, ACCESS_RENDEZVOUS_SUBPROTOCOL } from "./routes";
 import { accessResolveServiceRequest, validateAccessServiceResponse } from "./internal-service";
 import { rendezvousEdgeConfiguration } from "./config";
@@ -20,6 +22,14 @@ export default {
     let diagnosticRoute: DiagnosticRoute = "unclassified";
     try {
       const control = rendezvousEdgeConfiguration(env);
+      const challenge = classifyRendezvousChallengeRoute(routeInputFromRequest(request), control.authority);
+      if (challenge !== null) {
+        diagnosticRoute = "rendezvous-client";
+        assertNoInternalServiceHeaders(request.headers);
+        enforceCircuitBreaker(env.RENDEZVOUS_ENABLED, control.routeDisabledRetrySeconds);
+        await enforceSharedIngress(env.RENDEZVOUS_CLIENT_RATE_LIMITER, "rendezvous-client");
+        return await validateChallengeServiceResponse(await env.COORDINATOR.fetch(accessResolveServiceRequest(request)));
+      }
       const access = classifyAccessRoute(routeInputFromRequest(request), control.authority, "rendezvous");
       if (access !== null) {
         diagnosticRoute = "rendezvous-client";

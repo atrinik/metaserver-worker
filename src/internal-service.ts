@@ -1,3 +1,6 @@
+import { ADMISSION_HEADER, TICKET_HEADER, CLIENT_NONCE_HEADER, ADMISSION_SCHEMA,
+  parseAdmissionToken } from "./rendezvous-work";
+import { ACCESS_RENDEZVOUS_SUBPROTOCOL } from "./routes";
 import { isCanonicalHostname } from "./hostname";
 import {
   HTTP_ERROR_CODES,
@@ -51,6 +54,8 @@ const MAXIMUM_DYNAMIC_SERVICE_MILLISECONDS = 15_000;
 const HTTP_ERROR_CODE_SET = new Set<string>(HTTP_ERROR_CODES);
 const HTTP_RATE_LIMIT_REASON_SET = new Set<string>(HTTP_RATE_LIMIT_REASONS);
 const FIXED_RENDEZVOUS_ERRORS = Object.freeze([
+  { body: "Rendezvous admission required\n", headers: {}, status: 428 },
+  { body: "Forbidden\n", headers: {}, status: 403 },
   {
     body: "Invalid server ID\n",
     headers: {},
@@ -137,20 +142,32 @@ export function validatePublisherCoordinatorRequest(request: Request): void {
 }
 
 /** Build a rendezvous envelope containing only transport/authentication headers. */
+function rendezvousHeaders(request: Request, role: RendezvousRole): readonly string[] {
+  if (role === "server") {
+    if ([ADMISSION_HEADER, TICKET_HEADER, CLIENT_NONCE_HEADER].some(name => request.headers.has(name)))
+      throw new HttpError("bad_request");
+    return [...RENDEZVOUS_FORWARD_HEADERS, "Authorization"];
+  }
+  const access = request.headers.get("Sec-WebSocket-Protocol") === ACCESS_RENDEZVOUS_SUBPROTOCOL &&
+    /^\/v1\/access\/rendezvous\/classic\/[0-9a-f]{64}$/.test(new URL(request.url).pathname);
+  if (access) {
+    if (request.headers.has(TICKET_HEADER)) throw new HttpError("bad_request");
+    return [...RENDEZVOUS_FORWARD_HEADERS, ADMISSION_HEADER, "Authorization", CLIENT_NONCE_HEADER];
+  }
+  if (request.headers.has("Authorization") || request.headers.has(CLIENT_NONCE_HEADER)) throw new HttpError("bad_request");
+  return [...RENDEZVOUS_FORWARD_HEADERS, ADMISSION_HEADER, TICKET_HEADER];
+}
+
 export function rendezvousServiceRequest(request: Request, role: RendezvousRole): Request {
   assertNoInternalServiceHeaders(request.headers);
-  if (role === "client" && request.headers.has("Authorization")) throw new HttpError("bad_request");
-  return copyRequest(request, role === "server"
-    ? [...RENDEZVOUS_FORWARD_HEADERS, "Authorization"] : RENDEZVOUS_FORWARD_HEADERS);
+  return copyRequest(request, rendezvousHeaders(request, role));
 }
 
-/** Reject all requester metadata, including retired source/pair alias envelopes. */
+/** Reject requester metadata and accept client credentials only on the protected role. */
 export function consumeRendezvousCoordinatorRequest(request: Request, role: RendezvousRole): Request {
-  assertExactHeaderNames(request.headers, role === "server"
-    ? [...RENDEZVOUS_FORWARD_HEADERS, "Authorization"] : RENDEZVOUS_FORWARD_HEADERS);
-  return new Request(request.url, {method: request.method, headers: request.headers, redirect: "manual"});
+  assertExactHeaderNames(request.headers, rendezvousHeaders(request, role));
+  return new Request(request.url, { method: request.method, headers: request.headers, redirect: "manual" });
 }
-
 
 /** Validate and reconstruct one bounded, canonical publisher response. */
 export async function validatePublisherServiceResponse(
@@ -483,7 +500,8 @@ async function canonicalHttpErrorResponse(
 }
 
 export function assertNoInternalServiceHeaders(headers: Headers): void {
-  if (INTERNAL_HEADERS.some((name) => headers.has(name))) {
+  if (INTERNAL_HEADERS.some((name) => headers.has(name)) ||
+      [...headers.keys()].some(name => /^x-atrinik-(?:rendezvous-v[0-9]+-|role$)/i.test(name))) {
     throw new HttpError("bad_request");
   }
 }
@@ -595,5 +613,22 @@ export async function validateAccessServiceResponse(
   if (canonical === null || canonical !== body || !serviceResponseHeadersEqual(response.headers, headers, body)) {
     return rejectUnsafeDynamicResponse(response);
   }
+  return new Response(body, { headers });
+}
+
+/** Stateless admission challenge responses have their own closed success envelope. */
+export async function validateChallengeServiceResponse(response: Response): Promise<Response> {
+  if (response.status !== 200) return validateRendezvousServiceResponse(response, null);
+  if (response.webSocket !== null) return rejectUnsafeDynamicResponse(response);
+  let body: string;
+  try { body = await readBoundedResponseBody(response, 512); }
+  catch { return rejectUnsafeDynamicResponse(response); }
+  const value = parseJsonRecord(body);
+  const token = typeof value?.challenge === "string" ? parseAdmissionToken(value.challenge) : null;
+  const canonical = token === null ? null : JSON.stringify({ schema: ADMISSION_SCHEMA,
+    challenge: value!.challenge, difficulty: 24, expiresAt: String(token.expiresAt) });
+  const headers = jsonResponseHeaders();
+  if (canonical !== body || !serviceResponseHeadersEqual(response.headers, headers, body))
+    return rejectUnsafeDynamicResponse(response);
   return new Response(body, { headers });
 }

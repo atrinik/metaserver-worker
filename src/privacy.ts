@@ -109,6 +109,31 @@ export class SourceTagKeyRing {
     return new SourceTagKeyRing(Object.freeze(keys));
   }
 
+  get admissionKeyId(): string { return this.#keys[0]!.id; }
+
+  /** Admission signatures never reuse grant or ticket replay domains. */
+  async signAdmission(authority: string, serverId: string, prefix: string): Promise<string> {
+    return this.admissionMac(this.#keys[0]!, authority, serverId, prefix);
+  }
+
+  async verifyAdmission(authority: string, serverId: string, prefix: string,
+    keyId: string, mac: string): Promise<boolean> {
+    const key = this.#keys.find(candidate => candidate.id === keyId);
+    if (key === undefined || !LOWERCASE_HEX_256_PATTERN.test(mac)) return false;
+    const expected = await this.admissionMac(key, authority, serverId, prefix);
+    return equalBytes(new TextEncoder().encode(expected), new TextEncoder().encode(mac));
+  }
+
+  private async admissionMac(key: ImportedSourceTagKey, authority: string,
+    serverId: string, prefix: string): Promise<string> {
+    validateNamespace(authority);
+    validateServerId(serverId);
+    const domain = `atrinik-rendezvous-admission-v1\0${authority}\0classic\0${serverId}\0${prefix}`;
+    const mac = new Uint8Array(await crypto.subtle.sign("HMAC", key.key,
+      new TextEncoder().encode(domain)));
+    return Array.from(mac, byte => byte.toString(16).padStart(2, "0")).join("");
+  }
+
   /**
    * Derive current and previous-key aliases for a replay-ledger entry. The
    * caller receives only opaque tags; the ticket, HMAC keys, and signing

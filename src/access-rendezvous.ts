@@ -1,5 +1,5 @@
-export const INTERNAL_ACCESS_PROBE_URL = "https://rendezvous.internal/v4/access/probe";
-export const INTERNAL_ACCESS_REVOKE_URL = "https://rendezvous.internal/v4/access/revoke";
+export const INTERNAL_ACCESS_PROBE_URL = "https://rendezvous.internal/v5/access/probe";
+export const INTERNAL_ACCESS_REVOKE_URL = "https://rendezvous.internal/v5/access/revoke";
 export interface ParsedAccessInit {
   readonly ok: true;
   readonly access: true;
