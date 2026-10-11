@@ -3,6 +3,7 @@ import { resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { developmentWorkerNames, promotionEnvironmentNames } from "./delivery-targets.mjs";
 import { assertDirectoryBuildContext } from "./production-delivery.mjs";
+import { markDirectoryFailure, directoryFailureLine } from "./directory-reconciliation-diagnostics.mjs";
 
 const INTERNAL_URL = "https://internal.atrinik.invalid/v1/directory-reconciliation";
 const STAGE_TIMEOUT_MS = 90_000;
@@ -54,8 +55,11 @@ async function boundedCleanup(operation, milliseconds) {
 
 export async function invokeDirectoryProxy({ configPath, config, environment,
   authorize, createProxy, timeoutMs = STAGE_TIMEOUT_MS, cleanupTimeoutMs = CLEANUP_TIMEOUT_MS }) {
-  validateDirectoryProxyInput(config, environment);
-  if (typeof authorize !== "function") throw new Error("directory proxy live authority missing");
+  try {
+    validateDirectoryProxyInput(config, environment);
+    if (typeof authorize !== "function") throw new Error("directory proxy live authority missing");
+  } catch (error) { throw markDirectoryFailure(error, "configuration"); }
+  let phase = "authority-before-proxy";
   let timer;
   let proxy;
   let reader;
@@ -75,6 +79,7 @@ export async function invokeDirectoryProxy({ configPath, config, environment,
     const operation = (async () => {
       await authorize();
       assertRunning();
+      phase = "proxy-initialization";
       const acquired = await createProxy({ configPath, persist: false, remoteBindings: true });
       if (stopped) {
         await boundedCleanup(() => acquired.dispose(), cleanupTimeoutMs);
@@ -82,16 +87,21 @@ export async function invokeDirectoryProxy({ configPath, config, environment,
       }
       proxy = acquired;
       // Initialization can take long enough to lose current-main or the lease.
+      phase = "authority-before-request";
       await authorize();
       assertRunning();
+      phase = "request";
       const response = await proxy.env.DIRECTORY_RECONCILIATION.fetch(
         new Request(INTERNAL_URL, { method: "POST", redirect: "error", signal: abort.signal }));
       assertRunning();
+      phase = "response";
       if (response.status !== 200 || response.headers.get("Content-Type") !== "application/json" ||
           response.headers.get("Cache-Control") !== "no-store") {
         if (response.body) await response.body.cancel();
-        throw new Error("directory proxy response rejected");
+        throw new Error(response.status === 200 ? "directory proxy response rejected"
+          : `directory proxy response rejected (http=${response.status})`);
       }
+      phase = "receipt";
       // Read a bounded receipt before parsing; raw provider output never escapes.
       if (!response.body) throw new Error("directory proxy receipt missing");
       reader = response.body.getReader();
@@ -105,26 +115,33 @@ export async function invokeDirectoryProxy({ configPath, config, environment,
         if (bytes > 4_096) throw new Error("directory proxy receipt too large");
         chunks.push(value);
       }
-      const receipt = JSON.parse(Buffer.concat(chunks).toString("utf8"));
+      let receipt;
+      try { receipt = JSON.parse(Buffer.concat(chunks).toString("utf8")); }
+      catch { throw new Error("directory proxy receipt invalid"); }
+      phase = "authority-after-receipt";
       await authorize();
       assertRunning();
       return receipt;
     })();
     return await Promise.race([operation, deadline]);
+  } catch (error) {
+    throw markDirectoryFailure(error, phase);
   } finally {
     stopped = true;
     abort.abort();
     clearTimeout(timer);
     // Cancellation and disposal share one independent bound, even when reads or
     // provider cleanup never settle. A cleanup timeout is a failed stage.
-    await boundedCleanup(async () => {
-      const results = await Promise.allSettled([
-        reader ? reader.cancel() : Promise.resolve(),
-        proxy ? proxy.dispose() : Promise.resolve(),
-      ]);
-      if (results.some((result) => result.status === "rejected"))
-        throw new Error("directory proxy cleanup failed");
-    }, cleanupTimeoutMs);
+    try {
+      await boundedCleanup(async () => {
+        const results = await Promise.allSettled([
+          reader ? reader.cancel() : Promise.resolve(),
+          proxy ? proxy.dispose() : Promise.resolve(),
+        ]);
+        if (results.some((result) => result.status === "rejected"))
+          throw new Error("directory proxy cleanup failed");
+      }, cleanupTimeoutMs);
+    } catch (error) { throw markDirectoryFailure(error, "cleanup"); }
   }
 }
 
@@ -152,8 +169,8 @@ async function main() {
 }
 
 if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
-  main().catch(() => {
-    console.error("directory reconciliation stage failed");
+  main().catch((error) => {
+    console.error(directoryFailureLine(error));
     process.exitCode = 1;
   });
 }

@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
+import { spawnSync } from "node:child_process";
 import { readFile, rm, stat } from "node:fs/promises";
 import { resolve } from "node:path";
 import test from "node:test";
@@ -50,6 +51,7 @@ import {
   wranglerDeployArguments,
 } from "./production-delivery.mjs";
 
+import { directoryFailureLine, markDirectoryFailure, parseDirectoryFailure } from "./directory-reconciliation-diagnostics.mjs";
 import { developmentFixture, developmentWorkerNames } from "./delivery-targets.mjs";
 import { invokeDirectoryProxy, validateDirectoryProxyInput } from "./production-directory-reconciliation.mjs";
 
@@ -1987,4 +1989,90 @@ test("failure accessor and formatter do not publish private provider identity fi
   assert.deepEqual(record.completedRoles, ["staged:core"]);
   assert.notEqual(record.completedRoles, evidence.completedRoles);
   assert.equal(currentDeliveryFailureRecord(new Error("private")).reason, "unexpected-internal-error");
+});
+
+
+test("DEV reconciliation failures retain only closed phase/reason diagnostics through the parent", async () => {
+  const secret = "private account-id/token https://private.example/receipt";
+  const config = directoryReconciliationProxyConfiguration({ ...developmentFixture(configs[0], 0), account_id: "a".repeat(32) });
+  const environment = { ...proxyEnvironment(), ATRINIK_DELIVERY_ENVIRONMENT: "development",
+    GITHUB_EVENT_NAME: "workflow_run", ATRINIK_DEVELOPMENT_SHA: "a".repeat(40) };
+  const cases = [
+    { phase: "authority-before-proxy", authority: 1 },
+    { phase: "proxy-initialization", init: true },
+    { phase: "authority-before-request", authority: 2 },
+    { phase: "request", fetch: true },
+    { phase: "response", response: () => new Response(secret, { status: 503 }), reason: "http-503" },
+    { phase: "receipt", response: () => new Response(secret, { headers: { "Content-Type": "application/json", "Cache-Control": "no-store" } }), reason: "receipt-invalid" },
+    { phase: "authority-after-receipt", authority: 3 },
+    { phase: "cleanup", cleanup: true, reason: "cleanup-failed" },
+  ];
+  for (const scenario of cases) {
+    let calls = 0;
+    let failed;
+    try {
+      await invokeDirectoryProxy({ configPath: "/private/proxy.json", config, environment,
+        authorize: async () => { if (++calls === scenario.authority) throw new Error(secret); },
+        createProxy: async () => {
+          if (scenario.init) throw new Error(secret);
+          return { dispose: async () => { if (scenario.cleanup) throw new Error(secret); },
+            env: { DIRECTORY_RECONCILIATION: { fetch: async () => {
+              if (scenario.fetch) throw new Error(secret);
+              return scenario.response?.() ?? Response.json({ receipt: true }, { headers: { "Cache-Control": "no-store" } });
+            } } } };
+        },
+      });
+    } catch (error) { failed = error; }
+    assert.ok(failed, scenario.phase);
+    const line = directoryFailureLine(failed);
+    assert.deepEqual(parseDirectoryFailure(line), { schema: "directory-failure-v1", phase: scenario.phase,
+      reason: scenario.reason ?? "operation-failed" });
+    const detail = describeSubprocessFailure({ code: 1, stderr: `${secret}\n${line}\n` });
+    assert.equal(detail, `exit=1 directory-phase=${scenario.phase} directory-reason=${scenario.reason ?? "operation-failed"}`);
+    assert.equal(detail.includes(secret), false);
+    assert.equal(line.includes(secret), false);
+  }
+});
+
+test("reconciliation timeout diagnostics identify the pending stage and cleanup deadline", async () => {
+  const config = directoryReconciliationProxyConfiguration(productionConfigs()[0]);
+  const options = { configPath: "/private/proxy.json", config, environment: proxyEnvironment(),
+    timeoutMs: 5, cleanupTimeoutMs: 5 };
+  const never = () => new Promise(() => {});
+  for (const [phase, overrides] of [
+    ["authority-before-proxy", { authorize: never, createProxy: async () => assert.fail("must not initialize") }],
+    ["proxy-initialization", { authorize: async () => {}, createProxy: never }],
+    ["cleanup", { authorize: async () => {}, createProxy: async () => ({ dispose: never,
+      env: { DIRECTORY_RECONCILIATION: { fetch: async () => Response.json({}, { headers: { "Cache-Control": "no-store" } }) } } }) }],
+  ]) {
+    await assert.rejects(invokeDirectoryProxy({ ...options, ...overrides }), error => {
+      assert.deepEqual(parseDirectoryFailure(directoryFailureLine(error)), { schema: "directory-failure-v1", phase,
+        reason: phase === "cleanup" ? "cleanup-deadline-exceeded" : "deadline-exceeded" });
+      return true;
+    });
+  }
+});
+
+test("child diagnostics reject arbitrary fields, duplicate records and unrecognized codes", () => {
+  const line = directoryFailureLine(markDirectoryFailure(new Error("private-secret"), "proxy-initialization"));
+  for (const text of [line + "\n" + line, line.replace("proxy-initialization", "private-secret"),
+    line.replace('"operation-failed"', '"private-secret"'), line.replace('"phase":', '"private":"secret","phase":'),
+    "ATRINIK_DIRECTORY_FAILURE not-json", "x".repeat(8193) + line]) assert.equal(parseDirectoryFailure(text), null);
+  assert.deepEqual(parseDirectoryFailure(directoryFailureLine(new Error("private-secret"))),
+    { schema: "directory-failure-v1", phase: "configuration", reason: "operation-failed" });
+});
+
+
+test("real reconciliation child catch emits a redacted record consumed by the parent", () => {
+  const result = spawnSync(process.execPath,
+    [resolve(root, "scripts/production-directory-reconciliation.mjs"), "/private/secret-account-config-missing.json"],
+    { encoding: "utf8", env: { PATH: process.env.PATH } });
+  assert.ifError(result.error);
+  assert.equal(result.status, 1);
+  assert.equal(result.stdout, "");
+  assert.deepEqual(parseDirectoryFailure(result.stderr),
+    { schema: "directory-failure-v1", phase: "configuration", reason: "operation-failed" });
+  assert.equal(result.stderr.includes("secret-account"), false);
+  assert.equal(describeSubprocessFailure({ code: result.status, stderr: result.stderr }),
+    "exit=1 directory-phase=configuration directory-reason=operation-failed");
 });

@@ -6,6 +6,7 @@ import { dirname, isAbsolute, relative, resolve } from "node:path";
 import { setTimeout as wait } from "node:timers/promises";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
+import { parseDirectoryFailure } from "./directory-reconciliation-diagnostics.mjs";
 import { parseResourcePolicy, resourcePolicyDigest as digestResourcePolicy, validateResourceConfigurations,
   assertResourcePolicyLive, resourcePolicyReader } from "./delivery-resource-policy.mjs";
 import { developmentWorkerNames, promotionEnvironmentNames, targetContract, developmentFixture, deliveryTarget } from "./delivery-targets.mjs";
@@ -1129,6 +1130,11 @@ export function describeSubprocessFailure(error) {
   const messageStage = /\b(stage=(?:git|node|npm|npx|python3|tsc|vitest|wrangler))\b/u.exec(message)?.[1];
   if (messageStage && !details.some((value) => value === messageStage))
     details.push(messageStage);
+  const directoryFailure = fields.map(({ stderr }) => parseDirectoryFailure(stderr)).find(Boolean);
+  if (directoryFailure) {
+    details.push(`directory-phase=${directoryFailure.phase}`, `directory-reason=${directoryFailure.reason}`);
+    return details.join(" ");
+  }
   const providerOutput = subprocessText(primary);
   const executable = diagnosticExecutable(providerOutput);
   if (executable && !details.some((value) => value === `stage=${executable}`))
