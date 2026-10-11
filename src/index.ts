@@ -74,6 +74,7 @@ import {
 import type { CanonicalDynamicRoute } from "./routes";
 
 export { DirectoryBuilder, RendezvousHealth, RendezvousRoom };
+export { DirectoryReconciliation } from "./directory-reconciliation";
 
 /** Narrow internal publisher capability for the domainless publisher edge. */
 export class PublisherCoordinator extends WorkerEntrypoint<CoreEnv> {
