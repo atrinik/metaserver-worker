@@ -37,6 +37,8 @@ function awaitingClient(): ClientAttachment {
   return {
     v: ATTACHMENT_VERSION,
     role: "client",
+    boundTicketHash: TICKET_DIGEST,
+    accessClientNonce: null,
     accessGrant: null,
     accessRedemption: null,
     controlId: CONTROL_ID,
@@ -78,6 +80,7 @@ function exchangingClient(): ClientAttachment {
 function terminalClient(): ClientAttachment {
   return {
     ...exchangingClient(),
+    boundTicketHash: null,
     ticket: null,
     ticketDigest: null,
     stage: "terminal",
@@ -158,8 +161,8 @@ describe("rendezvous hibernation attachments", () => {
   });
 
   it("retains a grant only on a bounded admitted live client", () => {
-    const init = { ...awaitingClient(), authorization: "awaiting_init" } as const;
-    const admitted = { ...awaitingClient(), accessGrant: RAW_TICKET, accessRedemption: TICKET_DIGEST };
+    const init = { ...awaitingClient(), accessGrant: RAW_TICKET, accessRedemption: TICKET_DIGEST, accessClientNonce: "c".repeat(64), authorization: "awaiting_init" } as const;
+    const admitted = { ...awaitingClient(), accessGrant: RAW_TICKET, accessRedemption: TICKET_DIGEST, accessClientNonce: "c".repeat(64) };
     for (const attachment of [init,admitted]) {
       expect(decodeRendezvousAttachment(encodeRendezvousAttachment(attachment))).toEqual(attachment);
     }
@@ -205,9 +208,9 @@ describe("rendezvous hibernation attachments", () => {
       { role: "client", stage: "awaiting_candidate" },
       { role: "server", current: true },
       { ...client, v: 0 },
-      { ...client, v: 4 },
+      { ...client, v: 5 },
       { ...server, v: 0 },
-      { ...server, v: 4 },
+      { ...server, v: 5 },
       { ...server, r: "server" },
     ];
 

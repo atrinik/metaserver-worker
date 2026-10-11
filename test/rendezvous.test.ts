@@ -66,6 +66,7 @@ const COMPLETE_CLOSE = {
 } as const;
 
 let roomSequence = 0;
+let admissionTicketSequence = 1_000_000;
 
 function room(name: string): DurableObjectStub<RendezvousRoom> {
   roomSequence += 1;
@@ -94,6 +95,13 @@ function roomRequest(
   if (!headers.has(INTERNAL_RENDEZVOUS_GENERATION_HEADER)) {
     headers.set(INTERNAL_RENDEZVOUS_GENERATION_HEADER, "0".repeat(64));
   }
+  if (role === "client") {
+    if (!headers.has("X-Atrinik-Rendezvous-V5-Admission")) {
+      headers.set("X-Atrinik-Rendezvous-V5-Admission", "work-v1-24");
+      headers.set("X-Atrinik-Rendezvous-V5-Ticket", ticket(++admissionTicketSequence));
+      headers.set("X-Atrinik-Rendezvous-V5-Admission-Expires", String(Math.floor(Date.now() / 1000) + 60));
+    }
+  }
   return new Request(url, { ...init, headers });
 }
 
@@ -104,6 +112,8 @@ async function connect(
     readonly accessProtocol?: boolean;
     readonly authorizationRequired?: boolean;
     readonly generation?: string;
+    readonly ticket?: string;
+    readonly clientNonce?: string;
   } = {},
 ): Promise<WebSocket> {
   const accessProtocol = options.accessProtocol ?? false;
@@ -116,7 +126,16 @@ async function connect(
     [INTERNAL_RENDEZVOUS_GENERATION_HEADER]:
       options.generation ?? "0".repeat(64),
   };
-  const response = await stub.fetch(roomRequest(role, { headers }));
+  const admissionHeaders = new Headers(headers);
+  if (role === "client") {
+    admissionHeaders.set("X-Atrinik-Rendezvous-V5-Admission", "work-v1-24");
+    admissionHeaders.set("X-Atrinik-Rendezvous-V5-Ticket", options.ticket ?? ticket(++admissionTicketSequence));
+    admissionHeaders.set("X-Atrinik-Rendezvous-V5-Admission-Expires", String(Math.floor(Date.now() / 1000) + 60));
+    if (options.clientNonce !== undefined) {
+      admissionHeaders.set("X-Atrinik-Rendezvous-V5-Client-Nonce", options.clientNonce);
+    }
+  }
+  const response = await stub.fetch(roomRequest(role, { headers: admissionHeaders }));
   expect(response.status).toBe(101);
   expect(response.headers.get("Sec-WebSocket-Protocol")).toBe(
     accessProtocol ? ACCESS_RENDEZVOUS_SUBPROTOCOL : null,
@@ -757,25 +776,60 @@ describe("RendezvousRoom HTTP and admission boundary", () => {
     }
   });
 
-  it("releases an admission when post-quota upgrade construction fails", async () => {
+  it("admits at most one concurrent upgrade for the same preauthorized ticket", async () => {
+    const stub = room("concurrent-same-ticket");
+    const server = await connect(stub, "server");
+    const request = roomRequest("client");
+    const responses = await Promise.all([stub.fetch(request.clone()), stub.fetch(request.clone())]);
+    expect(responses.map(response => response.status).sort()).toEqual([101, 403]);
+    expect(await admissionCount(stub)).toBe(1);
+    const sockets = responses.flatMap(response => response.webSocket === null ? [] : [response.webSocket]);
+    for (const socket of sockets) socket.accept();
+    closeForCleanup(...sockets, server);
+  });
+
+  it.each(["missing", "invalid", "expired", "future"])("allocates no sockets or ledger rows for %s internal admission", async (attack) => {
+    const stub = room(`invalid-attestation-${attack}`);
+    const server = await connect(stub, "server");
+    try {
+      const request = roomRequest("client");
+      const headers = new Headers(request.headers);
+      if (attack === "missing") headers.delete("X-Atrinik-Rendezvous-V5-Admission");
+      if (attack === "invalid") headers.set("X-Atrinik-Rendezvous-V5-Admission", "work-v1-23");
+      if (attack === "expired") headers.set("X-Atrinik-Rendezvous-V5-Admission-Expires", String(Math.floor(Date.now() / 1000)));
+      if (attack === "future") headers.set("X-Atrinik-Rendezvous-V5-Admission-Expires", String(Math.floor(Date.now() / 1000) + 61));
+      const responses = await Promise.all(Array.from({ length: 32 }, () => stub.fetch(new Request(request.url, { headers }))));
+      expect(responses.every(response => response.status === 400 && response.webSocket === null)).toBe(true);
+      expect(await admissionCount(stub)).toBe(0);
+      expect(await runInDurableObject(stub, (_instance, state) => state.getWebSockets("client").length)).toBe(0);
+    } finally { closeForCleanup(server); }
+  });
+
+  it("retains a preclaimed ticket when upgrade construction fails", async () => {
     const stub = room("failed-client-upgrade-rollback");
     const server = await connect(stub, "server");
+    const request = roomRequest("client");
     const randomUuid = vi.spyOn(crypto, "randomUUID")
       .mockImplementationOnce(() => {
         throw new Error("injected client upgrade failure");
       });
     try {
       await expectFixedError(
-        await stub.fetch(roomRequest("client")),
+        await stub.fetch(request.clone()),
         503,
         "Rendezvous server unavailable\n",
         "5",
       );
-      expect(await admissionCount(stub)).toBe(0);
+      expect(await admissionCount(stub)).toBe(1);
+      randomUuid.mockRestore();
+      const replay = await stub.fetch(request.clone());
+      expect(replay.status).toBe(403);
+      expect(replay.webSocket).toBeNull();
+      expect(await admissionCount(stub)).toBe(1);
 
       randomUuid.mockRestore();
       const client = await connect(stub, "client");
-      expect(await admissionCount(stub)).toBe(1);
+      expect(await admissionCount(stub)).toBe(2);
       closeForCleanup(client);
     } finally {
       randomUuid.mockRestore();
@@ -799,7 +853,7 @@ describe("RendezvousRoom HTTP and admission boundary", () => {
         "Rendezvous server unavailable\n",
         "5",
       );
-      expect(await admissionCount(stub)).toBe(0);
+      expect(await admissionCount(stub)).toBe(1);
       await Promise.resolve();
       expect(summaries).toEqual([]);
       expect(server.readyState).toBe(WebSocket.OPEN);
@@ -970,7 +1024,7 @@ describe("RendezvousRoom HTTP and admission boundary", () => {
 });
 
 describe("RendezvousRoom access grants", () => {
-  async function fixture() {
+  async function grantFixture() {
     const serverId = ticket(80_000 + ++roomSequence);
     const generation = "a".repeat(64);
     const grant = ticket(90_000 + roomSequence);
@@ -986,9 +1040,105 @@ describe("RendezvousRoom access grants", () => {
     expect(await issueAccessGrant(env.DB,serverId,nonce,tags,generation,now,14400)).not.toBeNull();
     const stub = env.RENDEZVOUS.getByName(serverId);
     const server = await connect(stub,"server",{ accessProtocol:true,generation });
-    const client = await connect(stub,"client",{ accessProtocol:true,authorizationRequired:true,generation });
     const init = JSON.stringify({type:"access_init",version:1,grant,client_nonce:nonce});
-    return {serverId,generation,grant,nonce,stub,server,client,init};
+    return {serverId,generation,grant,nonce,stub,server,init};
+  }
+  async function fixture() {
+    const f = await grantFixture();
+    const client = await connect(f.stub, "client", { accessProtocol: true, authorizationRequired: true,
+      generation: f.generation, ticket: f.grant, clientNonce: f.nonce });
+    return { ...f, client };
+  }
+  function grantRequest(f: Awaited<ReturnType<typeof grantFixture>>, selectedGrant = f.grant): Request {
+    return roomRequest("client", { headers: {
+      [INTERNAL_RENDEZVOUS_PROTOCOL_HEADER]: "access-tokens-v1",
+      [INTERNAL_RENDEZVOUS_AUTHORIZATION_HEADER]: "required",
+      [INTERNAL_RENDEZVOUS_GENERATION_HEADER]: f.generation,
+      "X-Atrinik-Rendezvous-V5-Admission": "work-v1-24",
+      "X-Atrinik-Rendezvous-V5-Ticket": selectedGrant,
+      "X-Atrinik-Rendezvous-V5-Admission-Expires": String(Math.floor(Date.now() / 1000) + 60),
+      "X-Atrinik-Rendezvous-V5-Client-Nonce": f.nonce,
+    } });
+  }
+  it.each(["invalid", "revoked", "expired", "generation"])("allocates no client or replay row for a %s grant", async attack => {
+    const f = await grantFixture();
+    try {
+      const now = Math.floor(Date.now() / 1000);
+      if (attack === "revoked") await env.DB.prepare("UPDATE access_routes SET state='revoked',revoked_at=? WHERE route_index=?").bind(now, f.serverId).run();
+      if (attack === "expired") await env.DB.prepare("UPDATE access_grants SET expires_at=? WHERE server_id=?").bind(now, f.serverId).run();
+      if (attack === "generation") await env.DB.prepare("UPDATE server_presence SET rendezvous_generation=? WHERE server_id=?").bind("c".repeat(64), f.serverId).run();
+      const response = await f.stub.fetch(grantRequest(f, attack === "invalid" ? "f".repeat(64) : f.grant));
+      expect(response.status).toBe(403); expect(response.webSocket).toBeNull();
+      expect(await admissionCount(f.stub)).toBe(0);
+      expect(await runInDurableObject(f.stub, (_instance, state) => state.getWebSockets("client").length)).toBe(0);
+    } finally { closeForCleanup(f.server); }
+  });
+  it.each(["expiry", "revocation"])("rechecks %s after the grant redemption await before allocation", async change => {
+    const f = await grantFixture();
+    try {
+      const request = grantRequest(f);
+      await runInDurableObject(f.stub, async (instance, state) => {
+        const database = (Reflect.get(instance, "env") as { DB: D1Database }).DB;
+        const original = database.batch.bind(database);
+        const clock = vi.spyOn(Date, "now");
+        const start = Date.now();
+        const batch = vi.spyOn(database, "batch").mockImplementation(async statements => {
+          const results = await original(statements);
+          if (change === "expiry") clock.mockReturnValue(start + 16_000);
+          else await database.prepare("UPDATE access_routes SET state='revoked',revoked_at=? WHERE route_index=?")
+            .bind(Math.floor(start / 1000), f.serverId).run();
+          return results;
+        });
+        try {
+          const response = await instance.fetch(request);
+          expect(response.status).toBe(403); expect(response.webSocket).toBeNull();
+          expect(state.getWebSockets("client")).toHaveLength(0);
+          expect(state.storage.sql.exec<{ count: number }>("SELECT count(*) AS count FROM rendezvous_admissions").one().count).toBe(0);
+        } finally { batch.mockRestore(); clock.mockRestore(); }
+      });
+    } finally { closeForCleanup(f.server); }
+  });
+  it.each(["proof expiry", "grant expiry", "session expiry", "revocation"])("fails closed after alarm scheduling crosses %s", async change => {
+    const f = await grantFixture();
+    try {
+      const request = grantRequest(f);
+      const headers = new Headers(request.headers);
+      const start = Date.now();
+      if (change === "proof expiry") headers.set("X-Atrinik-Rendezvous-V5-Admission-Expires", String(Math.floor(start / 1000) + 1));
+      await runInDurableObject(f.stub, async (instance, state) => {
+        const clock = vi.spyOn(Date, "now");
+        const original = state.storage.setAlarm.bind(state.storage);
+        const setAlarm = vi.spyOn(state.storage, "setAlarm").mockImplementation(async (...args) => {
+          await original(...args);
+          if (state.getWebSockets("client").length === 0) return;
+          if (change === "revocation") await env.DB.prepare("UPDATE access_routes SET state='revoked',revoked_at=? WHERE route_index=?")
+            .bind(Math.floor(start / 1000), f.serverId).run();
+          else clock.mockReturnValue(start + (change === "proof expiry" ? 2_000 : 16_000));
+        });
+        try {
+          const response = await instance.fetch(new Request(request.url, { headers }));
+          expect(response.status).not.toBe(101); expect(response.webSocket).toBeNull();
+          expect(state.getWebSockets("client").every(socket => socket.readyState !== WebSocket.OPEN)).toBe(true);
+          expect(state.storage.sql.exec<{ count: number }>("SELECT count(*) AS count FROM rendezvous_admissions").one().count).toBe(1);
+          const row = await env.DB.prepare("SELECT redemption_id FROM access_grants WHERE server_id=?").bind(f.serverId).first<{ redemption_id: string }>();
+          expect(row?.redemption_id).toBeTruthy();
+        } finally { setAlarm.mockRestore(); clock.mockRestore(); }
+      });
+    } finally { closeForCleanup(f.server); }
+  });
+  it("redeems once before allocating sockets for concurrent protected upgrades", async () => {
+    const f = await grantFixture();
+    try {
+      const request = grantRequest(f);
+      const responses = await Promise.all([f.stub.fetch(request.clone()), f.stub.fetch(request.clone())]);
+      expect(responses.map(response => response.status).sort()).toEqual([101, 403]);
+      expect(await admissionCount(f.stub)).toBe(1);
+      const row = await env.DB.prepare("SELECT redemption_id FROM access_grants WHERE server_id=?").bind(f.serverId).first<{ redemption_id: string }>();
+      expect(row?.redemption_id).toBeTruthy();
+      for (const response of responses) if (response.webSocket !== null) {
+        response.webSocket.accept(); closeForCleanup(response.webSocket);
+      }
+    } finally { closeForCleanup(f.server); }
   }
   it("redeems once, survives hibernation, and relays only the grant-bound ticket", async () => {
     const f = await fixture();
@@ -1000,10 +1150,17 @@ describe("RendezvousRoom access grants", () => {
       expect(await forwarded).toEqual(JSON.parse(clientCandidate(f.grant)));
       const returned = nextJson(f.client); f.server.send(serverCandidate(f.grant));
       expect(await returned).toEqual(JSON.parse(serverCandidate(f.grant)));
-      const replay = await connect(f.stub,"client",{accessProtocol:true,authorizationRequired:true,generation:f.generation});
-      const denied = nextClose(replay); replay.send(f.init);
-      expect((await denied).code).toBe(4005);
-      closeForCleanup(replay);
+      const replay = await f.stub.fetch(roomRequest("client", { headers: {
+        [INTERNAL_RENDEZVOUS_PROTOCOL_HEADER]: "access-tokens-v1",
+        [INTERNAL_RENDEZVOUS_AUTHORIZATION_HEADER]: "required",
+        [INTERNAL_RENDEZVOUS_GENERATION_HEADER]: f.generation,
+        "X-Atrinik-Rendezvous-V5-Admission": "work-v1-24",
+        "X-Atrinik-Rendezvous-V5-Ticket": f.grant,
+        "X-Atrinik-Rendezvous-V5-Admission-Expires": String(Math.floor(Date.now() / 1000) + 60),
+        "X-Atrinik-Rendezvous-V5-Client-Nonce": f.nonce,
+      } }));
+      expect(replay.status).toBe(403);
+      expect(replay.webSocket).toBeNull();
     } finally { closeForCleanup(f.client,f.server); }
   });
   it.each(["wrong nonce","wrong ticket","candidate first","legacy init","repeated init"])("denies %s", async (attack) => {
@@ -1141,7 +1298,7 @@ describe("RendezvousRoom access grants", () => {
     const keys=await requiredSourceTagKeyRing(env);
     const tags=await keys.accessGrantTags(env.RENDEZVOUS_HOSTNAME,"classic",f.serverId,secondGrant,f.nonce);
     await issueAccessGrant(env.DB,f.serverId,f.nonce,tags,f.generation,Math.floor(Date.now()/1000),14400);
-    const second=await connect(f.stub,"client",{accessProtocol:true,authorizationRequired:true,generation:f.generation});
+    const second=await connect(f.stub,"client",{accessProtocol:true,authorizationRequired:true,generation:f.generation,ticket:secondGrant,clientNonce:f.nonce});
     try {
       let ready=nextJson(f.client); f.client.send(f.init); await ready;
       ready=nextJson(second); second.send(JSON.stringify({type:"access_init",version:1,grant:secondGrant,client_nonce:f.nonce})); await ready;
@@ -1184,55 +1341,53 @@ describe("RendezvousRoom access grants", () => {
       expect((await closed).code).toBe(4005);
     } finally {closeForCleanup(f.client,f.server);}
   });
-  it("serializes a delivered revoke behind an in-flight admission transition",async()=>{
-    const f=await fixture();
+  it("serializes a delivered revoke behind an in-flight confirmation transition", async () => {
+    const f = await fixture();
     try {
-      const ready=nextJson(f.client),closed=nextClose(f.client);
-      await runInDurableObject(f.stub,async(instance,state)=>{
-        const database=(Reflect.get(instance,"env") as {DB:D1Database}).DB;
-        const original=database.batch.bind(database);
-        let release:()=>void=()=>{};const gate=new Promise<void>(resolve=>{release=resolve;});let committed=false;
-        const batch=vi.spyOn(database,"batch").mockImplementation(async(statements)=>{
-          const result=await original(statements);committed=true;await gate;return result;
+      const closed = nextClose(f.client);
+      await runInDurableObject(f.stub, async (instance, state) => {
+        const original = (Reflect.get(instance, "accessStillLive") as (value: unknown) => Promise<boolean>).bind(instance);
+        let release: () => void = () => {};
+        const gate = new Promise<void>(resolve => { release = resolve; });
+        let entered = false;
+        Reflect.set(instance, "accessStillLive", async (value: unknown) => {
+          const live = await original(value); entered = true; await gate; return live;
         });
         try {
-          const admission=instance.webSocketMessage(state.getWebSockets("client")[0]!,f.init);
-          await vi.waitFor(()=>expect(committed).toBe(true));
-          await database.prepare("UPDATE access_routes SET state='revoked',revoked_at=? WHERE route_index=?")
-            .bind(Math.floor(Date.now()/1000),f.serverId).run();
-          await database.prepare("DELETE FROM access_grants WHERE route_index=?").bind(f.serverId).run();
-          let delivered=false;
-          const revoke=instance.fetch(new Request(INTERNAL_ACCESS_REVOKE_URL,{headers:{[INTERNAL_RENDEZVOUS_GENERATION_HEADER]:f.generation}}))
-            .then(response=>{delivered=true;return response;});
-          await Promise.resolve();await Promise.resolve();expect(delivered).toBe(false);
-          release();await admission;expect((await revoke).status).toBe(204);
-          for(const socket of state.getWebSockets("client")) {
-            expect(socket.deserializeAttachment()).toMatchObject({s:2,u:null,e:null});
+          const confirmation = instance.webSocketMessage(state.getWebSockets("client")[0]!, f.init);
+          await vi.waitFor(() => expect(entered).toBe(true));
+          await env.DB.prepare("UPDATE access_routes SET state='revoked',revoked_at=? WHERE route_index=?")
+            .bind(Math.floor(Date.now() / 1000), f.serverId).run();
+          let delivered = false;
+          const revoke = instance.fetch(new Request(INTERNAL_ACCESS_REVOKE_URL, { headers: {
+            [INTERNAL_RENDEZVOUS_GENERATION_HEADER]: f.generation,
+          } })).then(response => { delivered = true; return response; });
+          await Promise.resolve(); await Promise.resolve(); expect(delivered).toBe(false);
+          release(); await confirmation; expect((await revoke).status).toBe(204);
+          for (const socket of state.getWebSockets("client")) {
+            expect(socket.deserializeAttachment()).toMatchObject({ s: 2, u: null, e: null, w: null, l: null });
           }
-        } finally {release();batch.mockRestore();}
+        } finally { release(); Reflect.set(instance, "accessStillLive", original); }
       });
-      expect(await ready).toEqual({type:"access_ready",version:1});
       expect((await closed).code).toBe(4005);
-    } finally {closeForCleanup(f.client,f.server);}
+    } finally { closeForCleanup(f.client, f.server); }
   });
-  it("does not acknowledge a grant that expires while redemption commits",async()=>{
-    const start=Math.floor(Date.now()/1000)*1000;
-    const clock=vi.spyOn(Date,"now").mockReturnValue(start);
-    const f=await fixture();
+  it("does not acknowledge a grant when session expiry passes during confirmation", async () => {
+    const start = Math.floor(Date.now() / 1000) * 1000;
+    const clock = vi.spyOn(Date, "now").mockReturnValue(start);
+    const f = await fixture();
     try {
-      await env.DB.prepare("UPDATE access_grants SET expires_at=? WHERE server_id=?").bind(start/1000+1,f.serverId).run();
-      const closed=nextClose(f.client);
-      await runInDurableObject(f.stub,async(instance,state)=>{
-        const database=(Reflect.get(instance,"env") as {DB:D1Database}).DB;
-        const original=database.batch.bind(database);
-        const batch=vi.spyOn(database,"batch").mockImplementation(async(statements)=>{
-          const results=await original(statements);clock.mockReturnValue(start+1500);return results;
+      const closed = nextClose(f.client);
+      await runInDurableObject(f.stub, async (instance, state) => {
+        const original = (Reflect.get(instance, "accessStillLive") as (value: unknown) => Promise<boolean>).bind(instance);
+        Reflect.set(instance, "accessStillLive", async (value: unknown) => {
+          const live = await original(value); clock.mockReturnValue(start + 16_000); return live;
         });
-        try {await instance.webSocketMessage(state.getWebSockets("client")[0]!,f.init);}
-        finally {batch.mockRestore();}
+        try { await instance.webSocketMessage(state.getWebSockets("client")[0]!, f.init); }
+        finally { Reflect.set(instance, "accessStillLive", original); }
       });
       expect((await closed).code).toBe(4005);
-    } finally {clock.mockRestore();closeForCleanup(f.client,f.server);}
+    } finally { clock.mockRestore(); closeForCleanup(f.client, f.server); }
   });
   it("expires uninitialized sockets at the two-second deadline", async () => {
     const f = await fixture();
@@ -1249,8 +1404,8 @@ describe("RendezvousRoom ticket-scoped relay", () => {
   it("routes each ticket only to the client socket that claimed it", async () => {
     const stub = room("ticket-isolation");
     const server = await connect(stub, "server");
-    const firstClient = await connect(stub, "client");
-    const secondClient = await connect(stub, "client");
+    const firstClient = await connect(stub, "client", { ticket: ticket(1) });
+    const secondClient = await connect(stub, "client", { ticket: ticket(2) });
     const firstTicket = ticket(1);
     const secondTicket = ticket(2);
     try {
@@ -1289,17 +1444,22 @@ describe("RendezvousRoom ticket-scoped relay", () => {
   it("rejects duplicate ticket claims made from another client socket", async () => {
     const stub = room("duplicate-ticket");
     const server = await connect(stub, "server");
-    const owner = await connect(stub, "client");
-    const duplicate = await connect(stub, "client");
+    const owner = await connect(stub, "client", { ticket: ticket(3) });
+
     const selectedTicket = ticket(3);
     try {
       const offered = nextJson(server, "owned ticket offer");
       owner.send(clientCandidate(selectedTicket));
       await offered;
 
-      const duplicateClosed = nextClose(duplicate, "duplicate ticket close");
-      duplicate.send(clientCandidate(selectedTicket));
-      await expect(duplicateClosed).resolves.toMatchObject(PROTOCOL_CLOSE);
+      const duplicate = await stub.fetch(roomRequest("client", { headers: {
+        "X-Atrinik-Rendezvous-V5-Admission": "work-v1-24",
+        "X-Atrinik-Rendezvous-V5-Ticket": selectedTicket,
+        "X-Atrinik-Rendezvous-V5-Admission-Expires": String(Math.floor(Date.now() / 1000) + 60),
+      } }));
+      expect(duplicate.status).toBe(403);
+      expect(duplicate.webSocket).toBeNull();
+      expect(await admissionCount(stub)).toBe(1);
 
       const ownerReply = nextJson(owner, "ticket owner reply");
       server.send(serverCandidate(selectedTicket));
@@ -1309,14 +1469,14 @@ describe("RendezvousRoom ticket-scoped relay", () => {
       });
       expect(server.readyState).toBe(1);
     } finally {
-      closeForCleanup(owner, duplicate, server);
+      closeForCleanup(owner, server);
     }
   });
 
   it("rejects replay after server disconnect, eviction, and reconnect", async () => {
     const stub = room("ticket-replay-after-reconnect");
     const originalServer = await connect(stub, "server");
-    const originalClient = await connect(stub, "client");
+    const originalClient = await connect(stub, "client", { ticket: ticket(65) });
     const selectedTicket = ticket(65);
     const offered = nextJson(originalServer, "original replay ticket offer");
     originalClient.send(clientCandidate(selectedTicket));
@@ -1333,23 +1493,22 @@ describe("RendezvousRoom ticket-scoped relay", () => {
     await evictDurableObject(stub);
 
     const replacementServer = await connect(stub, "server");
-    const replacementClient = await connect(stub, "client");
-    const forwarded = vi.fn();
-    replacementServer.addEventListener("message", forwarded);
-    const replayClosed = nextClose(replacementClient, "replayed ticket close");
-    replacementClient.send(clientCandidate(selectedTicket));
-    await expect(replayClosed).resolves.toMatchObject(PROTOCOL_CLOSE);
-    await Promise.resolve();
-    expect(forwarded).not.toHaveBeenCalled();
+    const replay = await stub.fetch(roomRequest("client", { headers: {
+      "X-Atrinik-Rendezvous-V5-Admission": "work-v1-24",
+      "X-Atrinik-Rendezvous-V5-Ticket": selectedTicket,
+      "X-Atrinik-Rendezvous-V5-Admission-Expires": String(Math.floor(Date.now() / 1000) + 60),
+    } }));
+    expect(replay.status).toBe(403);
+    expect(replay.webSocket).toBeNull();
+    expect(await admissionCount(stub)).toBe(1);
     expect(replacementServer.readyState).toBe(1);
-    replacementServer.removeEventListener("message", forwarded);
     closeForCleanup(replacementServer);
   });
 
   it("forwards only the first of two back-to-back client candidates", async () => {
     const stub = room("one-client-candidate");
     const server = await connect(stub, "server");
-    const client = await connect(stub, "client");
+    const client = await connect(stub, "client", { ticket: ticket(4) });
     try {
       const offered = nextJson(server, "first client candidate");
       const closed = nextClose(client, "second client candidate close");
@@ -1366,7 +1525,7 @@ describe("RendezvousRoom ticket-scoped relay", () => {
   it("retires a server control whose candidate send fails", async () => {
     const stub = room("server-send-failure");
     const server = await connect(stub, "server");
-    const client = await connect(stub, "client");
+    const client = await connect(stub, "client", { ticket: ticket(68) });
     const summaries = await recordTerminalSummaries(stub);
     let restoreSend = (): void => {};
     await runInDurableObject(stub, (_instance, state) => {
@@ -1411,7 +1570,7 @@ describe("RendezvousRoom ticket-scoped relay", () => {
   it("drops bounded late frames for a known disconnected ticket", async () => {
     const stub = room("late-known-ticket-frames");
     const server = await connect(stub, "server");
-    const client = await connect(stub, "client");
+    const client = await connect(stub, "client", { ticket: ticket(12) });
     const selectedTicket = ticket(12);
     const offered = nextJson(server, "disconnected client offer");
     client.send(clientCandidate(selectedTicket));
@@ -1437,7 +1596,7 @@ describe("RendezvousRoom ticket-scoped relay", () => {
     server.send(serverCandidate(selectedTicket));
     server.send(complete(selectedTicket));
 
-    const nextClient = await connect(stub, "client");
+    const nextClient = await connect(stub, "client", { ticket: ticket(13) });
     const nextTicket = ticket(13);
     const offeredAgain = nextJson(server, "offer after late frames");
     nextClient.send(clientCandidate(nextTicket));
@@ -1448,7 +1607,7 @@ describe("RendezvousRoom ticket-scoped relay", () => {
   it("allows 12 back-to-back server candidates and fails the control on the 13th", async () => {
     const stub = room("server-candidate-ceiling");
     const server = await connect(stub, "server");
-    const client = await connect(stub, "client");
+    const client = await connect(stub, "client", { ticket: ticket(6) });
     const selectedTicket = ticket(6);
     const offered = nextJson(server, "candidate-limit offer");
     client.send(clientCandidate(selectedTicket));
@@ -1476,7 +1635,7 @@ describe("RendezvousRoom ticket-scoped relay", () => {
   it("preserves candidate-before-completion order in one server burst", async () => {
     const stub = room("ordered-server-burst");
     const server = await connect(stub, "server");
-    const client = await connect(stub, "client");
+    const client = await connect(stub, "client", { ticket: ticket(60) });
     const selectedTicket = ticket(60);
     const offered = nextJson(server, "ordered burst offer");
     client.send(clientCandidate(selectedTicket));
@@ -1503,7 +1662,7 @@ describe("RendezvousRoom ticket-scoped relay", () => {
   it("does not start a second client digest while the first frame is pending", async () => {
     const stub = room("client-message-fifo");
     const server = await connect(stub, "server");
-    const client = await connect(stub, "client");
+    const client = await connect(stub, "client", { ticket: ticket(61) });
     const firstTicket = ticket(61);
     const offered = nextJson(server, "FIFO client offer");
     const clientClosed = nextClose(client, "FIFO duplicate client close");
@@ -1548,7 +1707,7 @@ describe("RendezvousRoom ticket-scoped relay", () => {
   it("does not relabel a terminal client after delayed digest work", async () => {
     const stub = room("delayed-client-terminal-outcome");
     const server = await connect(stub, "server");
-    const client = await connect(stub, "client");
+    const client = await connect(stub, "client", { ticket: ticket(98) });
     const summaries = await recordTerminalSummaries(stub);
     const serverClosed = nextClose(server, "delayed digest server close");
     const clientClosed = nextClose(client, "delayed digest client close");
@@ -1609,7 +1768,7 @@ describe("RendezvousRoom ticket-scoped relay", () => {
   it("does not let completion overtake a pending server candidate digest", async () => {
     const stub = room("server-message-fifo");
     const server = await connect(stub, "server");
-    const client = await connect(stub, "client");
+    const client = await connect(stub, "client", { ticket: ticket(63) });
     const selectedTicket = ticket(63);
     const offered = nextJson(server, "FIFO server offer");
     client.send(clientCandidate(selectedTicket));
@@ -1660,7 +1819,7 @@ describe("RendezvousRoom ticket-scoped relay", () => {
   it("bounds queued server work before starting additional digests", async () => {
     const stub = room("bounded-server-message-queue");
     const server = await connect(stub, "server");
-    const client = await connect(stub, "client");
+    const client = await connect(stub, "client", { ticket: ticket(66) });
     const selectedTicket = ticket(66);
     const offered = nextJson(server, "bounded queue offer");
     client.send(clientCandidate(selectedTicket));
@@ -1716,7 +1875,7 @@ describe("RendezvousRoom ticket-scoped relay", () => {
     async (_label, oversizedFrame) => {
       const stub = room("oversized-pending-frame");
       const server = await connect(stub, "server");
-      const client = await connect(stub, "client");
+      const client = await connect(stub, "client", { ticket: ticket(67) });
       const selectedTicket = ticket(67);
       const offered = nextJson(server, "oversized queue offer");
       client.send(clientCandidate(selectedTicket));
@@ -1768,7 +1927,7 @@ describe("RendezvousRoom ticket-scoped relay", () => {
   it("delivers one completion before a normal client close", async () => {
     const stub = room("single-completion");
     const server = await connect(stub, "server");
-    const client = await connect(stub, "client");
+    const client = await connect(stub, "client", { ticket: ticket(7) });
     const selectedTicket = ticket(7);
     const offered = nextJson(server, "completion offer");
     client.send(clientCandidate(selectedTicket));
@@ -1815,7 +1974,7 @@ describe("RendezvousRoom ticket-scoped relay", () => {
   it("reports a failed completion delivery as an internal error", async () => {
     const stub = room("completion-send-failure");
     const server = await connect(stub, "server");
-    const client = await connect(stub, "client");
+    const client = await connect(stub, "client", { ticket: ticket(75) });
     const summaries = await recordTerminalSummaries(stub);
     const selectedTicket = ticket(75);
     const offered = nextJson(server, "failed completion offer");
@@ -1885,7 +2044,7 @@ describe("RendezvousRoom terminal metrics", () => {
   it("emits one completed summary with the accepted work totals", async () => {
     const stub = room("completed-terminal-metric");
     const server = await connect(stub, "server");
-    const client = await connect(stub, "client");
+    const client = await connect(stub, "client", { ticket: ticket(80) });
     const summaries = await recordTerminalSummaries(stub);
     const selectedTicket = ticket(80);
     try {
@@ -2072,7 +2231,7 @@ describe("RendezvousRoom terminal metrics", () => {
   it("retries an undurable metric marker without relabeling after eviction", async () => {
     const stub = room("undurable-terminal-metric-marker");
     const server = await connect(stub, "server");
-    const client = await connect(stub, "client");
+    const client = await connect(stub, "client", { ticket: ticket(86) });
     const selectedTicket = ticket(86);
     const offered = nextMessage(server, "undurable metric offer");
     client.send(clientCandidate(selectedTicket));
@@ -2142,7 +2301,7 @@ describe("RendezvousRoom terminal metrics", () => {
   it("preserves the original outcome when terminal writes fail before close", async () => {
     const stub = room("terminal-write-failure-outcome");
     const server = await connect(stub, "server");
-    const client = await connect(stub, "client");
+    const client = await connect(stub, "client", { ticket: ticket(89) });
     const selectedTicket = ticket(89);
     const offered = nextMessage(server, "terminal-write failure offer");
     client.send(clientCandidate(selectedTicket));
@@ -2184,7 +2343,7 @@ describe("RendezvousRoom terminal metrics", () => {
   it("retries an unresolved teardown without relabeling its outcome", async () => {
     const stub = room("unresolved-client-teardown");
     const server = await connect(stub, "server");
-    const client = await connect(stub, "client");
+    const client = await connect(stub, "client", { ticket: ticket(91) });
     const selectedTicket = ticket(91);
     const offered = nextMessage(server, "unresolved teardown offer");
     client.send(clientCandidate(selectedTicket));
@@ -2237,7 +2396,7 @@ describe("RendezvousRoom terminal metrics", () => {
   it("quarantines unresolved teardown state across instance reset", async () => {
     const stub = room("reset-during-unresolved-teardown");
     const server = await connect(stub, "server");
-    const client = await connect(stub, "client");
+    const client = await connect(stub, "client", { ticket: ticket(96) });
     const selectedTicket = ticket(96);
     const offered = nextMessage(server, "reset teardown offer");
     client.send(clientCandidate(selectedTicket));
@@ -2294,7 +2453,7 @@ describe("RendezvousRoom terminal metrics", () => {
   it("suppresses guessed metrics for a reconstructed local close", async () => {
     const stub = room("reconstructed-local-close");
     const server = await connect(stub, "server");
-    const client = await connect(stub, "client");
+    const client = await connect(stub, "client", { ticket: ticket(93) });
     const selectedTicket = ticket(93);
     const offered = nextMessage(server, "reconstructed close offer");
     client.send(clientCandidate(selectedTicket));
@@ -2585,7 +2744,7 @@ describe("RendezvousRoom hibernation, expiry, and privacy", () => {
   it("restores ticket routing from attachments after Durable Object eviction", async () => {
     const stub = room("hibernation-restore");
     const server = await connect(stub, "server");
-    const client = await connect(stub, "client");
+    const client = await connect(stub, "client", { ticket: ticket(9) });
     const selectedTicket = ticket(9);
 
     const offered = nextJson(server, "post-eviction offer");
@@ -2726,7 +2885,7 @@ describe("RendezvousRoom hibernation, expiry, and privacy", () => {
   it("fails closed after reconstruction with a future SQLite schema", async () => {
     const stub = room("future-room-schema");
     const server = await connect(stub, "server");
-    const client = await connect(stub, "client");
+    const client = await connect(stub, "client", { ticket: ticket(76) });
     const selectedTicket = ticket(76);
     const offered = nextJson(server, "future-schema client offer");
     client.send(clientCandidate(selectedTicket));
@@ -2778,7 +2937,7 @@ describe("RendezvousRoom hibernation, expiry, and privacy", () => {
   it("scrubs routing state when initialization fails before close succeeds", async () => {
     const stub = room("initialization-failure-scrub");
     const server = await connect(stub, "server");
-    const client = await connect(stub, "client");
+    const client = await connect(stub, "client", { ticket: ticket(77) });
     const selectedTicket = ticket(77);
     const offered = nextJson(server, "initialization scrub offer");
     client.send(clientCandidate(selectedTicket));
@@ -2824,7 +2983,7 @@ describe("RendezvousRoom hibernation, expiry, and privacy", () => {
   it("uses bounded alarm retries when initialization state cannot be scrubbed", async () => {
     const stub = room("initialization-failure-double-failure");
     const server = await connect(stub, "server");
-    const client = await connect(stub, "client");
+    const client = await connect(stub, "client", { ticket: ticket(78) });
     const selectedTicket = ticket(78);
     const offered = nextJson(server, "initialization double-failure offer");
     client.send(clientCandidate(selectedTicket));
@@ -3040,7 +3199,7 @@ describe("RendezvousRoom hibernation, expiry, and privacy", () => {
     const replacement = await connect(stub, "server");
     await expect(oldServerClosed).resolves.toMatchObject(REPLACED_CLOSE);
     await expect(oldClientClosed).resolves.toMatchObject(REPLACED_CLOSE);
-    const replacementClient = await connect(stub, "client");
+    const replacementClient = await connect(stub, "client", { ticket: ticket(10) });
 
     if (oldRoomSocket === undefined) {
       throw new Error("Old room-side server socket was not captured");
@@ -3070,7 +3229,7 @@ describe("RendezvousRoom hibernation, expiry, and privacy", () => {
   it("preserves the current control when replacement preparation fails", async () => {
     const stub = room("failed-server-replacement");
     const server = await connect(stub, "server");
-    const client = await connect(stub, "client");
+    const client = await connect(stub, "client", { ticket: ticket(64) });
     const randomUuid = vi.spyOn(crypto, "randomUUID")
       .mockImplementationOnce(() => {
         throw new Error("injected replacement preparation failure");
@@ -3101,7 +3260,7 @@ describe("RendezvousRoom hibernation, expiry, and privacy", () => {
   it("rejects replacement when the current control cannot retire", async () => {
     const stub = room("undurable-server-retirement");
     const server = await connect(stub, "server");
-    const client = await connect(stub, "client");
+    const client = await connect(stub, "client", { ticket: ticket(88) });
     const originalControlIds = await currentControlIds(stub);
     let restoreFaults = (): void => {};
     await runInDurableObject(stub, (_instance, state) => {
@@ -3622,7 +3781,7 @@ describe("RendezvousRoom hibernation, expiry, and privacy", () => {
   it("persists only admission metadata and opaque replay tags in SQL", async () => {
     const stub = room("sql-privacy");
     const server = await connect(stub, "server");
-    const client = await connect(stub, "client");
+    const client = await connect(stub, "client", { ticket: ticket(11) });
     const selectedTicket = ticket(11);
     const offered = nextJson(server, "privacy test offer");
     client.send(clientCandidate(selectedTicket, "2001:db8::11"));

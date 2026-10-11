@@ -31,6 +31,7 @@ import {
 
 const TICKET = "a".repeat(64);
 const GENERATION = "0".repeat(64);
+const ADMISSION_EXPIRY = Math.floor(Date.now() / 1000) + 60;
 const PUBLICATION = Object.freeze({
   serverId: "1".repeat(64),
   directoryProfile: "classic-v3",
@@ -93,6 +94,14 @@ function internalRequest(
   if (!headers.has(INTERNAL_RENDEZVOUS_GENERATION_HEADER)) {
     headers.set(INTERNAL_RENDEZVOUS_GENERATION_HEADER, GENERATION);
   }
+  if (role === "client") {
+    headers.set("X-Atrinik-Rendezvous-V5-Admission", "work-v1-24");
+    headers.set("X-Atrinik-Rendezvous-V5-Ticket", TICKET);
+    headers.set("X-Atrinik-Rendezvous-V5-Admission-Expires", String(ADMISSION_EXPIRY));
+    if (headers.get(INTERNAL_RENDEZVOUS_AUTHORIZATION_HEADER) === "required") {
+      headers.set("X-Atrinik-Rendezvous-V5-Client-Nonce", "b".repeat(64));
+    }
+  }
   return new Request(url, { ...init, headers });
 }
 
@@ -103,15 +112,17 @@ describe("internal rendezvous upgrade contract", () => {
       accessProtocol: false,
       authorizationRequired: false,
       generation: GENERATION,
+      admission: { ticket: TICKET, expiresAt: ADMISSION_EXPIRY, clientNonce: null },
     });
     expect(validateInternalRendezvousUpgrade(internalRequest("server"))).toEqual({
       role: "server",
       accessProtocol: false,
       authorizationRequired: false,
       generation: GENERATION,
+      admission: null,
     });
-    expect(INTERNAL_RENDEZVOUS_URL).toContain("/v4");
-    expect(INTERNAL_RENDEZVOUS_ROLE_HEADER).toContain("V4");
+    expect(INTERNAL_RENDEZVOUS_URL).toContain("/v5");
+    expect(INTERNAL_RENDEZVOUS_ROLE_HEADER).toContain("V5");
     expect(INTERNAL_RENDEZVOUS_ROLE_HEADER).not.toBe(
       LEGACY_INTERNAL_RENDEZVOUS_ROLE_HEADER,
     );
@@ -167,6 +178,7 @@ describe("internal rendezvous upgrade contract", () => {
       accessProtocol: true,
       authorizationRequired: true,
       generation: GENERATION,
+      admission: { ticket: TICKET, expiresAt: ADMISSION_EXPIRY, clientNonce: "b".repeat(64) },
     });
     expect(validateInternalRendezvousUpgrade(internalRequest("server", {
       headers: {
@@ -177,6 +189,7 @@ describe("internal rendezvous upgrade contract", () => {
       accessProtocol: true,
       authorizationRequired: false,
       generation: GENERATION,
+      admission: null,
     });
 
     const invalid = [
