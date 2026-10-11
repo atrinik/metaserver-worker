@@ -377,3 +377,22 @@ test("documents reviewer events and never falls through during provider outage",
   assert.match(behavior.providerOutage, /no-production-fallback/u);
   assert.match(behavior.commentPolicy, /no-privileged-github-actions/u);
 });
+
+
+test("review signing authority stays exclusively in the core", () => {
+  const roles = ["core", "publisher", "rendezvous"];
+  const materialization = review.liveCanary.configurationMaterialization;
+  const values = roles.map((role, index) => materializeReviewConfiguration(
+    configurations[index], role, materialization));
+  assert.equal(values[0].vars.SOURCE_TAG_KEY_CURRENT_ID, "review-canary-current");
+  assert.equal(review.liveCanary.resources.secrets.owner, "core");
+  for (const index of [1, 2]) {
+    assert.deepEqual(values[index].secrets?.required ?? [], []);
+    assert.equal(Object.keys(values[index].vars).some(name => name.startsWith("SOURCE_TAG_KEY_")), false);
+    for (const source of [
+      { ...configurations[index], secrets: { required: ["SOURCE_TAG_KEY_CURRENT"] } },
+      { ...configurations[index], vars: { ...configurations[index].vars, SOURCE_TAG_KEY_CURRENT_ID: "unexpected" } },
+    ]) assert.throws(() => materializeReviewConfiguration(source, roles[index], materialization),
+      /must not own signing keys/u);
+  }
+});

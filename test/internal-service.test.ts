@@ -1,9 +1,9 @@
 import { describe, expect, it, vi } from "vitest";
+import { admissionHeaders } from "./admission-fixture";
 
 import {
-  actorAliases,
   consumePublisherCoordinatorRequest,
-  consumeRendezvousAdmissionAliases,
+  consumeRendezvousCoordinatorRequest,
   INTERNAL_PAIR_TAG_HEADER,
   INTERNAL_PAIR_TAG_PREVIOUS_HEADER,
   INTERNAL_SOURCE_TAG_HEADER,
@@ -15,30 +15,42 @@ import {
 } from "../src/internal-service";
 
 const CURRENT = `v1.current.${"a".repeat(43)}`;
-const PREVIOUS = `v1.previous.${"b".repeat(43)}`;
-const PAIR_CURRENT = `v1.current.${"c".repeat(43)}`;
-const PAIR_PREVIOUS = `v1.previous.${"d".repeat(43)}`;
 const SAFE_DYNAMIC_HEADERS = {
   "Cache-Control": "no-store",
   "X-Content-Type-Options": "nosniff",
 } as const;
 
 describe("internal service boundary", () => {
-  it("requires two distinct canonical source-tag aliases", () => {
-    expect(actorAliases([CURRENT, PREVIOUS])).toEqual([CURRENT, PREVIOUS]);
-    for (const invalid of [
-      [],
-      [CURRENT],
-      [CURRENT, CURRENT],
-      [CURRENT, PREVIOUS, PAIR_CURRENT],
-      ["192.0.2.1", PREVIOUS],
-    ]) {
-      expect(() => actorAliases(invalid)).toThrow(
-        "Source-tag key ring produced an invalid alias set",
-      );
+  it("forwards only role-bound client proof and ticket credentials", () => {
+    const serverId = "1".repeat(64);
+    for (const protectedClient of [false, true]) {
+      const url = protectedClient
+        ? `https://rendezvous.meta.atrinik.org/v1/access/rendezvous/classic/${serverId}`
+        : `https://rendezvous.meta.atrinik.org/v1/classic/servers/${serverId}?role=client`;
+      const headers = admissionHeaders(protectedClient);
+      const forwarded = rendezvousServiceRequest(new Request(url, { headers: {
+        ...headers, Cookie: "private=value", "CF-Connecting-IP": "192.0.2.12",
+      }}), "client");
+      expect([...forwarded.headers.keys()].sort()).toEqual(Object.keys(headers).map(n => n.toLowerCase()).sort());
+      expect(consumeRendezvousCoordinatorRequest(forwarded, "client").headers.get("X-Atrinik-Rendezvous-Admission"))
+        .toBe(headers["X-Atrinik-Rendezvous-Admission"]);
+      for (const name of ["X-Atrinik-Rendezvous-Admission", "X-Atrinik-Rendezvous-Ticket", "X-Atrinik-Access-Client-Nonce"]) {
+        expect(() => rendezvousServiceRequest(new Request(url, { headers: { Upgrade: "websocket", [name]: "x" } }), "server"))
+          .toThrow();
+      }
     }
   });
-
+  it.each([[428, "Rendezvous admission required\n"], [403, "Forbidden\n"]] as const)
+    ("preserves only the fixed admission error %i", async (status, body) => {
+      const headers = { ...SAFE_DYNAMIC_HEADERS, "Content-Type": "text/plain; charset=utf-8" };
+      const response = await validateRendezvousServiceResponse(new Response(body, { status, headers }), null);
+      expect(response.status).toBe(status); expect(await response.text()).toBe(body);
+      for (const unsafe of [new Response(body + "detail", { status, headers }),
+        new Response(body, { status, headers: { ...headers, "Set-Cookie": "secret=value" } }),
+        new Response(body, { status, headers: { ...headers, "Retry-After": "5" } })]) {
+        await expect(validateRendezvousServiceResponse(unsafe, null)).rejects.toThrow();
+      }
+    });
   it("forwards only the signed publisher header contract", async () => {
     const request = new Request(
       `https://publish.meta.atrinik.org/v1/classic/servers/${"1".repeat(64)}/publish`,
@@ -81,6 +93,14 @@ describe("internal service boundary", () => {
     expect(() => publisherServiceRequest(request)).toThrow(
       "The request is invalid.",
     );
+    for (const name of ["X-Atrinik-Rendezvous-V4-Role", "X-Atrinik-Rendezvous-V5-Admission",
+      "X-Atrinik-Rendezvous-V5-Ticket", "X-Atrinik-Rendezvous-V5-Admission-Expires",
+      "X-Atrinik-Rendezvous-V5-Client-Nonce", "X-Atrinik-Rendezvous-V5-Generation"]) {
+      expect(() => rendezvousServiceRequest(new Request(
+        `https://rendezvous.meta.atrinik.org/v1/classic/servers/${"1".repeat(64)}?role=client`,
+        { headers: { ...admissionHeaders(), [name]: "work-v1-24" } },
+      ), "client")).toThrow("The request is invalid.");
+    }
   });
 
   it("rejects any request header outside the coordinator envelopes", () => {
@@ -92,10 +112,7 @@ describe("internal service boundary", () => {
     expect(() => rendezvousServiceRequest(new Request(
       `https://rendezvous.meta.atrinik.org/v1/classic/servers/${"2".repeat(64)}?role=client`,
       { headers: { Authorization: "must-not-cross" } },
-    ), "client", {
-      source: null,
-      pair: [PAIR_CURRENT, PAIR_PREVIOUS],
-    })).toThrow("The request is invalid.");
+    ), "client")).toThrow("The request is invalid.");
   });
 
   it("consumes only Workerd's exact internal chunked-body marker", async () => {
@@ -123,76 +140,20 @@ describe("internal service boundary", () => {
     }))).toThrow("The request is invalid.");
   });
 
-  it("consumes the client alias envelope and strips it from the request", () => {
-    const request = rendezvousServiceRequest(new Request(
-      `https://rendezvous.meta.atrinik.org/v1/classic/servers/${"2".repeat(64)}?role=client`,
-      {
-        headers: {
-          "CF-Connecting-IP": "192.0.2.20",
-          Cookie: "private=value",
-          Upgrade: "websocket",
-        },
-      },
-    ), "client", {
-      source: null,
-      pair: [PAIR_CURRENT, PAIR_PREVIOUS],
-    });
-
-    expect(request.headers.has("CF-Connecting-IP")).toBe(false);
-    expect(request.headers.has("Cookie")).toBe(false);
-    const consumed = consumeRendezvousAdmissionAliases(request, "client");
-    expect(consumed.aliases).toEqual({
-      source: null,
-      pair: [PAIR_CURRENT, PAIR_PREVIOUS],
-    });
-    for (const header of [
-      INTERNAL_SOURCE_TAG_HEADER,
-      INTERNAL_SOURCE_TAG_PREVIOUS_HEADER,
-      INTERNAL_PAIR_TAG_HEADER,
-      INTERNAL_PAIR_TAG_PREVIOUS_HEADER,
-    ]) {
-      expect(consumed.request.headers.has(header)).toBe(false);
+  it("forwards no requester metadata and rejects retired alias envelopes", () => {
+    const url = `https://rendezvous.meta.atrinik.org/v1/classic/servers/${"3".repeat(64)}?role=client`;
+    const forwarded = rendezvousServiceRequest(new Request(url, {headers: {
+      Upgrade: "websocket", "CF-Connecting-IP": "192.0.2.5", Forwarded: "for=192.0.2.5",
+      "X-Forwarded-For": "192.0.2.5", Cookie: "private=value",
+    }}), "client");
+    expect([...forwarded.headers.keys()]).toEqual(["upgrade"]);
+    expect(consumeRendezvousCoordinatorRequest(forwarded, "client").headers.get("Upgrade")).toBe("websocket");
+    for (const role of ["client", "server"] as const) {
+      for (const name of [INTERNAL_SOURCE_TAG_HEADER, INTERNAL_SOURCE_TAG_PREVIOUS_HEADER,
+        INTERNAL_PAIR_TAG_HEADER, INTERNAL_PAIR_TAG_PREVIOUS_HEADER, "CF-Connecting-IP", "X-Forwarded-For"]) {
+        expect(() => consumeRendezvousCoordinatorRequest(new Request(url, {headers: {[name]: CURRENT}}), role)).toThrow();
+      }
     }
-    expect(consumed.request.headers.get("Upgrade")).toBe("websocket");
-  });
-
-  it("accepts the provider-first server envelope and scrubs the old caller bridge", () => {
-    const serverUrl =
-      `https://rendezvous.meta.atrinik.org/v1/classic/servers/${"3".repeat(64)}?role=server`;
-    expect(consumeRendezvousAdmissionAliases(
-      new Request(serverUrl),
-      "server",
-    ).aliases).toEqual({ source: null, pair: null });
-
-    const bridged = consumeRendezvousAdmissionAliases(new Request(serverUrl, {
-      headers: {
-        [INTERNAL_SOURCE_TAG_HEADER]: CURRENT,
-        [INTERNAL_SOURCE_TAG_PREVIOUS_HEADER]: PREVIOUS,
-      },
-    }), "server");
-    expect(bridged.aliases).toEqual({ source: null, pair: null });
-    expect(bridged.request.headers.has(INTERNAL_SOURCE_TAG_HEADER)).toBe(false);
-    expect(bridged.request.headers.has(INTERNAL_SOURCE_TAG_PREVIOUS_HEADER))
-      .toBe(false);
-  });
-
-  it("rejects malformed or role-incoherent alias envelopes", () => {
-    const serverUrl =
-      `https://rendezvous.meta.atrinik.org/v1/classic/servers/${"3".repeat(64)}?role=server`;
-    expect(() => consumeRendezvousAdmissionAliases(new Request(serverUrl, {
-      headers: { [INTERNAL_SOURCE_TAG_HEADER]: CURRENT },
-    }), "server")).toThrow("The request is invalid.");
-
-    const headers = new Headers({
-      [INTERNAL_SOURCE_TAG_HEADER]: CURRENT,
-      [INTERNAL_SOURCE_TAG_PREVIOUS_HEADER]: PREVIOUS,
-      [INTERNAL_PAIR_TAG_HEADER]: PAIR_CURRENT,
-      [INTERNAL_PAIR_TAG_PREVIOUS_HEADER]: PAIR_PREVIOUS,
-    });
-    expect(() => consumeRendezvousAdmissionAliases(
-      new Request(serverUrl, { headers }),
-      "server",
-    )).toThrow("The request is invalid.");
   });
 
   it("accepts only a bounded canonical publisher response", async () => {

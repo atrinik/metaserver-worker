@@ -1,27 +1,11 @@
-import { normalizeIpAddress, RequestError } from "./protocol";
+// Historical key binding names serve non-address replay HMACs and separate admission signatures.
 import { isCanonicalHostname } from "./hostname";
 
 const KEY_ID_PATTERN = /^[A-Za-z0-9_-]{1,32}$/;
 const SECRET_PATTERN = /^[A-Za-z0-9_-]{43}$/;
 const LOWERCASE_HEX_256_PATTERN = /^[0-9a-f]{64}$/;
 
-export const SOURCE_TAG_VERSION = "v1";
 export const RENDEZVOUS_REPLAY_TAG_VERSION = "v1";
-
-export enum SourceTagPurpose {
-  GlobalIngress = "global-ingress",
-  RendezvousClientGlobal = "rendezvous-client-global",
-  RendezvousClientServer = "rendezvous-client-server",
-}
-
-const SOURCE_TAG_PURPOSES: ReadonlySet<string> = new Set(
-  Object.values(SourceTagPurpose),
-);
-
-export type UnscopedSourceTagPurpose = Exclude<
-  SourceTagPurpose,
-  SourceTagPurpose.RendezvousClientServer
->;
 
 export interface SourceTagKeyConfiguration {
   currentKeyId: string | undefined;
@@ -41,24 +25,6 @@ export type RendezvousReplayTags = readonly [
   current: string,
   previous: string,
 ];
-
-export interface RequestPrivacyContext {
-  tag(purpose: UnscopedSourceTagPurpose): Promise<string>;
-  tags(purpose: UnscopedSourceTagPurpose): Promise<readonly string[]>;
-  serverTag(
-    purpose: SourceTagPurpose.RendezvousClientServer,
-    serverId: string,
-  ): Promise<string>;
-  serverTags(
-    purpose: SourceTagPurpose.RendezvousClientServer,
-    serverId: string,
-  ): Promise<readonly string[]>;
-}
-
-export interface RequestPrivacyOptions {
-  keys: SourceTagKeyRing;
-  namespace: string;
-}
 
 interface ImportedSourceTagKey {
   readonly id: string;
@@ -143,73 +109,29 @@ export class SourceTagKeyRing {
     return new SourceTagKeyRing(Object.freeze(keys));
   }
 
-  createRequestContext(
-    request: Request,
-    namespace: string,
-  ): RequestPrivacyContext {
-    const validatedNamespace = validateNamespace(namespace);
-    const canonicalAddress = extractCanonicalSourceAddress(request);
-    const cachedTags = new Map<string, Promise<readonly string[]>>();
+  get admissionKeyId(): string { return this.#keys[0]!.id; }
 
-    const deriveTags = (
-      purpose: SourceTagPurpose,
-      serverId?: string,
-    ): Promise<readonly string[]> => {
-      const domain = sourceTagDomain(
-        validatedNamespace,
-        purpose,
-        canonicalAddress,
-        serverId,
-      );
-      const cached = cachedTags.get(domain);
-      if (cached !== undefined) {
-        return cached;
-      }
+  /** Admission signatures never reuse grant or ticket replay domains. */
+  async signAdmission(authority: string, serverId: string, prefix: string): Promise<string> {
+    return this.admissionMac(this.#keys[0]!, authority, serverId, prefix);
+  }
 
-      const tags = Promise.all(
-        this.#keys.map((key) => deriveTag(key, domain)),
-      ).then((values) => Object.freeze(values));
-      cachedTags.set(domain, tags);
-      return tags;
-    };
+  async verifyAdmission(authority: string, serverId: string, prefix: string,
+    keyId: string, mac: string): Promise<boolean> {
+    const key = this.#keys.find(candidate => candidate.id === keyId);
+    if (key === undefined || !LOWERCASE_HEX_256_PATTERN.test(mac)) return false;
+    const expected = await this.admissionMac(key, authority, serverId, prefix);
+    return equalBytes(new TextEncoder().encode(expected), new TextEncoder().encode(mac));
+  }
 
-    const deriveServerTags = (
-      purpose: SourceTagPurpose.RendezvousClientServer,
-      serverId: string,
-    ): Promise<readonly string[]> => {
-      assertServerScopedPurpose(purpose);
-      validateServerId(serverId);
-      return deriveTags(purpose, serverId);
-    };
-
-    return Object.freeze({
-      async tag(purpose: UnscopedSourceTagPurpose): Promise<string> {
-        assertUnscopedPurpose(purpose);
-        return firstTag(await deriveTags(purpose));
-      },
-
-      async tags(
-        purpose: UnscopedSourceTagPurpose,
-      ): Promise<readonly string[]> {
-        assertUnscopedPurpose(purpose);
-        return deriveTags(purpose);
-      },
-
-      async serverTag(
-        purpose: SourceTagPurpose.RendezvousClientServer,
-        serverId: string,
-      ): Promise<string> {
-        return firstTag(await deriveServerTags(purpose, serverId));
-      },
-
-      async serverTags(
-        purpose: SourceTagPurpose.RendezvousClientServer,
-        serverId: string,
-      ): Promise<readonly string[]> {
-        return deriveServerTags(purpose, serverId);
-      },
-
-    });
+  private async admissionMac(key: ImportedSourceTagKey, authority: string,
+    serverId: string, prefix: string): Promise<string> {
+    validateNamespace(authority);
+    validateServerId(serverId);
+    const domain = `atrinik-rendezvous-admission-v1\0${authority}\0classic\0${serverId}\0${prefix}`;
+    const mac = new Uint8Array(await crypto.subtle.sign("HMAC", key.key,
+      new TextEncoder().encode(domain)));
+    return Array.from(mac, byte => byte.toString(16).padStart(2, "0")).join("");
   }
 
   /**
@@ -248,6 +170,32 @@ export class SourceTagKeyRing {
     const tags: [string, string] = [current, previous];
     return Object.freeze(tags);
   }
+
+  /** Separate domain from transport tickets and request-source abuse tags. */
+  async accessGrantTags(
+    namespace: string, profile: "classic" | "game", serverId: string,
+    grant: string, clientNonce: string,
+  ): Promise<RendezvousReplayTags> {
+    const validatedNamespace = validateNamespace(namespace);
+    validateServerId(serverId);
+    validateRendezvousClientTicket(grant);
+    validateRendezvousClientTicket(clientNonce);
+    if (profile !== "classic" && profile !== "game") {
+      throw new SourceTagConfigurationError("Invalid access profile");
+    }
+    const [currentKey, previousKey, unexpectedKey] = this.#keys;
+    if (currentKey === undefined || previousKey === undefined || unexpectedKey !== undefined) {
+      throw new SourceTagConfigurationError("Access grants require exactly two source-tag keys");
+    }
+    const domain = JSON.stringify(["atrinik-access-grant-v1", validatedNamespace,
+      profile, serverId, grant, clientNonce]);
+    const tags = await Promise.all([
+      deriveVersionedTag(currentKey, RENDEZVOUS_REPLAY_TAG_VERSION, domain),
+      deriveVersionedTag(previousKey, RENDEZVOUS_REPLAY_TAG_VERSION, domain),
+    ]);
+    return Object.freeze([tags[0], tags[1]] as [string, string]);
+  }
+
 }
 
 export function parseSourceTagKeyRing(
@@ -286,29 +234,6 @@ export async function requiredSourceTagKeyRing(
   const ring = await parseSourceTagKeyRing(configuration);
   cachedRequiredSourceTagKeyRing = { ...configuration, ring };
   return ring;
-}
-
-export function createRequestPrivacyContext(
-  request: Request,
-  options: RequestPrivacyOptions,
-): RequestPrivacyContext {
-  return options.keys.createRequestContext(
-    request,
-    options.namespace,
-  );
-}
-
-function extractCanonicalSourceAddress(request: Request): string {
-  const address = request.headers.get("CF-Connecting-IP");
-  if (address === null) {
-    throw new RequestError("The source address is unavailable", 400);
-  }
-
-  try {
-    return normalizeIpAddress(address);
-  } catch {
-    throw new RequestError("The source address is invalid", 400);
-  }
 }
 
 function equalBytes(left: Uint8Array, right: Uint8Array): boolean {
@@ -394,13 +319,6 @@ async function importHmacKey(secret: Uint8Array): Promise<CryptoKey> {
   );
 }
 
-async function deriveTag(
-  key: ImportedSourceTagKey,
-  domain: string,
-): Promise<string> {
-  return deriveVersionedTag(key, SOURCE_TAG_VERSION, domain);
-}
-
 async function deriveVersionedTag(
   key: ImportedSourceTagKey,
   version: string,
@@ -412,16 +330,6 @@ async function deriveVersionedTag(
     new TextEncoder().encode(domain),
   );
   return `${version}.${key.id}.${encodeBase64Url(new Uint8Array(digest))}`;
-}
-
-function sourceTagDomain(
-  namespace: string,
-  purpose: SourceTagPurpose,
-  canonicalAddress: string,
-  serverId?: string,
-): string {
-  const base = `atrinik-metaserver\0source-tag\0${SOURCE_TAG_VERSION}\0${namespace}\0${purpose}\0${canonicalAddress}`;
-  return serverId === undefined ? base : `${base}\0${serverId}`;
 }
 
 function rendezvousReplayTagDomain(
@@ -441,34 +349,6 @@ function encodeBase64Url(bytes: Uint8Array): string {
     .replace(/\+/g, "-")
     .replace(/\//g, "_")
     .replace(/=+$/g, "");
-}
-
-function firstTag(tags: readonly string[]): string {
-  const tag = tags[0];
-  if (tag === undefined) {
-    throw new Error("Source-tag key ring is empty");
-  }
-  return tag;
-}
-
-function assertUnscopedPurpose(
-  purpose: UnscopedSourceTagPurpose,
-): void {
-  const candidate: string = purpose;
-  if (
-    !SOURCE_TAG_PURPOSES.has(candidate) ||
-    candidate === SourceTagPurpose.RendezvousClientServer
-  ) {
-    throw new TypeError("Invalid unscoped source-tag purpose");
-  }
-}
-
-function assertServerScopedPurpose(
-  purpose: SourceTagPurpose.RendezvousClientServer,
-): void {
-  if (purpose !== SourceTagPurpose.RendezvousClientServer) {
-    throw new TypeError("Invalid server-scoped source-tag purpose");
-  }
 }
 
 function validateServerId(serverId: string): void {

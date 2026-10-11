@@ -36,11 +36,10 @@ describe("domainless core Worker", () => {
       createExecutionContext(),
     );
     expect(getByName.mock.calls).toEqual([
-      ["classic-v1"],
-      ["classic-v2"],
-      ["game-v1"],
+      ["classic-v3"],
+      ["game-v2"],
     ]);
-    expect(reconcile).toHaveBeenCalledTimes(3);
+    expect(reconcile).toHaveBeenCalledTimes(2);
   });
 
   it("sanitizes scheduled configuration failures", async () => {

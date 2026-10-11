@@ -288,7 +288,7 @@
       "durableObjectNamespaces": 2,
       "r2Buckets": 3,
       "analyticsDatasets": 2,
-      "rateLimitNamespaces": 5,
+      "rateLimitNamespaces": 6,
       "customHostnames": 0,
       "accessApplications": 1,
       "cohortLifetime": "long-lived-singleton",
@@ -302,26 +302,26 @@
         "workersDevPrivateSubdomain": "exact-dedicated-live-account-subdomain-readback"
       },
       "sources": [
-        { "role": "core", "path": "wrangler.jsonc", "sha256": "01aa72881ffe1144defc211beb9a6b0ad3bf6e32897de0e9cd3812939588de32" },
-        { "role": "publisher", "path": "wrangler.publisher.jsonc", "sha256": "b847b3d35c239545ceb3ff15afa17a05e39f0de590e89a414aaf21220d56d01d" },
-        { "role": "rendezvous", "path": "wrangler.rendezvous.jsonc", "sha256": "10b32a4c9544c8153950a25db080824a72a6f5c621688e7d8accaf8b984b4e38" }
+        { "role": "core", "path": "wrangler.jsonc", "sha256": "1f7566c98f27258f875fdfb845a82c702ba4d8a129bf7d3fe658e5a7b6d33731" },
+        { "role": "publisher", "path": "wrangler.publisher.jsonc", "sha256": "aa33ab454fbdc3ce8b8894fefe7d45d959f2cfbf667a03e977a94e6a6fc23bbe" },
+        { "role": "rendezvous", "path": "wrangler.rendezvous.jsonc", "sha256": "8c015eaff5b80a3e4ad74631e50b9f912d740940aa7a2ebcf15a394245958b39" }
       ],
       "common": {
         "workersDev": true,
         "previewUrls": false,
         "routes": [],
         "observabilityDestinations": [],
-        "sourceTagCurrentId": "review-canary-current",
-        "sourceTagPreviousId": "review-canary-previous",
         "routeDisabledRetrySeconds": "60"
       },
       "core": {
+        "sourceTagCurrentId": "review-canary-current",
+        "sourceTagPreviousId": "review-canary-previous",
         "name": "atrinik-metaserver-review-canary",
         "d1DatabaseName": "atrinik-metaserver-review-canary",
         "d1DatabaseId": "<provider-issued-review-d1-uuid>",
         "r2BucketNames": ["atrinik-metaserver-review-canary-generations", "atrinik-metaserver-review-canary-classic", "atrinik-metaserver-review-canary-game"],
         "analyticsDatasets": ["atrinik_metaserver_rendezvous_review_canary", "atrinik_metaserver_directory_review_canary"],
-        "rateNamespaceIds": ["2006", "2007"],
+        "rateNamespaceIds": ["2008", "2006", "2007"],
         "directoryCacheZoneId": "00000000000000000000000000000000",
         "classicDirectoryPublicOrigin": "https://classic.review.invalid",
         "gameDirectoryPublicOrigin": "https://game.review.invalid",
@@ -379,9 +379,8 @@
         "migrationLedger": "independent-exact-checked-in-ledger",
         "reset": "fresh-d1-or-reviewed-expiry-only-no-bulk-production-copy",
         "referenceVectorSources": [
-          "test/fixtures/metaserver-publisher-v1.json",
-          "test/fixtures/metaserver-classic-publisher-v2.json",
-          "test/fixtures/metaserver-game-publisher-v1.json"
+          "test/fixtures/metaserver-classic-publisher-v3.json",
+          "test/fixtures/metaserver-game-publisher-v2.json"
         ]
       },
       "coordinationD1": {
@@ -457,6 +456,13 @@
       "rateLimits": [
         {
           "owner": "core",
+          "binding": "ACCESS_ROUTE_RATE_LIMITER",
+          "namespaceId": "2008",
+          "simple": { "limit": 16, "period": 60 },
+          "productionNamespaceReuse": false
+        },
+        {
+          "owner": "core",
           "binding": "PUBLISH_IDENTITY_RATE_LIMITER",
           "namespaceId": "2006",
           "simple": { "limit": 2, "period": 60 },
@@ -473,14 +479,14 @@
           "owner": "publisher",
           "binding": "GLOBAL_RATE_LIMITER",
           "namespaceId": "2101",
-          "simple": { "limit": 10, "period": 60 },
+          "simple": { "limit": 32768, "period": 60 },
           "productionNamespaceReuse": false
         },
         {
           "owner": "rendezvous",
           "binding": "GLOBAL_RATE_LIMITER",
           "namespaceId": "2201",
-          "simple": { "limit": 10, "period": 60 },
+          "simple": { "limit": 65536, "period": 60 },
           "productionNamespaceReuse": false
         }
       ],
@@ -488,12 +494,12 @@
         "owner": "rendezvous",
         "binding": "RENDEZVOUS_CLIENT_RATE_LIMITER",
         "namespaceId": "2202",
-        "simple": { "limit": 60, "period": 60 },
+        "simple": { "limit": 65536, "period": 60 },
         "countedWithinRateLimitNamespaceCeiling": true,
         "productionNamespaceReuse": false
       },
       "secrets": {
-        "owner": "canary-cohort-only",
+        "owner": "core",
         "names": ["DIRECTORY_CACHE_PURGE_TOKEN", "RENDEZVOUS_HEALTH_EXPORT_TOKEN", "SOURCE_TAG_KEY_CURRENT", "SOURCE_TAG_KEY_PREVIOUS"],
         "epochIds": ["review-canary-current", "review-canary-previous"],
         "productionValueReuse": false,

@@ -1,0 +1,14 @@
+{
+  "repository": "atrinik/protocol",
+  "commit": "b7c8d22ed9acd53bf31818bca5eda10a6f51d3e2",
+  "manifest": {
+    "path": "fixtures/metaserver-directory-v2.json",
+    "sha256": "19ef15b7c3a97db28bb42eb87dd7a253e848a1a003d1f320dbdd31f289f5cf89"
+  },
+  "fixtures": {
+    "canonical.json": "4fa5013b204c97668b8a3ff719b5b0aaa33dbe8b5cf90d2e90bb436a91d406fa",
+    "projection.xml": "644d6e8bb2bdc52c4eeceff4555fa5c0889b8ef6b190317d797f59605f17806c",
+    "negative-invalid-alabel.json": "6ff7fb6dca035b3c0d352af0f0fb75188840487cdaac7146d9abce92cdc8b117",
+    "negative-xml-noncharacter.json": "2a963e481fe5e76198c31d107c7d4230f94305260ac7e9c29f31e801107ce6d6"
+  }
+}

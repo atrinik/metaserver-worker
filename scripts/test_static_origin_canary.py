@@ -54,17 +54,13 @@ class Clock:
 
 class FakeOrigin:
     def __init__(self, profile: str) -> None:
-        if profile == "classic-v1":
-            json_name = "classic-directory-v4/index.json"
-            xml_name = "classic-directory-v4/index.xml"
-            html_name = None
-        elif profile == "classic-v2":
-            json_name = "classic-directory-v5/index.json"
-            xml_name = "classic-directory-v5/index.xml"
-            html_name = "classic-directory-v5/index.html"
+        if profile == "classic-v3":
+            json_name = "classic-directory-v6/index.json"
+            xml_name = "classic-directory-v6/index.xml"
+            html_name = "classic-directory-v6/index.html"
         else:
-            json_name = "game-directory-v1/canonical.json"
-            xml_name = "game-directory-v1/projection.xml"
+            json_name = "game-directory-v2/canonical.json"
+            xml_name = "game-directory-v2/projection.xml"
             html_name = None
         json_body = fixture(json_name)
         self.profile = profile
@@ -167,7 +163,7 @@ class StaticOriginCanaryTests(unittest.TestCase):
         )
 
     def test_accepts_exact_game_and_classic_static_origins(self) -> None:
-        for profile in ("classic-v1", "classic-v2", "game-v1"):
+        for profile in ("classic-v3", "game-v2"):
             with self.subTest(profile=profile):
                 fake = FakeOrigin(profile)
                 result = self.verify(profile, fake)
@@ -191,16 +187,16 @@ class StaticOriginCanaryTests(unittest.TestCase):
                     ))
 
     def test_accepts_one_adjacent_monotonic_convergence(self) -> None:
-        fake = FakeOrigin("game-v1")
+        fake = FakeOrigin("game-v2")
         current = fake.bodies["/index.html"][0]
         old = current.replace(b"<dd>42</dd>", b"<dd>41</dd>", 1)
         fake.bodies["/index.html"] = [old, current]
-        result = self.verify("game-v1", fake)
+        result = self.verify("game-v2", fake)
         self.assertEqual(result.generation, 42)
         self.assertEqual(result.attempts, 2)
 
     def test_accepts_atomic_publication_before_head(self) -> None:
-        fake = FakeOrigin("game-v1")
+        fake = FakeOrigin("game-v2")
         published = False
 
         def atomic_publication(method, url, headers, maximum_bytes):
@@ -210,7 +206,7 @@ class StaticOriginCanaryTests(unittest.TestCase):
                 published = True
             return fake(method, url, headers, maximum_bytes)
 
-        result = self.verify("game-v1", atomic_publication)
+        result = self.verify("game-v2", atomic_publication)
         self.assertEqual(result.generation, 43)
         self.assertEqual(result.attempts, 2)
         self.assertEqual(
@@ -226,7 +222,7 @@ class StaticOriginCanaryTests(unittest.TestCase):
         assert_complete_positive_attempt(self, fake.calls[5:])
 
     def test_accepts_larger_atomic_publication_before_conditional(self) -> None:
-        fake = FakeOrigin("game-v1")
+        fake = FakeOrigin("game-v2")
         published = False
 
         def atomic_publication(method, url, headers, maximum_bytes):
@@ -236,14 +232,14 @@ class StaticOriginCanaryTests(unittest.TestCase):
                 published = True
             return fake(method, url, headers, maximum_bytes)
 
-        result = self.verify("game-v1", atomic_publication)
+        result = self.verify("game-v2", atomic_publication)
         self.assertEqual(result.generation, 100)
         self.assertEqual(result.attempts, 2)
         conditional = next(
             call for call in fake.calls if call[2].get("If-None-Match") is not None
         )
         self.assertEqual(
-            conditional[3], canary.MAXIMUM_BYTES["game-v1"]["/index.html"]
+            conditional[3], canary.MAXIMUM_BYTES["game-v2"]["/index.html"]
         )
         restart = next(
             index
@@ -253,7 +249,7 @@ class StaticOriginCanaryTests(unittest.TestCase):
         assert_complete_positive_attempt(self, fake.calls[restart:])
 
     def test_rejects_persistent_head_mismatch(self) -> None:
-        fake = FakeOrigin("game-v1")
+        fake = FakeOrigin("game-v2")
         original = fake.__call__
 
         def mismatched_head(method, url, headers, maximum_bytes):
@@ -265,25 +261,25 @@ class StaticOriginCanaryTests(unittest.TestCase):
             return response
 
         with self.assertRaisesRegex(canary.CanaryError, "matching newer publication"):
-            self.verify("game-v1", mismatched_head)
+            self.verify("game-v2", mismatched_head)
 
     def test_rejects_same_generation_change_and_reused_validator(self) -> None:
-        fake = FakeOrigin("game-v1")
+        fake = FakeOrigin("game-v2")
         current = fake.bodies["/index.html"][0]
         generation, generated_at, expires_at, _, semantic = metadata(
-            current, "game-v1", "/index.html"
+            current, "game-v2", "/index.html"
         )
         older = canary.canonical_html(
-            "game-v1", generation - 1, generated_at, expires_at, semantic
+            "game-v2", generation - 1, generated_at, expires_at, semantic
         ).encode()
         changed_older = canary.canonical_html(
-            "game-v1", generation - 1, generated_at + 1, expires_at, semantic
+            "game-v2", generation - 1, generated_at + 1, expires_at, semantic
         ).encode()
         fake.bodies["/index.html"] = [older, changed_older]
         with self.assertRaisesRegex(canary.CanaryError, "changed body"):
-            self.verify("game-v1", fake)
+            self.verify("game-v2", fake)
 
-        fake = FakeOrigin("game-v1")
+        fake = FakeOrigin("game-v2")
         set_generation(fake, 43)
         reused = fake.headers("/index.html", fake.bodies["/index.html"][0])["etag"][0]
         fake.bodies["/index.html"] = [
@@ -292,22 +288,22 @@ class StaticOriginCanaryTests(unittest.TestCase):
         ]
         fake.header_overrides[("/index.html", "etag")] = reused
         with self.assertRaisesRegex(canary.CanaryError, "reuse"):
-            self.verify("game-v1", fake)
+            self.verify("game-v2", fake)
 
     def test_rejects_cross_attempt_same_generation_semantic_change(self) -> None:
-        fake = FakeOrigin("game-v1")
+        fake = FakeOrigin("game-v2")
         html = fake.bodies["/index.html"][0]
         _, generated_at, expires_at, _, semantic = metadata(
-            html, "game-v1", "/index.html"
+            html, "game-v2", "/index.html"
         )
         changed_server = json.loads(semantic[0])
         changed_server["name"] = "Changed publication"
         changed_semantic = (canary.semantic_server(changed_server), *semantic[1:])
         html_43 = canary.canonical_html(
-            "game-v1", 43, generated_at, expires_at, changed_semantic
+            "game-v2", 43, generated_at, expires_at, changed_semantic
         ).encode()
         html_44 = canary.canonical_html(
-            "game-v1", 44, generated_at, expires_at, changed_semantic
+            "game-v2", 44, generated_at, expires_at, changed_semantic
         ).encode()
         phase = "cohort"
 
@@ -335,10 +331,10 @@ class StaticOriginCanaryTests(unittest.TestCase):
         with self.assertRaisesRegex(
             canary.CanaryError, "one generation has inconsistent"
         ):
-            self.verify("game-v1", contradictory_publication)
+            self.verify("game-v2", contradictory_publication)
 
     def test_convergence_deadline_covers_positive_proofs(self) -> None:
-        fake = FakeOrigin("game-v1")
+        fake = FakeOrigin("game-v2")
         clock = Clock()
 
         def slow_origin(method, url, headers, maximum_bytes):
@@ -348,7 +344,7 @@ class StaticOriginCanaryTests(unittest.TestCase):
 
         with self.assertRaisesRegex(canary.CanaryError, "did not converge"):
             self.verify(
-                "game-v1",
+                "game-v2",
                 slow_origin,
                 clock=clock,
                 convergence_seconds=1,
@@ -363,7 +359,7 @@ class StaticOriginCanaryTests(unittest.TestCase):
             ("timeout", "timed out"),
         ):
             with self.subTest(mode=mode):
-                fake = FakeOrigin("game-v1")
+                fake = FakeOrigin("game-v2")
                 original = fake.__call__
 
                 def invalid_conditional(method, url, headers, maximum_bytes):
@@ -377,7 +373,7 @@ class StaticOriginCanaryTests(unittest.TestCase):
                         body = replace_generation(body, path, 43)
                         body = replace_times(body, path, NOW - 100, NOW)
                     elif mode == "oversized":
-                        body = b"x" * (canary.MAXIMUM_BYTES["game-v1"][path] + 1)
+                        body = b"x" * (canary.MAXIMUM_BYTES["game-v2"][path] + 1)
                     response_headers = fake.headers(path, fake.bodies[path][-1])
                     if mode == "expired":
                         response_headers = fake.headers(path, body)
@@ -387,10 +383,10 @@ class StaticOriginCanaryTests(unittest.TestCase):
                     return canary.HttpResponse(200, response_headers, body)
 
                 with self.assertRaisesRegex(canary.CanaryError, message):
-                    self.verify("game-v1", invalid_conditional)
+                    self.verify("game-v2", invalid_conditional)
 
     def test_rejects_unmatched_head_confirmation_and_invalid_304(self) -> None:
-        fake = FakeOrigin("game-v1")
+        fake = FakeOrigin("game-v2")
         original = fake.__call__
         head_seen = False
 
@@ -407,14 +403,14 @@ class StaticOriginCanaryTests(unittest.TestCase):
             return response
 
         with self.assertRaisesRegex(canary.CanaryError, "HEAD.*changed ETag"):
-            self.verify("game-v1", unmatched_confirmation)
+            self.verify("game-v2", unmatched_confirmation)
 
         for body, etag, message in (
             (b"unexpected", None, "bodyless 304"),
             (b"", '"wrong-validator"', "changed its validator"),
         ):
             with self.subTest(message=message):
-                fake = FakeOrigin("game-v1")
+                fake = FakeOrigin("game-v2")
                 original = fake.__call__
 
                 def invalid_304(method, url, headers, maximum_bytes):
@@ -425,10 +421,10 @@ class StaticOriginCanaryTests(unittest.TestCase):
                     return response
 
                 with self.assertRaisesRegex(canary.CanaryError, message):
-                    self.verify("game-v1", invalid_304)
+                    self.verify("game-v2", invalid_304)
 
     def test_repeated_valid_publications_exhaust_one_deadline(self) -> None:
-        fake = FakeOrigin("game-v1")
+        fake = FakeOrigin("game-v2")
         clock = Clock()
         generation = 42
 
@@ -443,14 +439,14 @@ class StaticOriginCanaryTests(unittest.TestCase):
 
         with self.assertRaisesRegex(canary.CanaryError, "did not converge"):
             self.verify(
-                "game-v1",
+                "game-v2",
                 continually_publishing,
                 clock=clock,
                 convergence_seconds=1,
             )
 
     def test_late_invalid_response_is_not_masked_by_deadline(self) -> None:
-        fake = FakeOrigin("game-v1")
+        fake = FakeOrigin("game-v2")
         clock = Clock()
 
         def late_invalid(method, url, headers, maximum_bytes):
@@ -462,11 +458,11 @@ class StaticOriginCanaryTests(unittest.TestCase):
 
         with self.assertRaisesRegex(canary.CanaryError, "bodyless 200"):
             self.verify(
-                "game-v1", late_invalid, clock=clock, convergence_seconds=1
+                "game-v2", late_invalid, clock=clock, convergence_seconds=1
             )
 
     def test_rechecks_freshness_after_positive_proofs(self) -> None:
-        fake = FakeOrigin("game-v1")
+        fake = FakeOrigin("game-v2")
         set_times(fake, NOW - 100, NOW + 1)
         clock = Clock()
 
@@ -477,28 +473,28 @@ class StaticOriginCanaryTests(unittest.TestCase):
 
         with self.assertRaisesRegex(canary.CanaryError, "future-dated or expired"):
             self.verify(
-                "game-v1", expiring_origin, clock=clock, convergence_seconds=2
+                "game-v2", expiring_origin, clock=clock, convergence_seconds=2
             )
 
     def test_rejects_nonconvergent_and_nonadjacent_aliases(self) -> None:
-        fake = FakeOrigin("game-v1")
+        fake = FakeOrigin("game-v2")
         current = fake.bodies["/index.html"][0]
         fake.bodies["/index.html"] = [
             current.replace(b"<dd>42</dd>", b"<dd>40</dd>", 1)
         ]
         with self.assertRaisesRegex(canary.CanaryError, "adjacent-generation"):
-            self.verify("game-v1", fake)
+            self.verify("game-v2", fake)
 
-        fake = FakeOrigin("game-v1")
+        fake = FakeOrigin("game-v2")
         current = fake.bodies["/index.html"][0]
         fake.bodies["/index.html"] = [
             current.replace(b"<dd>42</dd>", b"<dd>41</dd>", 1)
         ]
         with self.assertRaisesRegex(canary.CanaryError, "did not converge"):
-            self.verify("game-v1", fake, convergence_seconds=1)
+            self.verify("game-v2", fake, convergence_seconds=1)
 
     def test_rejects_generation_regression_between_attempts(self) -> None:
-        fake = FakeOrigin("game-v1")
+        fake = FakeOrigin("game-v2")
         current = fake.bodies["/index.html"][0]
         generation_41 = current.replace(b"<dd>42</dd>", b"<dd>41</dd>", 1)
         fake.bodies["/index.html"] = [current, generation_41]
@@ -508,37 +504,37 @@ class StaticOriginCanaryTests(unittest.TestCase):
             current_json,
         ]
         with self.assertRaisesRegex(canary.CanaryError, "regressed"):
-            self.verify("game-v1", fake)
+            self.verify("game-v2", fake)
 
     def test_rejects_malformed_or_reused_origin_validators(self) -> None:
-        fake = FakeOrigin("game-v1")
+        fake = FakeOrigin("game-v2")
         fake.header_overrides[("/index.html", "etag")] = 'W/"weak"'
         with self.assertRaisesRegex(canary.CanaryError, "strong ETag"):
-            self.verify("game-v1", fake)
+            self.verify("game-v2", fake)
 
-        fake = FakeOrigin("game-v1")
+        fake = FakeOrigin("game-v2")
         for path in canary.PUBLIC_PATHS:
             fake.header_overrides[(path, "etag")] = '"shared"'
         with self.assertRaisesRegex(canary.CanaryError, "reuse"):
-            self.verify("game-v1", fake)
+            self.verify("game-v2", fake)
 
     def test_requires_full_cross_format_server_semantics(self) -> None:
-        fake = FakeOrigin("game-v1")
+        fake = FakeOrigin("game-v2")
         fake.bodies["/index.xml"] = [
             fake.bodies["/index.xml"][0].replace(
                 b"<name>Beta</name>", b"<name>Gamma</name>", 1
             )
         ]
         with self.assertRaisesRegex(canary.CanaryError, "inconsistent artifact"):
-            self.verify("game-v1", fake)
+            self.verify("game-v2", fake)
 
     def test_content_length_is_optional_but_duplicates_fail_closed(self) -> None:
-        fake = FakeOrigin("classic-v1")
+        fake = FakeOrigin("classic-v3")
         for path in canary.PUBLIC_PATHS:
             fake.header_overrides[(path, "content-length")] = None
-        self.verify("classic-v1", fake)
+        self.verify("classic-v3", fake)
 
-        fake = FakeOrigin("classic-v1")
+        fake = FakeOrigin("classic-v3")
         original = fake.__call__
 
         def duplicate_header(method, url, headers, maximum_bytes):
@@ -554,19 +550,19 @@ class StaticOriginCanaryTests(unittest.TestCase):
             canary.verify_static_origin(
                 "https://canary.example.org",
                 "canary.example.org",
-                "classic-v1",
+                "classic-v3",
                 duplicate_header,
                 now=clock.now,
                 sleep=clock.sleep,
             )
 
     def test_rejects_header_policy_and_head_mismatch(self) -> None:
-        fake = FakeOrigin("classic-v1")
+        fake = FakeOrigin("classic-v3")
         fake.header_overrides[("/index.json", "cache-control")] = "public, max-age=3600"
         with self.assertRaisesRegex(canary.CanaryError, "Cache-Control"):
-            self.verify("classic-v1", fake)
+            self.verify("classic-v3", fake)
 
-        fake = FakeOrigin("classic-v1")
+        fake = FakeOrigin("classic-v3")
         original = fake.__call__
 
         def mismatched_head(method, url, headers, maximum_bytes):
@@ -582,7 +578,7 @@ class StaticOriginCanaryTests(unittest.TestCase):
             canary.verify_static_origin(
                 "https://canary.example.org",
                 "canary.example.org",
-                "classic-v1",
+                "classic-v3",
                 mismatched_head,
                 now=clock.now,
                 sleep=clock.sleep,
@@ -595,7 +591,7 @@ class StaticOriginCanaryTests(unittest.TestCase):
             (NOW - 1, NOW + 14_500, "freshness interval"),
         ):
             with self.subTest(message=message):
-                fake = FakeOrigin("game-v1")
+                fake = FakeOrigin("game-v2")
                 for path, bodies in fake.bodies.items():
                     body = bodies[0]
                     if path == "/index.json":
@@ -606,36 +602,36 @@ class StaticOriginCanaryTests(unittest.TestCase):
                         body = replace_html_times(body, generated_at, expires_at)
                     fake.bodies[path] = [body]
                 with self.assertRaisesRegex(canary.CanaryError, message):
-                    self.verify("game-v1", fake)
+                    self.verify("game-v2", fake)
 
     def test_rejects_public_manifest_and_wrong_https_root(self) -> None:
-        fake = FakeOrigin("game-v1")
+        fake = FakeOrigin("game-v2")
         fake.root_status = 308
         fake.root_headers = {
             "location": ("https://canary.example.org/index.html",),
         }
         with self.assertRaisesRegex(canary.CanaryError, "GET / must return 404"):
-            self.verify("game-v1", fake)
+            self.verify("game-v2", fake)
 
-        fake = FakeOrigin("game-v1")
+        fake = FakeOrigin("game-v2")
         fake.negative_status = 200
         with self.assertRaisesRegex(canary.CanaryError, "expected 403/404"):
-            self.verify("game-v1", fake)
+            self.verify("game-v2", fake)
 
-        fake = FakeOrigin("game-v1")
+        fake = FakeOrigin("game-v2")
         fake.root_headers = {"location": ("/index.html",)}
         with self.assertRaisesRegex(canary.CanaryError, "must not include Location"):
-            self.verify("game-v1", fake)
+            self.verify("game-v2", fake)
 
-        fake = FakeOrigin("game-v1")
+        fake = FakeOrigin("game-v2")
         fake.root_headers = {"cf-worker-status": ("ok",)}
         with self.assertRaisesRegex(canary.CanaryError, "CF-Worker-Status"):
-            self.verify("game-v1", fake)
+            self.verify("game-v2", fake)
 
-        fake = FakeOrigin("game-v1")
+        fake = FakeOrigin("game-v2")
         fake.root_head_status = 200
         with self.assertRaisesRegex(canary.CanaryError, "HEAD / must return"):
-            self.verify("game-v1", fake)
+            self.verify("game-v2", fake)
 
     def test_origin_input_is_canonical_and_production_is_explicit(self) -> None:
         self.assertEqual(
@@ -665,27 +661,28 @@ class StaticOriginCanaryTests(unittest.TestCase):
             canary.base_origin("https://xn--bcher-kva.example.org", False)[1],
             "xn--bcher-kva.example.org",
         )
-        self.assertEqual(canary.alias_prefix("classic-v2", "canary-v5"),
-                         "/canary-v5")
-        self.assertEqual(canary.alias_prefix("classic-v2", ""), "")
-        for profile, prefix in (("classic-v1", "canary-v5"),
-                                ("game-v1", "canary-v5"),
-                                ("classic-v2", "precutover-v4")):
+        self.assertEqual(canary.alias_prefix("classic-v3", "canary-v6"),
+                         "/canary-v6")
+        self.assertEqual(canary.alias_prefix("classic-v3", ""), "")
+        self.assertEqual(canary.alias_prefix("game-v2", "canary-v2"), "/canary-v2")
+        for profile, prefix in (("classic-v3", "canary-v2"),
+                                ("game-v2", "canary-v6"),
+                                ("classic-v3", "precutover-v4")):
             with self.subTest(profile=profile, prefix=prefix), \
                     self.assertRaises(ValueError):
                 canary.alias_prefix(profile, prefix)
 
     def test_json_decoder_rejects_duplicate_keys_and_noncanonical_bytes(self) -> None:
-        body = fixture("game-directory-v1/canonical.json")
+        body = fixture("game-directory-v2/canonical.json")
         duplicate = body.replace(
-            b'{"schema":"atrinik-directory-v1",',
-            b'{"schema":"atrinik-directory-v1","schema":"atrinik-directory-v1",',
+            b'{"schema":"atrinik-game-directory-v2",',
+            b'{"schema":"atrinik-game-directory-v2","schema":"atrinik-game-directory-v2",',
             1,
         )
         with self.assertRaisesRegex(canary.CanaryError, "duplicates key"):
-            canary.parse_json_artifact(duplicate, "game-v1")
+            canary.parse_json_artifact(duplicate, "game-v2")
         with self.assertRaisesRegex(canary.CanaryError, "canonically encoded"):
-            canary.parse_json_artifact(body.replace(b'":', b'": ', 1), "game-v1")
+            canary.parse_json_artifact(body.replace(b'":', b'": ', 1), "game-v2")
 
     def test_network_transport_reads_only_one_byte_past_the_bound(self) -> None:
         class Response:
@@ -714,19 +711,19 @@ class StaticOriginCanaryTests(unittest.TestCase):
         self.assertTrue(response.closed)
 
     def test_cli_emits_bounded_machine_readable_summary(self) -> None:
-        fake = FakeOrigin("game-v1")
+        fake = FakeOrigin("game-v2")
         stdout = io.StringIO()
         with mock.patch.object(canary, "network_fetch", return_value=fake):
             with mock.patch.object(canary.time, "time", return_value=NOW):
                 with contextlib.redirect_stdout(stdout):
                     result = canary.main([
-                        "--profile", "game-v1",
+                        "--profile", "game-v2",
                         "--base-url", "https://canary.example.org",
                         "--json",
                     ])
         self.assertEqual(result, 0)
         payload = json.loads(stdout.getvalue())
-        self.assertEqual(payload["profile"], "game-v1")
+        self.assertEqual(payload["profile"], "game-v2")
         self.assertEqual(payload["generation"], "42")
         self.assertNotIn("etag", payload)
         self.assertNotIn("sha256", payload)

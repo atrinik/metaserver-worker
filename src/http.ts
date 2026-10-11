@@ -92,7 +92,6 @@ export type AllowedMethod = "GET" | "HEAD" | "POST";
 export const HTTP_RATE_LIMIT_REASONS = [
   "global_burst",
   "rendezvous_client_burst",
-  "rendezvous_client_pair_cooldown",
   "rendezvous_server_burst",
   "rendezvous_server_daily",
   "publish_burst",

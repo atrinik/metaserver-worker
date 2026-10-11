@@ -4,6 +4,8 @@ from pathlib import Path
 
 
 ROOT = Path(__file__).resolve().parents[1]
+# Game publisher v2 reuses only the exact signed /servers/<identity>/publish
+# shape; the retired unsigned collection and rendezvous APIs remain forbidden.
 PATTERN = re.compile(
     r"COMPAT_[A-Z0-9_]+|compat-key-v1|"
     r"server_owners|server_blacklist|one_time_tokens|\brate_limits\b|"
@@ -13,7 +15,8 @@ PATTERN = re.compile(
     r"\b(?:FROM|INTO|UPDATE|TABLE|JOIN)\s+servers\b|"
     r"compat-(?:status|directory|otp|update(?:-source|-server)?|"
     r"rendezvous(?:-[a-z-]+)?)|"
-    r"/index\.wsgi/(?:otp|update)|/v2/(?:servers|rendezvous)"
+    r"/index\.wsgi/(?:otp|update)|/v2/(?:servers(?!/"
+    r"(?:[0-9a-f]{64}|\$\{(?:serverId|SERVER_ID)\}|\{server-id\})/publish)|rendezvous)"
 )
 
 RETIRED_DOCUMENTATION_PATTERN = re.compile(
@@ -29,6 +32,7 @@ HISTORICAL_PREFIXES = (
 )
 
 NEGATIVE_FIXTURES = {
+    "scripts/test_ip_tracking_removal.py": {"server_owners", "one_time_tokens", "rate_limits"},
     "scripts/static_origin_canary.py": {"source_ip"},
     "test/rendezvous-contract.test.ts": {
         "compat-key-v1",
@@ -48,6 +52,23 @@ NEGATIVE_FIXTURES = {
 
 
 class RetiredSurfaceSourcePolicyTests(unittest.TestCase):
+    def test_runtime_never_reads_requester_address_metadata(self) -> None:
+        # Endpoint candidate normalization remains necessary for signaling;
+        # requester-address metadata has no runtime consumer at any edge/core.
+        forbidden = re.compile(r"cf-connecting-ip|x-forwarded-for|true-client-ip|[\"']forwarded[\"']|request\.cf", re.IGNORECASE)
+        for source in (ROOT / "src").glob("*.ts"):
+            with self.subTest(source=source.name):
+                self.assertIsNone(forbidden.search(source.read_text()))
+
+    def test_game_v2_exception_does_not_admit_retired_collection_routes(self):
+        for path in ("/v2/servers", "/v2/servers/unknown/publish", "/v2/rendezvous",
+                     "/v2/servers/" + "a" * 64 + "/update"):
+            with self.subTest(path=path):
+                self.assertIsNotNone(PATTERN.search(path))
+        for identity in ("a" * 64, "${serverId}", "${SERVER_ID}", "{server-id}"):
+            self.assertIsNone(PATTERN.search(f"/v2/servers/{identity}/publish"))
+            self.assertIsNotNone(PATTERN.search(f"/v2/servers/{identity}/update"))
+
     def test_storage_removal_requires_noncanonical_deny_disposition(self) -> None:
         deployment = (ROOT / "DEPLOYMENT.md").read_text(encoding="utf-8")
         migration = (

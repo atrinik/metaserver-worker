@@ -25,6 +25,7 @@ class WranglerSecurityConfigurationTests(unittest.TestCase):
 
     def test_canonical_core_bindings_pin_reviewed_limits(self) -> None:
         expected_bindings = {
+            "ACCESS_ROUTE_RATE_LIMITER": ("1008", 16),
             "PUBLISH_IDENTITY_RATE_LIMITER": ("1006", 2),
             "RENDEZVOUS_SERVER_RATE_LIMITER": ("1007", 3),
         }
@@ -61,6 +62,25 @@ class WranglerSecurityConfigurationTests(unittest.TestCase):
             "RENDEZVOUS_CLIENT_RATE_LIMITER",
         ):
             self.assertNotIn(retired, {binding["name"] for binding in bindings})
+
+    def test_shared_ingress_circuits_cover_supported_cohort_bursts(self) -> None:
+        # Arithmetic capacity contract, not provider throughput/cost qualification.
+        root = Path(__file__).resolve().parents[1]
+        publisher = json.loads((root / "wrangler.publisher.jsonc").read_text())
+        rendezvous = json.loads((root / "wrangler.rendezvous.jsonc").read_text())
+        pub = publisher["ratelimits"][0]["simple"]
+        rv = {item["name"]: item["simple"] for item in rendezvous["ratelimits"]}
+        self.assertEqual(pub, {"limit": 32768, "period": 60})
+        self.assertEqual(rv["GLOBAL_RATE_LIMITER"], {"limit": 65536, "period": 60})
+        self.assertEqual(rv["RENDEZVOUS_CLIENT_RATE_LIMITER"], {"limit": 65536, "period": 60})
+        identities = 512
+        publisher_burst = identities * 2 * (16 + 2)
+        resolve_burst = identities * 60
+        client_burst = identities * 16 * (60 // 15) + resolve_burst
+        self.assertEqual((publisher_burst, resolve_burst, client_burst), (18432, 30720, 63488))
+        self.assertGreaterEqual(pub["limit"], publisher_burst)
+        self.assertGreaterEqual(rv["GLOBAL_RATE_LIMITER"]["limit"], resolve_burst)
+        self.assertGreaterEqual(rv["RENDEZVOUS_CLIENT_RATE_LIMITER"]["limit"], client_burst)
 
     def test_source_tag_secrets_and_logging_policy_are_pinned(self) -> None:
         self.assertEqual(
@@ -158,6 +178,10 @@ class WranglerSecurityConfigurationTests(unittest.TestCase):
             {"type": "worker", "cache": {"enabled": False}},
         )
         self.assertEqual(
+            self.configuration["exports"]["DirectoryReconciliation"],
+            {"type": "worker", "cache": {"enabled": False}},
+        )
+        self.assertEqual(
             self.configuration["exports"]["RendezvousHealth"],
             {"type": "worker", "cache": {"enabled": False}},
         )
@@ -186,21 +210,11 @@ class WranglerSecurityConfigurationTests(unittest.TestCase):
             {
                 name: self.configuration["vars"][name]
                 for name in (
-                    "RENDEZVOUS_CLIENT_PAIR_BURST_LIMIT",
-                    "RENDEZVOUS_CLIENT_PAIR_WINDOW_SECONDS",
-                    "RENDEZVOUS_CLIENT_PAIR_INITIAL_COOLDOWN_SECONDS",
-                    "RENDEZVOUS_CLIENT_PAIR_MAXIMUM_COOLDOWN_SECONDS",
-                    "RENDEZVOUS_CLIENT_PAIR_RESET_SECONDS",
                     "RENDEZVOUS_ACTIVE_CLIENT_LIMIT",
                     "RENDEZVOUS_CLIENT_SESSION_SECONDS",
                 )
             },
             {
-                "RENDEZVOUS_CLIENT_PAIR_BURST_LIMIT": "20",
-                "RENDEZVOUS_CLIENT_PAIR_WINDOW_SECONDS": "60",
-                "RENDEZVOUS_CLIENT_PAIR_INITIAL_COOLDOWN_SECONDS": "30",
-                "RENDEZVOUS_CLIENT_PAIR_MAXIMUM_COOLDOWN_SECONDS": "900",
-                "RENDEZVOUS_CLIENT_PAIR_RESET_SECONDS": "1800",
                 "RENDEZVOUS_ACTIVE_CLIENT_LIMIT": "16",
                 "RENDEZVOUS_CLIENT_SESSION_SECONDS": "15",
             },
@@ -306,17 +320,16 @@ class WranglerSecurityConfigurationTests(unittest.TestCase):
         self.assertRegex(
             deployment,
             r"python3 scripts/static_origin_canary\.py \\\n"
-            r"\s+--profile classic-v2 \\\n"
-            r"\s+--base-url https://classic-v5-directory-canary\.example\.org \\\n"
-            r"\s+--alias-prefix canary-v5 \\\n"
-            r"\s+--json",
+            r"\s+--profile classic-v3 \\\n"
+            r"\s+--base-url https://classic-v6-directory-canary\.example\.org \\\n"
+            r"\s+--alias-prefix canary-v6 --json",
         )
         self.assertIn(
             "python3 scripts/edge_ingress_canary.py",
             normalized_deployment,
         )
-        self.assertIn("--profile classic-v1", normalized_deployment)
-        self.assertIn("--profile game-v1", normalized_deployment)
+        self.assertIn("--profile classic-v3", normalized_deployment)
+        self.assertIn("--profile game-v2", normalized_deployment)
         self.assertIn("--hsts-max-age 300", normalized_deployment)
         self.assertIn("Strict-Transport-Security: max-age=300", edge_policy)
         self.assertIn(
@@ -401,6 +414,7 @@ class DynamicServiceBoundaryConfigurationTests(unittest.TestCase):
                 "PublisherCoordinator",
                 "RendezvousCoordinator",
                 "RendezvousHealth",
+                "DirectoryReconciliation",
             },
         )
         self.assertNotIn("services", self.core)
@@ -437,7 +451,6 @@ class DynamicServiceBoundaryConfigurationTests(unittest.TestCase):
             "preview_urls",
             "services",
             "ratelimits",
-            "secrets",
             "vars",
             "observability",
             "logpush",
@@ -478,14 +491,9 @@ class DynamicServiceBoundaryConfigurationTests(unittest.TestCase):
                 self.assertIs(configuration["logpush"], False)
                 self.assertEqual(configuration["tail_consumers"], [])
                 self.assertEqual(configuration["streaming_tail_consumers"], [])
-                self.assertEqual(
-                    set(configuration["secrets"]["required"]),
-                    {"SOURCE_TAG_KEY_CURRENT", "SOURCE_TAG_KEY_PREVIOUS"},
-                )
-                self.assertNotIn(
-                    "DIRECTORY_CACHE_PURGE_TOKEN",
-                    configuration["secrets"]["required"],
-                )
+                self.assertNotIn("secrets", configuration)
+                self.assertFalse(any(name.startswith("SOURCE_TAG_KEY_")
+                                     for name in configuration["vars"]))
                 self.assertNotIn("DIRECTORY_CACHE_ZONE_ID", configuration["vars"])
                 self.assertNotIn(
                     "CLASSIC_DIRECTORY_PUBLIC_ORIGIN", configuration["vars"]
@@ -508,7 +516,7 @@ class DynamicServiceBoundaryConfigurationTests(unittest.TestCase):
         }
         self.assertEqual(
             rendezvous_limits["RENDEZVOUS_CLIENT_RATE_LIMITER"],
-            {"limit": 60, "period": 60},
+            {"limit": 65536, "period": 60},
         )
 
     def test_rate_limit_namespaces_are_unique_across_worker_services(self) -> None:
@@ -587,7 +595,7 @@ class DynamicServiceBoundaryConfigurationTests(unittest.TestCase):
                 self.assertIn("--dry-run", dry_run)
                 self.assertIn(f"-c {config}", dry_run)
 
-    def test_runbook_pins_isolated_canary_and_three_service_rotation(self) -> None:
+    def test_runbook_pins_isolated_canary_and_core_only_rotation(self) -> None:
         guide = DEPLOYMENT_GUIDE.read_text(encoding="utf-8")
         normalized = " ".join(guide.split())
         self.assertIn("Classic v5.9.0", guide)
@@ -596,7 +604,8 @@ class DynamicServiceBoundaryConfigurationTests(unittest.TestCase):
         rotation = guide[guide.index("## Rotate source-tag keys"):]
         self.assertIn("atrinik-metaserver-publisher", rotation)
         self.assertIn("atrinik-metaserver-rendezvous", rotation)
-        self.assertIn("no cross-Worker atomic deploy", rotation)
+        self.assertIn("core-only", rotation)
+        self.assertIn("receive no signing secrets or key IDs", rotation)
 
 
 if __name__ == "__main__":

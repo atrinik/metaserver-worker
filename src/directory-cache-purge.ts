@@ -75,7 +75,7 @@ function cachePurgeConfiguration(
 ): Readonly<{ token: string; zoneId: string; publicOrigin: string }> {
   const token = environment.DIRECTORY_CACHE_PURGE_TOKEN;
   const zoneId = environment.DIRECTORY_CACHE_ZONE_ID;
-  const publicOrigin = profile !== "game-v1"
+  const publicOrigin = profile !== "game-v2"
     ? environment.CLASSIC_DIRECTORY_PUBLIC_ORIGIN
     : environment.GAME_DIRECTORY_PUBLIC_ORIGIN;
   if (typeof token !== "string" || !TOKEN.test(token)) {

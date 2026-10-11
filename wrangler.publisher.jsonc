@@ -18,24 +18,16 @@
       "name": "GLOBAL_RATE_LIMITER",
       "namespace_id": "1101",
       "simple": {
-        "limit": 10,
+        "limit": 32768,
         "period": 60
       }
     }
   ],
-  "secrets": {
-    "required": [
-      "SOURCE_TAG_KEY_CURRENT",
-      "SOURCE_TAG_KEY_PREVIOUS"
-    ]
-  },
   "vars": {
     "PUBLISH_HOSTNAME": "publish.meta.atrinik.org",
     "PUBLISH_ENABLED": "enabled",
     "GAME_PUBLISH_ENABLED": "disabled",
-    "ROUTE_DISABLED_RETRY_SECONDS": "300",
-    "SOURCE_TAG_KEY_CURRENT_ID": "2026-08-a",
-    "SOURCE_TAG_KEY_PREVIOUS_ID": "2026-07-a"
+    "ROUTE_DISABLED_RETRY_SECONDS": "300"
   },
   "logpush": false,
   "tail_consumers": [],

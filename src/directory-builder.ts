@@ -95,8 +95,7 @@ interface DirectoryEntryRecord {
   readonly hostname: string | null;
   readonly port: number | null;
   readonly quic_cert_sha256: string;
-  readonly password_required: number | null;
-  readonly access_code_required: number | null;
+  readonly access_required: number | null;
   readonly last_seen: number;
 }
 
@@ -154,15 +153,11 @@ interface DirectoryModelBase {
 
 type DirectoryModel = DirectoryModelBase & (
   | {
-      readonly profile: "classic-v1";
+      readonly profile: "classic-v3";
       readonly servers: readonly ClassicDirectoryServer[];
     }
   | {
-      readonly profile: "classic-v2";
-      readonly servers: readonly ClassicDirectoryServer[];
-    }
-  | {
-      readonly profile: "game-v1";
+      readonly profile: "game-v2";
       readonly servers: readonly GameDirectoryServer[];
     }
 );
@@ -315,6 +310,7 @@ export class DirectoryBuilder extends DurableObject<CoreEnv> {
     const aliasPrefix = directoryAliasPrefix(
       profile,
       configuration.classicDirectoryCutoverMode,
+      configuration.gameDirectoryCutoverMode,
     );
     const [model, checkpoint] = await Promise.all([
       this.readModel(
@@ -339,7 +335,7 @@ export class DirectoryBuilder extends DurableObject<CoreEnv> {
     const refreshDue = checkpoint.generation === 0 ||
       now >= checkpoint.expiresAt - configuration.refreshLeadSeconds;
     const leaseExtended = model.expiresAt > checkpoint.expiresAt;
-    const publicBucket = profile !== "game-v1"
+    const publicBucket = profile !== "game-v2"
       ? this.env.CLASSIC_DIRECTORY_PUBLIC
       : this.env.GAME_DIRECTORY_PUBLIC;
     if (!modelChanged && checkpoint.generation > 0 &&
@@ -450,11 +446,6 @@ export class DirectoryBuilder extends DurableObject<CoreEnv> {
 
     try {
       const ordered = aliasPublicationOrder(profile, objects);
-      await assertNoClassicV1ProductionRollback(
-        publicBucket,
-        profile,
-        aliasPrefix,
-      );
       for (const object of ordered) {
         await this.assertFresh(pending);
         await putPublicAlias(
@@ -577,7 +568,7 @@ export class DirectoryBuilder extends DurableObject<CoreEnv> {
                 entries.players_online, entries.players_capacity, entries.status,
                 entries.game_json_bytes, entries.hostname,
                 entries.port, entries.quic_cert_sha256,
-                entries.password_required, entries.access_code_required,
+                entries.access_required,
                 presence.last_seen
            FROM directory_entries AS entries
            JOIN server_presence AS presence
@@ -687,7 +678,7 @@ export class DirectoryBuilder extends DurableObject<CoreEnv> {
     let expiresAt = modelGeneratedAt + artifactLifetimeSeconds;
     const rankedRows = rankDirectoryEntries(
       rows.map((row): RankedDirectoryEntry => {
-        const currentPopulation = profile === "game-v1"
+        const currentPopulation = profile === "game-v2"
           ? row.players_online
           : row.players_count;
         if (
@@ -709,7 +700,7 @@ export class DirectoryBuilder extends DurableObject<CoreEnv> {
       }),
       modelGeneratedAt,
     );
-    const servers = profile !== "game-v1"
+    const servers = profile !== "game-v2"
       ? rankedRows.map(({ row }) => {
         if (!Number.isSafeInteger(row.last_seen) || row.last_seen < 0) {
           throw new Error("Directory presence timestamp is invalid");
@@ -719,11 +710,7 @@ export class DirectoryBuilder extends DurableObject<CoreEnv> {
           ? {}
           : { endpoint: { hostname: row.hostname, port: row.port } };
         if (
-          profile === "classic-v2"
-            ? (row.access_code_required !== 0 && row.access_code_required !== 1) ||
-              row.password_required !== null
-            : (row.password_required !== 0 && row.password_required !== 1) ||
-              row.access_code_required !== null
+          row.access_required !== 0 && row.access_required !== 1
         ) {
           throw new Error("Classic directory policy is invalid");
         }
@@ -734,9 +721,7 @@ export class DirectoryBuilder extends DurableObject<CoreEnv> {
           version: row.version,
           textComment: row.text_comment,
           certificateSha256: row.quic_cert_sha256,
-          ...(profile === "classic-v2"
-            ? { accessCodeRequired: row.access_code_required === 1 }
-            : { passwordRequired: row.password_required === 1 }),
+          accessRequired: row.access_required === 1,
           ...endpoint,
         } as ClassicDirectoryServer;
       })
@@ -749,8 +734,7 @@ export class DirectoryBuilder extends DurableObject<CoreEnv> {
           ? {}
           : { endpoint: { hostname: row.hostname, port: row.port } };
         if (
-          (row.password_required !== 0 && row.password_required !== 1) ||
-          row.access_code_required !== null
+          row.access_required !== 0 && row.access_required !== 1
         ) {
           throw new Error("Game directory policy is invalid");
         }
@@ -773,7 +757,7 @@ export class DirectoryBuilder extends DurableObject<CoreEnv> {
             capacity: row.players_capacity,
           },
           status: row.status,
-          passwordRequired: row.password_required === 1,
+          accessRequired: row.access_required === 1,
           ...endpoint,
         } as GameDirectoryServer;
         if (
@@ -801,7 +785,7 @@ export class DirectoryBuilder extends DurableObject<CoreEnv> {
       modelSha256,
       hasPendingOutbox: (pendingOutbox as number) > 0,
     } as const;
-    return profile !== "game-v1"
+    return profile !== "game-v2"
       ? Object.freeze({
           ...model,
           profile,
@@ -968,6 +952,7 @@ export class DirectoryBuilder extends DurableObject<CoreEnv> {
         directoryAliasPrefix(
           profile,
           configuration.classicDirectoryCutoverMode,
+          configuration.gameDirectoryCutoverMode,
         ),
       );
       const checkpoint = await readDirectoryArtifactPublication(
@@ -1228,7 +1213,7 @@ function directorySnapshot(
   model: DirectoryModel,
   pending: PendingBuild,
 ): DirectorySnapshot {
-  if (profile !== "game-v1") {
+  if (profile !== "game-v2") {
     if (model.profile !== profile) {
       throw new Error("Directory model profile is invalid");
     }
@@ -1256,15 +1241,13 @@ function directorySnapshot(
 
 export function directoryAliasPrefix(
   profile: DirectoryProfile,
-  cutoverMode: "v4-production" | "v5-production",
+  cutoverMode: "v4-production" | "v5-production" | "v6-production",
+  gameCutoverMode: "v1-production" | "v2-production" = "v1-production",
 ): string {
-  if (profile === "game-v1") {
-    return "";
+  if (profile === "game-v2") {
+    return gameCutoverMode === "v2-production" ? "" : "canary-v2/";
   }
-  if (profile === "classic-v1") {
-    return cutoverMode === "v4-production" ? "" : "precutover-v4/";
-  }
-  return cutoverMode === "v5-production" ? "" : "canary-v5/";
+  return cutoverMode === "v6-production" ? "" : "canary-v6/";
 }
 
 async function readPublicGeneration(
@@ -1406,7 +1389,7 @@ function aliasPublicationOrder(
   profile: DirectoryProfile,
   objects: readonly RenderedObject[],
 ): readonly RenderedObject[] {
-  const order = profile !== "game-v1"
+  const order = profile !== "game-v2"
     ? ["html", "json", "xml", "manifest"]
     : ["html", "xml", "json", "manifest"];
   return order.map((format) => {
@@ -1499,14 +1482,6 @@ async function putPublicAlias(
 ): Promise<void> {
   const httpMetadata = publicHttpMetadata(object, pending);
   const existing = await bucket.head(key);
-  if (
-    profile === "classic-v1" && !key.includes("/") &&
-    existing?.customMetadata?.profile === "classic-v2"
-  ) {
-    throw new DirectoryObjectConflictError(
-      "Classic directory protocol 5 cannot roll back to protocol 4",
-    );
-  }
   const existingGeneration = existing === null
     ? 0
     : observedGeneration(existing.customMetadata);
@@ -1555,28 +1530,6 @@ async function putPublicAlias(
     httpMetadata,
     "public",
   );
-}
-
-export async function assertNoClassicV1ProductionRollback(
-  bucket: R2Bucket,
-  profile: DirectoryProfile,
-  aliasPrefix: string,
-): Promise<void> {
-  if (profile !== "classic-v1" || aliasPrefix !== "") {
-    return;
-  }
-  const aliases = await Promise.all(
-    ["index.html", "index.json", "index.xml", "manifest.json"].map((key) =>
-      bucket.head(key)
-    ),
-  );
-  if (aliases.some((alias) =>
-    alias?.customMetadata?.profile === "classic-v2"
-  )) {
-    throw new DirectoryObjectConflictError(
-      "Classic directory protocol 5 cannot roll back to protocol 4",
-    );
-  }
 }
 
 function immutableHttpMetadata(object: RenderedObject): R2HTTPMetadata {

@@ -2109,5 +2109,91 @@ class DirectoryActivityRankingMigrationTests(unittest.TestCase):
             )
 
 
+
+class AccessTokenProfilesMigrationTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.database = sqlite3.connect(":memory:")
+        self.addCleanup(self.database.close)
+        self.database.execute("PRAGMA foreign_keys = ON")
+        for migration in sorted((REPOSITORY_ROOT / "migrations").glob("*.sql")):
+            if migration.name[:4] < "0013":
+                self.database.executescript(migration.read_text(encoding="utf-8"))
+
+    def upgrade(self) -> None:
+        self.database.executescript((REPOSITORY_ROOT / "migrations" /
+            "0013_access_token_profiles.sql").read_text(encoding="utf-8"))
+
+    def seed_new_presence(self, profile="classic-v3", server_id="1" * 64):
+        self.database.execute(
+            "INSERT INTO publisher_replay VALUES (?, ?, '11', ?, ?, 100)",
+            (server_id, profile, "a" * 32, "b" * 64))
+        self.database.execute(
+            "INSERT INTO server_presence(profile,server_id,last_seen,"
+            "rendezvous_token_hash,rendezvous_generation,certificate,name,"
+            "access_required) VALUES (?,?,100,?,?, 'AQ==','Private',1)",
+            (profile, server_id, "a" * 64, "b" * 64))
+
+    def test_populated_upgrade_preserves_history_without_policy_reinterpretation(self):
+        ClassicAccessCodeMigrationTests.seed_profile(self, "classic-v1", "1" * 64)
+        ClassicAccessCodeMigrationTests.seed_profile(self, "game-v1", "2" * 64)
+        DirectoryActivityRankingMigrationTests.seed_presence(self, "classic-v2", "1" * 64)
+        self.database.execute("UPDATE publisher_replay SET last_sequence='18446744073709551615' WHERE profile='classic-v2'")
+        self.database.execute("INSERT INTO directory_entries(profile,server_id,name,players_count,version,text_comment,quic_cert_sha256,access_code_required,directory_fingerprint) VALUES ('classic-v2',?,'Protected',0,'6','',?,1,?)", ("1"*64,"1"*64,"c"*64))
+        for profile in ("classic-v1", "classic-v2", "game-v1"):
+            sid = "2"*64 if profile == "game-v1" else "1"*64
+            self.database.execute("INSERT INTO directory_activity_state VALUES (?,?,100,100,1,1)", (profile,sid))
+            self.database.execute("INSERT INTO directory_activity_buckets VALUES (?,?,0,300,5,1,1,0)", (profile,sid))
+            self.database.execute("UPDATE directory_revisions SET revision=7,updated_at=100 WHERE profile=?", (profile,))
+            self.database.execute("INSERT INTO directory_outbox VALUES (?,7,100)", (profile,))
+        old_tables = ("publisher_replay", "publisher_nonces", "directory_activity_state", "directory_activity_buckets", "directory_outbox")
+        before = {n:self.database.execute(f"SELECT * FROM {n} ORDER BY 1,2").fetchall() for n in old_tables}
+        self.upgrade()
+        for table, rows in before.items():
+            self.assertEqual(rows,self.database.execute(f"SELECT * FROM {table} WHERE profile IN ('classic-v1','classic-v2','game-v1') ORDER BY 1,2").fetchall())
+        self.assertEqual(self.database.execute("PRAGMA foreign_key_check").fetchall(),[])
+        self.assertEqual(self.database.execute("SELECT profile,last_sequence FROM publisher_replay WHERE profile IN ('classic-v3','game-v2') ORDER BY profile").fetchall(),[("classic-v3","18446744073709551615"),("game-v2","7")])
+        self.assertEqual(self.database.execute("SELECT profile,nonce FROM publisher_nonces WHERE profile IN ('classic-v3','game-v2') ORDER BY profile").fetchall(),[("classic-v3","1"*32),("game-v2","2"*32)])
+        self.assertEqual(self.database.execute("SELECT profile,revision FROM directory_revisions WHERE profile IN ('classic-v3','game-v2') ORDER BY profile").fetchall(),[("classic-v3",0),("game-v2",0)])
+        self.assertEqual(self.database.execute("SELECT count(*) FROM directory_entries WHERE profile IN ('classic-v3','game-v2')").fetchone(),(0,))
+        self.assertEqual(self.database.execute("SELECT count(*) FROM server_presence WHERE certificate IS NOT NULL OR name IS NOT NULL OR access_required IS NOT NULL").fetchone(),(0,))
+        self.assertEqual(self.database.execute("SELECT profile,password_required,access_code_required,access_required FROM directory_entries ORDER BY profile").fetchall(),[("classic-v1",1,None,None),("classic-v2",None,1,None),("game-v1",0,None,None)])
+
+    def test_new_private_presence_never_creates_directory_or_revision(self):
+        self.upgrade()
+        self.seed_new_presence()
+        self.assertEqual(self.database.execute("SELECT name,certificate,hostname,port,access_required FROM server_presence WHERE profile='classic-v3'").fetchone(),('Private','AQ==',None,None,1))
+        self.assertEqual(self.database.execute("SELECT count(*) FROM directory_entries").fetchone(),(0,))
+        self.assertEqual(self.database.execute("SELECT sum(revision) FROM directory_revisions").fetchone(),(0,))
+        for assignment in ("certificate=NULL", "name=NULL", "access_required=NULL", "access_required=2", "hostname='127.0.0.1',port=1234", "hostname='UPPER.example',port=1234", "hostname='play.example',port=NULL", "hostname='"+'a'*64+".example',port=1234"):
+            with self.subTest(assignment=assignment), self.assertRaises(sqlite3.IntegrityError):
+                self.database.execute("UPDATE server_presence SET "+assignment+" WHERE profile='classic-v3'")
+
+    def test_new_public_policy_and_profile_budget_are_enforced(self):
+        self.upgrade()
+        self.seed_new_presence("game-v2")
+        sql="INSERT INTO directory_entries(profile,server_id,name,description,protocol_major,protocol_minor,content_id,content_revision_sha256,players_online,players_capacity,status,game_json_bytes,quic_cert_sha256,access_required,directory_fingerprint) VALUES ('game-v2',?,'Game','',1,1,'main',?,0,64,'online',?,?,1,?)"
+        self.database.execute(sql,("1"*64,"b"*64,262000,"1"*64,"c"*64))
+        for assignment in ("game_json_bytes=262001", "password_required=0", "access_code_required=1", "access_required=NULL"):
+            with self.subTest(assignment=assignment), self.assertRaises(sqlite3.IntegrityError):
+                self.database.execute("UPDATE directory_entries SET "+assignment)
+        self.seed_new_presence("game-v2","2"*64)
+        with self.assertRaises(sqlite3.IntegrityError):
+            self.database.execute(sql,("2"*64,"b"*64,1,"2"*64,"c"*64))
+
+    def test_new_profiles_keep_presence_and_ranking_capacity(self):
+        self.upgrade()
+        for index in range(512):
+            self.seed_new_presence("classic-v3",f"{index+1:064x}")
+        with self.assertRaises(sqlite3.IntegrityError):
+            self.seed_new_presence("classic-v3","f"*64)
+        sid=f"{1:064x}"
+        for index in range(8):
+            self.database.execute("INSERT INTO directory_activity_buckets VALUES ('classic-v3',?,?,0,0,0,0,0)",(sid,index*86400))
+        with self.assertRaises(sqlite3.IntegrityError):
+            self.database.execute("INSERT INTO directory_activity_buckets VALUES ('classic-v3',?,?,0,0,0,0,0)",(sid,8*86400))
+        self.database.execute("DELETE FROM server_presence WHERE profile='classic-v3' AND server_id=?",(sid,))
+        self.assertEqual(self.database.execute("SELECT count(*) FROM directory_activity_buckets").fetchone(),(0,))
+
+
 if __name__ == "__main__":
     unittest.main()

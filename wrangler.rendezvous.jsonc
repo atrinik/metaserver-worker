@@ -18,7 +18,7 @@
       "name": "GLOBAL_RATE_LIMITER",
       "namespace_id": "1201",
       "simple": {
-        "limit": 10,
+        "limit": 65536,
         "period": 60
       }
     },
@@ -26,23 +26,15 @@
       "name": "RENDEZVOUS_CLIENT_RATE_LIMITER",
       "namespace_id": "1202",
       "simple": {
-        "limit": 60,
+        "limit": 65536,
         "period": 60
       }
     }
   ],
-  "secrets": {
-    "required": [
-      "SOURCE_TAG_KEY_CURRENT",
-      "SOURCE_TAG_KEY_PREVIOUS"
-    ]
-  },
   "vars": {
     "RENDEZVOUS_HOSTNAME": "rendezvous.meta.atrinik.org",
     "RENDEZVOUS_ENABLED": "enabled",
-    "ROUTE_DISABLED_RETRY_SECONDS": "300",
-    "SOURCE_TAG_KEY_CURRENT_ID": "2026-08-a",
-    "SOURCE_TAG_KEY_PREVIOUS_ID": "2026-07-a"
+    "ROUTE_DISABLED_RETRY_SECONDS": "300"
   },
   "logpush": false,
   "tail_consumers": [],
