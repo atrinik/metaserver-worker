@@ -26,6 +26,11 @@ export async function handleAccessRouteMutation(
   request: Request, env: CoreEnv, profile: AccessProfile, serverId: string,
   authority: string, now: number, freshness = 14400,
 ): Promise<Response> {
+  // Game has no supported capability resolver or access rendezvous consumer.
+  // Its publication circuit cannot authorize unusable access routes, including
+  // receipts or revoke-before-reserve tombstones. Reject before authentication
+  // or any D1 allocation; previously stored Game routes remain inert.
+  if (profile !== "classic") return accessUnavailable();
   const authenticated = await authenticateAccessRoute(request,
     await readBoundedPublishBody(request, 4096), profile, serverId, authority, now);
   if (await env.DB.prepare("SELECT 1 AS denied FROM server_denials WHERE server_id=?")
