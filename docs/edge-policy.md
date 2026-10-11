@@ -208,7 +208,9 @@ http.host eq "rendezvous.meta.atrinik.org" and not (
     (raw.http.request.uri.query eq "" and
      not (raw.http.request.uri contains "?") and (
       (http.request.method eq "POST" and
-       raw.http.request.uri.path eq "/v1/access/resolve") or
+       (raw.http.request.uri.path eq "/v1/access/resolve" or
+        (starts_with(raw.http.request.uri.path, "/v1/rendezvous/challenge/classic/") and
+         len(raw.http.request.uri.path) eq 97))) or
       (http.request.method eq "GET" and (
         (starts_with(raw.http.request.uri.path, "/v1/access/rendezvous/classic/") and
          len(raw.http.request.uri.path) eq 94) or
@@ -229,9 +231,12 @@ The HTTPS authority prefix makes plaintext part of the block-outside rule;
 never redirect a WebSocket upgrade.
 
 The Worker remains responsible for the exact route shape, 64-hex server ID,
-WebSocket headers, role, bounded resolve body, access subprotocol, and
-authentication. Do not add health, directory,
-challenge, or update paths to this host.
+WebSocket headers, role, bounded resolve/challenge bodies, access subprotocol,
+and authentication. Admission-v1 adds only the exact Classic challenge POST;
+do not allow unrelated health, directory or update paths. The 97-byte challenge
+path is blind and stateless, and shares the client ingress ceiling. Review this
+operator rule change before deploying mandatory admission clients; source changes
+do not mutate the deployed rule.
 
 The automatic delivery canary stays inside this envelope: it uses `GET` on the
 84-byte Classic server path with `role=server` and canonical WebSocket headers,
@@ -412,7 +417,8 @@ separately; a source test cannot establish its absence or its retention.
 With shared native controls below their canary ceilings, claim one ticket,
 disconnect the server, allow the room to evict, reconnect the authenticated
 server, and replay that ticket from a new client. The room must reject it before
-candidate forwarding while a fresh ticket still succeeds. This proves the
+socket allocation while a fresh ticket with valid work still succeeds. A replay
+with a fresh challenge or a different valid solution must also fail. This proves the
 24-hour SQLite HMAC replay ledger, rather than a live attachment or an edge
 counter, owns reconstruction-safe single use.
 

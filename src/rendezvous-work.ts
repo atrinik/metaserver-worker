@@ -25,7 +25,10 @@ export async function ticketHash(ticket: string): Promise<string> {
 /** Blind issuance has no D1, Durable Object, or challenge-state dependency. */
 export async function issueRendezvousChallenge(request: Request, env: SourceTagKeyEnvironment,
   authority: string, serverId: string, now = Math.floor(Date.now() / 1000)): Promise<Response> {
-  const body = new TextDecoder("utf-8", { fatal: true }).decode(await readBoundedPublishBody(request, 256));
+  const bytes = await readBoundedPublishBody(request, 256);
+  let body: string;
+  try { body = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true }).decode(bytes); }
+  catch { throw new HttpError("bad_request"); }
   const match = /^\{"schema":"atrinik-rendezvous-admission-v1","ticketHash":"([0-9a-f]{64})"\}$/.exec(body);
   if (match === null) throw new HttpError("bad_request");
   const ring = await requiredSourceTagKeyRing(env);

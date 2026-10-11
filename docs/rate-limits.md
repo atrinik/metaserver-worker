@@ -35,7 +35,7 @@ review environments. No Worker limiter can undo the invocation that reached it.
 | --- | ---: | ---: |
 | Shared publisher ingress, including route CRUD | 32,768/minute/location | none |
 | Shared resolve ingress | 65,536/minute/location | none |
-| Shared client rendezvous ingress | 65,536/minute/location | none |
+| Shared challenge and client rendezvous ingress | 65,536/minute/location | none |
 | Shared server rendezvous ingress | 65,536/minute/location | none |
 | Authenticated Classic/Game publisher identity | 2/minute | 48/UTC day |
 | Authenticated server rendezvous identity | 3/minute | 50/UTC day |
@@ -50,8 +50,11 @@ source identifier:
 - Publisher: `512 identities × 2 profiles × (16 route operations + 2 publishes)`
   = **18,432** requests per minute, below 32,768.
 - Resolve: `512 × 60` = **30,720** requests per minute, below 65,536.
-- Client rendezvous: `512 × 16 × 4 + 30,720` = **63,488** requests per minute,
-  below 65,536.
+- Client rendezvous: the former `512 × 16 × 4 + 30,720` = **63,488**
+  upgrade requests per minute excludes mandatory challenge requests. Each
+  completed attempt now charges this same shared scope twice; that recovery
+  cohort can exceed the unchanged 65,536 ceiling and must back off. It is not
+  evidence of reserved availability.
 
 This is capacity arithmetic, not a reservation or proof of globally exact
 admission. Shared capacity can be exhausted by another caller. Authenticate
@@ -84,14 +87,14 @@ substitute for repairing a retry loop.
 | Signaling frame size | 512 bytes |
 | Accepted signaling bytes for the complete attempt | 9,216 bytes |
 
-Admission requires a live authenticated server control and fresh profile
-presence. Open clients introduce a fresh 64-hex ticket in their candidate.
-Protected clients use the exact access subprotocol and `access_init`, binding a
-single-use grant, client nonce, and ticket before candidates. Grant redemption
-checks current route revision, publication generation, expiry, and denial;
-dispatch rechecks authorization. Old invitation challenge/proof frames are
-rejected. Candidate addresses are validated and forwarded only in the live
-event, never retained in attachments, SQL, logs, metrics, or application history.
+Admission requires a live authenticated server control, fresh profile presence,
+and [admission-v1](rendezvous-admission.md) fixed 24-bit work. Challenges are
+blind and stateless; core verification rejects missing/invalid work before any
+room or presence lookup. The v5 room boundary supplies the validated ticket and
+proof expiry. Protected grant redemption checks current route revision,
+publication generation, expiry and denial before any reservation or socket.
+`access_init` confirms that same grant and nonce; dispatch rechecks authorization
+after hashing. Candidate addresses remain transient forwarding data.
 
 A ticket routes only to its bound client socket. Completion closes the client;
 one hibernation-safe alarm enforces the at-most-15-second deadline and the earliest
@@ -101,8 +104,9 @@ deadline and one, three, and seven seconds later. If both attachment persistence
 and close fail, bounded platform alarm retries handle failure; no per-session
 timer or unbounded signaling remains.
 
-The room reserves an admission row before `101` and atomically claims both
-current/previous-key replay aliases when the ticket is introduced. Its high
+The room atomically reserves an admission row and claims both current/previous-key
+replay aliases before allocating a socket. Replayed tickets leave no new row;
+claimed rows survive allocation failure, control replacement and reconstruction. Its high
 emergency storage ceiling returns temporary unavailability when exhausted,
 not a daily player quota. A row contains acceptance time and HMAC aliases, never
 raw ticket, unkeyed routing digest, connection ID, or candidate. Honest clients
@@ -160,3 +164,9 @@ rows fail the scheduled invocation so bounded diagnostics and platform alerts
 expose backlog. Diagnose with aggregate age/count queries, never actor keys.
 Provider recovery history and old IP-based rules/logs remain separate retention
 and operator-review concerns; live removal is not historical erasure.
+
+Missing admission proof returns fixed `428 Rendezvous admission required`; invalid
+or replayed work returns fixed `403 Forbidden`. All are noncacheable. Work raises
+computational cost but cannot guarantee fairness against an anonymous attacker.
+The native solver is bounded to 2^27 trials and ten seconds within the original
+attempt deadline. Slower devices may time out; there is no difficulty downgrade.

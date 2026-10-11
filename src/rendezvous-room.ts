@@ -1034,11 +1034,12 @@ export class RendezvousRoom extends DurableObject<CoreEnv> {
         connectionId: crypto.randomUUID(),
         admissionId: admission.admissionId,
         openedAt: now,
-        expiresAt: Math.min(now + policy.rendezvousClientSessionSeconds * 1_000,
+        expiresAt: Math.min(now + (authorizationRequired ? 2_000 : policy.rendezvousClientSessionSeconds * 1_000),
           receipt === null ? Number.MAX_SAFE_INTEGER : receipt.expires_at * 1000),
         boundTicketHash,
         accessGrant: authorizationRequired ? proof.ticket : null,
         accessClientNonce: proof.clientNonce,
+        accessExpiresAt: receipt === null ? null : receipt.expires_at * 1000,
         accessRedemption: receipt?.redemption_id ?? null,
         ticket: null,
         ticketDigest: null,
@@ -1062,16 +1063,24 @@ export class RendezvousRoom extends DurableObject<CoreEnv> {
       this.ctx.acceptWebSocket(room, ["client"]);
       writeAttachment(room, attachment);
       await this.scheduleNextAlarm(now);
+      const live = receipt === null || await this.accessStillLive(attachment);
       const activeServer = this.reconcileActiveServer();
+      const current = readClientAttachment(room);
+      const admittedAt = Date.now();
       if (
+        !live || proof.expiresAt * 1000 <= admittedAt || attachment.expiresAt <= admittedAt ||
+        (receipt !== null && receipt.expires_at * 1000 <= admittedAt) ||
+        current === null || current.stage === "terminal" ||
+        current.connectionId !== attachment.connectionId ||
         activeServer === null ||
         activeServer.socket !== server.socket ||
+        activeServer.socket.readyState !== WebSocket.OPEN ||
         activeServer.attachment.controlId !== attachment.controlId ||
         activeServer.attachment.generation !== attachment.generation ||
         this.currentGeneration !== attachment.generation ||
         room.readyState !== WebSocket.OPEN
       ) {
-        throw new Error("Server control changed during admission");
+        throw new Error("Admission changed before upgrade delivery");
       }
       const response = this.createUpgradeResponse(client, accessProtocol);
       attachment.summaryEmitted = false;
@@ -1079,9 +1088,13 @@ export class RendezvousRoom extends DurableObject<CoreEnv> {
       return response;
     } catch (error) {
       if (room !== null) {
-        closeSocket(room, RENDEZVOUS_CLOSE.serverUnavailable);
+        const failed = readClientAttachment(room);
+        if (failed !== null) this.failClient(room, failed, "server_unavailable", RENDEZVOUS_CLOSE.serverUnavailable);
+        else closeSocket(room, RENDEZVOUS_CLOSE.serverUnavailable);
       }
       // The preclaimed replay survives every later failure for the full horizon.
+      // Allocation may fail before scheduleNextAlarm installs its first alarm.
+      await this.scheduleAdmissionAlarm(Date.now());
       if (error instanceof RendezvousTeardownIntegrityError) {
         await this.rethrowTeardownFailure(error);
       }
@@ -1119,7 +1132,12 @@ export class RendezvousRoom extends DurableObject<CoreEnv> {
       return;
     }
     current.authorization = "not_required";
+    current.expiresAt = Math.min(current.openedAt +
+      rendezvousPolicyConfiguration(this.env).rendezvousClientSessionSeconds * 1000,
+      current.accessExpiresAt!);
     writeAttachment(socket, current);
+    // The earlier confirmation alarm remains a conservative wakeup and will
+    // reschedule the extended deadline; do not introduce a new authorization await.
     socket.send(JSON.stringify({ type: "access_ready", version: 1 }));
   }
 
@@ -2029,6 +2047,7 @@ export class RendezvousRoom extends DurableObject<CoreEnv> {
     attachment.ticketDigest = null;
     attachment.boundTicketHash = null;
     attachment.accessClientNonce = null;
+    attachment.accessExpiresAt = null;
     attachment.accessGrant = null;
     attachment.accessRedemption = null;
     attachment.terminalOutcome = outcome;
@@ -2304,8 +2323,9 @@ export class RendezvousRoom extends DurableObject<CoreEnv> {
           attachment.ticket = null;
           attachment.ticketDigest = null;
           attachment.boundTicketHash = null;
-    attachment.accessClientNonce = null;
-    attachment.accessGrant = null;
+          attachment.accessClientNonce = null;
+          attachment.accessExpiresAt = null;
+          attachment.accessGrant = null;
           attachment.accessRedemption = null;
           attachment.terminalOutcome = "internal_error";
           attachment.terminalCloseAttempts = 0;
@@ -2337,8 +2357,9 @@ export class RendezvousRoom extends DurableObject<CoreEnv> {
           attachment.ticket = null;
           attachment.ticketDigest = null;
           attachment.boundTicketHash = null;
-    attachment.accessClientNonce = null;
-    attachment.accessGrant = null;
+          attachment.accessClientNonce = null;
+          attachment.accessExpiresAt = null;
+          attachment.accessGrant = null;
           attachment.accessRedemption = null;
           attachment.terminalOutcome = "internal_error";
           attachment.terminalCloseAttempts = 0;

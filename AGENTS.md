@@ -72,8 +72,16 @@
   receipts plus nonterminal routes cannot exceed 4096 per identity or 65536
   globally; existing-record revocation must work at capacity.
   Grants are single-use, fifteen seconds, purpose-HMAC tagged in D1, and bound to
-  identity, generation, token revision and client nonce. Admit them only through
-  the versioned v4 room boundary and recheck denial before candidate dispatch.
+  identity, generation, token revision and client nonce. Require blind stateless
+  admission-v1 HMAC challenges and fixed 24-bit work before any client room lookup;
+  challenge issuance must never query presence/D1/rooms or persist challenge state.
+  Admit clients only through the exact versioned v5 room attestation. Redeem
+  protected grants in D1 and atomically reserve/claim ticket replay tags before
+  socket allocation; retain claims on every later failure. Recheck expiry,
+  generation, live control, capacity and grant liveness after awaits. Candidate
+  tickets must match their prebound binary-ticket hash. Protected access_init
+  confirms the preauthorized grant/nonce; it never redeems an alternate grant.
+  Recheck denial after hashing and before candidate dispatch.
   Raw grants may exist only in bounded live attachments and must be scrubbed at
   terminal teardown. The retired invitation challenge/proof frames are rejected.
   Source migrations 0013/0014 preserve populated history; 0015 physically removes
@@ -109,7 +117,7 @@
   headers without an old-envelope bridge. Anonymous edge counters use fixed
   purpose keys per location, not requester metadata or a fairness identity.
   Historical `SOURCE_TAG_KEY_*` names and key-ring classes serve only random
-  grant/ticket replay HMACs; preserve their exact domain separation and strictly
+  grant/ticket replay HMACs and separately domain-separated admission signatures; preserve their exact domain separation and strictly
   more than 24-hour overlapping-key retirement window. Preserve authenticated
   identity budgets. Candidate addresses are transient validated forwarding data,
   never attachment/SQL/log/history state; operator DNS endpoints are signed
@@ -122,7 +130,8 @@
   domain policy cannot be bypassed. Use an isolated Worker/Durable Object,
   custom hostname, secrets, D1 database, Analytics Engine dataset, and native
   Rate Limiting namespace IDs for canaries; reused namespace IDs share
-  counters across Workers.
+  counters across Workers. Admission work is a computational cost gate, not
+  anonymous-attacker fairness; bounded native solvers may time out on slower devices.
 - `deployment/workers-builds-review.json` owns the non-`main` review design.
   Same-repository branch automation is build-only, has no bindings, protected
   inputs, account/zone resource permission, upload, or URL, and must reject

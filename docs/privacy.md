@@ -360,11 +360,14 @@ copied into a custom metric or log.
 
 ## Rendezvous transient state
 
-The first open client candidate or protected `access_init` carries a fresh
-client-generated 64-hex ticket. The
-room retains the raw ticket beyond the frame currently being validated or
-forwarded only in that client's compact, versioned WebSocket attachment for the
-at-most-15-second connection. The authenticated server socket's attachment
+Every client upgrade binds a fresh 64-hex ticket through a stateless HMAC
+challenge and fixed 24-bit work. The challenge contains the SHA-256 hash of the
+32 binary ticket bytes, a random nonce, signing key ID and issuance time; it
+contains no source identity. Issuance never looks up presence, D1 or rooms.
+The v5 private boundary attests verified work, ticket and expiry. The room
+retains the ordinary ticket's binary hash in its versioned live attachment;
+the raw ticket is retained only after its matching candidate arrives and only
+for the at-most-15-second connection. The authenticated server socket's attachment
 keeps its random control ID, non-secret token-generation ID, and opening time
 plus, for each live attempt, the ticket's SHA-256 routing digest, a random
 client connection ID, opening/expiry times, and bounded stage/frame/byte
@@ -373,7 +376,8 @@ and signaling cannot cross a publish-time credential rotation. A terminal
 client attachment
 retains only those non-routing counters, its random local IDs/timestamps, the
 closed outcome enum, summary marker, and a bounded close-attempt counter: its
-raw ticket and digest are cleared as part of the terminal transition. Live
+raw ticket, ticket binding hash, client nonce and routing digest are cleared as
+part of the terminal transition. Live
 routing state survives
 hibernation, but it is not the 24-hour replay ledger and is removed at the
 session deadline. Only non-routing terminal metadata can outlive that deadline
@@ -381,9 +385,11 @@ when the platform transport refuses to close. Every attachment is strictly
 decoded and remains below Cloudflare's
 [16,384-byte attachment ceiling](https://developers.cloudflare.com/durable-objects/best-practices/websockets/#websocketserializeattachment).
 
-Protected `access_init` also carries a short-lived single-use grant and client
-nonce. Grant redemption is bound to server identity, publication generation,
-route revision, and nonce; dispatch rechecks authorization. Raw grants may exist
+Protected upgrades carry a short-lived single-use bearer grant and client nonce.
+Grant redemption occurs before socket allocation and is bound to server identity,
+publication generation, route revision and nonce. The retained `access_init`
+frame confirms exactly that preauthorized grant and nonce; dispatch rechecks
+authorization after hashing and before forwarding. Raw grants may exist
 only in bounded live attachments and are scrubbed at terminal teardown. They
 never enter logs, metrics, public artifacts, or the durable replay ledger.
 Retired invitation challenge/proof frames are rejected, with no compatibility
@@ -421,11 +427,11 @@ only after every socket is either durably non-routing or transport-closed.
 
 Each accepted client reserves one row in the per-room Durable Object SQLite
 admission ledger. Apart from its local numeric row ID, its application fields
-are `accepted_at_ms` and exactly two nullable replay-alias columns. The first
-valid open client candidate or protected `access_init` derives and
-atomically claims both aliases; the same
-transaction rejects a collision against either column before forwarding the
-candidate. The room deletes every row whose acceptance time is at or before
+are `accepted_at_ms` and exactly two nullable replay-alias columns. Before
+socket allocation the room atomically reserves the row and claims both aliases;
+a collision against either column leaves no new reservation. A claimed row
+survives allocation failure, alternative challenges/solutions, publication
+rotation and reconstruction. Post-upgrade frames never claim a second row. The room deletes every row whose acceptance time is at or before
 the rolling 24-hour cutoff. Its high emergency row ceiling is storage-only;
 exhaustion returns temporary unavailability and never a player-facing daily
 budget response.
@@ -440,7 +446,13 @@ atrinik-metaserver\0rendezvous-ticket-replay-tag\0v1\0<canonical-deployment-host
 That scope prevents the same ticket from becoming a cross-environment or
 cross-room pseudonym. The historical source-tag key-ring name does not authorize
 address derivation:
-this purpose contains only a random ticket and its replay scope.
+this purpose contains only a random ticket and its replay scope. Admission
+challenge signatures use a separate domain:
+`atrinik-rendezvous-admission-v1\0<authority>\0classic\0<server-id>\0<token-prefix>`.
+Current keys sign and current/previous keys verify; the existing strictly more
+than 24-hour overlap remains mandatory. Challenges expire after 60 seconds and
+are never persisted. Computational cost provides no anonymous-attacker fairness
+guarantee or source attribution.
 SQLite never receives the raw ticket, its unkeyed SHA-256 routing digest, a
 connection ID, candidate address, frame counter, or credential. Testing a
 guessed ticket against an alias requires the corresponding HMAC secret. The

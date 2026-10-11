@@ -52,12 +52,17 @@ persistent QUIC certificate. Both publishers fold freshness and identity proof
 into one replay-safe signed request. Rendezvous server peers authenticate
 separately.
 
-Rendezvous is one short, bounded signaling attempt. A client is admitted only
-while an authenticated server-control socket is live. Open public connections
-retain the bounded ticket/candidate flow. Protected access first resolves a
-route capability over HTTPS, then opens the access rendezvous route and sends
-one `access_init` frame with a fresh grant and client nonce. No access code,
-route capability or grant appears in a URL or WebSocket subprotocol.
+Rendezvous is one short, bounded signaling attempt. Every client first obtains a
+blind stateless challenge from
+`POST /v1/rendezvous/challenge/classic/{server-id}` and solves fixed 24-bit
+SHA-256 work. The core verifies the proof and binary-ticket hash before any
+presence or room lookup. Open upgrades send the proof and fresh ticket headers;
+protected upgrades send the proof, bearer grant and client nonce. Only a live
+authenticated server control can admit the client. The room redeems protected
+grants and claims ticket replay tags before allocating a socket. Protected
+`access_init` confirms that same preauthorized grant and nonce; it never provides
+another authentication path. No access code, route capability or grant appears
+in a URL or WebSocket subprotocol. See [admission details](docs/rendezvous-admission.md).
 
 The grant expires within 15 seconds and is redeemed once through the current
 D1 route authority before room admission. Revocation and redemption serialize

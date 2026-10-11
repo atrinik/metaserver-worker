@@ -1511,3 +1511,25 @@ migration.
 If canonical availability degrades, disable the affected canonical circuit,
 retain the exact journal/evidence, and fix forward. Do not reattach the core,
 restore the retired WAF allowlist, or expose a compatibility response.
+
+## Mandatory rendezvous admission-v1 boundary
+
+The v5 Worker-to-room envelope and v4 live attachment format reject older
+versions; there is no v4-envelope compatibility bridge. Keep the existing
+replay ledger and HMAC namespace intact. Drain old live sessions, deploy the
+core before callers, and reconnect authenticated server controls. Their public
+handshake and signaling frames are unchanged. Coordinate mandatory admission-v1
+Classic clients and the exact challenge POST in the reviewed raw-target gate;
+old clients receive 428 and new clients fail closed against providers without
+the challenge route. Do not solve deployment skew by reducing difficulty or
+restoring post-upgrade grant authentication.
+
+Before activation, validate stateless challenge issuance, missing/invalid proof
+zero-room dispatch, grant rejection before allocation, replay after room
+reconstruction/key rotation, and proof/grant expiry during asynchronous admission.
+Record representative native solver cost and bounded timeout behavior. The
+fixed 24-bit cost does not reserve capacity or guarantee anonymous fairness.
+Challenge requests share the existing client ingress ceiling and count separately
+from upgrades. Existing credential-free deployment canaries use server-role
+requests and remain unchanged; a successful canary does not prove client work
+admission or gameplay. These requirements grant no deployment authority.
