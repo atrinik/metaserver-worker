@@ -1780,15 +1780,18 @@ test("directory proxy bounds hanging fetch, read, cancellation and disposal", as
   const options = { configPath: "/test/proxy.json", config, environment: proxyEnvironment(),
     authorize: async () => {}, timeoutMs: 10, cleanupTimeoutMs: 10 };
   const never = () => new Promise(() => {});
-  let signal;
+  // A real pending fetch retains its Request. Keep that same lifetime here:
+  // Node may stop forwarding aborts once the Request is garbage-collected,
+  // even if its dependent signal is still referenced by this fake fetch.
+  let pendingRequest;
   let disposed = false;
   await assert.rejects(invokeDirectoryProxy({ ...options, createProxy: async () => ({
     dispose: async () => { disposed = true; },
     env: { DIRECTORY_RECONCILIATION: { fetch: async (request) => {
-      signal = request.signal; return never();
+      pendingRequest = request; return never();
     } } },
   }) }), /deadline exceeded/u);
-  assert.equal(signal.aborted, true);
+  assert.equal(pendingRequest.signal.aborted, true);
   assert.equal(disposed, true);
 
   let cancelled = false;
