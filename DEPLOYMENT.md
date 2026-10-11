@@ -941,9 +941,10 @@ The accepted review design is
 [`deployment/workers-builds-review.json`](deployment/workers-builds-review.json)
 and its rationale/runbook is
 [`docs/review-environment.md`](docs/review-environment.md). The production
-project has Cloudflare's provider-native production and preview triggers. The
-production trigger selects only `main`; the preview trigger selects every
-non-`main` branch and runs only `npm run review:branch` plus the local contract
+project retains the separate provider-native preview trigger. The former
+automatic-production main trigger must remain fenced and drained; automatic
+main delivery belongs to DEV. The preview trigger selects every non-`main`
+branch and runs only `npm run review:branch` plus the local contract
 validator. The preview trigger has its own zero-resource build token and an
 exact one-variable nonsecret environment, with no production protected input,
 binding, route, branch-created Worker version, or URL. The checked-in
