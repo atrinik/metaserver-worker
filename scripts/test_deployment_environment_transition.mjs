@@ -373,3 +373,72 @@ test("command-only completion preserves original main and review selectors", () 
     [[["main"], []], [["*"], ["main"]]]);
   assert.equal(nextTransitionOperation({ plan, snapshot: f.snapshot, now }).phase, "complete");
 });
+
+function inertTransitionFixture() {
+  const f = fixture();
+  f.disposition = "retained-inert-builds";
+  f.snapshot.productionTriggers[1].build_token_uuid = f.snapshot.productionTriggers[0].build_token_uuid;
+  f.snapshot.environments[id(2)].ATRINIK_WORKERS_BUILDS_API_TOKEN = { is_secret: true, value: null };
+  return f;
+}
+test("explicit retained inert transition seals both roles with exact command-only requests and reaches valid fence", async () => {
+  const f = inertTransitionFixture(), plan = createTransitionPlan(f), records = [], phases = [];
+  const original = clone(f.snapshot.productionTriggers);
+  let clockNow = now;
+  for (let step = 0; step < 3; step++) {
+    f.snapshot.capturedAt = new Date(clockNow).toISOString();
+    const result = await applyTransitionStep({ plan, snapshot: f.snapshot, records, now: clockNow,
+      append: async () => {}, execute: async op => {
+        phases.push(op.phase);
+        assert.deepEqual(op.body, { build_command: "exit 1", deploy_command: "exit 1" });
+        const target = op.phase === "fence-production" ? 0 : 1;
+        assert.equal(op.path, `/accounts/${f.coordinates.accountId}/builds/triggers/${f.snapshot.productionTriggers[target].trigger_uuid}`);
+        Object.assign(f.snapshot.productionTriggers[target], op.body);
+      } });
+    assert.equal(result.phase, step === 2 ? "complete" : "await-readback");
+    clockNow += 1000;
+  }
+  assert.deepEqual(phases, ["fence-production", "fence-review"]);
+  assert.equal(verifyTransitionJournal(records, plan), null);
+  assert.deepEqual(f.snapshot.productionTriggers, original.map(t => ({ ...t, build_command: "exit 1", deploy_command: "exit 1" })));
+  const policy = { ...fencePolicy(plan), disposition: plan.disposition,
+    reviewTriggerDigest: transitionDigest(normalizeTransitionTrigger(f.snapshot.productionTriggers[1])) };
+  assert.equal(validateProductionWriterFence({ triggers: f.snapshot.productionTriggers,
+    builds: [], environments: f.snapshot.environments }, policy).disposition, "retained-inert-builds");
+});
+test("retained inert review uncertain write recovers only exact fresh readback, never repeats", async () => {
+  const f = inertTransitionFixture(), plan = createTransitionPlan(f), records = [];
+  Object.assign(f.snapshot.productionTriggers[0], { build_command: "exit 1", deploy_command: "exit 1" });
+  await assert.rejects(applyTransitionStep({ plan, snapshot: f.snapshot, records, now,
+    append: async () => {}, execute: async () => { throw new Error("uncertain"); } }), /uncertain/);
+  f.snapshot.capturedAt = new Date(now + 1000).toISOString();
+  await assert.rejects(applyTransitionStep({ plan, snapshot: f.snapshot, records, now: now + 1000,
+    append: async () => assert.fail("unproven observation"), execute: async () => assert.fail("repeated") }), /unresolved/);
+  Object.assign(f.snapshot.productionTriggers[1], { build_command: "exit 1", deploy_command: "exit 1" });
+  assert.equal((await applyTransitionStep({ plan, snapshot: f.snapshot, records, now: now + 1000,
+    append: async () => {}, execute: async () => assert.fail("repeated") })).phase, "complete");
+});
+test("retained inert phases reject new active builds, environment changes and peer drift before writes", async () => {
+  for (const change of [
+    f => { f.snapshot.productionBuilds.push({ build_uuid: id(400), status: "running", trigger: clone(f.snapshot.productionTriggers[1]) }); },
+    f => { f.snapshot.environments[id(2)].ENV = { is_secret: true, value: null }; },
+    f => { f.snapshot.productionTriggers[1].branch_excludes = []; },
+    f => { f.snapshot.productionTriggers[1].build_token_uuid = id(444); },
+  ]) {
+    const f = inertTransitionFixture(), plan = createTransitionPlan(f);
+    Object.assign(f.snapshot.productionTriggers[0], { build_command: "exit 1", deploy_command: "exit 1" });
+    change(f);
+    await assert.rejects(applyTransitionStep({ plan, snapshot: f.snapshot, records: [], now,
+      append: async () => assert.fail("unsafe intent"), execute: async () => assert.fail("unsafe write") }));
+  }
+});
+test("retained inert planning is explicit, rejects active predecessors and unsafe review inputs", () => {
+  const f = inertTransitionFixture();
+  assert.throws(() => createTransitionPlan({ ...f, disposition: undefined }), /predecessor/);
+  assert.throws(() => createTransitionPlan({ ...f, disposition: "unknown" }), /disposition/);
+  f.snapshot.productionBuilds.push({ build_uuid: id(400), status: "queued", trigger: clone(f.snapshot.productionTriggers[1]) });
+  assert.throws(() => createTransitionPlan(f), /in flight/);
+  f.snapshot.productionBuilds = [];
+  f.snapshot.environments[id(2)].NODE_OPTIONS = { is_secret: true, value: null };
+  assert.throws(() => createTransitionPlan(f), /environment/);
+});

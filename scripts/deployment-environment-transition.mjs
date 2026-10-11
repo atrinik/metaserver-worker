@@ -194,7 +194,9 @@ function snapshotCheck(snapshot, coordinates, now) {
 function core(coordinates, environment) {
   return coordinates.workers[environment].find((w) => w.role === "core");
 }
-export function createTransitionPlan({ snapshot, coordinates, now = Date.now() }) {
+export function createTransitionPlan({ snapshot, coordinates, disposition = "credential-free-review", now = Date.now() }) {
+  if (!["credential-free-review", "retained-inert-builds"].includes(disposition)) fail("unknown transition disposition");
+  const inert = disposition === "retained-inert-builds";
   snapshotCheck(snapshot, coordinates, now);
   const prod = normalizedTriggers(snapshot.productionTriggers);
   if (prod.length !== 2 || normalizedTriggers(snapshot.developmentTriggers).length !== 0)
@@ -206,23 +208,29 @@ export function createTransitionPlan({ snapshot, coordinates, now = Date.now() }
       !same(old.branch_includes, ["main"]) ||
       !same(old.branch_excludes, []) || old.build_caching_enabled !== false ||
       !same(review.branch_includes, ["*"]) || !same(review.branch_excludes, ["main"]) ||
-      old.build_token_uuid === review.build_token_uuid ||
+      !uuid.test(old.build_token_uuid) || !uuid.test(review.build_token_uuid) ||
+      (!inert && old.build_token_uuid === review.build_token_uuid) ||
       old.repo_connection?.repo_connection_uuid !== coordinates.repositoryConnectionUuid ||
       !same(old.repo_connection, review.repo_connection) ||
       old.repo_connection.provider_type !== "github" ||
       old.repo_connection.provider_account_name !== "atrinik" ||
       old.repo_connection.repo_name !== "metaserver-worker") fail("predecessor trigger identity mismatch");
-  if (review.build_command !== "npm run build" || review.deploy_command !== "npm run validate" ||
+  if (!inert && (review.build_command !== "npm run build" || review.deploy_command !== "npm run validate" ||
       review.root_directory !== "/deployment/review-check" || review.build_caching_enabled !== false ||
       !same(review.path_includes, ["*"]) || !same(review.path_excludes, []) ||
       !same(snapshot.environments?.[review.trigger_uuid],
-        { SKIP_DEPENDENCY_INSTALL: { is_secret: false, value: "1" } }))
+        { SKIP_DEPENDENCY_INSTALL: { is_secret: false, value: "1" } })))
     fail("unsafe review predecessor");
   validateRetainedInertEnvironment(snapshot.environments?.[old.trigger_uuid], "production");
+  if (inert) {
+    if (review.build_caching_enabled !== false) fail("unsafe review cache predecessor");
+    validateRetainedInertEnvironment(snapshot.environments?.[review.trigger_uuid], "review");
+    requireStoppedBuilds(snapshot.productionBuilds);
+  }
   productionFencePatchBody(old);
   const baselineVersions = Object.fromEntries(coordinates.workers.production.map((w) =>
     [w.name, snapshot.activeVersions[w.name]]));
-  const plan = { schemaVersion: 1, kind: "metaserver-production-writer-fence", coordinates,
+  const plan = { schemaVersion: 1, kind: "metaserver-production-writer-fence", disposition, coordinates,
     predecessorDigest: transitionDigest(snapshot),
     predecessorProduction: old, review, baselineVersions,
     productionEnvironments: Object.fromEntries(prod.map((r) => [r.trigger_uuid,
@@ -231,6 +239,10 @@ export function createTransitionPlan({ snapshot, coordinates, now = Date.now() }
   plan.planDigest = transitionDigest(plan);
   activeBuilds(snapshot.productionBuilds, { ...coordinates, externalScriptId: old.external_script_id, reviewTrigger: review });
   return plan;
+}
+function requireStoppedBuilds(builds) {
+  if (!Array.isArray(builds) || builds.some(build => build.status !== "stopped"))
+    fail("retained Builds writer still in flight");
 }
 function checkPlan(plan) {
   const { planDigest, ...body } = plan;
@@ -252,7 +264,9 @@ function preservation(plan, snapshot, now) {
   for (const [name, version] of Object.entries(plan.baselineVersions))
     if (snapshot.activeVersions[name] !== version) fail("active production version changed");
   const prod = normalizedTriggers(snapshot.productionTriggers);
-  if (prod.length !== 2 || !same(selected(prod, plan.coordinates.reviewTriggerUuid), plan.review) ||
+  const currentReview = selected(prod, plan.coordinates.reviewTriggerUuid);
+  const fencedReview = plan.disposition === "retained-inert-builds" ? fencedProduction(plan.review) : plan.review;
+  if (prod.length !== 2 || (!same(currentReview, plan.review) && !same(currentReview, fencedReview)) ||
       !same(Object.fromEntries(prod.map((r) => [r.trigger_uuid,
         secretManifest(snapshot.environments?.[r.trigger_uuid])])), plan.productionEnvironments))
     fail("production peer or protected environment changed");
@@ -260,7 +274,7 @@ function preservation(plan, snapshot, now) {
   const fenced = fencedProduction(plan.predecessorProduction);
   if (!same(current, plan.predecessorProduction) && !same(current, fenced))
     fail("production predecessor drift");
-  return { current, fenced };
+  return { current, fenced, currentReview, fencedReview };
 }
 function snapshotStateDigest(snapshot) {
   const { capturedAt: _capturedAt, ...state } = snapshot;
@@ -273,10 +287,16 @@ function operation(plan, snapshot, phase, method, suffix, body, extra = {}) {
     capturedAt: snapshot.capturedAt, expiresAt: new Date(Date.parse(snapshot.capturedAt) + 30_000).toISOString(), ...extra };
 }
 export function nextTransitionOperation({ plan, snapshot, now = Date.now() }) {
-  const { current, fenced } = preservation(plan, snapshot, now);
+  const { current, fenced, currentReview, fencedReview } = preservation(plan, snapshot, now);
+  if (plan.disposition === "retained-inert-builds") {
+    requireStoppedBuilds(snapshot.productionBuilds);
+    activeBuilds(snapshot.productionBuilds, { ...plan.coordinates, externalScriptId: current.external_script_id });
+  }
   const coordinates = plan.coordinates;
   if (!same(current, fenced)) return operation(plan, snapshot, "fence-production", "PATCH",
     `/builds/triggers/${coordinates.productionTriggerUuid}`, productionFencePatchBody(plan.predecessorProduction));
+  if (!same(currentReview, fencedReview)) return operation(plan, snapshot, "fence-review", "PATCH",
+    `/builds/triggers/${coordinates.reviewTriggerUuid}`, productionFencePatchBody(plan.review));
   const pending = activeBuilds(snapshot.productionBuilds,
     { ...coordinates, externalScriptId: current.external_script_id, reviewTrigger: plan.review });
   if (pending.length) {
@@ -312,6 +332,8 @@ export function verifyTransitionJournal(records, plan) {
 function applied(op, plan, snapshot) {
   const prod = selected(snapshot.productionTriggers, plan.coordinates.productionTriggerUuid);
   if (op.phase === "fence-production") return same(normalizeTransitionTrigger(prod), fencedProduction(plan.predecessorProduction));
+  if (op.phase === "fence-review" && plan.disposition === "retained-inert-builds")
+    return same(normalizeTransitionTrigger(selected(snapshot.productionTriggers, plan.coordinates.reviewTriggerUuid)), fencedProduction(plan.review));
   if (op.phase === "cancel-production-build") return snapshot.productionBuilds.some((b) =>
     b.build_uuid === op.buildUuid && b.status === "stopped");
   return false;
