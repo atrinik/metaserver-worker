@@ -1,8 +1,8 @@
 # DEV and PROD delivery policy
 
-Reviewed `main` pushes deploy automatically to persistent DEV through Cloudflare
-Workers Builds. PROD accepts only a separately owner-approved immutable release
-tag/SHA through the manual `promote-production.yml` GitHub Actions workflow.
+Reviewed `main` pushes deploy automatically to persistent DEV through
+GitHub Actions in `deploy-development.yml`. PROD accepts only a separately
+owner-approved immutable release tag/SHA through the manual `promote-production.yml` GitHub Actions workflow.
 This document specifies source policy and acceptance gates; it does not assert
 that provider settings, migrations, deployments or environment protections have
 been applied.
@@ -18,7 +18,7 @@ been applied.
 | Game static origin | `https://game.dev.meta.atrinik.org` | reviewed protected PROD origin |
 | Publisher origin | `https://publish.dev.meta.atrinik.org` | reviewed protected PROD origin |
 | Rendezvous origin | `https://rendezvous.dev.meta.atrinik.org` | reviewed protected PROD origin |
-| Routine authority | exact current-main Workers Build | approved exact-tag workflow dispatch |
+| Routine authority | exact current-main GitHub Actions run | approved exact-tag workflow dispatch |
 | State lifetime | persistent; never reset to validate code | persistent; forward-only migration history |
 
 These DEV names identify the existing cohort, not permission to create a
@@ -26,7 +26,8 @@ replacement cohort. Fresh provider readback must prove its identity and
 bindings. DEV retains the existing `DevelopmentMaintenance` Durable Object
 alarm scheduler and its constant object name/state. The Free account already
 uses all five cron slots: do not add DEV cron, change PROD cron, replace the
-scheduler or upgrade the account plan as part of delivery. Keep DEV and PROD D1 databases, R2 buckets, Durable Object namespaces,
+scheduler or upgrade the account plan as part of delivery. Keep DEV and PROD
+D1 databases, R2 buckets, Durable Object namespaces,
 Analytics Engine datasets, rate-limiting namespace IDs, secrets, circuits,
 custom domains and service targets fully disjoint. A shared account or zone is
 not permission to share state. The core owns state, schedules, purge and
@@ -59,6 +60,30 @@ nor a former accepted-main authority may activate the new PROD path. Retirement
 is a separately authorized provider change. This source patch does not perform
 it or prove it has occurred.
 
+Do not add or move a DEV Workers Builds trigger/repository connection. The
+retained provider 12002 constraint prevents one connection targeting two
+Workers, and the repository-connection API inventory cannot establish a
+per-Worker identity. Keep the historical review connection and credential-free
+branch trigger in place.
+
+The operator transition interface emits a plan or the next exact API operation:
+
+```sh
+node scripts/deployment-environment-transition.mjs --plan /absolute/private-input.json /absolute/new-plan.json
+node scripts/deployment-environment-transition.mjs --next /absolute/private-input.json /absolute/new-operation.json
+```
+
+Neither command sends a network write. The `--next` input supplies `plan`,
+`snapshot`, `journalPath`, and `records`. Keep checksum-framed receipts at
+`${journalPath}.N.json` immutable and load them during recovery. Each snapshot
+must be no older than 30 seconds, complete and stable across the exhaustive
+inventory. Apply only the exact emitted request through the separately approved
+Cloudflare transport, then capture fresh readback before continuing. This
+transition retires the automatic writer; it grants no legacy runtime/data
+cleanup. The production promotion's read-only writer fence consumes
+`CLOUDFLARE_ACCOUNT_ID`, `ATRINIK_PRODUCTION_BUILDS_READ_TOKEN`, and
+`ATRINIK_PRODUCTION_WRITER_FENCE_POLICY` from protected environment input.
+
 ## Prepare persistent DEV
 
 1. Capture fresh bounded private readback for the exact existing DEV cohort:
@@ -81,20 +106,27 @@ it or prove it has occurred.
    `ATRINIK_DEVELOPMENT_CORE_CONFIG`,
    `ATRINIK_DEVELOPMENT_PUBLISHER_CONFIG`, and
    `ATRINIK_DEVELOPMENT_RENDEZVOUS_CONFIG`, plus `CLOUDFLARE_ACCOUNT_ID`
-   and `ATRINIK_DEVELOPMENT_WORKERS_BUILDS_API_TOKEN`.
+   in the DEV GitHub environment. Use a newly scoped DEV deployment token or
+   an explicitly authorized token transfer; never copy PROD secrets into DEV
+   or display token values. DEV credentials belong only in the DEV execution
+   step, not the secret-free source-validation job.
    Never commit private IDs/configs or print credentials/provider responses.
 5. Prepare the concrete source PR first. DEV automatic activation requires the
-   owner-approved merge of the new source PR before trigger activation. Then
-   configure the exact reviewed all-path main trigger from
-   `deployment/workers-builds-development.json`, retaining pinned Node/npm,
-   lockfile-resolved Wrangler, isolated dependency installation and positive
-   child-environment allowlists. Freshly reconcile trigger commands, filters,
-   token policy and protected input classification before remote use.
+   owner-approved merge of the new source PR. The checked-in
+   `deployment/workers-builds-development.json` retains its historical filename
+   but now declares the GitHub Actions provider; it does not authorize a new
+   Cloudflare trigger. `deploy-development.yml` runs on protected main pushes,
+   validates selected source without credentials, and deploys through a distinct
+   DEV execution job with fixed DEV concurrency and `cancel-in-progress: false`.
+   Retain pinned Node/npm, lockfile-resolved Wrangler, isolated dependency
+   installation and positive child-environment allowlists. Fresh authenticated
+   exact-current-main and current-run validation fences protect each live use.
 
 Local credential-free inspection uses `npm run deploy:development:validate`
 and `npm run deploy:development:dry-run`. Live `npm run deploy:development`
-requires the exact authenticated provider build, clean source equal to its SHA,
-and newest-current-main authority. A local invocation grants no remote access.
+requires the exact authenticated automatic GitHub Actions main run, clean source
+matching its SHA and successful source validation. A stale run stops before
+mutation. A local invocation grants no remote access.
 
 ## Review and dispatch a PROD promotion
 
@@ -123,14 +155,16 @@ fails closed. Both selected source and trusted controller must be ancestors of
 fresh current main, allowing deliberate promotion of an older accepted release.
 The selected-source check job receives no production credentials.
 
-The production GitHub environment must enforce independent review,
-`prevent_self_review: true`, no administrator bypass and protected branches
-only. Read back these controls; writing the workflow does not configure them.
-Use one fixed production concurrency group with `cancel-in-progress: false`.
-Only the initial run attempt is eligible, within one hour of run creation;
-workflow reruns are rejected. Production credentials enter only the execution
-step after approval and final coordinate validation. Any changed tag, digest,
-configuration, migration or predecessor requires new review.
+Scope credentials to the production GitHub environment and enforce its
+protected-branch gate. The owner's explicit dispatch of the reviewed exact
+inputs is promotion approval; this policy adds no second human or required
+review count. Use one fixed production concurrency group with
+`cancel-in-progress: false`. Only the initial run attempt is eligible, within
+one hour of run creation; workflow reruns are rejected. Production credentials
+enter only the execution step after exact coordinate validation. The successful
+initial source-validation job is rechecked through the authenticated API at
+each authority fence. Any changed tag, digest, configuration, migration or
+predecessor requires new owner review and approval.
 
 `node scripts/production-promotion.mjs --dry-run` performs credential-free
 validation of the six input coordinates. It does **not** resolve bundles or
@@ -175,7 +209,7 @@ restore core breakers disabled and separately report whether recovery is
 Never guess the active phase, repeat an ambiguous upload, reverse an applied
 migration or reopen core before coherent readback.
 
-DEV may fix forward from the exact newest current main after the separately
+DEV may fix forward from the exact current main after the separately
 authorized prerequisite and exact ledger readback. PROD does not reuse an old
 run: reconcile its one-use attempt and active phase, then obtain a newly
 reviewed attempt bound to the exact release, digests and current predecessor.

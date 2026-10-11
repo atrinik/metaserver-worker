@@ -50,8 +50,8 @@
   merge of the concrete source PR. Retain DEV `DevelopmentMaintenance` alarm
   scheduling and constant object identity/state; do not add cron or change PROD
   scheduling. Run `npm run deploy:development`
-  only inside that exact Workers Builds trigger. Keep pinned tools, all-path
-  triggers, newest-current-main fencing, protected DEV inputs, no-op digests,
+  only inside the exact automatic GitHub Actions main workflow. Keep pinned tools, all-path
+  triggers, exact-current-main fencing, protected DEV inputs, no-op digests,
   exact migration ledgers, ordered disabled staging and caller-before-core
   restoration synchronized with the implementation and
   `docs/deployment-environments.md`. Automatic delivery never applies SQL.
@@ -287,8 +287,8 @@
 - Never deploy, run remote D1 migrations, reset ownership, or mutate Cloudflare
   resources merely to validate a change. Those external actions require
   explicit authorization and reviewed environment bindings. The automatic DEV
-  entrypoint is authorized only inside its configured Workers Builds `main`
-  trigger; PROD requires the separately approved exact-tag workflow dispatch.
+  entrypoint is authorized only inside its configured GitHub Actions `main`
+  workflow; PROD requires the separately approved exact-tag workflow dispatch.
   Local live execution must fail before remote access.
 - Commits and pull-request titles use Conventional Commits. Every squash merge
   is released by semantic-release.

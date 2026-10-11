@@ -13,7 +13,8 @@ are stateless public edges with one named Service Binding each.
 
 The current policy and operator checklist are in
 [deployment environments](docs/deployment-environments.md). Reviewed `main`
-pushes use `deployment/workers-builds-development.json` and
+pushes use the `deploy-development.yml` GitHub Actions workflow,
+`deployment/workers-builds-development.json` and
 `npm run deploy:development` against the existing persistent DEV cohort.
 `deployment/workers-builds-production.json` describes explicit GitHub Actions
 promotion of an approved immutable tag/SHA. No accepted `main` push, release
@@ -32,7 +33,7 @@ Both paths retain exact remote-ledger verification without automatic SQL,
 digest-bound no-ops, strict direct 100% deployment, core/publisher/rendezvous
 staging with public circuits disabled, publisher/rendezvous/core restoration,
 phase readback, private directory reconciliation and bounded public canaries.
-PROD replaces newest-main build authority with the exact promotion attempt,
+PROD replaces exact-current-main workflow authority with the exact promotion attempt,
 approved tag/SHA, release provenance, digests and expected predecessor.
 Never print private configurations, IDs, credentials or raw provider responses.
 
@@ -1033,7 +1034,7 @@ through to the production command or blocks unrelated GitHub validation.
 
 Use the environment-specific recovery checklist in
 [deployment environments](docs/deployment-environments.md#failure-and-recovery).
-DEV may retry only the exact current-main build after its separately authorized
+DEV may retry only the exact current-main workflow after its separately authorized
 prerequisite is proven. PROD must use a newly approved attempt; workflow reruns
 and silent automatic retries are rejected. A partial phase is evidence to
 reconcile, never permission to replay an ambiguous write. Keep core circuits

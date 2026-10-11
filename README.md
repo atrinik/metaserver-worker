@@ -101,13 +101,14 @@ deployable. Generated declarations and `dist/` output are untracked and must
 not be edited.
 
 Reviewed pushes to protected `main` automatically deploy to the persistent
-DEV cohort through Cloudflare Workers Builds and `npm run deploy:development`.
+DEV cohort through the automatic `deploy-development.yml` GitHub Actions
+workflow and `npm run deploy:development`.
 The machine contract is
 [`deployment/workers-builds-development.json`](deployment/workers-builds-development.json).
 DEV uses the existing `atrinik-metaserver-development` core and its
 `-publisher` and `-rendezvous` callers; production resources are disjoint.
 Delivery checks the exact D1 ledger without applying migrations, fences stale
-builds, stages all three Workers with circuits disabled, restores callers before
+workflow runs, stages all three Workers with circuits disabled, restores callers before
 core, and reads back the coherent 100% cohort before bounded canaries.
 
 Production changes require an explicit GitHub Actions workflow dispatch for an
@@ -133,8 +134,8 @@ with no bindings, protected inputs, upload, or URL. Forks receive ordinary
 GitHub repository validation only. Changes that need live provider evidence
 use a separately requested, operator-supervised exact-SHA run against one
 serialized, Access-protected, production-disjoint canary cohort. The production
-core project uses Cloudflare's documented production-plus-preview trigger pair;
-the preview trigger has its own zero-resource token and a one-variable nonsecret
+core project retains the separate Cloudflare preview trigger while the former
+automatic production trigger is fenced and drained. The preview trigger has its own zero-resource token and a one-variable nonsecret
 environment, so no production protected input or credential enters the build. Cloudflare's
 account-scoped Builds control-plane permission remains an explicit trusted
 operator user-token exception across builds, tokens, environment variables,
