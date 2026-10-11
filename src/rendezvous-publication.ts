@@ -7,6 +7,7 @@ import {
   DIRECTORY_ACTIVITY_WINDOW_SECONDS,
 } from "./directory-ranking";
 import type { InternalRendezvousPublication } from "./rendezvous-contract";
+import { cleanupPublisherNonces, publisherNonceCapacity } from "./publisher-nonces";
 
 interface PublishedGenerationRecord {
   readonly rendezvous_generation: string;
@@ -120,7 +121,8 @@ async function persistSignedPublication(
             )
        )`;
 
-  const persisted = await db.batch([
+  const results = await db.batch([
+    cleanupPublisherNonces(db, publication.now),
     db.prepare(
       `INSERT INTO publisher_replay
          (server_id, profile, last_sequence, last_nonce, commit_token,
@@ -129,7 +131,7 @@ async function persistSignedPublication(
         WHERE NOT EXISTS (
           SELECT 1 FROM publisher_nonces
            WHERE server_id = ? AND ${lineageNoncePredicate} AND nonce = ?
-        ) ${insertSequenceGuard}
+        ) ${insertSequenceGuard} AND ${publisherNonceCapacity()}
        ON CONFLICT(server_id, profile) DO UPDATE SET
          last_sequence = excluded.last_sequence,
          last_nonce = excluded.last_nonce,
@@ -189,7 +191,9 @@ async function persistSignedPublication(
     publicationAssertion(db, publication),
   ]);
 
-  requireBatchResults(persisted, 10);
+  requireBatchResults(results, 11);
+  // Expired-row reclamation is independent of accepting this publication.
+  const persisted = results.slice(1);
   const accepted = changes(persisted, 0) === 1;
   if (!accepted) {
     if (persisted.some((_, index) => index > 0 && changes(persisted, index) !== 0)) {

@@ -1,6 +1,7 @@
 import { HttpError } from "./http";
 import type { AccessRoutePayload } from "./access-route-auth";
 import { randomToken, sha256Hex } from "./protocol";
+import { cleanupPublisherNonces, publisherNonceCapacity } from "./publisher-nonces";
 
 const RETENTION_SECONDS = 90 * 86400;
 export type AccessRouteOutcome = "reserved" | "active" | "revoked" | "conflict" |
@@ -51,12 +52,27 @@ export async function mutateAccessRoute(
     server_id = ? AND request_id = ? AND commit_token = ? AND outcome = ?)`;
   const receiptValues = (outcome: AccessRouteOutcome) => [p.profile, p.serverId, p.requestId, commit, outcome];
 
-  const statements = [db.prepare(
-    `UPDATE publisher_replay SET last_sequence=?,last_nonce=?,commit_token=?,updated_at=?
+  const statements = [cleanupPublisherNonces(db, now), db.prepare(
+    `WITH nonce_budget AS (SELECT CASE WHEN ?='reserve' THEN 2
+       WHEN ?='revoke' AND EXISTS (
+         SELECT 1 FROM access_routes WHERE route_index=? AND profile=? AND server_id=?
+           AND token_id=? AND state IN ('reserved','active'))
+         AND NOT EXISTS (SELECT 1 FROM access_route_receipts
+           WHERE profile=? AND server_id=? AND request_id=?)
+         AND (SELECT count(*) FROM access_route_receipts) +
+           (SELECT count(*) FROM access_routes WHERE state IN ('reserved','active')) <=65536
+         AND (SELECT count(*) FROM access_route_receipts WHERE profile=? AND server_id=?) +
+           (SELECT count(*) FROM access_routes WHERE profile=? AND server_id=?
+             AND state IN ('reserved','active')) <=4096
+       THEN 0 ELSE 1 END AS growth)
+     UPDATE publisher_replay SET last_sequence=?,last_nonce=?,commit_token=?,updated_at=?
      WHERE server_id=? AND profile=? AND
        (length(?)>length(last_sequence) OR (length(?)=length(last_sequence) AND ?>last_sequence))
-       AND NOT EXISTS(SELECT 1 FROM publisher_nonces WHERE server_id=? AND profile=? AND nonce=?)`,
-  ).bind(authenticated.sequence,authenticated.nonce,commit,now,p.serverId,profile,
+       AND NOT EXISTS(SELECT 1 FROM publisher_nonces WHERE server_id=? AND profile=? AND nonce=?)
+       AND (SELECT ${publisherNonceCapacity("growth")} FROM nonce_budget)`,
+  ).bind(p.operation,p.operation,p.index,p.profile,p.serverId,p.tokenId,
+    p.profile,p.serverId,p.requestId,p.profile,p.serverId,p.profile,p.serverId,
+    authenticated.sequence,authenticated.nonce,commit,now,p.serverId,profile,
     authenticated.sequence,authenticated.sequence,authenticated.sequence,p.serverId,profile,authenticated.nonce),
   db.prepare(`INSERT INTO publisher_nonces(server_id,profile,nonce,expires_at,created_at)
     SELECT ?,?,?,?,? WHERE ${fence}`).bind(p.serverId, profile, authenticated.nonce,
@@ -171,7 +187,7 @@ export async function mutateAccessRoute(
       p.profile, p.serverId, p.requestId, ...fenceValues));
   const results = await db.batch(statements);
   if (results.some((result) => !result.success)) throw new Error("Access transaction failed");
-  if (results[0].meta.changes !== 1 || results[1].meta.changes !== 1) {
+  if (results[1].meta.changes !== 1 || results[2].meta.changes !== 1) {
     throw new HttpError("conflict");
   }
   const receipt = results.at(-1)!.results[0] as Receipt | undefined;
