@@ -203,6 +203,9 @@ export async function createProductionAuthority({ environment = process.env, che
     const evidence = await readPromotionEvidence(environment, inputs, fetcher);
     validatePromotionEvidence({ environment, event, inputs, evidence, now: now() });
     await writerFence(environment, fetcher);
+    // Provider inventory sweeps may consume the remaining dispatch lifetime.
+    // Recheck with a fresh clock at handoff, after every awaited authority read.
+    validatePromotionEvidence({ environment, event, inputs, evidence, now: now() });
   };
   await fence();
   return {

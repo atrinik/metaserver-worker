@@ -178,6 +178,25 @@ test("fresh authority is fetched on every fence; moved tag prevents the next mut
   assert.equal(writerChecks, 2);
 });
 
+test("dispatch expiry during writer inventory stops initial and subsequent authority handoff", async () => {
+  const f = fixture();
+  const created = Date.parse(f.evidence.run.created_at);
+  let clock = created + 60 * 60 * 1000 - 1000;
+  let sweepDuration = 2000;
+  const options = { environment: f.environment, checkoutHead: source, dirty: false,
+    readEvent: async () => JSON.stringify(f.event), fetcher: fakeFetch(f), now: () => clock,
+    writerFence: async () => { clock += sweepDuration; } };
+  await assert.rejects(createProductionAuthority(options), /freshness/);
+
+  clock = created + 60 * 60 * 1000 - 1000;
+  sweepDuration = 0;
+  const authority = await createProductionAuthority(options);
+  sweepDuration = 2000;
+  let mutations = 0;
+  await assert.rejects(async () => { await authority.fence(); mutations += 1; }, /freshness/);
+  assert.equal(mutations, 0);
+});
+
 test("writer fence failure denies authority before delivery", async () => {
   const f = fixture();
   await assert.rejects(createProductionAuthority({ environment: f.environment, checkoutHead: source, dirty: false,
@@ -259,6 +278,8 @@ test("workflow has a single manual serialized writer and credentials only in exe
   assert.doesNotMatch(validation, /secrets\.|CLOUDFLARE_API_TOKEN/u);
   const [preparation, execution] = promotion.split("      - name: Verify authority and promote");
   assert.doesNotMatch(preparation, /secrets\./u);
+  assert.match(execution, /ATRINIK_DELIVERY_RESOURCE_POLICY: \$\{\{ vars\.ATRINIK_DELIVERY_RESOURCE_POLICY \}\}/u);
+  assert.match(execution, /ATRINIK_DELIVERY_RESOURCE_READ_TOKEN: \$\{\{ secrets\.ATRINIK_DELIVERY_RESOURCE_READ_TOKEN \}\}/u);
   assert.match(execution, /node scripts\/production-promotion.mjs --execute/u);
   assert.doesNotMatch(execution, /npm (?:ci|run check)/u);
   assert.match(promotion, /path: controller/u);
