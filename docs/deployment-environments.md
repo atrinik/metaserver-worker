@@ -35,11 +35,13 @@ replay/admission secrets. Each public caller owns only its one named Service
 Binding and public circuit configuration; no state binding or signing material.
 All three Workers disable `workers.dev` and preview URLs.
 
-Non-main review stays build-only and credential-free, with no upload, binding,
-protected configuration or URL. Its separate trigger may remain attached to
-the PROD core project but must retain its zero-resource token and independent
-nonsecret environment. DEV activation never turns the review trigger into a
-live environment. Historical live-review fixture authority remains separate.
+GitHub Actions is the sole active PR/source-validation path. Retain the
+Cloudflare review connection and incident history inactive. Fresh provider
+review readback includes an encrypted Builds secret and a shared user Builds
+wrapper whose effective policy is unreadable. It cannot be described as
+credential-free or zero-resource. Restoring credential-free review requires
+separate authorization and fresh policy proof; DEV activation grants neither.
+Historical live-review fixture authority remains separate.
 
 ## Protect and verify all resource cohorts
 
@@ -49,7 +51,7 @@ Both DEV and PROD execution environments supply protected
 inventory bounded to 48 KiB. It pins PROD, DEV and any provisioned live-review
 cohort with exact binding purposes/resource IDs, stable origins/routes,
 configuration and secret **names**. A review cohort is included only when live
-resources exist; the credential-free branch-review trigger creates no cohort.
+resources exist; the retained inactive branch-review trigger creates no cohort.
 Keep the policy outside public artifacts and logs. The inventory-policy digest
 is included in the deployable digest approved for promotion; a changed policy
 requires recalculation and owner review of the exact coordinates.
@@ -73,13 +75,43 @@ creation, secret rotation, deletion or extra promotion approval mechanism.
 ## Retire the previous production writer first
 
 Before publication of the replacement policy, an authorized provider operator
-must fence the previous automatic PROD-main trigger and drain its already
-queued/running builds and uploads. Fresh exhaustive readback must prove that no
-other trigger, Deploy Hook, workflow or credential can continue that automatic
-writer. Preserve exact predecessor version IDs and private retirement evidence.
-Do not infer quiescence from the trigger's disabled flag alone, a canceled
-request, a cached inventory, or the new source contract. Keep the review trigger
-and unrelated repository connections intact.
+must fence **both** retained Cloudflare production and review triggers and drain
+all queued/running Builds, including review. Branch exclusion alone does not
+fence manual builds or retries. For the retained-inert alternative, both exact
+trigger build and deploy commands must be literal `exit 1`, build caching
+must be disabled, implicit installation
+must be disabled with `SKIP_DEPENDENCY_INSTALL=1`, and all branches excluded.
+Seal exact private trigger/configuration/environment digests, including a bounded
+startup-environment allowlist, and freshly verify them before promotion. No
+repository code or dependency installation may run in either retained trigger.
+Set the protected `ATRINIK_PRODUCTION_WRITER_FENCE_POLICY` disposition explicitly
+to `retained-inert-builds`; never infer this exception from shared wrapper IDs.
+Require no additional trigger or active Build across the six PROD/DEV Workers.
+
+Retries use the configuration current when retried, so fresh command/config
+readback is part of the fence, not a historical build-start snapshot. See
+[Cloudflare build settings](https://developers.cloudflare.com/workers/ci-cd/builds/configuration/#build-settings).
+Require exhaustive proof that all Builds and uploads are stopped. A disabled
+branch selector, requested cancellation, cached inventory or source contract
+alone is insufficient. Preserve exact predecessor versions and private proof.
+
+Seal the bounded protected-input allowlist by name and classification. Retained
+PROD secret names are account, the three production configs,
+`ATRINIK_WORKERS_BUILDS_API_TOKEN` and optionally
+`ATRINIK_PRODUCTION_CONTROL_PLANE_READY`; review may retain only optional
+`ATRINIK_WORKERS_BUILDS_API_TOKEN`. Each retained protected entry must read back
+as secret-classified with no visible value. `SKIP_DEPENDENCY_INSTALL` is the
+nonsecret literal `1` on both triggers. Unknown environment names, including
+startup variables, fail closed. Use exact private trigger/environment hashes,
+not the names alone, to bind the approved fence.
+
+Unknown retained credentials remain unread and uncalled. This alternative does
+not remove authentication, copy credentials, create a new production deploy
+path or grant secret deletion. Keep unrelated connections intact. The attempted
+partial trigger PATCH was rejected with provider 12002; subsequent fresh
+readback showed existing versions, environments and branch settings unchanged.
+That attempt establishes no completed transition or fence. Publication requires
+successful fresh acceptance of the full retained-inert policy.
 
 The old v1 production contract, accepted setup/rotation authorities, applied
 migration history and incident journals remain historical evidence under their
@@ -92,8 +124,8 @@ it or prove it has occurred.
 Do not add or move a DEV Workers Builds trigger/repository connection. The
 retained provider 12002 constraint prevents one connection targeting two
 Workers, and the repository-connection API inventory cannot establish a
-per-Worker identity. Keep the historical review connection and credential-free
-branch trigger in place.
+per-Worker identity. Keep the historical review connection and trigger in place, with the retained
+inactive fence above.
 
 The operator transition interface emits a plan or the next exact API operation:
 
@@ -207,6 +239,13 @@ local bundle/configuration checks; it performs no remote mutation. The live `--e
 the authenticated, approved workflow, never a local deployment shortcut.
 
 ## Ordered deployment and acceptance
+
+The trusted controller owns the Wrangler executable, its working directory and
+validated toolchain pins. The selected release supplies absolute application
+entrypoints, migrations and application dependency inputs. An older release's
+unused development-tool pins do not override the controller toolchain. The
+resolved deployable digest binds both selected-source and controller lockfile
+digests.
 
 Both environments validate exact source/configuration/migration identity,
 read back the remote ledger and resolve desired plus disabled bundles before

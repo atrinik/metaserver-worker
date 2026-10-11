@@ -164,17 +164,19 @@
 - Historical provisioning/rotation procedures below preserve immutable incident
   evidence; references to the old production automatic trigger describe that
   historical state and grant no current activation authority.
-- `deployment/workers-builds-review.json` owns the non-`main` review design.
-  Same-repository branch automation is build-only, has no bindings, protected
-  inputs, account/zone resource permission, upload, or URL, and must reject
-  `main`; fork refs remain outside the connected repository. The provider-native
-  preview trigger shares the production core Worker and repository connection
-  but has a distinct zero-resource token and a separate nonsecret environment;
-  no production trigger setting or protected input is available to review builds. The trusted setup/budget
-  operator's account-wide Builds control-plane reach (builds, tokens,
-  environment variables, connections, triggers, and manual builds) is an
-  explicit provider limitation; its user API token is never build-readable and
-  exact review trigger ID guards must reject production-trigger mutations.
+- GitHub Actions is the sole active PR/source-validation path. Retain Cloudflare
+  review inactive: fresh readback includes an encrypted Builds secret and a
+  shared wrapper with unreadable policy, so never call it credential-free.
+  Both retained Cloudflare triggers require literal `exit 1` build/deploy,
+  `SKIP_DEPENDENCY_INSTALL=1`, all branches excluded, sealed bounded startup
+  environment/configuration digests and every Build stopped, including review.
+  Branch pause alone cannot fence manual/retried Builds. Retain unknown
+  credentials unread and uncalled; this policy authorizes no authentication
+  removal, secret copying or new PROD deployment. A rejected partial PATCH is
+  no transition proof. Restoring credential-free review needs separate current
+  authorization and policy proof. The historical
+  `deployment/workers-builds-review.json` design and incident procedures below
+  remain evidence, never current credential-boundary or activation proof.
   Branch builds create no Worker version. Live review is an operator-supervised exact-SHA run in a dedicated
   account with no GitHub connection or zone. Its production-disjoint resources, disabled
   circuits, exact-duration lease, quiescing/terminal teardown fence, logical

@@ -945,27 +945,21 @@ change fails closed.
 
 ## Non-main review delivery
 
-The accepted review design is
+GitHub Actions is the sole active PR/source-validation path. Cloudflare review
+remains retained but inactive under the
+[retained-inert fence](docs/deployment-environments.md#retire-the-previous-production-writer-first).
+Both exact trigger build/deploy commands must be literal `exit 1`, installation
+skipped, all branches excluded, private config/environment digests sealed and
+all Builds stopped. Manual/retry paths require this command fence; a branch
+pause alone is insufficient. The current encrypted Builds secret and shared
+wrapper with unreadable policy must never be called credential-free.
+Restoration requires separate authorization and proven policy.
+
+The remaining section records the historical
 [`deployment/workers-builds-review.json`](deployment/workers-builds-review.json)
-and its rationale/runbook is
-[`docs/review-environment.md`](docs/review-environment.md). The production
-project retains the separate provider-native preview trigger. The former
-automatic-production main trigger must remain fenced and drained; automatic
-main delivery belongs to DEV. The preview trigger selects every non-`main`
-branch and runs only `npm run review:branch` plus the local contract
-validator. The preview trigger has its own zero-resource build token and an
-exact one-variable nonsecret environment, with no production protected input,
-binding, route, branch-created Worker version, or URL. The checked-in
-`deployment/review-check/wrangler.jsonc` is a local dry-run validation input,
-not a deployed bootstrap Worker. Its
-1,000-minute monthly budget alerts at 800 and disables the trigger at the
-threshold. Its separate dedicated-nonhuman
-user token has `User Details:Read`, no personal
-data, and no account/zone permission or resource selector. #66 must prove that zero-resource token works before
-enabling the trigger; never substitute the production token. Fork refs do not
-exist in the connected repository and receive ordinary GitHub validation only.
-Cloudflare emits its native check and PR status comment/history without a
-preview URL.
+and [`docs/review-environment.md`](docs/review-environment.md) design. It grants
+no current activation or secret mutation. The partial provider PATCH rejected
+with 12002 and unchanged readback is not completed transition evidence.
 
 The Builds trigger request uses `/deployment/review-check` as its exact
 provider-canonical repository root. The leading slash is part of the reviewed

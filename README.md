@@ -134,32 +134,19 @@ Historical provisioning and token-rotation records remain immutable evidence,
 and their former production activation procedure is superseded by the current
 environment policy in [DEPLOYMENT.md](DEPLOYMENT.md).
 
-The accepted [review-environment design](docs/review-environment.md) gives
-eligible same-repository non-`main` branches an automatic build-only check
-with no bindings, protected inputs, upload, or URL. Forks receive ordinary
-GitHub repository validation only. Changes that need live provider evidence
-use a separately requested, operator-supervised exact-SHA run against one
-serialized, Access-protected, production-disjoint canary cohort. The production
-core project retains the separate Cloudflare preview trigger while the former
-automatic production trigger is fenced and drained. The preview trigger has its own zero-resource token and a one-variable nonsecret
-environment, so no production protected input or credential enters the build. Cloudflare's
-account-scoped Builds control-plane permission remains an explicit trusted
-operator user-token exception across builds, tokens, environment variables,
-connections, and triggers, never a build credential; the procedure uses only
-exact preview-trigger mutations and rejects the production-trigger ID. Review
-builds create no version, binding, route, `workers.dev` URL, or preview URL. A
-1,000-minute monthly review-build budget fails
-closed at its operator threshold. The live
-account has no GitHub connection and uses stable `workers.dev` hosts. Native
-Cloudflare checks and PR status comments/history contain no preview URL. That
-cohort is not
-provisioned by this repository change; `npm run deploy:review-canary` remains a
-fail-closed placeholder until a maintainer separately authorizes the live
-cohort. Validate the machine boundary with
-`npm run test:review`, `npm run review:validate`, and
-`npm run review:dry-run`. See [DEPLOYMENT.md](DEPLOYMENT.md) for provider settings,
-exceptional pauses, exact-SHA retry, partial failure, outage, revocation, and
-manual escape procedures.
+GitHub Actions provides PR/source validation. The retained Cloudflare review
+connection and histories are inactive until a separately authorized restoration
+proves credential-free policy. Fresh provider readback instead includes an
+encrypted Builds secret and a shared wrapper with unreadable policy. Both
+retained Cloudflare triggers require literal `exit 1` build/deploy commands,
+skipped installation, excluded branches, sealed private configuration/environment
+digests and stopped Builds before promotion. A branch pause cannot fence manual
+runs or retries. The attempted partial PATCH was rejected with provider 12002
+and fresh readback showed unchanged provider state; no completed fence is
+claimed. See [deployment environments](docs/deployment-environments.md) for the
+retained-inert alternative. Historical
+[review-environment design](docs/review-environment.md) remains evidence,
+not proof of the current credential boundary.
 
 After an operator has separately provisioned an isolated R2 custom domain and
 its reviewed edge rules, validate the public static contract with the
