@@ -1115,7 +1115,7 @@ describe("RendezvousRoom access grants", () => {
           if (state.getWebSockets("client").length === 0) return;
           if (change === "revocation") await env.DB.prepare("UPDATE access_routes SET state='revoked',revoked_at=? WHERE route_index=?")
             .bind(Math.floor(start / 1000), f.serverId).run();
-          else clock.mockReturnValue(start + (change === "proof expiry" ? 2_000 : 16_000));
+          else clock.mockReturnValue(start + (change === "proof expiry" ? 2_000 : change === "session expiry" ? 3_000 : 16_000));
         });
         try {
           const response = await instance.fetch(new Request(request.url, { headers }));
