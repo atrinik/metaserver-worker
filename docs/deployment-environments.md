@@ -169,8 +169,12 @@ predecessor requires new owner review and approval.
 `node scripts/production-promotion.mjs --dry-run` performs credential-free
 validation of the six input coordinates. It does **not** resolve bundles or
 prove the artifact, release, environment controls or live predecessor.
-`npm run deploy:production:dry-run` provides local bundle/configuration checks;
-it performs no remote mutation. The live `--execute` controller is reserved for
+`node scripts/production-promotion.mjs --plan` resolves the selected-source
+production plan against the protected three-role configs and produces actual
+deployable, configuration and migration digests without remote calls. Keep
+those private configs outside the checkout; verify the selected SHA before
+using the resulting coordinates. `npm run deploy:production:dry-run` provides
+local bundle/configuration checks; it performs no remote mutation. The live `--execute` controller is reserved for
 the authenticated, approved workflow, never a local deployment shortcut.
 
 ## Ordered deployment and acceptance
