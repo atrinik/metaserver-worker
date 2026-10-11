@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
+import { admissionHeaders } from "./admission-fixture";
 
 import {
   consumePublisherCoordinatorRequest,
@@ -20,6 +21,36 @@ const SAFE_DYNAMIC_HEADERS = {
 } as const;
 
 describe("internal service boundary", () => {
+  it("forwards only role-bound client proof and ticket credentials", () => {
+    const serverId = "1".repeat(64);
+    for (const protectedClient of [false, true]) {
+      const url = protectedClient
+        ? `https://rendezvous.meta.atrinik.org/v1/access/rendezvous/classic/${serverId}`
+        : `https://rendezvous.meta.atrinik.org/v1/classic/servers/${serverId}?role=client`;
+      const headers = admissionHeaders(protectedClient);
+      const forwarded = rendezvousServiceRequest(new Request(url, { headers: {
+        ...headers, Cookie: "private=value", "CF-Connecting-IP": "192.0.2.12",
+      }}), "client");
+      expect([...forwarded.headers.keys()].sort()).toEqual(Object.keys(headers).map(n => n.toLowerCase()).sort());
+      expect(consumeRendezvousCoordinatorRequest(forwarded, "client").headers.get("X-Atrinik-Rendezvous-Admission"))
+        .toBe(headers["X-Atrinik-Rendezvous-Admission"]);
+      for (const name of ["X-Atrinik-Rendezvous-Admission", "X-Atrinik-Rendezvous-Ticket", "X-Atrinik-Access-Client-Nonce"]) {
+        expect(() => rendezvousServiceRequest(new Request(url, { headers: { Upgrade: "websocket", [name]: "x" } }), "server"))
+          .toThrow();
+      }
+    }
+  });
+  it.each([[428, "Rendezvous admission required\n"], [403, "Forbidden\n"]] as const)
+    ("preserves only the fixed admission error %i", async (status, body) => {
+      const headers = { ...SAFE_DYNAMIC_HEADERS, "Content-Type": "text/plain; charset=utf-8" };
+      const response = await validateRendezvousServiceResponse(new Response(body, { status, headers }), null);
+      expect(response.status).toBe(status); expect(await response.text()).toBe(body);
+      for (const unsafe of [new Response(body + "detail", { status, headers }),
+        new Response(body, { status, headers: { ...headers, "Set-Cookie": "secret=value" } }),
+        new Response(body, { status, headers: { ...headers, "Retry-After": "5" } })]) {
+        await expect(validateRendezvousServiceResponse(unsafe, null)).rejects.toThrow();
+      }
+    });
   it("forwards only the signed publisher header contract", async () => {
     const request = new Request(
       `https://publish.meta.atrinik.org/v1/classic/servers/${"1".repeat(64)}/publish`,

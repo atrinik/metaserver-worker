@@ -17,6 +17,7 @@ import { sha256Hex } from "../src/protocol";
 import { persistRendezvousPublication } from "../src/rendezvous-publication";
 import { ACCESS_RENDEZVOUS_SUBPROTOCOL } from "../src/routes";
 import publisherFixture from "./fixtures/metaserver-classic-publisher-v3.json";
+import { admissionHeaders, admissionKeys, admissionVector } from "./admission-fixture";
 
 const CURRENT_SECRET = "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA";
 const PREVIOUS_SECRET = "AQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQE";
@@ -171,12 +172,12 @@ describe("in-process service-boundary contract", () => {
     const old = await rendezvousWorker.fetch(new Request(
       `https://rendezvous.meta.atrinik.org/v1/classic/servers/${publisherFixture.server_id}?role=client`,
       {headers:{Upgrade:"websocket","CF-Connecting-IP":"192.0.2.153"}}),edge);
-    expect(old.status).toBe(503);
+    expect(old.status).toBe(428);
     const client = await rendezvousWorker.fetch(new Request(
       `https://rendezvous.meta.atrinik.org/v1/access/rendezvous/classic/${publisherFixture.server_id}`,
       {headers:{Upgrade:"websocket","CF-Connecting-IP":"192.0.2.153",
         "Sec-WebSocket-Protocol":ACCESS_RENDEZVOUS_SUBPROTOCOL}}),edge);
-    expect(client.status).toBe(101); client.webSocket?.accept();
+    expect(client.status).toBe(428);
     expect(await env.DB.prepare(`SELECT access_required FROM directory_entries WHERE profile='classic-v3' AND server_id=?`)
       .bind(publisherFixture.server_id).first()).toEqual({access_required:1});
     client.webSocket?.close(1000,"Test complete"); server.webSocket?.close(1000,"Test complete");
@@ -264,14 +265,14 @@ describe("in-process service-boundary contract", () => {
           },
         },
       ), rendezvousEdge);
-      expect(offline.status).toBe(404);
+      expect(offline.status).toBe(428);
     }
     expect(await env.DB.prepare(
       "SELECT COUNT(*) AS count FROM sqlite_schema WHERE name='rendezvous_pair_attempts'",
     ).first<number>("count")).toBe(0);
   });
 
-  it("preserves a fixed no-server admission response through both boundaries", async () => {
+  it("requires proof through both boundaries before revealing server state", async () => {
     const core = coreEnvironment();
     const context = createExecutionContext();
     const published = await publisherWorker.fetch(
@@ -292,9 +293,9 @@ describe("in-process service-boundary contract", () => {
         },
       },
     ), rendezvousEnvironment(core));
-    expect(response.status).toBe(503);
-    expect(response.headers.get("Retry-After")).toBe("5");
-    expect(await response.text()).toBe("Rendezvous server unavailable\n");
+    expect(response.status).toBe(428);
+    expect(response.headers.has("Retry-After")).toBe(false);
+    expect(await response.text()).toBe("Rendezvous admission required\n");
   });
 
   it("preserves a signed publish and WebSocket admission without forwarding the source address", async () => {
@@ -387,12 +388,23 @@ describe("in-process service-boundary contract", () => {
         }),
       } as unknown as Env["RENDEZVOUS"],
     });
-    const edge = rendezvousEnvironment(admissionCore);
+    const edge = override(rendezvousEnvironment(admissionCore), {
+      ...admissionKeys, RENDEZVOUS_HOSTNAME: admissionVector.authority,
+    });
+    const validatedCore = override(admissionCore, {
+      DB: { prepare: () => ({ bind: () => ({ first: async () => ({ authorization_required: 1,
+        rendezvous_token_hash: "4".repeat(64), rendezvous_generation: "5".repeat(64) }) }) }) },
+      ...admissionKeys, RENDEZVOUS_HOSTNAME: admissionVector.authority,
+    });
+    const validatedEdge = override(edge, { COORDINATOR: { fetch: (request: Request) =>
+      handleRendezvousCoordinatorRequest(request, validatedCore) } });
+    vi.mocked(Date.now).mockReturnValue(Number(admissionVector.issuedAt) * 1000);
 
     const clientRequest = () => new Request(
-      `https://rendezvous.meta.atrinik.org/v1/access/rendezvous/classic/${publisherFixture.server_id}`,
+      `https://${admissionVector.authority}/v1/access/rendezvous/classic/${admissionVector.serverId}`,
       {
         headers: {
+          ...admissionHeaders(true),
           "CF-Connecting-IP": "192.0.2.171",
           "Sec-WebSocket-Protocol":
             ACCESS_RENDEZVOUS_SUBPROTOCOL,
@@ -403,7 +415,7 @@ describe("in-process service-boundary contract", () => {
     const clients: WebSocket[] = [];
     try {
       for (let attempt = 0; attempt < 21; attempt += 1) {
-        const admitted = await rendezvousWorker.fetch(clientRequest(), edge);
+        const admitted = await rendezvousWorker.fetch(clientRequest(), validatedEdge);
         expect(admitted.status).toBe(101);
         const socket = admitted.webSocket;
         if (socket === null) {

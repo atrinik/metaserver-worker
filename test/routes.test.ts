@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest";
 import { HttpError } from "../src/http";
 import {
   classifyCanonicalRoute,
+  classifyRendezvousChallengeRoute,
   ACCESS_RENDEZVOUS_SUBPROTOCOL,
   PUBLISH_AUTHORITY,
   PUBLISH_MAX_BODY_BYTES,
@@ -56,6 +57,23 @@ function canonicalError(input: RouteInput): HttpError {
 }
 
 describe("canonical dynamic route grammar", () => {
+  it("classifies only the exact bounded blind challenge POST route", () => {
+    const target = `https://${RENDEZVOUS_AUTHORITY}/v1/rendezvous/challenge/classic/${SERVER_ID}`;
+    const input: RouteInput = { target, method: "POST", hasBody: true,
+      headers: new Headers({ "Content-Type": "application/json" }) };
+    expect(classifyRendezvousChallengeRoute(input, RENDEZVOUS_AUTHORITY)).toBe(SERVER_ID);
+    for (const change of [{ target: target + "?" }, { target: target + "/" },
+      { target: target.replace("/classic/", "/game/") }, { method: "GET" }, { method: "HEAD" },
+      { hasBody: false }, { target: target.replace(SERVER_ID, "A".repeat(64)) }]) {
+      expect(() => classifyRendezvousChallengeRoute({ ...input, ...change }, RENDEZVOUS_AUTHORITY)).toThrow();
+    }
+    for (const extra of [{ Cookie: "secret=value" }, { Authorization: "Bearer secret" },
+      { "Content-Encoding": "gzip" }, { "Content-Length": "257" }, { Upgrade: "websocket" },
+      { "X-Atrinik-Rendezvous-Admission": "proof" }, { "X-Atrinik-Rendezvous-Ticket": "2".repeat(64) }]) {
+      expect(() => classifyRendezvousChallengeRoute({ ...input,
+        headers: new Headers({ "Content-Type": "application/json", ...extra }) }, RENDEZVOUS_AUTHORITY)).toThrow();
+    }
+  });
   it("classifies all generation-specific publisher paths", () => {
     expect(classifyCanonicalRoute(publisherInput())).toEqual({
       kind: "publish",

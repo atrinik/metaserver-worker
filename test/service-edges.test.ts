@@ -9,10 +9,11 @@ import {
   INTERNAL_SOURCE_TAG_PREVIOUS_HEADER,
 } from "../src/internal-service";
 import { ACCESS_RENDEZVOUS_SUBPROTOCOL } from "../src/routes";
+import { admissionHeaders } from "./admission-fixture";
 
 const CURRENT_SECRET = "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA";
 const PREVIOUS_SECRET = "AQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQE";
-const SERVER_ID = "4".repeat(64);
+const SERVER_ID = "1".repeat(64);
 const SAFE_DYNAMIC_HEADERS = {
   "Cache-Control": "no-store",
   "X-Content-Type-Options": "nosniff",
@@ -277,7 +278,7 @@ describe("rendezvous edge Worker", () => {
       });
     });
     const response = await rendezvousWorker.fetch(
-      rendezvousRequest("client"),
+      rendezvousRequest("client", admissionHeaders()),
       configured.env,
     );
     expect(response.status).toBe(101);
@@ -324,9 +325,7 @@ describe("rendezvous edge Worker", () => {
       headers: SAFE_DYNAMIC_HEADERS,
       webSocket: pair[0],
     }));
-    const response = await rendezvousWorker.fetch(rendezvousRequest("client", {
-      "Sec-WebSocket-Protocol": ACCESS_RENDEZVOUS_SUBPROTOCOL,
-    }), configured.env);
+    const response = await rendezvousWorker.fetch(new Request(`https://rendezvous.meta.atrinik.org/v1/access/rendezvous/classic/${SERVER_ID}`, { headers: admissionHeaders(true) }), configured.env);
     expect(response.status).toBe(500);
   });
 

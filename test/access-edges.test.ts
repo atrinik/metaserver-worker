@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import { classifyAccessRoute } from "../src/routes";
 import rendezvousWorker from "../src/rendezvous-worker";
+import { admissionKeys, admissionVector as vector } from "./admission-fixture";
 
 const authority="rendezvous.example.test";
 const capability="a".repeat(64), nonce="b".repeat(64);
@@ -14,6 +15,37 @@ function environment(fetch: (request:Request)=>Promise<Response>) {
     SOURCE_TAG_KEY_PREVIOUS_ID:"previous",SOURCE_TAG_KEY_PREVIOUS:"AQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQE"} as unknown as RendezvousEnv};
 }
 describe("private access edge ingress",()=>{
+  it("charges the shared client ingress before a blind bounded challenge and strips source metadata", async () => {
+    const challengeBody = JSON.stringify({ schema: "atrinik-rendezvous-admission-v1", ticketHash: vector.ticketHash });
+    const challengeTarget = `https://${authority}/v1/rendezvous/challenge/classic/${vector.serverId}`;
+    const fetch = vi.fn(async (request: Request) => {
+      expect(request.url).toBe(challengeTarget);
+      expect([...request.headers.keys()]).toEqual(["content-type"]);
+      expect(await request.text()).toBe(challengeBody);
+      return Response.json({ schema: "atrinik-rendezvous-admission-v1", challenge: vector.token,
+        difficulty: 24, expiresAt: vector.expiresAt }, {
+        headers: { "Cache-Control": "no-store", "X-Content-Type-Options": "nosniff" },
+      });
+    });
+    const configured = environment(fetch);
+    const response = await rendezvousWorker.fetch(new Request(challengeTarget, { method: "POST",
+      headers: { "Content-Type": "application/json", "CF-Connecting-IP": "192.0.2.10" }, body: challengeBody,
+    }), configured.env);
+    expect(response.status).toBe(200);
+    expect(configured.limit.mock.calls).toEqual([[{ key: "shared-ingress-v1.rendezvous-client" }]]);
+    expect(configured.limit.mock.invocationCallOrder[0]).toBeLessThan(fetch.mock.invocationCallOrder[0]);
+  });
+  it("stops a blind challenge at the circuit breaker before shared ingress or core dispatch", async () => {
+    const fetch = vi.fn(async () => new Response(null, { status: 500 }));
+    const configured = environment(fetch);
+    const disabled = { ...configured.env, ...admissionKeys, RENDEZVOUS_ENABLED: "disabled" } as RendezvousEnv;
+    const response = await rendezvousWorker.fetch(new Request(
+      `https://${authority}/v1/rendezvous/challenge/classic/${vector.serverId}`, { method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ schema: "atrinik-rendezvous-admission-v1", ticketHash: vector.ticketHash }),
+      }), disabled);
+    expect(response.status).toBe(503); expect(fetch).not.toHaveBeenCalled(); expect(configured.limit).not.toHaveBeenCalled();
+  });
   it("charges shared admission before lookup and forwards only a bounded POST body",async()=>{
     const fetch=vi.fn(async(request:Request)=>{
       expect(request.url).toBe(target); expect(request.url).not.toContain(capability);
