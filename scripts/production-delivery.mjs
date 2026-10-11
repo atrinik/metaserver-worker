@@ -56,8 +56,35 @@ export function deliveryFailureRecord(error, evidence) {
     outcome: "production-delivery-stopped",
     reason:
       error instanceof DeliveryError ? error.message : "unexpected-internal-error",
-    ...evidence,
+    sourceSha: evidence.sourceSha,
+    deployableDigest: evidence.deployableDigest,
+    failedRole: evidence.failedRole,
+    completedRoles: [...evidence.completedRoles],
+    recoveryOutcome: evidence.recoveryOutcome,
   };
+}
+
+export function currentDeliveryFailureRecord(error) {
+  return deliveryFailureRecord(error, failureEvidence);
+}
+
+export function publicDeliveryWorkers(workers) {
+  return workers.map(({ role, sourceSha }) => ({ role, sourceSha }));
+}
+
+export async function retainPrivateDeliveryEvidence(evidence, baseDirectory = process.env.RUNNER_TEMP ?? tmpdir()) {
+  const directory = await mkdtemp(resolve(baseDirectory, "atrinik-delivery-evidence-"));
+  await chmod(directory, 0o700);
+  const path = resolve(directory, "receipt.json");
+  await writeFile(path, JSON.stringify(evidence), { mode: 0o600, flag: "wx" });
+  return path;
+}
+
+export async function verifyPredecessorHandoff(expectedVersions, readPredecessor, validatePredecessor) {
+  const current = await readPredecessor();
+  if (JSON.stringify(current.versions) !== JSON.stringify(expectedVersions))
+    fail("active predecessor changed before the first deployment mutation");
+  await validatePredecessor(current.annotations, { versions: current.versions });
 }
 
 function fail(message) {
@@ -907,6 +934,7 @@ export async function orchestrateDelivery({
   decision,
   fence,
   deployStaged,
+  verifyPredecessor = async () => {},
   readbackStaged,
   verifyStaged,
   deployActive,
@@ -921,6 +949,7 @@ export async function orchestrateDelivery({
     if (decision === "deploy") {
       await executeOrderedStages(workers, async (worker, index) => {
         await fence();
+        if (index === 0) await verifyPredecessor();
         await deployStaged(worker, index);
         await fence();
         await readbackStaged(worker, index);
@@ -2372,6 +2401,16 @@ export async function runDelivery({ target = "production", sourceRoot, mode = "d
     workers: contract.workers,
     decision,
     fence,
+    verifyPredecessor: () => verifyPredecessorHandoff(predecessorVersions, async () => {
+      const current = { annotations: [], versions: [] };
+      for (const [index, worker] of contract.workers.entries()) {
+        const active = await readActive(configPaths[index]);
+        current.versions.push(active.versionId);
+        current.annotations.push(validateReadback(worker, configs[index], active, null, { exact: false }));
+      }
+      return current;
+    }, (currentAnnotations, current) => authority.validatePredecessor(currentAnnotations,
+      { ...current, workers: contract.workers })),
     deployStaged: async (worker, index) => {
       failureEvidence.failedRole = `staged:${worker.role}`;
       expectedStagedMessages.set(
@@ -2522,20 +2561,25 @@ export async function runDelivery({ target = "production", sourceRoot, mode = "d
     },
     completed: (stage) => failureEvidence.completedRoles.push(stage),
   });
-  console.log(
-    JSON.stringify({
-      outcome,
-      environment: target,
-      buildUuid: failureEvidence.buildUuid,
-      sourceSha: checkoutHead,
-      workers: finalReadback,
-      deployableDigest: plan.deploy,
-      ...(decision === "deploy"
-        ? { order: contract.invariants.deploymentOrder }
-        : {}),
-      canaries: contract.productionCanaries.map(({ name }) => name),
-    }),
-  );
+  const privateEvidencePath = await retainPrivateDeliveryEvidence({
+    outcome, environment: target, sourceSha: checkoutHead, deployableDigest: plan.deploy,
+    executionId: failureEvidence.buildUuid,
+    completedRoles: failureEvidence.completedRoles, recoveryOutcome: failureEvidence.recoveryOutcome,
+    workers: finalReadback,
+  });
+  const result = {
+    outcome,
+    environment: target,
+    sourceSha: checkoutHead,
+    workers: publicDeliveryWorkers(finalReadback),
+    deployableDigest: plan.deploy,
+    ...(decision === "deploy"
+      ? { order: contract.invariants.deploymentOrder }
+      : {}),
+    canaries: contract.productionCanaries.map(({ name }) => name),
+  };
+  console.log(JSON.stringify(result));
+  return { ...result, privateEvidencePath };
   } finally {
     await rm(protectedInputs.directory, { recursive: true, force: true });
   }
@@ -2557,7 +2601,7 @@ const invoked = process.argv[1] && resolve(process.argv[1]) === fileURLToPath(im
 if (invoked) {
   main().catch((error) => {
     console.error(
-      JSON.stringify(deliveryFailureRecord(error, failureEvidence)),
+      JSON.stringify(currentDeliveryFailureRecord(error)),
     );
     process.exitCode = 1;
   });

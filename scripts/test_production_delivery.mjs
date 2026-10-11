@@ -13,6 +13,10 @@ import {
   currentMainGitUrl,
   disabledCircuitConfiguration,
   deliveryFailureRecord,
+  currentDeliveryFailureRecord,
+  publicDeliveryWorkers,
+  retainPrivateDeliveryEvidence,
+  verifyPredecessorHandoff,
   describeSubprocessFailure,
   deliveryDecision,
   directoryReconciliationProxyConfiguration,
@@ -1917,4 +1921,70 @@ test("authenticated Wrangler and bundle tooling stay anchored to the trusted con
   assert.ok(observed.every((call) => call.program === resolve(root, "node_modules/.bin/wrangler")));
   assert.ok(observed.every((call) => call.options.cwd === root),
     "selected cwd must not load a release-owned .env with CLOUDFLARE_API_BASE_URL");
+});
+
+
+test("first mutation rechecks every approved predecessor after slow authority fences", async () => {
+  for (let changedRole = 0; changedRole < 3; changedRole++) {
+    const approved = ["private-core-version", "private-publisher-version", "private-rendezvous-version"];
+    let active = [...approved];
+    const events = [];
+    await assert.rejects(orchestrateDelivery({
+      workers: ["core", "publisher", "rendezvous"], decision: "deploy",
+      fence: async () => { events.push("fence"); active[changedRole] = "unapproved-version"; },
+      verifyPredecessor: () => verifyPredecessorHandoff(approved,
+        async () => { events.push("read-all-predecessors"); return { versions: active, annotations: [] }; },
+        async () => events.push("approved")),
+      deployStaged: async () => events.push("MUTATION"),
+      recover: async () => events.push("no-core-mutation-to-recover"),
+    }), /active predecessor changed/u);
+    assert.deepEqual(events, ["fence", "read-all-predecessors", "no-core-mutation-to-recover"]);
+  }
+});
+
+test("unchanged predecessor is reauthorized once before core staging, not against intermediate cohort", async () => {
+  const versions = ["core-before", "publisher-before", "rendezvous-before"];
+  let validations = 0;
+  const events = [];
+  await orchestrateDelivery({
+    workers: ["core", "publisher", "rendezvous"], decision: "deploy",
+    fence: async () => events.push("fence"),
+    verifyPredecessor: () => verifyPredecessorHandoff(versions,
+      async () => { events.push("predecessor"); return { versions: [...versions], annotations: ["approved"] }; },
+      async (annotations, observed) => {
+        validations++; assert.deepEqual(annotations, ["approved"]); assert.deepEqual(observed.versions, versions);
+      }),
+    deployStaged: async (role) => events.push(`deploy:${role}`),
+    readbackStaged: async () => {}, verifyStaged: async () => {}, deployActive: async () => {},
+    readbackActive: async () => {}, verifyFinal: async () => {}, reconcileDirectories: async () => {},
+    canaries: async () => {}, recover: async () => assert.fail("unexpected recovery"),
+  });
+  assert.equal(validations, 1);
+  assert.deepEqual(events.slice(0, 3), ["fence", "predecessor", "deploy:core"]);
+});
+
+test("success reports omit provider IDs while owner-only receipt retains exact versions", async () => {
+  const workers = ["core", "publisher", "rendezvous"].map(role => ({
+    role, sourceSha: "a".repeat(40), versionId: `private-${role}-version`, unexpected: "private-config",
+  }));
+  const publicWorkers = publicDeliveryWorkers(workers);
+  assert.deepEqual(publicWorkers, workers.map(({ role, sourceSha }) => ({ role, sourceSha })));
+  assert.equal(JSON.stringify(publicWorkers).includes("private"), false);
+  const path = await retainPrivateDeliveryEvidence({ workers });
+  try {
+    assert.deepEqual(JSON.parse(await readFile(path, "utf8")), { workers });
+    assert.equal((await stat(path)).mode & 0o777, 0o600);
+    assert.equal((await stat(resolve(path, ".."))).mode & 0o777, 0o700);
+  } finally { await rm(resolve(path, ".."), { recursive: true, force: true }); }
+});
+
+test("failure accessor and formatter do not publish private provider identity fields", () => {
+  const evidence = { sourceSha: "a".repeat(40), deployableDigest: null, failedRole: "staged:core",
+    completedRoles: ["staged:core"], recoveryOutcome: "failed", buildUuid: "private-build-id",
+    workers: [{ versionId: "private-worker-version" }], privateEvidencePath: "/private/receipt" };
+  const record = deliveryFailureRecord(new Error("private provider response"), evidence);
+  assert.equal(JSON.stringify(record).includes("private"), false);
+  assert.deepEqual(record.completedRoles, ["staged:core"]);
+  assert.notEqual(record.completedRoles, evidence.completedRoles);
+  assert.equal(currentDeliveryFailureRecord(new Error("private")).reason, "unexpected-internal-error");
 });
