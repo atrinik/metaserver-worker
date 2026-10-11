@@ -52,7 +52,7 @@ function fixture() {
     approvals: [{ state: "approved", user: { id: 456 }, environments: [{ id: 999, name: "production" }] }],
     protection: { id: 999, name: "production",
       deployment_branch_policy: { protected_branches: true, custom_branch_policies: false },
-      protection_rules: [{ type: "required_reviewers", prevent_self_review: true, reviewers: [{ id: 456 }] }] },
+      protection_rules: [{ type: "required_reviewers", prevent_self_review: true, reviewers: [{ type: "User", reviewer: { id: 456 } }] }] },
   };
   return { inputs, environment, event, evidence, now };
 }
@@ -147,7 +147,8 @@ test("solo operator manual approval needs no invented second-person gate", () =>
   f.evidence.protection.protection_rules = [];
   f.evidence.approvals = [];
   validatePromotionEvidence(f);
-  f.evidence.protection.protection_rules = [{ type: "required_reviewers", prevent_self_review: false }];
+  f.evidence.protection.protection_rules = [{ type: "required_reviewers", prevent_self_review: false,
+    reviewers: [{ type: "User", reviewer: { id: 123 } }] }];
   f.evidence.approvals = [{ state: "approved", user: { id: 123 }, environments: [{ id: 999, name: "production" }] }];
   validatePromotionEvidence(f);
 });
@@ -205,6 +206,39 @@ test("API errors do not reflect credential contents; oversized/incomplete respon
   await assert.rejects(readPromotionEvidence(f.environment, f.inputs, fakeFetch(f, (path, value) =>
     path === "/actions/workflows/check.yml/runs" ? { ...value, total_count: 101 } : value)), /incomplete/);
 });
+
+
+for (const [name, rules] of [["missing", undefined], ["null", null], ["object", {}],
+  ["null entry", [null]], ["array entry", [[]]], ["missing type", [{}]],
+  ["unknown type", [{ type: "unknown" }]], ["duplicate rule", [{ type: "branch_policy" }, { type: "branch_policy" }]]])
+  test(`rejects incomplete environment protection rules: ${name}`, () => {
+    const f = fixture(); f.evidence.protection.protection_rules = rules;
+    assert.throws(() => validatePromotionEvidence(f));
+  });
+
+for (const [name, modify] of [
+  ["missing self-review flag", (rule) => { delete rule.prevent_self_review; }],
+  ["null self-review flag", (rule) => { rule.prevent_self_review = null; }],
+  ["string self-review flag", (rule) => { rule.prevent_self_review = "false"; }],
+  ["missing reviewers", (rule) => { delete rule.reviewers; }],
+  ["empty reviewers", (rule) => { rule.reviewers = []; }],
+  ["malformed reviewer", (rule) => { rule.reviewers = [null]; }],
+]) test(`rejects malformed configured reviewer policy: ${name}`, () => {
+  const f = fixture(); modify(f.evidence.protection.protection_rules[0]);
+  f.evidence.approvals[0].user.id = f.event.sender.id;
+  assert.throws(() => validatePromotionEvidence(f));
+});
+
+for (const path of ["/actions/workflows/check.yml/runs", "/actions/runs/1234/attempts/1/jobs"])
+  for (const [name, count] of [["missing", undefined], ["null", null], ["negative", -1],
+    ["negative zero", -0], ["string", "1"], ["fractional", 1.5], ["unsafe", Number.MAX_SAFE_INTEGER + 1],
+    ["underreported", 0], ["overreported", 2], ["truncated", 101]])
+    test(`rejects malformed or incomplete inventory ${path}: ${name}`, async () => {
+      const f = fixture();
+      // JSON.stringify canonicalizes -0 to 0, which still contradicts the one returned row.
+      await assert.rejects(readPromotionEvidence(f.environment, f.inputs,
+        fakeFetch(f, (actualPath, value) => actualPath === path ? { ...value, total_count: count } : value)), /incomplete/);
+    });
 
 test("dry run is credential-free and cannot invoke deployment or network", () => {
   const f = fixture();

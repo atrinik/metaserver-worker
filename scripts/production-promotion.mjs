@@ -85,12 +85,21 @@ export function validatePromotionEvidence({ environment, event, inputs, evidence
     fail("selected source lacks successful protected-main Check before dispatch");
   if (protection?.name !== "production" || !Number.isSafeInteger(protection.id) ||
       protection.deployment_branch_policy?.protected_branches !== true ||
-      protection.deployment_branch_policy?.custom_branch_policies !== false)
+      protection.deployment_branch_policy?.custom_branch_policies !== false ||
+      !Array.isArray(protection.protection_rules) ||
+      protection.protection_rules.some((rule) => !rule || typeof rule !== "object" ||
+        Array.isArray(rule) || !["required_reviewers", "wait_timer", "branch_policy"].includes(rule.type)) ||
+      new Set(protection.protection_rules.map((rule) => rule.type)).size !== protection.protection_rules.length)
     fail("production environment must restrict deployment to protected branches");
   // The authenticated manual dispatch is the operator's approval. Honor any
   // existing environment review policy without imposing a second human operator.
-  const reviewers = protection.protection_rules?.find((rule) => rule.type === "required_reviewers");
+  const reviewers = protection.protection_rules.find((rule) => rule.type === "required_reviewers");
   if (reviewers) {
+    if (typeof reviewers.prevent_self_review !== "boolean" ||
+        !Array.isArray(reviewers.reviewers) || reviewers.reviewers.length < 1 ||
+        reviewers.reviewers.some((entry) => !["User", "Team"].includes(entry?.type) ||
+          !Number.isSafeInteger(entry.reviewer?.id) || entry.reviewer.id < 1))
+      fail("production reviewer policy is incomplete");
     const reviews = Array.isArray(approvals) ? approvals.filter((approval) =>
       approval.environments?.some((entry) => entry.id === protection.id && entry.name === "production")) : [];
     if (reviews.length !== 1 || reviews[0].state !== "approved" ||
@@ -170,11 +179,16 @@ export async function readPromotionEvidence(environment, inputs, fetcher = fetch
     object = (await github(`/git/tags/${object.sha}`)).object;
   }
   if (tag.ref !== `refs/tags/${inputs.tag}` || object?.type !== "commit") fail("tag cannot resolve to commit");
-  if (!Array.isArray(checkPage.workflow_runs) || checkPage.total_count > 100)
-    fail("source validation inventory is incomplete");
+  for (const [page, key, label] of [[checkPage, "workflow_runs", "source validation"],
+    [jobPage, "jobs", "dispatch validation"]]) {
+    if (!Array.isArray(page?.[key]) || !Number.isSafeInteger(page.total_count) ||
+        page.total_count < 0 || Object.is(page.total_count, -0) || page.total_count > 100 ||
+        page.total_count !== page[key].length)
+      fail(`${label} inventory is incomplete`);
+  }
   return { repo, branch, run, release, tagSha: object.sha, sourceComparison, controllerComparison,
     checks: checkPage.workflow_runs, protection,
-    jobs: Number.isSafeInteger(jobPage.total_count) && jobPage.total_count <= 100 ? jobPage.jobs : null,
+    jobs: jobPage.jobs,
     approvals, actorPermission };
 }
 
