@@ -5,7 +5,6 @@ import { developmentWorkerNames, promotionEnvironmentNames } from "./delivery-ta
 import { assertDirectoryBuildContext } from "./production-delivery.mjs";
 import { markDirectoryFailure, directoryFailureLine } from "./directory-reconciliation-diagnostics.mjs";
 
-const INTERNAL_URL = "https://internal.atrinik.invalid/v1/directory-reconciliation";
 const STAGE_TIMEOUT_MS = 90_000;
 
 // This helper is only entered by the production parent after its live fences.
@@ -91,8 +90,14 @@ export async function invokeDirectoryProxy({ configPath, config, environment,
       await authorize();
       assertRunning();
       phase = "request";
-      const response = await proxy.env.DIRECTORY_RECONCILIATION.fetch(
-        new Request(INTERNAL_URL, { method: "POST", redirect: "error", signal: abort.signal }));
+      // Node's Request is not the SDK's Request, and its HTTP bridge adds
+      // transport headers. The zero-argument RPC constructs the canonical
+      // empty POST inside workerd instead. The deadline disposes the proxy;
+      // it cannot roll back reconciliation already accepted by the core.
+      const response = await proxy.env.DIRECTORY_RECONCILIATION.reconcile();
+      if (stopped && response.body) {
+        await boundedCleanup(() => response.body.cancel(), cleanupTimeoutMs);
+      }
       assertRunning();
       phase = "response";
       if (response.status !== 200 || response.headers.get("Content-Type") !== "application/json" ||

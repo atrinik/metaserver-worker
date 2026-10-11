@@ -1727,10 +1727,8 @@ test("directory proxy bounds initialization, failure, receipts and always dispos
   const makeProxy = (response) => async (supplied) => {
     assert.deepEqual(supplied, { configPath: options.configPath, persist: false, remoteBindings: true });
     return { dispose: async () => { disposed += 1; }, env: {
-      DIRECTORY_RECONCILIATION: { fetch: async (request) => {
-        assert.equal(request.url, "https://internal.atrinik.invalid/v1/directory-reconciliation");
-        assert.equal(request.method, "POST"); assert.equal(request.body, null);
-        assert.deepEqual([...request.headers], []);
+      DIRECTORY_RECONCILIATION: { reconcile: async (...args) => {
+        assert.deepEqual(args, []);
         return response;
       } },
     } };
@@ -1751,6 +1749,91 @@ test("directory proxy bounds initialization, failure, receipts and always dispos
     createProxy: async () => new Promise(() => {}) }), /deadline/u);
 });
 
+test("real SDK named binding RPC preserves the exact envelope and bounded acceptance", async () => {
+  const { build } = await import("esbuild");
+  const { Miniflare, convertV4MiniflareOptions } = await import("miniflare");
+  const bundled = await build({ stdin: { resolveDir: root, sourcefile: "directory-rpc-fixture.ts",
+    contents: `
+      import { DirectoryReconciliation as Core } from './src/directory-reconciliation';
+      let calls = 0;
+      export class DirectoryReconciliation extends Core {
+        invocationCount() { return calls; }
+        async fetch(request) {
+          calls++;
+          const response = await super.fetch(request);
+          // Missing state bindings make the real handler return 503 only after
+          // accepting its exact envelope. Malformed envelopes still return 400.
+          if (response.status !== 503) return response;
+          return Response.json({url:request.url,method:request.method,
+            headers:[...request.headers],bodyIsNull:request.body===null},
+            {headers:{'Cache-Control':'no-store'}});
+        }
+      }
+      export class Oversized extends DirectoryReconciliation {
+        async fetch() { return new Response('x'.repeat(4097),
+          {headers:{'Content-Type':'application/json','Cache-Control':'no-store'}}); }
+      }
+      export class Pending extends DirectoryReconciliation {
+        async fetch(request) {
+          await new Promise(resolve => setTimeout(resolve, 1000));
+          return super.fetch(request);
+        }
+      }
+    ` }, bundle: true, write: false, format: "esm", platform: "browser",
+    target: "es2022", external: ["cloudflare:workers"], logLevel: "silent" });
+  const mf = new Miniflare(convertV4MiniflareOptions({ workers: [
+    { name: "directory-proxy-fixture", modules: true, compatibilityDate: "2026-08-05",
+      script: "export default {fetch(){return new Response('unused')}}",
+      serviceBindings: Object.fromEntries(["DirectoryReconciliation", "Oversized", "Pending"].map(
+        entrypoint => [entrypoint, { name: "directory-core-fixture", entrypoint }])) },
+    { name: "directory-core-fixture", modules: true, compatibilityDate: "2026-08-05",
+      script: bundled.outputFiles[0].text },
+  ] }));
+  let disposal;
+  const dispose = () => disposal ??= mf.dispose();
+  try {
+    const bindings = await mf.getBindings("directory-proxy-fixture");
+    const binding = bindings.DirectoryReconciliation;
+    const url = "https://internal.atrinik.invalid/v1/directory-reconciliation";
+    // Pin the original defect at the actual SDK boundary, not a fetch mock:
+    // native Node Request is stringified by the SDK's separate undici realm.
+    await assert.rejects(async () => binding.fetch(new globalThis.Request(url, { method: "POST" })),
+      /Failed to parse URL from \[object Request\]/u);
+    assert.equal(await binding.invocationCount(), 0);
+    // URL+init reaches workerd but the SDK's transport headers violate the
+    // unchanged handler guard; accepting them is not the production fix.
+    const http = await binding.fetch(url, { method: "POST", redirect: "error" });
+    assert.equal(http.status, 400);
+    await http.body.cancel();
+    const before = await binding.invocationCount();
+    for (const args of [[undefined], ["classic-v3"], [{ url }]]) {
+      const rejected = await binding.reconcile(...args);
+      assert.equal(rejected.status, 400);
+      await rejected.body.cancel();
+    }
+    assert.equal(await binding.invocationCount(), before);
+    const options = { configPath: "/fixture/proxy.json",
+      config: directoryReconciliationProxyConfiguration(productionConfigs()[0]),
+      environment: proxyEnvironment(), authorize: async () => {} };
+    const proxy = (service) => async () => ({
+      env: { DIRECTORY_RECONCILIATION: service }, dispose: async () => {},
+    });
+    assert.deepEqual(await invokeDirectoryProxy({ ...options, createProxy: proxy(binding) }),
+      { url, method: "POST", headers: [], bodyIsNull: true });
+    await assert.rejects(invokeDirectoryProxy({ ...options,
+      createProxy: proxy(bindings.Oversized) }), /receipt too large/u);
+    let authorizations = 0;
+    let disposed = false;
+    await assert.rejects(invokeDirectoryProxy({ ...options, timeoutMs: 20,
+      authorize: async () => { authorizations++; }, createProxy: async () => ({
+        env: { DIRECTORY_RECONCILIATION: bindings.Pending },
+        dispose: async () => { disposed = true; await dispose(); },
+      }) }), /deadline exceeded/u);
+    assert.equal(disposed, true);
+    assert.equal(authorizations, 2, "expired RPC cannot reach receipt acceptance");
+  } finally { await dispose(); }
+});
+
 test("directory proxy requires live authority before import, request and receipt acceptance", async () => {
   const config = directoryReconciliationProxyConfiguration(productionConfigs()[0]);
   const events = [];
@@ -1762,7 +1845,7 @@ test("directory proxy requires live authority before import, request and receipt
       events.push("import-and-init");
       return {
         dispose: async () => events.push("dispose"),
-        env: { DIRECTORY_RECONCILIATION: { fetch: async () => {
+        env: { DIRECTORY_RECONCILIATION: { reconcile: async () => {
           events.push("remote-request");
           return Response.json({ receipt: true }, { headers: { "Cache-Control": "no-store" } });
         } } },
@@ -1792,25 +1875,22 @@ test("directory proxy bounds hanging fetch, read, cancellation and disposal", as
   const options = { configPath: "/test/proxy.json", config, environment: proxyEnvironment(),
     authorize: async () => {}, timeoutMs: 10, cleanupTimeoutMs: 10 };
   const never = () => new Promise(() => {});
-  // A real pending fetch retains its Request. Keep that same lifetime here:
-  // Node may stop forwarding aborts once the Request is garbage-collected,
-  // even if its dependent signal is still referenced by this fake fetch.
-  let pendingRequest;
+  let invoked = false;
   let disposed = false;
   await assert.rejects(invokeDirectoryProxy({ ...options, createProxy: async () => ({
     dispose: async () => { disposed = true; },
-    env: { DIRECTORY_RECONCILIATION: { fetch: async (request) => {
-      pendingRequest = request; return never();
+    env: { DIRECTORY_RECONCILIATION: { reconcile: async (...args) => {
+      assert.deepEqual(args, []); invoked = true; return never();
     } } },
   }) }), /deadline exceeded/u);
-  assert.equal(pendingRequest.signal.aborted, true);
+  assert.equal(invoked, true);
   assert.equal(disposed, true);
 
   let cancelled = false;
   disposed = false;
   await assert.rejects(invokeDirectoryProxy({ ...options, createProxy: async () => ({
     dispose: async () => { disposed = true; },
-    env: { DIRECTORY_RECONCILIATION: { fetch: async () => new Response(new ReadableStream({
+    env: { DIRECTORY_RECONCILIATION: { reconcile: async () => new Response(new ReadableStream({
       pull: never, cancel: () => { cancelled = true; },
     }), { headers: { "Content-Type": "application/json", "Cache-Control": "no-store" } }) } },
   }) }), /deadline exceeded/u);
@@ -1819,7 +1899,7 @@ test("directory proxy bounds hanging fetch, read, cancellation and disposal", as
 
   await assert.rejects(invokeDirectoryProxy({ ...options, createProxy: async () => ({
     dispose: never,
-    env: { DIRECTORY_RECONCILIATION: { fetch: async () =>
+    env: { DIRECTORY_RECONCILIATION: { reconcile: async () =>
       Response.json({ receipt: true }, { headers: { "Cache-Control": "no-store" } }) } },
   }) }), /cleanup deadline exceeded/u);
 
@@ -1828,7 +1908,7 @@ test("directory proxy bounds hanging fetch, read, cancellation and disposal", as
   const delayed = invokeDirectoryProxy({ ...options, createProxy: () => new Promise((resolveProxy) => {
     completeInitialization = () => resolveProxy({
       dispose: async () => { disposed = true; },
-      env: { DIRECTORY_RECONCILIATION: { fetch: async () => {
+      env: { DIRECTORY_RECONCILIATION: { reconcile: async () => {
         assert.fail("expired initialization must not invoke the core");
       } } },
     });
@@ -2016,7 +2096,7 @@ test("DEV reconciliation failures retain only closed phase/reason diagnostics th
         createProxy: async () => {
           if (scenario.init) throw new Error(secret);
           return { dispose: async () => { if (scenario.cleanup) throw new Error(secret); },
-            env: { DIRECTORY_RECONCILIATION: { fetch: async () => {
+            env: { DIRECTORY_RECONCILIATION: { reconcile: async () => {
               if (scenario.fetch) throw new Error(secret);
               return scenario.response?.() ?? Response.json({ receipt: true }, { headers: { "Cache-Control": "no-store" } });
             } } } };
@@ -2043,7 +2123,7 @@ test("reconciliation timeout diagnostics identify the pending stage and cleanup 
     ["authority-before-proxy", { authorize: never, createProxy: async () => assert.fail("must not initialize") }],
     ["proxy-initialization", { authorize: async () => {}, createProxy: never }],
     ["cleanup", { authorize: async () => {}, createProxy: async () => ({ dispose: never,
-      env: { DIRECTORY_RECONCILIATION: { fetch: async () => Response.json({}, { headers: { "Cache-Control": "no-store" } }) } } }) }],
+      env: { DIRECTORY_RECONCILIATION: { reconcile: async () => Response.json({}, { headers: { "Cache-Control": "no-store" } }) } } }) }],
   ]) {
     await assert.rejects(invokeDirectoryProxy({ ...options, ...overrides }), error => {
       assert.deepEqual(parseDirectoryFailure(directoryFailureLine(error)), { schema: "directory-failure-v1", phase,

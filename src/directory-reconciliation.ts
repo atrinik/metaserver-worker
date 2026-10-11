@@ -30,6 +30,14 @@ const MAX_MANIFEST_BYTES = 4_096;
 
 /** A deployment-only Service Binding capability; it has no public dispatcher. */
 export class DirectoryReconciliation extends WorkerEntrypoint<CoreEnv> {
+  async reconcile(...args: unknown[]): Promise<Response> {
+    // The deployment proxy crosses Node/undici and HTTP transport boundaries.
+    // Construct the exact envelope here so no caller data or proxy headers can
+    // supply profile, object, URL or request authority.
+    if (args.length !== 0) return failure(400);
+    return this.fetch(new Request(INTERNAL_DIRECTORY_RECONCILIATION_URL, { method: "POST" }));
+  }
+
   async fetch(request: Request): Promise<Response> {
     return handleDirectoryReconciliationRequest(request, this.env);
   }

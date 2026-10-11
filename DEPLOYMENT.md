@@ -1148,13 +1148,17 @@ Migration 0013 leaves `classic-v3` and `game-v2` publication checkpoints at
 generation zero with no new aliases. The explicit pre-canary reconciliation
 stage builds valid empty cohorts even before the first cron or signed publication;
 it also verifies or refreshes the cohort for later deliveries. The private
-entrypoint accepts only an empty `POST` to
+entrypoint exposes the zero-argument `reconcile()` Service Binding RPC, which
+constructs an empty `POST` inside the Worker. Its fetch handler accepts only that
+empty `POST` to
 `https://internal.atrinik.invalid/v1/directory-reconciliation`, selects only the
 two fixed profiles, and verifies checkpoints and complete alias integrity before
-returning the redacted `directory-reconciliation-v1` receipt. It has no public
+returning the redacted `directory-reconciliation-v1` receipt. Extra RPC arguments
+are rejected before state access. Node's native Request and the proxy's injected
+HTTP headers never cross the handler's strict envelope boundary. It has no public
 route, request-selected profile, resource key, generation or origin. The
 receipt binds completion time and actual cutover modes/origins; the parent
-binds the account, source, active topology and sole Builds lease around the
+binds the account, source, active topology and sole Actions writer around the
 stage. A receipt is not independent permission to invoke live maintenance.
 Timeout or cleanup failure stops acceptance; aborting the proxy is not a
 rollback of aliases already reconciled by the core, and provider work already

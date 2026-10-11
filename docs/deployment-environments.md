@@ -281,8 +281,12 @@ Authority and expected predecessor checks must occur at the point of use,
 including after awaits; cached preflight evidence cannot authorize a write.
 
 Reconcile the two fixed directory profiles through the private
-`DirectoryReconciliation` Service Binding, retaining bounded receipts and purge
-completion. Then prove static-origin formats/freshness/conditional behavior and
+`DirectoryReconciliation.reconcile()` Service Binding RPC with zero arguments,
+retaining bounded receipts and purge completion. The Worker constructs the fixed
+empty internal POST, keeping Node Request types and proxy HTTP headers outside
+the strict request envelope. Deadline expiry disposes the proxy and stops
+acceptance; it cannot undo core work already accepted. Then prove
+static-origin formats/freshness/conditional behavior and
 canonical credential-free publisher/rendezvous envelopes, followed by coherent
 final topology and source/authority readback. Report the exact selected SHA,
 digests, phase prefix, no-op/deployment result and recovery outcome without
