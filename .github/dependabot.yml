@@ -12,6 +12,11 @@ updates:
     directory: /
     schedule:
       interval: weekly
+    ignore:
+      # @cloudflare/vitest-pool-workers requires Vitest ^4.1.0.
+      - dependency-name: vitest
+        versions:
+          - ">=5.0.0 <6.0.0"
     groups:
       npm-development:
         dependency-type: development
