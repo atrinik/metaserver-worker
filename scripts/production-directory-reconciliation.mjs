@@ -1,12 +1,15 @@
 import { readFile } from "node:fs/promises";
 import { resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { assertDirectoryBuildContext } from "./production-delivery.mjs";
 
 const INTERNAL_URL = "https://internal.atrinik.invalid/v1/directory-reconciliation";
 const STAGE_TIMEOUT_MS = 90_000;
 
 // This helper is only entered by the production parent after its live fences.
-// It receives deployment authentication, never the parent lease token or configs.
+// Its provider-backed observer receives the existing lease token separately from
+// proxy bindings; the token is removed from the process environment before Wrangler.
+const CLEANUP_TIMEOUT_MS = 10_000;
 export function validateDirectoryProxyInput(config, environment) {
   if (environment.WORKERS_CI !== "1" || environment.WORKERS_CI_BRANCH !== "main" ||
       !/^[0-9a-f]{40}$/u.test(environment.WORKERS_CI_COMMIT_SHA ?? "") ||
@@ -30,55 +33,92 @@ export function validateDirectoryProxyInput(config, environment) {
       })) throw new Error("directory proxy authority rejected");
 }
 
+async function boundedCleanup(operation, milliseconds) {
+  let timer;
+  try {
+    return await Promise.race([
+      Promise.resolve().then(operation),
+      new Promise((_, reject) => {
+        timer = setTimeout(() => reject(new Error("directory proxy cleanup deadline exceeded")),
+          milliseconds);
+      }),
+    ]);
+  } finally { clearTimeout(timer); }
+}
+
 export async function invokeDirectoryProxy({ configPath, config, environment,
-  createProxy, timeoutMs = STAGE_TIMEOUT_MS }) {
+  authorize, createProxy, timeoutMs = STAGE_TIMEOUT_MS, cleanupTimeoutMs = CLEANUP_TIMEOUT_MS }) {
   validateDirectoryProxyInput(config, environment);
+  if (typeof authorize !== "function") throw new Error("directory proxy live authority missing");
   let timer;
   let proxy;
+  let reader;
   let stopped = false;
+  const abort = new AbortController();
+  const assertRunning = () => {
+    if (stopped || abort.signal.aborted) throw new Error("directory proxy deadline exceeded");
+  };
   const deadline = new Promise((_, reject) => {
     timer = setTimeout(() => {
       stopped = true;
+      abort.abort();
       reject(new Error("directory proxy deadline exceeded"));
     }, timeoutMs);
   });
   try {
     const operation = (async () => {
+      await authorize();
+      assertRunning();
       const acquired = await createProxy({ configPath, persist: false, remoteBindings: true });
       if (stopped) {
-        await acquired.dispose();
+        await boundedCleanup(() => acquired.dispose(), cleanupTimeoutMs);
         throw new Error("directory proxy initialization expired");
       }
       proxy = acquired;
+      // Initialization can take long enough to lose current-main or the lease.
+      await authorize();
+      assertRunning();
       const response = await proxy.env.DIRECTORY_RECONCILIATION.fetch(
-        new Request(INTERNAL_URL, { method: "POST", redirect: "error" }));
+        new Request(INTERNAL_URL, { method: "POST", redirect: "error", signal: abort.signal }));
+      assertRunning();
       if (response.status !== 200 || response.headers.get("Content-Type") !== "application/json" ||
-          response.headers.get("Cache-Control") !== "no-store")
+          response.headers.get("Cache-Control") !== "no-store") {
+        if (response.body) await response.body.cancel();
         throw new Error("directory proxy response rejected");
+      }
       // Read a bounded receipt before parsing; raw provider output never escapes.
       if (!response.body) throw new Error("directory proxy receipt missing");
-      const reader = response.body.getReader();
+      reader = response.body.getReader();
       const chunks = [];
       let bytes = 0;
-      try {
-        while (true) {
-          const { done, value } = await reader.read();
-          if (done) break;
-          bytes += value.byteLength;
-          if (bytes > 4_096) throw new Error("directory proxy receipt too large");
-          chunks.push(value);
-        }
-      } finally {
-        await reader.cancel();
+      while (true) {
+        const { done, value } = await reader.read();
+        assertRunning();
+        if (done) break;
+        bytes += value.byteLength;
+        if (bytes > 4_096) throw new Error("directory proxy receipt too large");
+        chunks.push(value);
       }
-      const receipt = Buffer.concat(chunks).toString("utf8");
-      return JSON.parse(receipt);
+      const receipt = JSON.parse(Buffer.concat(chunks).toString("utf8"));
+      await authorize();
+      assertRunning();
+      return receipt;
     })();
     return await Promise.race([operation, deadline]);
   } finally {
     stopped = true;
+    abort.abort();
     clearTimeout(timer);
-    if (proxy) await proxy.dispose();
+    // Cancellation and disposal share one independent bound, even when reads or
+    // provider cleanup never settle. A cleanup timeout is a failed stage.
+    await boundedCleanup(async () => {
+      const results = await Promise.allSettled([
+        reader ? reader.cancel() : Promise.resolve(),
+        proxy ? proxy.dispose() : Promise.resolve(),
+      ]);
+      if (results.some((result) => result.status === "rejected"))
+        throw new Error("directory proxy cleanup failed");
+    }, cleanupTimeoutMs);
   }
 }
 
@@ -87,11 +127,18 @@ async function main() {
   const configPath = resolve(process.argv[2]);
   const config = JSON.parse(await readFile(configPath, "utf8"));
   validateDirectoryProxyInput(config, process.env);
-  // Suppress routine Wrangler output; only the bounded receipt uses stdout.
+  const environment = { ...process.env };
+  // The read-only authority checker retains this credential in its private
+  // closure; Wrangler and its remote-binding subprocesses cannot inherit it.
+  delete process.env.ATRINIK_WORKERS_BUILDS_API_TOKEN;
   process.env.WRANGLER_LOG = "error";
-  const { getPlatformProxy } = await import("wrangler");
   const receipt = await invokeDirectoryProxy({
-    configPath, config, environment: process.env, createProxy: getPlatformProxy,
+    configPath, config, environment,
+    authorize: () => assertDirectoryBuildContext(config, environment),
+    createProxy: async (options) => {
+      const { getPlatformProxy } = await import("wrangler");
+      return getPlatformProxy(options);
+    },
   });
   console.log(JSON.stringify(receipt));
 }

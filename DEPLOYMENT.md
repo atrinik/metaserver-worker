@@ -115,9 +115,16 @@ The entrypoint performs this fail-closed sequence:
    verified core Worker and account, has no public URL or state bindings, and
    uses the pinned Wrangler `getPlatformProxy` API with `persist: false` and
    `remoteBindings: true`. The proxy child receives only deployment authentication
-   and the four nonsecret build coordinates; the lease token and protected
-   configurations stay in the parent. Bound initialization and invocation to
-   90 seconds with a 120-second parent subprocess ceiling, dispose the proxy,
+   and exact nonsecret CI coordinates. The existing lease token passes only
+   to the child's read-only build-authority observer and is removed from its
+   process environment before Wrangler loads; protected configurations stay
+   in the parent. The child independently checks clean local `HEAD`, account,
+   current `main`, the authenticated running build, live trigger/environment
+   and sole exact-SHA lease before import, again after proxy initialization
+   immediately before the request, and after its receipt. It never cancels builds.
+   Bound authority checks, initialization and invocation to 90 seconds, then
+   bound request abort, receipt cancellation and proxy disposal to 10 seconds,
+   with a 120-second parent subprocess ceiling,
    and accept only a bounded, fresh receipt for both positive publication
    generations, selected cutover modes and exact origins. Generation zero,
    stale or absent alias cohorts, failed reconciliation, and pending purge stop
@@ -1271,6 +1278,10 @@ route, request-selected profile, resource key, generation or origin. The
 receipt binds completion time and actual cutover modes/origins; the parent
 binds the account, source, active topology and sole Builds lease around the
 stage. A receipt is not independent permission to invoke live maintenance.
+Timeout or cleanup failure stops acceptance; aborting the proxy is not a
+rollback of aliases already reconciled by the core, and provider work already
+accepted may finish independently. The builder's durable publication journal
+and later exact readback remain authoritative.
 Cloudflare documents the supported [remote Service Binding pattern](https://developers.cloudflare.com/workers/local-development/#remote-bindings)
 and [Wrangler proxy API](https://developers.cloudflare.com/workers/wrangler/api/).
 This source change exercises only isolated fixtures; no live proxy, migration,
@@ -1279,6 +1290,12 @@ Canaries verify canonical JSON/XML/HTML, `accessRequired` policy, fresh coherent
 cohorts, native validators, public/private separation and bounded rejection paths.
 Current publisher canaries use the protocol-owned Classic v3 signature envelope.
 They cannot authorize deployment or cutover merely by passing.
+
+The updated public callers have no signing-key secret or key-ID bindings.
+Existing deployed caller secrets are not deleted by this source change, and
+preflight rejects any retained signing bindings before a production rollout.
+Removing those remote secrets requires separate operator authorization and
+fresh readback; local validation cannot remove or waive them.
 
 `ACCESS_ROUTE_RATE_LIMITER` is core-only, namespace `1008`, 16 requests/minute.
 The isolated review cohort uses `2008` with the same ceiling and counts it in its

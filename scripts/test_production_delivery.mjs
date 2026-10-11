@@ -1610,10 +1610,13 @@ test("directory proxy is account-bound and grants only the private remote entryp
   assert.throws(() => validateDirectoryProxyInput(proxy, {}), /authority rejected/u);
   assert.throws(() => directoryReconciliationProxyConfiguration({ ...core, name: "other-core" }),
     /target identity/u);
-  const child = childEnvironment({ ...proxyEnvironment(),
-    ATRINIK_WORKERS_BUILDS_API_TOKEN: "parent-only", ATRINIK_PRODUCTION_CORE_CONFIG: "private",
+  const authorityEnvironment = { ...proxyEnvironment(),
+    ATRINIK_WORKERS_BUILDS_API_TOKEN: "read-only-observer",
+    WRANGLER_CI_MATCH_TAG: "test-core-tag", WRANGLER_CI_OVERRIDE_NAME: "atrinik-metaserver" };
+  const child = childEnvironment({ ...authorityEnvironment,
+    ATRINIK_PRODUCTION_CORE_CONFIG: "private",
     UNREVIEWED_SECRET: "parent-only" }, "directory-reconciliation");
-  assert.deepEqual(child, proxyEnvironment());
+  assert.deepEqual(child, authorityEnvironment);
 });
 
 test("directory proof binds fresh complete aliases to the selected environment", () => {
@@ -1706,7 +1709,8 @@ test("failed or stale reconciliation cannot reach static canaries", async () => 
 
 test("directory proxy bounds initialization, failure, receipts and always disposes", async () => {
   const config = directoryReconciliationProxyConfiguration(productionConfigs()[0]);
-  const options = { configPath: "/test/proxy.json", config, environment: proxyEnvironment() };
+  const options = { configPath: "/test/proxy.json", config, environment: proxyEnvironment(),
+    authorize: async () => {} };
   let disposed = 0;
   const makeProxy = (response) => async (supplied) => {
     assert.deepEqual(supplied, { configPath: options.configPath, persist: false, remoteBindings: true });
@@ -1733,4 +1737,89 @@ test("directory proxy bounds initialization, failure, receipts and always dispos
   assert.equal(initialize, 0);
   await assert.rejects(invokeDirectoryProxy({ ...options, timeoutMs: 5,
     createProxy: async () => new Promise(() => {}) }), /deadline/u);
+});
+
+test("directory proxy requires live authority before import, request and receipt acceptance", async () => {
+  const config = directoryReconciliationProxyConfiguration(productionConfigs()[0]);
+  const events = [];
+  let authorizations = 0;
+  const options = {
+    configPath: "/test/proxy.json", config, environment: proxyEnvironment(),
+    authorize: async () => { authorizations += 1; events.push(`authority:${authorizations}`); },
+    createProxy: async () => {
+      events.push("import-and-init");
+      return {
+        dispose: async () => events.push("dispose"),
+        env: { DIRECTORY_RECONCILIATION: { fetch: async () => {
+          events.push("remote-request");
+          return Response.json({ receipt: true }, { headers: { "Cache-Control": "no-store" } });
+        } } },
+      };
+    },
+  };
+  assert.deepEqual(await invokeDirectoryProxy(options), { receipt: true });
+  assert.deepEqual(events, ["authority:1", "import-and-init", "authority:2",
+    "remote-request", "authority:3", "dispose"]);
+  for (const failedAuthority of [1, 2, 3]) {
+    authorizations = 0; events.length = 0;
+    await assert.rejects(invokeDirectoryProxy({ ...options, authorize: async () => {
+      authorizations += 1;
+      if (authorizations === failedAuthority) throw new Error("actual build authority rejected");
+    } }), /actual build authority rejected/u);
+    assert.equal(events.includes("import-and-init"), failedAuthority > 1);
+    assert.equal(events.includes("remote-request"), failedAuthority > 2);
+    assert.equal(events.includes("dispose"), failedAuthority > 1);
+  }
+  events.length = 0;
+  await assert.rejects(invokeDirectoryProxy({ ...options, authorize: undefined }), /live authority missing/u);
+  assert.deepEqual(events, []);
+});
+
+test("directory proxy bounds hanging fetch, read, cancellation and disposal", async () => {
+  const config = directoryReconciliationProxyConfiguration(productionConfigs()[0]);
+  const options = { configPath: "/test/proxy.json", config, environment: proxyEnvironment(),
+    authorize: async () => {}, timeoutMs: 10, cleanupTimeoutMs: 10 };
+  const never = () => new Promise(() => {});
+  let signal;
+  let disposed = false;
+  await assert.rejects(invokeDirectoryProxy({ ...options, createProxy: async () => ({
+    dispose: async () => { disposed = true; },
+    env: { DIRECTORY_RECONCILIATION: { fetch: async (request) => {
+      signal = request.signal; return never();
+    } } },
+  }) }), /deadline exceeded/u);
+  assert.equal(signal.aborted, true);
+  assert.equal(disposed, true);
+
+  let cancelled = false;
+  disposed = false;
+  await assert.rejects(invokeDirectoryProxy({ ...options, createProxy: async () => ({
+    dispose: async () => { disposed = true; },
+    env: { DIRECTORY_RECONCILIATION: { fetch: async () => new Response(new ReadableStream({
+      pull: never, cancel: () => { cancelled = true; },
+    }), { headers: { "Content-Type": "application/json", "Cache-Control": "no-store" } }) } },
+  }) }), /deadline exceeded/u);
+  assert.equal(cancelled, true);
+  assert.equal(disposed, true);
+
+  await assert.rejects(invokeDirectoryProxy({ ...options, createProxy: async () => ({
+    dispose: never,
+    env: { DIRECTORY_RECONCILIATION: { fetch: async () =>
+      Response.json({ receipt: true }, { headers: { "Cache-Control": "no-store" } }) } },
+  }) }), /cleanup deadline exceeded/u);
+
+  disposed = false;
+  let completeInitialization;
+  const delayed = invokeDirectoryProxy({ ...options, createProxy: () => new Promise((resolveProxy) => {
+    completeInitialization = () => resolveProxy({
+      dispose: async () => { disposed = true; },
+      env: { DIRECTORY_RECONCILIATION: { fetch: async () => {
+        assert.fail("expired initialization must not invoke the core");
+      } } },
+    });
+  }) });
+  await assert.rejects(delayed, /deadline exceeded/u);
+  completeInitialization();
+  await new Promise((resolveNext) => setImmediate(resolveNext));
+  assert.equal(disposed, true);
 });

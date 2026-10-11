@@ -362,7 +362,7 @@ export function validateContract(contract) {
     !Array.isArray(contract.workers) ||
     contract.workers.length !== 3 ||
     sha256Json(canonicalJson(contract.workers)) !==
-      "c9059f0406b468029fdc6e7cfa835bf9251e690cc3ba35cb894ba60b12c026d8" ||
+      "79c113610030ae444f3e987e63068345bced7fd33819c6b66ea54792e30b19c9" ||
     JSON.stringify(contract.workers.map(({ name }) => name)) !==
       JSON.stringify(expectedWorkerNames) ||
     JSON.stringify(contract.workers.map(({ order }) => order)) !==
@@ -500,7 +500,8 @@ function validateConfigurationAuthority(worker, config) {
   }
   assertArrayObjectKeys(config.routes ?? [], ["pattern", "custom_domain"],
     `${worker.role} route`);
-  assertAllowedKeys(config.secrets, ["required"], `${worker.role} secret contract`);
+  assertAllowedKeys(config.secrets === undefined ? {} : config.secrets,
+    ["required"], `${worker.role} secret contract`);
   assertAllowedKeys(config.triggers ?? { crons: [] }, ["crons"],
     `${worker.role} trigger contract`);
   assertAllowedKeys(config.observability, ["enabled", "logs", "traces"],
@@ -972,7 +973,8 @@ export function childEnvironment(input, policy = "public") {
       environment.CLOUDFLARE_API_TOKEN = input.CLOUDFLARE_API_TOKEN;
     if (policy === "directory-reconciliation") {
       for (const name of ["WORKERS_CI", "WORKERS_CI_BRANCH",
-        "WORKERS_CI_COMMIT_SHA", "WORKERS_CI_BUILD_UUID"])
+        "WORKERS_CI_COMMIT_SHA", "WORKERS_CI_BUILD_UUID", "WRANGLER_CI_MATCH_TAG",
+        "WRANGLER_CI_OVERRIDE_NAME", "ATRINIK_WORKERS_BUILDS_API_TOKEN"])
         if (typeof input[name] === "string") environment[name] = input[name];
     }
   } else if (policy !== "public") {
@@ -1661,11 +1663,11 @@ async function assertBuildLease(
   contract,
   sourceSha,
   buildUuid,
-  { arbitrate = true } = {},
+  { arbitrate = true, exclusiveReadOnly = false, environment = process.env } = {},
 ) {
-  const accountId = process.env.CLOUDFLARE_ACCOUNT_ID;
+  const accountId = environment.CLOUDFLARE_ACCOUNT_ID;
   const token = validateProtectedDocument(
-    process.env[contract.protectedInputs.buildsApiTokenVariable],
+    environment[contract.protectedInputs.buildsApiTokenVariable],
     contract.protectedInputs.buildsApiTokenVariable,
   );
   const self = await cloudflareResult(
@@ -1685,7 +1687,7 @@ async function assertBuildLease(
     fail("Workers Builds execution identity or command drift");
   const liveTriggers = await cloudflareResult(
     accountId,
-    `/builds/workers/${encodeURIComponent(process.env.WRANGLER_CI_MATCH_TAG)}/triggers`,
+    `/builds/workers/${encodeURIComponent(environment.WRANGLER_CI_MATCH_TAG)}/triggers`,
     { token },
   );
   const liveTrigger = selectLiveTrigger(liveTriggers, triggerUuid);
@@ -1695,7 +1697,7 @@ async function assertBuildLease(
       build_trigger_metadata: self.build_trigger_metadata,
       trigger: liveTrigger,
     },
-    process.env.WRANGLER_CI_MATCH_TAG,
+    environment.WRANGLER_CI_MATCH_TAG,
   );
   validateBuildEnvironment(
     contract,
@@ -1705,9 +1707,17 @@ async function assertBuildLease(
       { token },
     ),
   );
-  if (!arbitrate) return;
+  if (!arbitrate && !exclusiveReadOnly) return;
   const buildsPath =
-    `/builds/workers/${encodeURIComponent(process.env.WRANGLER_CI_MATCH_TAG)}/builds`;
+    `/builds/workers/${encodeURIComponent(environment.WRANGLER_CI_MATCH_TAG)}/builds`;
+  if (exclusiveReadOnly) {
+    const builds = await cloudflareResult(accountId, buildsPath, { token });
+    if (!Array.isArray(builds) || buildLeaseDecision(
+      builds, sourceSha, triggerUuid, buildUuid).length !== 0)
+      fail("directory reconciliation production lease is not exclusive");
+    await assertCurrentMain(contract, sourceSha);
+    return;
+  }
   await arbitrateBuildLease({
     sourceSha,
     buildUuid,
@@ -1725,6 +1735,32 @@ async function assertBuildLease(
       { token },
     ),
   });
+}
+
+// A child cannot turn syntax-valid CI variables into live authority. Independently
+// authenticate the same exact running build and current-main exclusive lease.
+// This path only observes provider state; it never cancels competing builds.
+export async function assertDirectoryBuildContext(config, environment = process.env) {
+  const contract = await readJson(contractPath);
+  validateContract(contract);
+  if (config.account_id !== environment.CLOUDFLARE_ACCOUNT_ID ||
+      config.services?.[0]?.service !== contract.workers[0].name)
+    fail("directory reconciliation execution account drift");
+  validateSourceCoordinates({
+    workersCi: environment.WORKERS_CI,
+    branch: environment.WORKERS_CI_BRANCH,
+    sourceSha: environment.WORKERS_CI_COMMIT_SHA,
+    head: await git("rev-parse", "HEAD"),
+    dirty: (await git("status", "--porcelain")) !== "",
+    buildUuid: environment.WORKERS_CI_BUILD_UUID,
+    overrideName: environment.WRANGLER_CI_OVERRIDE_NAME,
+    matchTag: environment.WRANGLER_CI_MATCH_TAG,
+    accountId: environment.CLOUDFLARE_ACCOUNT_ID,
+    currentMain: await currentMainSha(contract),
+  });
+  await assertBuildLease(contract, environment.WORKERS_CI_COMMIT_SHA,
+    environment.WORKERS_CI_BUILD_UUID,
+    { arbitrate: false, exclusiveReadOnly: true, environment });
 }
 
 async function readLiveControlPlane(worker, accountId) {
