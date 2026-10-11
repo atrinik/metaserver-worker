@@ -4,7 +4,7 @@ import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { authorizeTransitionOperation, applyTransitionStep, createTransitionPlan, nextTransitionOperation,
-  normalizeTransitionTrigger, runTransitionCli, transitionDigest, validateProductionWriterFence,
+  normalizeTransitionTrigger, productionFencePatchBody, runTransitionCli, transitionDigest, validateProductionWriterFence,
   verifyTransitionJournal } from "./deployment-environment-transition.mjs";
 import { assertProductionPromotionWriterFence } from "./production-writer-fence.mjs";
 const id = (n) => `00000000-0000-4000-8000-${String(n).padStart(12, "0")}`;
@@ -31,14 +31,14 @@ function fixture() {
     stable: true, workers: clone(coordinates.workers), productionTriggers: [production, review], developmentTriggers: [],
     developmentTokenProofDigest: coordinates.developmentTokenProofDigest,
     productionBuilds: [], activeVersions: Object.fromEntries(Object.values(coordinates.workers).flat().map((w, n) =>
-      [w.name, id(10 + n)])), environments: { [id(1)]: { PROD_SECRET: { is_secret: true, value: null } },
+      [w.name, id(10 + n)])), environments: { [id(1)]: { CLOUDFLARE_ACCOUNT_ID: { is_secret: true, value: null }, SKIP_DEPENDENCY_INSTALL: { is_secret: false, value: "1" } },
       [id(2)]: { SKIP_DEPENDENCY_INSTALL: { is_secret: false, value: "1" } } } };
   snapshot.otherWorkers = Object.fromEntries(Object.values(coordinates.workers).flat().slice(1)
     .map((w) => [w.tag, { triggers: [], builds: [] }]));
   return { snapshot, coordinates, now };
 }
 function simulate(op, snapshot, plan) {
-  if (op.phase === "fence-production") snapshot.productionTriggers[0].branch_excludes = ["*"];
+  if (op.phase === "fence-production") Object.assign(snapshot.productionTriggers[0], { branch_excludes: ["*"], build_command: "exit 1", deploy_command: "exit 1" });
   if (op.phase === "cancel-production-build") snapshot.productionBuilds.find((b) => b.build_uuid === op.buildUuid).status = "stopped";
 
 }
@@ -46,7 +46,7 @@ function fencePolicy(plan) {
   const c = plan.coordinates;
   return { accountId: c.accountId, scriptName: "atrinik-metaserver", externalScriptId: "1".repeat(32),
     workers: c.workers.production, developmentWorkers: c.workers.development, productionTriggerUuid: c.productionTriggerUuid, reviewTriggerUuid: c.reviewTriggerUuid,
-    productionTriggerDigest: transitionDigest({ ...plan.predecessorProduction, branch_excludes: ["*"] }),
+    productionTriggerDigest: transitionDigest({ ...plan.predecessorProduction, branch_excludes: ["*"], build_command: "exit 1", deploy_command: "exit 1" }),
     reviewTriggerDigest: transitionDigest(plan.review),
     productionEnvironmentDigest: transitionDigest(plan.productionEnvironments[id(1)]),
     reviewEnvironmentDigest: transitionDigest(plan.productionEnvironments[id(2)]) };
@@ -83,7 +83,7 @@ for (const [name, mutate] of [
   ["review changed", (s) => { s.productionTriggers[1].deploy_command = "wrangler deploy"; }],
   ["PROD token changed", (s) => { s.productionTriggers[0].build_token_uuid = id(90); }],
   ["PROD env changed", (s) => { s.environments[id(1)].OTHER = { is_secret: true, value: null }; }],
-  ["secret disclosure", (s) => { s.environments[id(1)].PROD_SECRET.value = "never-print"; }],
+  ["secret disclosure", (s) => { s.environments[id(1)].CLOUDFLARE_ACCOUNT_ID.value = "never-print"; }],
   ["deleted trigger", (s) => { s.productionTriggers[0].deleted_on = new Date(now).toISOString(); }],
   ["deleted repository connection", (s) => {
     s.productionTriggers[0].repo_connection.deleted_on = new Date(now).toISOString();
@@ -100,7 +100,7 @@ test("uncertain write never repeats; exact later readback recovers its intent", 
   f.snapshot.capturedAt = new Date(now + 1000).toISOString();
   await assert.rejects(applyTransitionStep({ plan, snapshot: f.snapshot, records, now: now + 1000,
     append: async () => {}, execute: async () => assert.fail("retried") }), /unresolved prior intent/);
-  f.snapshot.productionTriggers[0].branch_excludes = ["*"];
+  Object.assign(f.snapshot.productionTriggers[0], { branch_excludes: ["*"], build_command: "exit 1", deploy_command: "exit 1" });
   await applyTransitionStep({ plan, snapshot: f.snapshot, records, now: now + 1000,
     append: async () => {}, execute: async () => assert.fail("recovery mutated") });
 });
@@ -112,7 +112,7 @@ test("journal tampering is rejected", async () => {
 });
 test("unknown in-flight PROD identity and competing DEV or caller writer are rejected", () => {
   const f = fixture(), plan = createTransitionPlan(f);
-  f.snapshot.productionTriggers[0].branch_excludes = ["*"];
+  Object.assign(f.snapshot.productionTriggers[0], { branch_excludes: ["*"], build_command: "exit 1", deploy_command: "exit 1" });
   f.snapshot.productionBuilds.push({ build_uuid: id(99), status: "running", trigger: { trigger_uuid: id(99) } });
   assert.throws(() => nextTransitionOperation({ plan, snapshot: f.snapshot, now }), /identity/);
   f.snapshot.productionBuilds = [];
@@ -121,7 +121,7 @@ test("unknown in-flight PROD identity and competing DEV or caller writer are rej
 });
 test("promotion fence rejects even digest-authorized unsafe review commands or environments", () => {
   const f = fixture(), plan = createTransitionPlan(f), policy = fencePolicy(plan);
-  f.snapshot.productionTriggers[0].branch_excludes = ["*"];
+  Object.assign(f.snapshot.productionTriggers[0], { branch_excludes: ["*"], build_command: "exit 1", deploy_command: "exit 1" });
   f.snapshot.productionTriggers[1].deploy_command = "wrangler deploy";
   policy.reviewTriggerDigest = transitionDigest(normalizeTransitionTrigger(f.snapshot.productionTriggers[1]));
   assert.throws(() => validateProductionWriterFence({ triggers: f.snapshot.productionTriggers,
@@ -129,7 +129,7 @@ test("promotion fence rejects even digest-authorized unsafe review commands or e
 });
 test("promotion HTTP adapter reads stable exhaustive inventories and performs no mutations", async () => {
   const f = fixture(), plan = createTransitionPlan(f), policy = fencePolicy(plan);
-  f.snapshot.productionTriggers[0].branch_excludes = ["*"];
+  Object.assign(f.snapshot.productionTriggers[0], { branch_excludes: ["*"], build_command: "exit 1", deploy_command: "exit 1" });
   const environment = { CLOUDFLARE_ACCOUNT_ID: f.coordinates.accountId,
     ATRINIK_PRODUCTION_BUILDS_READ_TOKEN: "private-test-token", ATRINIK_PRODUCTION_WRITER_FENCE_POLICY: JSON.stringify(policy) };
   const calls = [];
@@ -175,7 +175,7 @@ test("failed journal persistence prevents execution", async () => {
 
 test("active review builds require immutable safe launch commands and token, not merely current trigger UUID", () => {
   const f = fixture(), plan = createTransitionPlan(f), policy = fencePolicy(plan);
-  f.snapshot.productionTriggers[0].branch_excludes = ["*"];
+  Object.assign(f.snapshot.productionTriggers[0], { branch_excludes: ["*"], build_command: "exit 1", deploy_command: "exit 1" });
   const build = { build_uuid: id(95), status: "running", trigger: clone(plan.review),
     build_trigger_metadata: { build_token_uuid: plan.review.build_token_uuid, build_command: "npm run build",
       deploy_command: "npm run validate", root_directory: "/deployment/review-check", branch: "feature/test",
@@ -215,7 +215,7 @@ test("CLI concurrent intent emission has one winner and preserves immutable rece
 
 test("normalization accepts null tombstones but rejects deleted repository connections even with matching field digests", () => {
   const f = fixture(), plan = createTransitionPlan(f), policy = fencePolicy(plan);
-  f.snapshot.productionTriggers[0].branch_excludes = ["*"];
+  Object.assign(f.snapshot.productionTriggers[0], { branch_excludes: ["*"], build_command: "exit 1", deploy_command: "exit 1" });
   f.snapshot.productionTriggers[0].repo_connection.deleted_on = null;
   assert.equal(validateProductionWriterFence({ triggers: f.snapshot.productionTriggers,
     builds: [], environments: f.snapshot.environments }, policy).mutation, false);
@@ -228,10 +228,10 @@ test("normalization accepts null tombstones but rejects deleted repository conne
 function inertFixture() {
   const f = fixture(), plan = createTransitionPlan(f), policy = fencePolicy(plan);
   policy.disposition = "retained-inert-builds";
-  for (const trigger of f.snapshot.productionTriggers) {
+  for (const [index, trigger] of f.snapshot.productionTriggers.entries()) {
     trigger.build_command = "exit 1";
     trigger.deploy_command = "exit 1";
-    trigger.branch_excludes = ["*"];
+    trigger.branch_excludes = index === 0 ? ["*"] : ["main", "*"];
     trigger.build_token_uuid = id(3);
   }
   f.snapshot.environments[id(1)] = {
@@ -274,7 +274,7 @@ for (const role of [0, 1]) {
   test(`inert ${role} rejects branch-only pause and caching`, () => {
     const { input, policy, bind } = inertFixture(); input.triggers[role].branch_excludes = ["main"]; bind();
     assert.throws(() => validateProductionWriterFence(input, policy));
-    input.triggers[role].branch_excludes = ["*"]; input.triggers[role].build_caching_enabled = true; bind();
+    input.triggers[role].branch_excludes = role === 0 ? ["*"] : ["main", "*"]; input.triggers[role].build_caching_enabled = true; bind();
     assert.throws(() => validateProductionWriterFence(input, policy), /executable/);
   });
   test(`inert ${role} requires exact nonsecret dependency skip`, () => {
@@ -320,4 +320,34 @@ test("HTTP read-only adapter retains the explicit inert disposition", async () =
     return new Response(JSON.stringify({ success: true, errors: [], result }));
   };
   assert.equal((await assertProductionPromotionWriterFence({ environment, fetcher })).disposition, "retained-inert-builds");
+});
+
+test("normal transition emits the full preserved trigger payload and seals both main commands", () => {
+  const f = fixture(), plan = createTransitionPlan(f), original = clone(f.snapshot.productionTriggers[0]);
+  const op = nextTransitionOperation({ plan, snapshot: f.snapshot, now });
+  assert.deepEqual(op.body, productionFencePatchBody(original));
+  assert.equal(op.body.external_script_id, original.external_script_id);
+  assert.equal(op.body.repo_connection_uuid, original.repo_connection.repo_connection_uuid);
+  assert.equal(op.body.build_token_uuid, original.build_token_uuid);
+  assert.equal(op.body.build_command, "exit 1");assert.equal(op.body.deploy_command, "exit 1");
+  assert.equal(Object.keys(op.body).length, 12);assert.equal(op.body.trigger_uuid, undefined);
+  assert.deepEqual(f.snapshot.productionTriggers[0], original);
+});
+test("branch-only pause cannot complete a normal transition or authorize a writer fence", async () => {
+  const f = fixture(), plan = createTransitionPlan(f), records = [];
+  await applyTransitionStep({ plan, snapshot: f.snapshot, records, now, append: async () => {}, execute: async () => {} });
+  f.snapshot.productionTriggers[0].branch_excludes = ["*"];
+  f.snapshot.capturedAt = new Date(now + 1000).toISOString();
+  await assert.rejects(applyTransitionStep({ plan, snapshot: f.snapshot, records, now: now + 1000,
+    append: async () => assert.fail("partial fence observed"), execute: async () => assert.fail("partial fence retried") }), /drift/);
+  const policy = fencePolicy(plan);
+  policy.productionTriggerDigest = transitionDigest(normalizeTransitionTrigger(f.snapshot.productionTriggers[0]));
+  assert.throws(() => validateProductionWriterFence({ triggers: f.snapshot.productionTriggers, builds: [], environments: f.snapshot.environments }, policy), /executable/);
+});
+test("normal transition requires dependency skip and rejects production startup environment variables", () => {
+  const f = fixture();delete f.snapshot.environments[id(1)].SKIP_DEPENDENCY_INSTALL;
+  assert.throws(() => createTransitionPlan(f), /environment/);
+  f.snapshot.environments[id(1)].SKIP_DEPENDENCY_INSTALL = { is_secret: false, value: "1" };
+  f.snapshot.environments[id(1)].BASH_ENV = { is_secret: true, value: null };
+  assert.throws(() => createTransitionPlan(f), /environment/);
 });
