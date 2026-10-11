@@ -1150,6 +1150,13 @@ async function command(program, args, options = {}) {
   }
 }
 
+// Selected release dependencies are application inputs, never executable tooling
+// with deployment credentials. This path is anchored to the reviewed controller
+// module even while command cwd and bundle entrypoints point to selected source.
+export async function executeTrustedWrangler(args, options = {}, execute = command) {
+  return execute(resolve(controllerRoot, "node_modules/.bin/wrangler"), args, options);
+}
+
 async function git(...args) {
   return (await command("git", args)).stdout.trim();
 }
@@ -1158,7 +1165,7 @@ async function assertToolchain(contract) {
   const packageJson = await readJson(resolve(root, "package.json"));
   const packageLock = await readJson(resolve(root, "package-lock.json"));
   const wranglerPackage = await readJson(
-    resolve(root, "node_modules/wrangler/package.json"),
+    resolve(controllerRoot, "node_modules/wrangler/package.json"),
   );
   const node = process.versions.node;
   const npm =
@@ -1309,7 +1316,7 @@ async function bundleWorkers(configPaths) {
     const bundles = [];
     for (const [index, configPath] of configPaths.entries()) {
       const output = resolve(outputRoot, String(index));
-      await command(resolve(root, "node_modules/.bin/wrangler"), [
+      await executeTrustedWrangler([
         "deploy",
         "--dry-run",
         "--strict",
@@ -1442,7 +1449,7 @@ async function assertCurrentMain(contract, sourceSha) {
 }
 
 async function wranglerJson(configPath, args) {
-  const { stdout } = await command(resolve(root, "node_modules/.bin/wrangler"), [
+  const { stdout } = await executeTrustedWrangler([
     ...args,
     "--config",
     configPath,
@@ -1815,7 +1822,7 @@ async function readLiveControlPlane(worker, accountId) {
       cloudflareResult(accountId, `${service}/routes?show_zonename=true`),
       cloudflareResult(
         accountId,
-        `/workers/domains/records?page=0&per_page=100&service=${workerName}&environment=${environment}`,
+        `/workers/domains?service=${workerName}&environment=${environment}`,
       ),
       cloudflareResult(accountId, `${service}/subdomain`),
       cloudflareResult(accountId, service),
@@ -2068,8 +2075,7 @@ async function deployWorker(
   } = {},
 ) {
   const message = `atrinik-delivery-v1 source=${sourceSha} deploy=${plan.deploy} migration=${plan.migrationDigest} horizon=${plan.migrations.length} control=${controls[worker.order - 1]} role=${worker.role} phase=${phase}`;
-  await command(
-    resolve(root, "node_modules/.bin/wrangler"),
+  await executeTrustedWrangler(
     wranglerDeployArguments({
       configPath,
       sourceSha,

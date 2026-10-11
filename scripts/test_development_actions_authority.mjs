@@ -73,7 +73,7 @@ test("local and fork attempts fail before GitHub or provider reads", async () =>
   assert.equal(called, false);
 });
 
-test("each DEV fence refreshes main and refuses superseded source before provider authority", async () => {
+test("each DEV fence refreshes main after provider readback and refuses superseded source", async () => {
   const { environment, event, evidence } = fixture();
   environment.GITHUB_TOKEN = "test-only";
   let writerChecks = 0;
@@ -96,5 +96,25 @@ test("each DEV fence refreshes main and refuses superseded source before provide
   await authority.fence(); assert.equal(writerChecks, 2);
   evidence.branch.commit.sha = "b".repeat(40);
   await assert.rejects(authority.fence(), /newest-main/u);
-  assert.equal(writerChecks, 2);
+  assert.equal(writerChecks, 3);
+});
+
+test("slow provider writer readback cannot carry DEV authority past its deadline", async () => {
+  const { environment, event, evidence } = fixture();
+  environment.GITHUB_TOKEN = "test-only";
+  let clock = Date.parse(evidence.run.created_at) + 59 * 60_000 + 59_000;
+  const fetcher = async (url) => {
+    const path = new URL(url).pathname.replace(`/repos/${repository.full_name}`, "");
+    const routes = {
+      "": evidence.repo, "/branches/main": evidence.branch, "/actions/runs/12": evidence.run,
+      "/actions/runs/11": evidence.check, "/actions/runs/11/jobs": { total_count: 1, jobs: evidence.jobs },
+      "/actions/runs/12/attempts/1/jobs": { total_count: 1, jobs: evidence.deployJobs },
+      "/actions/workflows/deploy-development.yml/runs": { total_count: 1, workflow_runs: evidence.activeRuns },
+      "/environments/development": evidence.protection,
+    };
+    return Response.json(routes[path]);
+  };
+  await assert.rejects(createDevelopmentAuthority({ environment, checkoutHead: sha, dirty: false,
+    readEvent: async () => JSON.stringify(event), fetcher, now: () => clock,
+    writerFence: async () => { clock += 2000; } }), /freshness/u);
 });

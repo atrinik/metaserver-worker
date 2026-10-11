@@ -2,6 +2,12 @@
 import { createHash } from "node:crypto";
 
 const roles = ["core", "publisher", "rendezvous"];
+const cohortWorkerNames = Object.freeze({
+  production: ["atrinik-metaserver", "atrinik-metaserver-publisher", "atrinik-metaserver-rendezvous"],
+  development: ["atrinik-metaserver-development", "atrinik-metaserver-development-publisher", "atrinik-metaserver-development-rendezvous"],
+  // These are the governed disposable canary identities in workers-builds-review.json.
+  review: ["atrinik-metaserver-review-canary", "atrinik-metaserver-publisher-review-canary", "atrinik-metaserver-rendezvous-review-canary"],
+});
 const originBindings = ["CLASSIC_DIRECTORY_PUBLIC_ORIGIN", "GAME_DIRECTORY_PUBLIC_ORIGIN",
   "PUBLISH_HOSTNAME", "RENDEZVOUS_HOSTNAME"];
 const resourceTypes = new Set(["d1", "r2", "durable-object", "analytics", "rate-limit"]);
@@ -37,7 +43,7 @@ function originHost(binding, value) {
 // would let a configuration escape the disjoint-resource policy.
 export function projectWorkerResources({ name, role, settings, routes, domains }) {
   if (!Array.isArray(settings?.bindings) || !Array.isArray(routes) || !Array.isArray(domains) ||
-      routes.length !== 0) fail("complete settings and domain-only routes required");
+      routes.length !== 0 || domains.some((value) => value.service !== name || value.environment !== "production")) fail("complete settings and domain-only routes required");
   const resources = [], services = [], origins = [], secrets = [];
   if (!unique(settings.bindings.map((value) => value.name))) fail("duplicate live binding");
   for (const binding of settings.bindings) {
@@ -84,7 +90,7 @@ export function validateResourcePolicy(policy, target, accountId) {
     if (!["production", "development", "review"].includes(cohort.environment) ||
         !/^[0-9a-f]{32}$/u.test(cohort.accountId ?? "") || !Array.isArray(cohort.workers) ||
         cohort.workers.length !== 3 || !same(cohort.workers.map((worker) => worker.role), roles) ||
-        !unique(cohort.workers.map((worker) => worker.name))) fail("cohort identity invalid");
+        !same(cohort.workers.map((worker) => worker.name), cohortWorkerNames[cohort.environment])) fail("cohort identity invalid");
     for (const worker of cohort.workers) {
       exactKeys(worker, ["name", "role", "resources", "services", "origins", "routes", "secrets"]);
       if (!nonempty(worker.name) || !/^[a-z0-9][a-z0-9-]*$/u.test(worker.name) ||
@@ -197,7 +203,7 @@ export async function assertResourcePolicyLive(policy, { target, accountId, read
 export function resourcePolicyReader(environment, fetcher = fetch) {
   const token = environment.ATRINIK_DELIVERY_RESOURCE_READ_TOKEN;
   if (!token) fail("read-only resource inventory token missing");
-  const get = async (accountId, path) => {
+  const get = async (accountId, path, { filteredDomains = false } = {}) => {
     const response = await fetcher(`https://api.cloudflare.com/client/v4/accounts/${accountId}${path}`, {
       method: "GET", redirect: "error", signal: AbortSignal.timeout(15_000),
       headers: { Authorization: `Bearer ${token}` },
@@ -214,7 +220,15 @@ export function resourcePolicyReader(environment, fetcher = fetch) {
     }
     const body = JSON.parse(Buffer.concat(chunks).toString("utf8"));
     if (body.success !== true || body.result === undefined) fail("resource response incomplete");
-    if (body.result_info?.total_pages > 1 || body.result_info?.total_count > 100)
+    if (filteredDomains) {
+      // Public domain-list metadata distinguishes the filtered-service count
+      // from global account total_count/total_pages. The latter are not pages
+      // of this filtered inventory and must not be interpreted as truncation.
+      if (!Array.isArray(body.result) || body.result.length > 100 ||
+          !Number.isSafeInteger(body.result_info?.count) ||
+          body.result_info.count !== body.result.length)
+        fail("filtered domain inventory incomplete");
+    } else if (body.result_info?.total_pages > 1 || body.result_info?.total_count > 100)
       fail("resource response pagination exceeds bound");
     return body.result;
   };
@@ -223,7 +237,7 @@ export function resourcePolicyReader(environment, fetcher = fetch) {
     const [settings, routes, domains] = await Promise.all([
       get(accountId, `/workers/scripts/${worker}/settings`),
       get(accountId, `/workers/services/${worker}/environments/production/routes?show_zonename=true`),
-      get(accountId, `/workers/domains/records?page=0&per_page=100&service=${worker}&environment=production`),
+      get(accountId, `/workers/domains?service=${worker}&environment=production`, { filteredDomains: true }),
     ]);
     return { settings, routes, domains };
   };

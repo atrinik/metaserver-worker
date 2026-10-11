@@ -19,6 +19,7 @@ import {
   validateDirectoryReconciliationProof,
   deployStagedWithRecoveryIntent,
   executeOrderedStages,
+  executeTrustedWrangler,
   orchestrateDelivery,
   materializeProtectedInputs,
   parseLiveVersionMessage,
@@ -1896,4 +1897,22 @@ test("promotion credentials reach only the independently authorized reconciliati
 test("ordinary local production invocation fails before selected source or provider access", async () => {
   await assert.rejects(runDelivery(), /explicit selected source checkout/u);
   await assert.rejects(runDelivery({ target: "review" }), /invalid delivery invocation/u);
+});
+
+
+test("authenticated Wrangler and bundle tooling stay anchored to the trusted controller", async () => {
+  const observed = [];
+  const selected = "/untrusted-selected-release";
+  const execute = async (program, args, options) => {
+    assert.notEqual(program, `${selected}/node_modules/.bin/wrangler`);
+    observed.push({ program, args, options });
+    return { stdout: "{}" };
+  };
+  await executeTrustedWrangler(["deploy", "--dry-run"], { cwd: selected }, execute);
+  await executeTrustedWrangler(["versions", "view", "existing"],
+    { cwd: selected, environmentPolicy: "deployment" }, execute);
+  await executeTrustedWrangler(["deploy", "--strict"],
+    { cwd: selected, environmentPolicy: "deployment" }, execute);
+  assert.equal(observed.length, 3);
+  assert.ok(observed.every((call) => call.program === resolve(root, "node_modules/.bin/wrangler")));
 });

@@ -92,6 +92,8 @@ export async function createDevelopmentAuthority({ environment = process.env, ch
   const event = JSON.parse(await readEvent(environment.GITHUB_EVENT_PATH));
   const sourceSha = validateDevelopmentContext(environment, event, checkoutHead, dirty);
   const fence = async () => {
+    // The final GitHub read follows all potentially slow provider sweeps.
+    await writerFence(environment);
     const github = (path) => requestJson(path, environment, fetcher);
     const [repo, branch, run, check, jobs, deployJobs, activeRuns, protection] = await Promise.all([
       github(""), github("/branches/main"), github(`/actions/runs/${environment.GITHUB_RUN_ID}`),
@@ -101,10 +103,10 @@ export async function createDevelopmentAuthority({ environment = process.env, ch
       github("/actions/workflows/deploy-development.yml/runs?status=in_progress&per_page=100"),
       github("/environments/development"),
     ]);
-    validateDevelopmentEvidence(environment, event, { repo, branch, run, check,
+    const evidence = { repo, branch, run, check,
       jobs: completePage(jobs, "jobs"), deployJobs: completePage(deployJobs, "jobs"),
-      activeRuns: completePage(activeRuns, "workflow_runs"), protection }, now());
-    await writerFence(environment);
+      activeRuns: completePage(activeRuns, "workflow_runs"), protection };
+    validateDevelopmentEvidence(environment, event, evidence, now());
   };
   await fence();
   return { sourceSha, executionId: environment.GITHUB_RUN_ID, fence,

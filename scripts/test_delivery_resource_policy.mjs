@@ -8,9 +8,9 @@ const accountId = "a".repeat(32);
 function fixture() {
   const observed = new Map();
   const cohorts = ["production", "development"].map((environment, coordinate) => {
-    const core = `core-${environment}`;
+    const core = environment === "production" ? "atrinik-metaserver" : "atrinik-metaserver-development";
     return { environment, accountId, workers: ["core", "publisher", "rendezvous"].map((role, index) => {
-      const name = index ? `${role}-${environment}` : core;
+      const name = index ? `${core}-${role}` : core;
       const bindings = index === 0 ? [
         { type: "d1", name: "DB", id: `database-${environment}` },
         { type: "r2_bucket", name: "DIRECTORY", bucket_name: `directory-${environment}` },
@@ -24,7 +24,7 @@ function fixture() {
       { type: "plain_text", name: role === "publisher" ? "PUBLISH_HOSTNAME" : "RENDEZVOUS_HOSTNAME",
         text: `${role}.${environment}.invalid` }];
       bindings.push({ type: "ratelimit", name: "RATE", namespace_id: String(1000 + coordinate * 10 + index) });
-      const live = { settings: { bindings }, routes: [], domains: index ? [{ hostname: `${role}.${environment}.invalid` }] : [] };
+      const live = { settings: { bindings }, routes: [], domains: index ? [{ hostname: `${role}.${environment}.invalid`, service: name, environment: "production" }] : [] };
       observed.set(name, live);
       return projectWorkerResources({ name, role, ...live });
     }) };
@@ -52,7 +52,7 @@ test("policy binds all resource types and desired configurations to their existi
   const projected = policy.cohorts[1].workers[0].resources;
   assert.deepEqual(projected.find((v) => v.type === "durable-object"), {
     binding: "ROOM", type: "durable-object", id: "namespace-development",
-    owner: "core-development", className: "Room",
+    owner: "atrinik-metaserver-development", className: "Room",
   });
   const reorder = { cohorts: policy.cohorts, schema: policy.schema };
   assert.equal(resourcePolicyDigest(policy), resourcePolicyDigest(reorder));
@@ -74,8 +74,8 @@ test("cross-cohort sharing rejects D1, R2, DO, analytics, rate limit and domain 
 test("same-cohort purpose sharing and cross-cohort owner/service authority fail closed", () => {
   for (const change of [
     (policy) => { const core = policy.cohorts[1].workers[0]; core.resources.push({ ...core.resources.find((v) => v.type === "r2"), binding: "PRIVATE" }); },
-    (policy) => { policy.cohorts[1].workers[0].resources.find((v) => v.type === "durable-object").owner = "core-production"; },
-    (policy) => { policy.cohorts[1].workers[1].services[0].service = "core-production"; },
+    (policy) => { policy.cohorts[1].workers[0].resources.find((v) => v.type === "durable-object").owner = "atrinik-metaserver"; },
+    (policy) => { policy.cohorts[1].workers[1].services[0].service = "atrinik-metaserver"; },
     (policy) => { policy.cohorts[1].workers[1].resources.push({ binding: "HIDDEN", type: "d1", id: "another" }); },
   ]) {
     const { policy } = fixture(); change(policy);
@@ -105,7 +105,7 @@ test("fresh observations are mandatory and policy changes cannot authorize adopt
   assert.equal(reads, 6);
   await assertResourcePolicyLive(policy, { target: "development", accountId, readWorker });
   assert.equal(reads, 12);
-  observed.get("core-production").settings.bindings.find((v) => v.type === "r2_bucket").bucket_name = "directory-development";
+  observed.get("atrinik-metaserver").settings.bindings.find((v) => v.type === "r2_bucket").bucket_name = "directory-development";
   await assert.rejects(assertResourcePolicyLive(policy, { target: "development", accountId, readWorker }), /provider.*drift/u);
   const next = fixture();
   next.policy.cohorts[1].workers[0].resources.find((v) => v.type === "d1").id = "new-database";
@@ -116,10 +116,10 @@ test("fresh observations are mandatory and policy changes cannot authorize adopt
 test("live DO namespace replacement and previously ignored binding authority fail closed", async () => {
   for (const change of [
     (settings) => { settings.bindings.find((v) => v.type === "durable_object_namespace").namespace_id = "new-namespace"; },
-    (settings) => { settings.bindings.find((v) => v.type === "durable_object_namespace").script_name = "core-production"; },
+    (settings) => { settings.bindings.find((v) => v.type === "durable_object_namespace").script_name = "atrinik-metaserver"; },
     (settings) => { settings.bindings.push({ type: "kv_namespace", name: "UNREVIEWED", namespace_id: "hidden" }); },
   ]) {
-    const { policy, observed } = fixture(); change(observed.get("core-development").settings);
+    const { policy, observed } = fixture(); change(observed.get("atrinik-metaserver-development").settings);
     await assert.rejects(assertResourcePolicyLive(policy, { target: "development", accountId,
       readWorker: async (_account, name) => observed.get(name) }));
   }
@@ -128,7 +128,7 @@ test("live DO namespace replacement and previously ignored binding authority fai
 test("target caller secrets are forbidden while unchanged legacy non-target names are observed", async () => {
   const { policy, observed } = fixture();
   policy.cohorts[0].workers[1].secrets.push("SOURCE_TAG_KEY_CURRENT");
-  observed.get("publisher-production").settings.bindings.push({ type: "secret_text", name: "SOURCE_TAG_KEY_CURRENT" });
+  observed.get("atrinik-metaserver-publisher").settings.bindings.push({ type: "secret_text", name: "SOURCE_TAG_KEY_CURRENT" });
   await assertResourcePolicyLive(policy, { target: "development", accountId,
     readWorker: async (_account, name) => observed.get(name) });
   assert.throws(() => validateResourcePolicy(policy, "production", accountId), /callers retain/u);
@@ -142,13 +142,42 @@ test("resource observer has GET-only bounded authority and rejects incomplete in
   const reader = resourcePolicyReader({ ATRINIK_DELIVERY_RESOURCE_READ_TOKEN: "read-only" }, async (url, options) => {
     assert.equal(options.method, "GET"); calls += 1;
     const path = new URL(url).pathname;
-    const live = observed.get("core-development");
-    return Response.json({ success: true, result: path.endsWith("/settings") ? live.settings : [], result_info: { total_pages: 1 } });
+    const live = observed.get("atrinik-metaserver-development");
+    return Response.json({ success: true, result: path.endsWith("/settings") ? live.settings : [], result_info: { total_pages: 1, count: path.endsWith("/settings") ? undefined : 0 } });
   });
-  assert.deepEqual(await reader(accountId, "core-development"), observed.get("core-development"));
+  assert.deepEqual(await reader(accountId, "atrinik-metaserver-development"), observed.get("atrinik-metaserver-development"));
   assert.equal(calls, 3);
   const incomplete = resourcePolicyReader({ ATRINIK_DELIVERY_RESOURCE_READ_TOKEN: "read-only" },
     async () => Response.json({ success: true, result: [], result_info: { total_pages: 2 } }));
-  await assert.rejects(incomplete(accountId, "core-development"), /pagination/u);
+  await assert.rejects(incomplete(accountId, "atrinik-metaserver-development"), /pagination/u);
   assert.throws(() => resourcePolicyReader({}), /token missing/u);
+});
+
+
+test("non-target production and development identities cannot be replaced by clean decoys", () => {
+  for (const target of ["production", "development"]) {
+    const { policy } = fixture();
+    const decoy = policy.cohorts.find((cohort) => cohort.environment !== target);
+    decoy.workers[0].name = "clean-decoy-core";
+    assert.throws(() => validateResourcePolicy(policy, target, accountId), /cohort identity/u);
+  }
+});
+
+test("public domains filtering proves ownership and uses filtered count rather than global pages", async () => {
+  const { observed } = fixture();
+  const worker = "atrinik-metaserver-development-publisher";
+  const live = observed.get(worker);
+  const reader = resourcePolicyReader({ ATRINIK_DELIVERY_RESOURCE_READ_TOKEN: "read-only" }, async (url) => {
+    const parsed = new URL(url);
+    if (parsed.pathname.endsWith("/domains")) {
+      assert.equal(parsed.searchParams.get("service"), worker);
+      assert.equal(parsed.searchParams.get("environment"), "production");
+      return Response.json({ success: true, result: live.domains,
+        result_info: { count: 1, total_pages: 100, total_count: 2000 } });
+    }
+    return Response.json({ success: true, result: parsed.pathname.endsWith("/settings") ? live.settings : [] });
+  });
+  assert.deepEqual(await reader(accountId, worker), live);
+  assert.throws(() => projectWorkerResources({ name: worker, role: "publisher", ...live,
+    domains: [{ ...live.domains[0], service: "atrinik-metaserver-publisher" }] }), /domain-only/u);
 });
