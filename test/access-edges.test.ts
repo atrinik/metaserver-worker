@@ -37,7 +37,7 @@ describe("private access edge ingress",()=>{
   it("stops a blind challenge at the circuit breaker before shared ingress or core dispatch", async () => {
     const fetch = vi.fn(async () => new Response(null, { status: 500 }));
     const configured = environment(fetch);
-    const disabled = { ...configured.env, ...admissionKeys, RENDEZVOUS_ENABLED: "disabled" } as RendezvousEnv;
+    const disabled = { ...configured.env, ...admissionKeys, RENDEZVOUS_ENABLED: "disabled" } as unknown as RendezvousEnv;
     const response = await rendezvousWorker.fetch(new Request(
       `https://${authority}/v1/rendezvous/challenge/classic/${vector.serverId}`, { method: "POST",
         headers: { "Content-Type": "application/json" },
