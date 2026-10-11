@@ -1,7 +1,8 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import { spawnSync } from "node:child_process";
-import { readFile, rm, stat } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, stat, symlink, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
 import { resolve } from "node:path";
 import test from "node:test";
 import {
@@ -52,6 +53,7 @@ import {
 } from "./production-delivery.mjs";
 
 import { directoryFailureLine, markDirectoryFailure, parseDirectoryFailure } from "./directory-reconciliation-diagnostics.mjs";
+import { directoryInterfacePath, incompatibleDirectoryInterface, readDirectoryInterface } from "./directory-reconciliation-interface.mjs";
 import { developmentFixture, developmentWorkerNames } from "./delivery-targets.mjs";
 import { invokeDirectoryProxy, validateDirectoryProxyInput } from "./production-directory-reconciliation.mjs";
 
@@ -1750,6 +1752,10 @@ test("directory proxy bounds initialization, failure, receipts and always dispos
 });
 
 test("real SDK named binding RPC preserves the exact envelope and bounded acceptance", async () => {
+  const interfaceBytes = await readFile(resolve(root, directoryInterfacePath));
+  const selectedInterface = JSON.parse(interfaceBytes);
+  assert.equal((await readDirectoryInterface(root, { committed: false })).digest,
+    createHash("sha256").update(interfaceBytes).digest("hex"));
   const { build } = await import("esbuild");
   const { Miniflare, convertV4MiniflareOptions } = await import("miniflare");
   const bundled = await build({ stdin: { resolveDir: root, sourcefile: "directory-rpc-fixture.ts",
@@ -1794,7 +1800,7 @@ test("real SDK named binding RPC preserves the exact envelope and bounded accept
   try {
     const bindings = await mf.getBindings("directory-proxy-fixture");
     const binding = bindings.DirectoryReconciliation;
-    const url = "https://internal.atrinik.invalid/v1/directory-reconciliation";
+    const url = selectedInterface.request.url;
     // Pin the original defect at the actual SDK boundary, not a fetch mock:
     // native Node Request is stringified by the SDK's separate undici realm.
     await assert.rejects(async () => binding.fetch(new globalThis.Request(url, { method: "POST" })),
@@ -1807,7 +1813,7 @@ test("real SDK named binding RPC preserves the exact envelope and bounded accept
     await http.body.cancel();
     const before = await binding.invocationCount();
     for (const args of [[undefined], ["classic-v3"], [{ url }]]) {
-      const rejected = await binding.reconcile(...args);
+      const rejected = await binding[selectedInterface.method](...args);
       assert.equal(rejected.status, 400);
       await rejected.body.cancel();
     }
@@ -1819,7 +1825,7 @@ test("real SDK named binding RPC preserves the exact envelope and bounded accept
       env: { DIRECTORY_RECONCILIATION: service }, dispose: async () => {},
     });
     assert.deepEqual(await invokeDirectoryProxy({ ...options, createProxy: proxy(binding) }),
-      { url, method: "POST", headers: [], bodyIsNull: true });
+      { url, method: selectedInterface.request.method, headers: [], bodyIsNull: true });
     await assert.rejects(invokeDirectoryProxy({ ...options,
       createProxy: proxy(bindings.Oversized) }), /receipt too large/u);
     let authorizations = 0;
@@ -1978,6 +1984,95 @@ test("promotion credentials reach only the independently authorized reconciliati
     ATRINIK_PRODUCTION_WRITER_FENCE_POLICY: "policy", ATRINIK_DELIVERY_ENVIRONMENT: "production",
     ATRINIK_DELIVERY_SOURCE_ROOT: "/selected",
   });
+});
+
+test("selected Git source must declare the supported interface before any DEV or PROD provider access", async () => {
+  const selected = await mkdtemp(resolve(tmpdir(), "atrinik-directory-interface-test-"));
+  const path = resolve(selected, directoryInterfacePath);
+  const canonical = await readFile(resolve(root, directoryInterfacePath), "utf8");
+  const runGit = (...args) => {
+    const result = spawnSync("git", ["-C", selected, "-c", "user.name=Interface Fixture",
+      "-c", "user.email=fixture@example.invalid", "-c", "commit.gpgsign=false", ...args],
+      { encoding: "utf8", env: { PATH: process.env.PATH, HOME: selected } });
+    assert.ifError(result.error);
+    assert.equal(result.status, 0, result.stderr);
+    return result.stdout.trim();
+  };
+  const commit = () => { runGit("add", "-A"); runGit("commit", "--allow-empty", "-qm", "fixture"); };
+  const originalFetch = globalThis.fetch;
+  const originalEnvironment = process.env.ATRINIK_DELIVERY_ENVIRONMENT;
+  const originalSourceRoot = process.env.ATRINIK_DELIVERY_SOURCE_ROOT;
+  let providerCalls = 0;
+  globalThis.fetch = async () => { providerCalls++; throw new Error("provider must remain untouched"); };
+  try {
+    runGit("init", "-q");
+    await mkdir(resolve(selected, "deployment"));
+    commit();
+    const rejectBoth = async () => {
+      for (const target of ["development", "production"]) {
+        await assert.rejects(runDelivery({ target, sourceRoot: selected }),
+          { message: incompatibleDirectoryInterface });
+      }
+      assert.equal(providerCalls, 0);
+    };
+    await rejectBoth(); // Historical fetch-only tag: no declaration.
+    const incompatible = [
+      { schemaVersion: 2 }, { transport: "service-binding-http" }, { method: "fetch" },
+      { argumentCount: 1 }, { receipt: { schema: "future-receipt" } }, { extra: "unsupported" },
+    ];
+    for (const delta of incompatible) {
+      await writeFile(path, JSON.stringify({ ...JSON.parse(canonical), ...delta }, null, 2) + "\n");
+      commit();
+      await rejectBoth();
+    }
+    await writeFile(path, canonical);
+    await rejectBoth(); // Uncommitted local data cannot make an old tag eligible.
+    commit();
+    const evidence = await readDirectoryInterface(selected);
+    assert.equal(evidence.sourceSha, runGit("rev-parse", "HEAD"));
+    assert.equal(evidence.digest, createHash("sha256").update(canonical).digest("hex"));
+    // Compatible selected tags may lag main; the exact selected Git coordinate
+    // controls this source check, not a latest-tag policy.
+    await writeFile(resolve(selected, "unrelated.txt"), "later commit\n"); commit();
+    runGit("checkout", "--detach", "-q", evidence.sourceSha);
+    assert.deepEqual(await readDirectoryInterface(selected), evidence);
+    await writeFile(path, canonical + " ");
+    await rejectBoth();
+    await rm(path);
+    await writeFile(resolve(selected, "contract-target.json"), canonical);
+    await symlink("../contract-target.json", path);
+    commit();
+    await rejectBoth();
+  } finally {
+    globalThis.fetch = originalFetch;
+    if (originalEnvironment === undefined) delete process.env.ATRINIK_DELIVERY_ENVIRONMENT;
+    else process.env.ATRINIK_DELIVERY_ENVIRONMENT = originalEnvironment;
+    if (originalSourceRoot === undefined) delete process.env.ATRINIK_DELIVERY_SOURCE_ROOT;
+    else process.env.ATRINIK_DELIVERY_SOURCE_ROOT = originalSourceRoot;
+    await rm(selected, { recursive: true, force: true });
+  }
+});
+
+test("an RPC response arriving after timeout is cancelled without accepting its receipt", async () => {
+  let finish;
+  let authorizations = 0;
+  let disposed = false;
+  let cancelled = false;
+  await assert.rejects(invokeDirectoryProxy({ configPath: "/fixture/proxy.json",
+    config: directoryReconciliationProxyConfiguration(productionConfigs()[0]),
+    environment: proxyEnvironment(), timeoutMs: 5,
+    authorize: async () => { authorizations++; },
+    createProxy: async () => ({ dispose: async () => { disposed = true; },
+      env: { DIRECTORY_RECONCILIATION: { reconcile: () => new Promise(resolveResponse => {
+        finish = resolveResponse;
+      }) } } }),
+  }), /deadline exceeded/u);
+  assert.equal(disposed, true);
+  finish(new Response(new ReadableStream({ cancel() { cancelled = true; } }),
+    { headers: { "Content-Type": "application/json", "Cache-Control": "no-store" } }));
+  await new Promise(resolveNext => setImmediate(resolveNext));
+  assert.equal(cancelled, true);
+  assert.equal(authorizations, 2);
 });
 
 test("ordinary local production invocation fails before selected source or provider access", async () => {

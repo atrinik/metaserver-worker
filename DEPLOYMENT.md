@@ -1148,6 +1148,11 @@ Migration 0013 leaves `classic-v3` and `game-v2` publication checkpoints at
 generation zero with no new aliases. The explicit pre-canary reconciliation
 stage builds valid empty cohorts even before the first cron or signed publication;
 it also verifies or refreshes the cohort for later deliveries. The private
+interface is declared in `deployment/directory-reconciliation-interface.json`.
+The controller requires its exact supported regular blob in the selected Git
+commit before provider access and binds its digest into the deployable plan.
+Compatible older tags may lag main; pre-interface fetch-only tags are rejected
+before upload, with no transport fallback. The private
 entrypoint exposes the zero-argument `reconcile()` Service Binding RPC, which
 constructs an empty `POST` inside the Worker. Its fetch handler accepts only that
 empty `POST` to

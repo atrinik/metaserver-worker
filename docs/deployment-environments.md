@@ -265,6 +265,15 @@ unused development-tool pins do not override the controller toolchain. The
 resolved deployable digest binds both selected-source and controller lockfile
 digests.
 
+Selected-source eligibility also requires the canonical checked-in
+`deployment/directory-reconciliation-interface.json` contract for the
+zero-argument RPC and bounded `directory-reconciliation-v1` receipt. Before
+provider access, the controller compares the regular file with the exact blob
+in the selected Git commit and rejects a missing or unsupported interface.
+Its digest is part of the deployable plan. A compatible older tag can still be
+promoted while main is ahead; a historical fetch-only tag cannot be uploaded
+by this controller. Uncommitted compatibility declarations grant no eligibility.
+
 Both environments validate exact source/configuration/migration identity,
 read back the remote ledger and resolve desired plus disabled bundles before
 mutation. If the complete deployable digest is already active, retain the

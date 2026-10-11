@@ -67,6 +67,11 @@
   incident verification; never reactivate it as routine policy. Stop before
   promotion until the owner reviews and approves the exact tag. Both environment
   dry runs must retain zero remote mutation paths.
+  The selected Git tree must contain the supported canonical
+  `deployment/directory-reconciliation-interface.json` regular blob before any
+  provider access. Bind its digest into the deployable plan. Older compatible
+  tags may lag main; historical fetch-only tags and uncommitted declarations
+  are ineligible. Never fall back to Node HTTP transport or loosen its envelope.
 - Both GitHub execution environments require protected
   `ATRINIK_DELIVERY_RESOURCE_POLICY` and
   `ATRINIK_DELIVERY_RESOURCE_READ_TOKEN`. The bounded private policy pins exact
