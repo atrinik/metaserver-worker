@@ -23,6 +23,7 @@ function fixture() {
         entrypoint: role === "publisher" ? "PublisherCoordinator" : "RendezvousCoordinator" },
       { type: "plain_text", name: role === "publisher" ? "PUBLISH_HOSTNAME" : "RENDEZVOUS_HOSTNAME",
         text: `${role}.${environment}.invalid` }];
+      bindings.push({ type: "plain_text", name: "PUBLISH_ENABLED", text: "false" });
       bindings.push({ type: "ratelimit", name: "RATE", namespace_id: String(1000 + coordinate * 10 + index) });
       const live = { settings: { bindings }, routes: [], domains: index ? [{ hostname: `${role}.${environment}.invalid`, service: name, environment: "production" }] : [] };
       observed.set(name, live);
@@ -39,7 +40,7 @@ function fixture() {
       .map((v) => ({ name: v.binding, class_name: v.className })) },
     ratelimits: worker.resources.filter((v) => v.type === "rate-limit").map((v) => ({ name: v.binding, namespace_id: v.id })),
     services: worker.services,
-    vars: Object.fromEntries(worker.origins.map((v) => [v.binding, v.value])),
+    vars: Object.fromEntries(worker.variables.map((v) => [v.binding, v.value])),
     secrets: { required: worker.secrets }, routes: worker.routes.map((pattern) => ({ pattern, custom_domain: true })),
   }));
   return { policy, observed, configs };
@@ -180,4 +181,36 @@ test("public domains filtering proves ownership and uses filtered count rather t
   assert.deepEqual(await reader(accountId, worker), live);
   assert.throws(() => projectWorkerResources({ name: worker, role: "publisher", ...live,
     domains: [{ ...live.domains[0], service: "atrinik-metaserver-publisher" }] }), /domain-only/u);
+});
+
+for (const target of ["development", "production"]) {
+  for (const change of ["modify", "add", "remove"]) test(`${target} rejects non-target plaintext ${change}`, async () => {
+    const { policy, observed } = fixture();
+    const other = policy.cohorts.find(c => c.environment !== target);
+    const bindings = observed.get(other.workers[0].name).settings.bindings;
+    if (change === "modify") bindings.find(b => b.name === "PUBLISH_ENABLED").text = "true";
+    if (change === "add") bindings.push({ type: "plain_text", name: "SOURCE_TAG_KEY_ID_CURRENT", text: "unexpected" });
+    if (change === "remove") bindings.splice(bindings.findIndex(b => b.name === "PUBLISH_ENABLED"), 1);
+    await assert.rejects(assertResourcePolicyLive(policy, { target, accountId,
+      readWorker: async (_account, name) => observed.get(name) }), /provider.*drift/);
+  });
+}
+test("target plaintext follows delivery config while missing policy inventories fail closed", () => {
+  const { policy, configs } = fixture();
+  configs[0].vars.PUBLISH_ENABLED = "true";
+  assert.doesNotThrow(() => validateResourceConfigurations(policy, "development", configs));
+  delete policy.cohorts[0].workers[0].variables;
+  assert.throws(() => validateResourcePolicy(policy, "development", accountId), /schema/);
+});
+
+test("target staged circuits may change while origin and non-target plaintext stay pinned", async () => {
+  const { policy, observed, configs } = fixture();
+  observed.get("atrinik-metaserver-development").settings.bindings.find(b => b.name === "PUBLISH_ENABLED").text = "true";
+  configs[0].vars.PUBLISH_ENABLED = "true";
+  assert.doesNotThrow(() => validateResourceConfigurations(policy, "development", configs));
+  await assertResourcePolicyLive(policy, { target: "development", accountId,
+    readWorker: async (_account, name) => observed.get(name) });
+  observed.get("atrinik-metaserver-development").settings.bindings.find(b => b.name === "CLASSIC_DIRECTORY_PUBLIC_ORIGIN").text = "https://drift.invalid";
+  await assert.rejects(assertResourcePolicyLive(policy, { target: "development", accountId,
+    readWorker: async (_account, name) => observed.get(name) }), /provider.*drift/);
 });

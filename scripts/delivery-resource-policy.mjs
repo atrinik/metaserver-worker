@@ -44,7 +44,7 @@ function originHost(binding, value) {
 export function projectWorkerResources({ name, role, settings, routes, domains }) {
   if (!Array.isArray(settings?.bindings) || !Array.isArray(routes) || !Array.isArray(domains) ||
       routes.length !== 0 || domains.some((value) => value.service !== name || value.environment !== "production")) fail("complete settings and domain-only routes required");
-  const resources = [], services = [], origins = [], secrets = [];
+  const resources = [], services = [], origins = [], variables = [], secrets = [];
   if (!unique(settings.bindings.map((value) => value.name))) fail("duplicate live binding");
   for (const binding of settings.bindings) {
     const base = { binding: binding.name };
@@ -63,12 +63,14 @@ export function projectWorkerResources({ name, role, settings, routes, domains }
           fail("cross-environment Service Binding");
         services.push({ ...base, service: binding.service, entrypoint: binding.entrypoint }); break;
       case "plain_text":
+        if (typeof binding.text !== "string") fail("plaintext binding value invalid");
+        variables.push({ ...base, value: binding.text });
         if (originBindings.includes(binding.name)) origins.push({ ...base, value: binding.text }); break;
       case "secret_text": secrets.push(binding.name); break;
       default: fail("unrecognized live binding authority");
     }
   }
-  return { name, role, resources: sorted(resources), services: sorted(services), origins: sorted(origins),
+  return { name, role, resources: sorted(resources), services: sorted(services), origins: sorted(origins), variables: sorted(variables),
     routes: domains.map((value) => value.hostname).sort(), secrets: secrets.sort() };
 }
 
@@ -92,14 +94,15 @@ export function validateResourcePolicy(policy, target, accountId) {
         cohort.workers.length !== 3 || !same(cohort.workers.map((worker) => worker.role), roles) ||
         !same(cohort.workers.map((worker) => worker.name), cohortWorkerNames[cohort.environment])) fail("cohort identity invalid");
     for (const worker of cohort.workers) {
-      exactKeys(worker, ["name", "role", "resources", "services", "origins", "routes", "secrets"]);
+      exactKeys(worker, ["name", "role", "resources", "services", "origins", "variables", "routes", "secrets"]);
       if (!nonempty(worker.name) || !/^[a-z0-9][a-z0-9-]*$/u.test(worker.name) ||
-          [worker.resources, worker.services, worker.origins, worker.routes, worker.secrets].some((v) => !Array.isArray(v)))
+          [worker.resources, worker.services, worker.origins, worker.variables, worker.routes, worker.secrets].some((v) => !Array.isArray(v)))
         fail("Worker inventory invalid");
       own(`${cohort.accountId}:worker:${worker.name}`, cohort.environment);
       if (!unique(worker.resources.map((value) => value.binding)) ||
           !unique(worker.services.map((value) => value.binding)) ||
-          !unique(worker.origins.map((value) => value.binding)) || !unique(worker.secrets) ||
+          !unique(worker.origins.map((value) => value.binding)) ||
+          !unique(worker.variables.map((value) => value.binding)) || !unique(worker.secrets) ||
           !unique(worker.routes)) fail("duplicate inventory authority");
       for (const resource of worker.resources) {
         exactKeys(resource, resource.type === "durable-object"
@@ -123,6 +126,12 @@ export function validateResourcePolicy(policy, target, accountId) {
           fail("Service Binding escapes cohort");
       }
       if (worker.services.length !== (worker.role === "core" ? 0 : 1)) fail("Service Binding inventory incomplete");
+      for (const variable of worker.variables) {
+        exactKeys(variable, ["binding", "value"]);
+        if (!nonempty(variable.binding) || typeof variable.value !== "string") fail("plaintext inventory invalid");
+      }
+      if (!same(sorted(worker.origins), sorted(worker.variables.filter(value => originBindings.includes(value.binding)))))
+        fail("origin and plaintext inventories differ");
       for (const origin of worker.origins) {
         exactKeys(origin, ["binding", "value"]);
         if (!originBindings.includes(origin.binding)) fail("unknown origin binding");
@@ -178,13 +187,20 @@ export function validateResourceConfigurations(policy, target, configs) {
         if (v.custom_domain !== true) fail("target acquired a non-domain route");
         return v.pattern;
       }).sort(), secrets: [...(config.secrets?.required ?? [])].sort() };
-    if (config.account_id !== cohort.accountId || !same(actual, normalizeWorker(expected)))
+    if (config.account_id !== cohort.accountId || !same(actual, withoutVariables(normalizeWorker(expected))))
       fail("target configuration differs from existing resource inventory");
   }
 }
+// Target plaintext is authorized by the complete delivery configuration and checked
+// against exact staged/active readback by the engine. The resource policy still
+// pins its origins, resources and secret names, plus every non-target plaintext value.
+function withoutVariables(worker) {
+  const { variables: _variables, ...rest } = worker;
+  return rest;
+}
 function normalizeWorker(worker) {
   return { ...worker, resources: sorted(worker.resources), services: sorted(worker.services),
-    origins: sorted(worker.origins), routes: [...worker.routes].sort(), secrets: [...worker.secrets].sort() };
+    origins: sorted(worker.origins), variables: sorted(worker.variables), routes: [...worker.routes].sort(), secrets: [...worker.secrets].sort() };
 }
 
 export async function assertResourcePolicyLive(policy, { target, accountId, readWorker }) {
@@ -195,7 +211,9 @@ export async function assertResourcePolicyLive(policy, { target, accountId, read
     for (const worker of cohort.workers) {
       const observed = await readWorker(cohort.accountId, worker.name);
       const actual = projectWorkerResources({ name: worker.name, role: worker.role, ...observed });
-      if (!same(actual, normalizeWorker(worker))) fail("fresh provider resource inventory drift");
+      const expected = normalizeWorker(worker);
+      const compared = cohort.environment === target ? [withoutVariables(actual), withoutVariables(expected)] : [actual, expected];
+      if (!same(...compared)) fail("fresh provider resource inventory drift");
     }
   }
 }
