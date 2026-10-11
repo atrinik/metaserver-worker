@@ -430,7 +430,7 @@ async function injectCurrentServer(
     const roomServer = pair[1];
     state.acceptWebSocket(roomServer, ["server"]);
     roomServer.serializeAttachment({
-      v: 3,
+      v: 4,
       r: "s",
       u: true,
       p: false,
@@ -697,6 +697,8 @@ describe("RendezvousRoom HTTP and admission boundary", () => {
           active.serializeAttachment({
             ...attachment,
             s: 2,
+            l: null,
+            w: null,
             p: 6,
             y: terminalOutcomeCode("internal_error"),
           });
@@ -2575,6 +2577,8 @@ describe("RendezvousRoom hibernation, expiry, and privacy", () => {
         roomClient.serializeAttachment({
           ...attachment,
           s: 2,
+          l: null,
+          w: null,
           p: 6,
           m: true,
           y: terminalOutcomeCode("internal_error"),
@@ -2656,6 +2660,8 @@ describe("RendezvousRoom hibernation, expiry, and privacy", () => {
         roomClient.serializeAttachment({
           ...attachment,
           s: 2,
+          l: null,
+          w: null,
           p: 6,
           m: true,
           y: terminalOutcomeCode("internal_error"),
@@ -2711,6 +2717,8 @@ describe("RendezvousRoom hibernation, expiry, and privacy", () => {
         roomClient.serializeAttachment({
           ...attachment,
           s: 2,
+          l: null,
+          w: null,
           p: 6,
           m: true,
           y: terminalOutcomeCode("internal_error"),
