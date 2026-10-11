@@ -105,7 +105,8 @@ runs, preventing unbounded retained review history.
 
 The historical binding names `SOURCE_TAG_KEY_CURRENT` and
 `SOURCE_TAG_KEY_PREVIOUS`, their `_ID` labels, and the `SourceTagKeyRing` type
-remain only for non-IP random-capability replay HMACs. Each encrypted secret is
+serve non-IP random-capability replay HMACs and separately domain-separated
+admission-challenge signatures. Each encrypted secret is
 32-byte base64url material. Current and previous IDs and secrets must be distinct;
 malformed or duplicate material fails closed. The stateless public edges do not
 need these keys. Provision independent keys for every environment.

@@ -1,4 +1,4 @@
-// Historical key binding names are retained only for non-address grant/ticket replay HMACs.
+// Historical key binding names serve non-address replay HMACs and separate admission signatures.
 import { isCanonicalHostname } from "./hostname";
 
 const KEY_ID_PATTERN = /^[A-Za-z0-9_-]{1,32}$/;
