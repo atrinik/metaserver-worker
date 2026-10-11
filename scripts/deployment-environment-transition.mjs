@@ -108,8 +108,9 @@ export function validateProductionWriterFence({ triggers, builds, environments }
       review.external_script_id !== policy.externalScriptId ||
       !uuid.test(production.build_token_uuid) || !uuid.test(review.build_token_uuid) ||
       !same(production.branch_includes, ["main"]) ||
-      !same(production.branch_excludes, ["*"]) ||
-      !same(review.branch_includes, ["*"]) ||
+      !same(production.branch_excludes, []) ||
+      production.build_caching_enabled !== false ||
+      !same(review.branch_includes, ["*"]) || !same(review.branch_excludes, ["main"]) ||
       !hash.test(policy.productionTriggerDigest) || !hash.test(policy.reviewTriggerDigest) ||
       transitionDigest(production) !== policy.productionTriggerDigest ||
       transitionDigest(review) !== policy.reviewTriggerDigest)
@@ -122,11 +123,12 @@ export function validateProductionWriterFence({ triggers, builds, environments }
   if (disposition === "retained-inert-builds") {
     // Cloudflare retry uses current build configuration. Exclusion alone cannot stop manual retries.
     // https://developers.cloudflare.com/workers/ci-cd/builds/configuration/#build-settings
+    // Pushes may still enqueue failing builds; this validates stopped work at the observation point.
     // This disposition validates an operator-established state; it never creates or restores authority.
-    for (const [index, trigger] of [production, review].entries()) {
-      if (!same(trigger.branch_excludes, index === 0 ? ["*"] : ["main", "*"]) || trigger.build_command !== "exit 1" ||
+    for (const trigger of [production, review]) {
+      if (trigger.build_command !== "exit 1" ||
           trigger.deploy_command !== "exit 1" || trigger.build_caching_enabled !== false)
-        fail("retained Builds trigger is executable or not excluded");
+        fail("retained Builds trigger is executable or caching is enabled");
     }
     validateRetainedInertEnvironment(environments[policy.productionTriggerUuid], "production");
     validateRetainedInertEnvironment(environments[policy.reviewTriggerUuid], "review");
@@ -146,7 +148,8 @@ export function validateProductionWriterFence({ triggers, builds, environments }
         production.build_token_uuid === review.build_token_uuid)
       fail("production writer fence or review trigger drift");
   }
-  if (activeBuilds(builds, { ...policy, reviewTrigger: review }).length) fail("production writer still in flight");
+  activeBuilds(builds, { ...policy, reviewTrigger: review });
+  if (builds.some(build => build.status !== "stopped")) fail("production Builds work still in flight");
   return { outcome: "production-writer-fenced", disposition, mutation: false };
 }
 
@@ -201,7 +204,7 @@ export function createTransitionPlan({ snapshot, coordinates, now = Date.now() }
   if (old.external_script_id !== core(coordinates, "production").tag ||
       review.external_script_id !== old.external_script_id ||
       !same(old.branch_includes, ["main"]) ||
-      ![transitionDigest([]), transitionDigest(["*"])].includes(transitionDigest(old.branch_excludes)) ||
+      !same(old.branch_excludes, []) || old.build_caching_enabled !== false ||
       !same(review.branch_includes, ["*"]) || !same(review.branch_excludes, ["main"]) ||
       old.build_token_uuid === review.build_token_uuid ||
       old.repo_connection?.repo_connection_uuid !== coordinates.repositoryConnectionUuid ||
@@ -210,7 +213,8 @@ export function createTransitionPlan({ snapshot, coordinates, now = Date.now() }
       old.repo_connection.provider_account_name !== "atrinik" ||
       old.repo_connection.repo_name !== "metaserver-worker") fail("predecessor trigger identity mismatch");
   if (review.build_command !== "npm run build" || review.deploy_command !== "npm run validate" ||
-      review.root_directory !== "/deployment/review-check" ||
+      review.root_directory !== "/deployment/review-check" || review.build_caching_enabled !== false ||
+      !same(review.path_includes, ["*"]) || !same(review.path_excludes, []) ||
       !same(snapshot.environments?.[review.trigger_uuid],
         { SKIP_DEPENDENCY_INSTALL: { is_secret: false, value: "1" } }))
     fail("unsafe review predecessor");
@@ -233,17 +237,15 @@ function checkPlan(plan) {
   if (!hash.test(planDigest) || transitionDigest(body) !== planDigest) fail("plan digest mismatch");
 }
 function fencedProduction(trigger) {
-  return { ...trigger, branch_excludes: ["*"], build_command: "exit 1", deploy_command: "exit 1" };
+  return { ...trigger, build_command: "exit 1", deploy_command: "exit 1" };
 }
 export function productionFencePatchBody(trigger) {
-  const fenced = fencedProduction(normalizeTransitionTrigger(trigger));
-  const fields = ["trigger_name", "external_script_id", "build_token_uuid", "build_command", "deploy_command",
-    "root_directory", "branch_includes", "branch_excludes", "path_includes", "path_excludes", "build_caching_enabled"];
-  if (fields.some(field => fenced[field] === undefined) || !uuid.test(fenced.repo_connection?.repo_connection_uuid))
-    fail("production trigger lacks a complete editable predecessor");
-  return { ...Object.fromEntries(fields.map(field => [field, structuredClone(fenced[field])])),
-    repo_connection_uuid: fenced.repo_connection.repo_connection_uuid };
+  normalizeTransitionTrigger(trigger);
+  // The documented PATCH changes only commands; preserve selectors and all other saved settings.
+  // https://developers.cloudflare.com/workers/ci-cd/builds/api-reference/
+  return { build_command: "exit 1", deploy_command: "exit 1" };
 }
+
 function preservation(plan, snapshot, now) {
   checkPlan(plan);
   snapshotCheck(snapshot, plan.coordinates, now);
@@ -282,6 +284,8 @@ export function nextTransitionOperation({ plan, snapshot, now = Date.now() }) {
     return operation(plan, snapshot, "cancel-production-build", "PUT",
       `/builds/builds/${pending[0].build_uuid}/cancel`, null, { buildUuid: pending[0].build_uuid });
   }
+  if (snapshot.productionBuilds.some(build => build.status !== "stopped"))
+    fail("production Builds work still in flight");
   return { phase: "complete", mutation: false, planDigest: plan.planDigest,
     predecessorDigest: transitionDigest(snapshot) };
 }

@@ -38,7 +38,7 @@ function fixture() {
   return { snapshot, coordinates, now };
 }
 function simulate(op, snapshot, plan) {
-  if (op.phase === "fence-production") Object.assign(snapshot.productionTriggers[0], { branch_excludes: ["*"], build_command: "exit 1", deploy_command: "exit 1" });
+  if (op.phase === "fence-production") Object.assign(snapshot.productionTriggers[0], { build_command: "exit 1", deploy_command: "exit 1" });
   if (op.phase === "cancel-production-build") snapshot.productionBuilds.find((b) => b.build_uuid === op.buildUuid).status = "stopped";
 
 }
@@ -46,7 +46,7 @@ function fencePolicy(plan) {
   const c = plan.coordinates;
   return { accountId: c.accountId, scriptName: "atrinik-metaserver", externalScriptId: "1".repeat(32),
     workers: c.workers.production, developmentWorkers: c.workers.development, productionTriggerUuid: c.productionTriggerUuid, reviewTriggerUuid: c.reviewTriggerUuid,
-    productionTriggerDigest: transitionDigest({ ...plan.predecessorProduction, branch_excludes: ["*"], build_command: "exit 1", deploy_command: "exit 1" }),
+    productionTriggerDigest: transitionDigest({ ...plan.predecessorProduction, build_command: "exit 1", deploy_command: "exit 1" }),
     reviewTriggerDigest: transitionDigest(plan.review),
     productionEnvironmentDigest: transitionDigest(plan.productionEnvironments[id(1)]),
     reviewEnvironmentDigest: transitionDigest(plan.productionEnvironments[id(2)]) };
@@ -100,7 +100,7 @@ test("uncertain write never repeats; exact later readback recovers its intent", 
   f.snapshot.capturedAt = new Date(now + 1000).toISOString();
   await assert.rejects(applyTransitionStep({ plan, snapshot: f.snapshot, records, now: now + 1000,
     append: async () => {}, execute: async () => assert.fail("retried") }), /unresolved prior intent/);
-  Object.assign(f.snapshot.productionTriggers[0], { branch_excludes: ["*"], build_command: "exit 1", deploy_command: "exit 1" });
+  Object.assign(f.snapshot.productionTriggers[0], { build_command: "exit 1", deploy_command: "exit 1" });
   await applyTransitionStep({ plan, snapshot: f.snapshot, records, now: now + 1000,
     append: async () => {}, execute: async () => assert.fail("recovery mutated") });
 });
@@ -112,7 +112,7 @@ test("journal tampering is rejected", async () => {
 });
 test("unknown in-flight PROD identity and competing DEV or caller writer are rejected", () => {
   const f = fixture(), plan = createTransitionPlan(f);
-  Object.assign(f.snapshot.productionTriggers[0], { branch_excludes: ["*"], build_command: "exit 1", deploy_command: "exit 1" });
+  Object.assign(f.snapshot.productionTriggers[0], { build_command: "exit 1", deploy_command: "exit 1" });
   f.snapshot.productionBuilds.push({ build_uuid: id(99), status: "running", trigger: { trigger_uuid: id(99) } });
   assert.throws(() => nextTransitionOperation({ plan, snapshot: f.snapshot, now }), /identity/);
   f.snapshot.productionBuilds = [];
@@ -121,7 +121,7 @@ test("unknown in-flight PROD identity and competing DEV or caller writer are rej
 });
 test("promotion fence rejects even digest-authorized unsafe review commands or environments", () => {
   const f = fixture(), plan = createTransitionPlan(f), policy = fencePolicy(plan);
-  Object.assign(f.snapshot.productionTriggers[0], { branch_excludes: ["*"], build_command: "exit 1", deploy_command: "exit 1" });
+  Object.assign(f.snapshot.productionTriggers[0], { build_command: "exit 1", deploy_command: "exit 1" });
   f.snapshot.productionTriggers[1].deploy_command = "wrangler deploy";
   policy.reviewTriggerDigest = transitionDigest(normalizeTransitionTrigger(f.snapshot.productionTriggers[1]));
   assert.throws(() => validateProductionWriterFence({ triggers: f.snapshot.productionTriggers,
@@ -129,7 +129,7 @@ test("promotion fence rejects even digest-authorized unsafe review commands or e
 });
 test("promotion HTTP adapter reads stable exhaustive inventories and performs no mutations", async () => {
   const f = fixture(), plan = createTransitionPlan(f), policy = fencePolicy(plan);
-  Object.assign(f.snapshot.productionTriggers[0], { branch_excludes: ["*"], build_command: "exit 1", deploy_command: "exit 1" });
+  Object.assign(f.snapshot.productionTriggers[0], { build_command: "exit 1", deploy_command: "exit 1" });
   const environment = { CLOUDFLARE_ACCOUNT_ID: f.coordinates.accountId,
     ATRINIK_PRODUCTION_BUILDS_READ_TOKEN: "private-test-token", ATRINIK_PRODUCTION_WRITER_FENCE_POLICY: JSON.stringify(policy) };
   const calls = [];
@@ -175,13 +175,15 @@ test("failed journal persistence prevents execution", async () => {
 
 test("active review builds require immutable safe launch commands and token, not merely current trigger UUID", () => {
   const f = fixture(), plan = createTransitionPlan(f), policy = fencePolicy(plan);
-  Object.assign(f.snapshot.productionTriggers[0], { branch_excludes: ["*"], build_command: "exit 1", deploy_command: "exit 1" });
+  Object.assign(f.snapshot.productionTriggers[0], { build_command: "exit 1", deploy_command: "exit 1" });
   const build = { build_uuid: id(95), status: "running", trigger: clone(plan.review),
     build_trigger_metadata: { build_token_uuid: plan.review.build_token_uuid, build_command: "npm run build",
       deploy_command: "npm run validate", root_directory: "/deployment/review-check", branch: "feature/test",
       provider_type: "github", provider_account_name: "atrinik", repo_name: "metaserver-worker" } };
   const input = { triggers: f.snapshot.productionTriggers, builds: [build], environments: f.snapshot.environments };
-  assert.equal(validateProductionWriterFence(input, policy).mutation, false);
+  assert.throws(() => validateProductionWriterFence(input, policy), /in flight/);
+  f.snapshot.productionBuilds = [build];
+  assert.throws(() => nextTransitionOperation({ plan, snapshot: f.snapshot, now }), /in flight/);
   build.trigger.build_token_uuid = plan.predecessorProduction.build_token_uuid;
   assert.throws(() => validateProductionWriterFence(input, policy), /launch authority/);
   build.trigger = clone(plan.review);
@@ -215,7 +217,7 @@ test("CLI concurrent intent emission has one winner and preserves immutable rece
 
 test("normalization accepts null tombstones but rejects deleted repository connections even with matching field digests", () => {
   const f = fixture(), plan = createTransitionPlan(f), policy = fencePolicy(plan);
-  Object.assign(f.snapshot.productionTriggers[0], { branch_excludes: ["*"], build_command: "exit 1", deploy_command: "exit 1" });
+  Object.assign(f.snapshot.productionTriggers[0], { build_command: "exit 1", deploy_command: "exit 1" });
   f.snapshot.productionTriggers[0].repo_connection.deleted_on = null;
   assert.equal(validateProductionWriterFence({ triggers: f.snapshot.productionTriggers,
     builds: [], environments: f.snapshot.environments }, policy).mutation, false);
@@ -228,10 +230,9 @@ test("normalization accepts null tombstones but rejects deleted repository conne
 function inertFixture() {
   const f = fixture(), plan = createTransitionPlan(f), policy = fencePolicy(plan);
   policy.disposition = "retained-inert-builds";
-  for (const [index, trigger] of f.snapshot.productionTriggers.entries()) {
+  for (const trigger of f.snapshot.productionTriggers) {
     trigger.build_command = "exit 1";
     trigger.deploy_command = "exit 1";
-    trigger.branch_excludes = index === 0 ? ["*"] : ["main", "*"];
     trigger.build_token_uuid = id(3);
   }
   f.snapshot.environments[id(1)] = {
@@ -271,11 +272,11 @@ for (const role of [0, 1]) {
         assert.throws(() => validateProductionWriterFence(input, policy), /executable/);
       });
   }
-  test(`inert ${role} rejects branch-only pause and caching`, () => {
-    const { input, policy, bind } = inertFixture(); input.triggers[role].branch_excludes = ["main"]; bind();
+  test(`inert ${role} rejects selector drift and caching even with new matching digests`, () => {
+    const { input, policy, bind } = inertFixture(); input.triggers[role].branch_excludes = ["*"]; bind();
     assert.throws(() => validateProductionWriterFence(input, policy));
-    input.triggers[role].branch_excludes = role === 0 ? ["*"] : ["main", "*"]; input.triggers[role].build_caching_enabled = true; bind();
-    assert.throws(() => validateProductionWriterFence(input, policy), /executable/);
+    input.triggers[role].branch_excludes = role === 0 ? [] : ["main"]; input.triggers[role].build_caching_enabled = true; bind();
+    assert.throws(() => validateProductionWriterFence(input, policy), /executable|drift/);
   });
   test(`inert ${role} requires exact nonsecret dependency skip`, () => {
     const { input, policy, bind } = inertFixture(), environment = input.environments[id(role + 1)];
@@ -322,16 +323,16 @@ test("HTTP read-only adapter retains the explicit inert disposition", async () =
   assert.equal((await assertProductionPromotionWriterFence({ environment, fetcher })).disposition, "retained-inert-builds");
 });
 
-test("normal transition emits the full preserved trigger payload and seals both main commands", () => {
+test("normal transition emits only documented command fields and preserves saved configuration", () => {
   const f = fixture(), plan = createTransitionPlan(f), original = clone(f.snapshot.productionTriggers[0]);
   const op = nextTransitionOperation({ plan, snapshot: f.snapshot, now });
   assert.deepEqual(op.body, productionFencePatchBody(original));
-  assert.equal(op.body.external_script_id, original.external_script_id);
-  assert.equal(op.body.repo_connection_uuid, original.repo_connection.repo_connection_uuid);
-  assert.equal(op.body.build_token_uuid, original.build_token_uuid);
-  assert.equal(op.body.build_command, "exit 1");assert.equal(op.body.deploy_command, "exit 1");
-  assert.equal(Object.keys(op.body).length, 12);assert.equal(op.body.trigger_uuid, undefined);
+  assert.deepEqual(op.body, { build_command: "exit 1", deploy_command: "exit 1" });
   assert.deepEqual(f.snapshot.productionTriggers[0], original);
+  simulate(op, f.snapshot, plan);
+  const { build_command: _build, deploy_command: _deploy, ...unchanged } = f.snapshot.productionTriggers[0];
+  const { build_command: _oldBuild, deploy_command: _oldDeploy, ...predecessor } = original;
+  assert.deepEqual(unchanged, predecessor);
 });
 test("branch-only pause cannot complete a normal transition or authorize a writer fence", async () => {
   const f = fixture(), plan = createTransitionPlan(f), records = [];
@@ -342,7 +343,7 @@ test("branch-only pause cannot complete a normal transition or authorize a write
     append: async () => assert.fail("partial fence observed"), execute: async () => assert.fail("partial fence retried") }), /drift/);
   const policy = fencePolicy(plan);
   policy.productionTriggerDigest = transitionDigest(normalizeTransitionTrigger(f.snapshot.productionTriggers[0]));
-  assert.throws(() => validateProductionWriterFence({ triggers: f.snapshot.productionTriggers, builds: [], environments: f.snapshot.environments }, policy), /executable/);
+  assert.throws(() => validateProductionWriterFence({ triggers: f.snapshot.productionTriggers, builds: [], environments: f.snapshot.environments }, policy), /drift/);
 });
 test("normal transition requires dependency skip and rejects production startup environment variables", () => {
   const f = fixture();delete f.snapshot.environments[id(1)].SKIP_DEPENDENCY_INSTALL;
@@ -350,4 +351,25 @@ test("normal transition requires dependency skip and rejects production startup 
   f.snapshot.environments[id(1)].SKIP_DEPENDENCY_INSTALL = { is_secret: false, value: "1" };
   f.snapshot.environments[id(1)].BASH_ENV = { is_secret: true, value: null };
   assert.throws(() => createTransitionPlan(f), /environment/);
+});
+
+test("normal transition and guard reject digest-bound branch or cache drift", () => {
+  for (const mutate of [trigger => { trigger.branch_excludes = ["*"]; },
+    trigger => { trigger.branch_includes = ["*"]; }, trigger => { trigger.build_caching_enabled = true; }]) {
+    const f = fixture(); mutate(f.snapshot.productionTriggers[0]);
+    assert.throws(() => createTransitionPlan(f), /predecessor/);
+    const good = fixture(), plan = createTransitionPlan(good), policy = fencePolicy(plan);
+    Object.assign(good.snapshot.productionTriggers[0], { build_command: "exit 1", deploy_command: "exit 1" });
+    mutate(good.snapshot.productionTriggers[0]);
+    policy.productionTriggerDigest = transitionDigest(normalizeTransitionTrigger(good.snapshot.productionTriggers[0]));
+    assert.throws(() => validateProductionWriterFence({ triggers: good.snapshot.productionTriggers,
+      builds: [], environments: good.snapshot.environments }, policy), /drift/);
+  }
+});
+test("command-only completion preserves original main and review selectors", () => {
+  const f = fixture(), plan = createTransitionPlan(f), op = nextTransitionOperation({ plan, snapshot: f.snapshot, now });
+  simulate(op, f.snapshot, plan);
+  assert.deepEqual(f.snapshot.productionTriggers.map(t => [t.branch_includes, t.branch_excludes]),
+    [[["main"], []], [["*"], ["main"]]]);
+  assert.equal(nextTransitionOperation({ plan, snapshot: f.snapshot, now }).phase, "complete");
 });
