@@ -3,9 +3,10 @@ import { readFile } from "node:fs/promises";
 
 import { readD1Migrations } from "@cloudflare/vitest-pool-workers";
 import { convertV4MiniflareOptions, Miniflare } from "miniflare";
-import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
+import { afterAll, beforeAll, describe, expect, it } from "vitest";
 
 import publisherFixture from "../test/fixtures/metaserver-classic-publisher-v3.json";
+import admissionFixture from "./fixtures/service-binding-admission.json";
 
 const CURRENT_SECRET = "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA";
 const PREVIOUS_SECRET = "AQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQE";
@@ -14,7 +15,7 @@ const ROUTE_CAPABILITY = "3".repeat(64);
 const TEST_TOKEN = "a".repeat(64);
 // Keep platform alarm timestamps in the future throughout this bounded test;
 // otherwise a frozen application clock could continually reschedule past alarms.
-const CORE_TEST_NOW = Date.now() + 300_000;
+const CORE_TEST_NOW = admissionFixture.now;
 
 let miniflare: Miniflare;
 let harness: WorkerFetcher;
@@ -131,12 +132,27 @@ beforeAll(async () => {
       {
         name: "core",
         modules: true,
-        // Freeze only this isolated test backend's clock. Node's test solver
-        // stays bounded by real time, while a slow test host cannot consume a
-        // production-sized fifteen-second grant before testing the boundary.
-        // The actual compiled core, including mandatory 24-bit verification,
-        // still executes unchanged after this test-only clock prefix.
-        script: `Date.now = () => ${CORE_TEST_NOW};\n${await readFile("dist/core/index.js", "utf8")}`,
+        // Deterministic inputs exist only in this disposable core isolate. The
+        // actual compiled core still issues and verifies the HMAC challenges,
+        // fixed 24-bit work, grant expiry, and single-use replay tags. Neither
+        // Node nor the edge Workers receive clock or crypto overrides.
+        // A fixed future date also keeps platform alarms from firing repeatedly
+        // against the frozen application clock.
+        script: `
+          Date.now = () => ${CORE_TEST_NOW};
+          const randomValues = crypto.getRandomValues.bind(crypto);
+          const calls = new Map();
+          crypto.getRandomValues = (bytes) => {
+            if (!(bytes instanceof Uint8Array) || ![16, 32].includes(bytes.length)) {
+              return randomValues(bytes);
+            }
+            const call = (calls.get(bytes.length) ?? 0) + 1;
+            if (call > 255) throw new Error("Test entropy fixture exhausted");
+            calls.set(bytes.length, call);
+            return bytes.fill(call);
+          };
+          ${await readFile("dist/core/index.js", "utf8")}
+        `,
         compatibilityDate: COMPATIBILITY_DATE,
         compatibilityFlags: ["nodejs_compat", "no_web_socket_compression"],
         bindings: {
@@ -188,13 +204,12 @@ afterAll(async () => {
 });
 
 describe("compiled named Worker Service Bindings", () => {
-  it("terminates the test work solver at its real-time deadline", async () => {
-    const clock = vi.spyOn(Date, "now").mockReturnValueOnce(0).mockReturnValue(60_000);
-    try {
-      await expect(solveAdmissionWork("synthetic-deadline-token"))
-        .rejects.toThrow("Admission test solver exceeded its bounded deadline");
-    } finally {
-      clock.mockRestore();
+  it("pins valid production-difficulty admission work vectors", () => {
+    for (const { challenge, solution } of admissionFixture.vectors) {
+      const digest = createHash("sha256")
+        .update(`atrinik-rendezvous-work-v1\0${challenge}\0${solution}`, "ascii")
+        .digest();
+      expect(digest.subarray(0, 3)).toEqual(Buffer.alloc(3));
     }
   });
   it("carries both credential-free production canary envelopes to core", async () => {
@@ -327,7 +342,7 @@ describe("compiled named Worker Service Bindings", () => {
       sockets.push(socket);
       return socket;
     };
-    const exchange = async (server: WebSocket, clientNonce: string): Promise<void> => {
+    const exchange = async (server: WebSocket, clientNonce: string, vector: typeof admissionFixture.vectors[number]): Promise<void> => {
       const resolved=await harness.fetch("http://service-binding.test/forward",{
         method:"POST",headers:{"Content-Type":"application/json","CF-Connecting-IP":"192.0.2.211",
           "X-Atrinik-Test-Edge":"1","X-Atrinik-Test-Target":"https://rendezvous.meta.atrinik.org/v1/access/resolve"},
@@ -346,7 +361,10 @@ describe("compiled named Worker Service Bindings", () => {
       };
       expect(challenge.schema).toBe("atrinik-rendezvous-admission-v1");
       expect(challenge.difficulty).toBe(24);
-      const solution = await solveAdmissionWork(challenge.challenge);
+      expect(ticket).toBe(vector.ticket);
+      expect(challenge.challenge).toBe(vector.challenge);
+      expect(challenge.expiresAt).toBe(String(now + 60));
+      const solution = vector.solution;
       const client = await connect("client", {
         Authorization: `Bearer ${ticket}`,
         "X-Atrinik-Access-Client-Nonce": clientNonce,
@@ -383,11 +401,11 @@ describe("compiled named Worker Service Bindings", () => {
       // assert a provider eviction or reproduce a production network reset;
       // deterministic room eviction is covered by the Workers-pool tests.
       await new Promise((resolve) => setTimeout(resolve, 12_000));
-      await exchange(server, "1".repeat(64));
+      await exchange(server, "1".repeat(64), admissionFixture.vectors[0]!);
       const replaced = socketEvent(server, "close");
       const replacement = await connect("server");
       await expect(replaced).resolves.toMatchObject({ code: 4004 });
-      await exchange(replacement, "2".repeat(64));
+      await exchange(replacement, "2".repeat(64), admissionFixture.vectors[1]!);
     } finally {
       for (const socket of sockets) {
         if (socket.readyState === WebSocket.OPEN) {
@@ -395,7 +413,7 @@ describe("compiled named Worker Service Bindings", () => {
         }
       }
     }
-  }, 180_000);
+  }, 30_000);
 
   it("keeps the v3 publisher canary independent of inert legacy retirement", async () => {
     const bindings = await miniflare.getBindings<{ DB: D1Database }>("core");
@@ -437,27 +455,6 @@ function socketEvent(socket: WebSocket, type: "message" | "close"): Promise<Even
     socket.addEventListener("error", failed);
     if (type !== "close") socket.addEventListener("close", failed);
   });
-}
-
-/** Test-only solver: fixed production difficulty, bounded trials and real time. */
-async function solveAdmissionWork(token: string): Promise<string> {
-  const base = createHash("sha256").update(`atrinik-rendezvous-work-v1\0${token}\0`, "ascii");
-  const solution = Buffer.from("0000000000000000", "ascii");
-  const deadline = Date.now() + 60_000;
-  for (let trial = 0; trial < 2 ** 27; trial += 1) {
-    if ((trial & 4095) === 0) {
-      if (Date.now() >= deadline) throw new Error("Admission test solver exceeded its bounded deadline");
-      await new Promise<void>(resolve => setImmediate(resolve));
-    }
-    const digest = base.copy().update(solution).digest();
-    if (digest[0] === 0 && digest[1] === 0 && digest[2] === 0) return solution.toString("ascii");
-    for (let digit = 15; digit >= 0; digit -= 1) {
-      if (solution[digit] === 102) { solution[digit] = 48; continue; }
-      solution[digit] += solution[digit] === 57 ? 40 : 1;
-      break;
-    }
-  }
-  throw new Error("Admission test solver exhausted its bounded trial count");
 }
 
 async function fetchPublisherCanary(): Promise<Response> {
