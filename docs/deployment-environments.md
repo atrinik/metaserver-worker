@@ -41,6 +41,35 @@ the PROD core project but must retain its zero-resource token and independent
 nonsecret environment. DEV activation never turns the review trigger into a
 live environment. Historical live-review fixture authority remains separate.
 
+## Protect and verify all resource cohorts
+
+Both DEV and PROD execution environments supply protected
+`ATRINIK_DELIVERY_RESOURCE_POLICY` and
+`ATRINIK_DELIVERY_RESOURCE_READ_TOKEN`. The policy is a canonical private
+inventory bounded to 48 KiB. It pins PROD, DEV and any provisioned live-review
+cohort with exact binding purposes/resource IDs, stable origins/routes,
+configuration and secret **names**. A review cohort is included only when live
+resources exist; the credential-free branch-review trigger creates no cohort.
+Keep the policy outside public artifacts and logs. The inventory-policy digest
+is included in the deployable digest approved for promotion; a changed policy
+requires recalculation and owner review of the exact coordinates.
+
+The separate read token needs effective GET-only permissions across the
+inventoried cohorts' settings and routes, without deployment or cleanup
+permission. Every engine phase and the private directory-reconciliation child
+freshly read all cohorts and reject resource/configuration drift. A cached
+inventory or target-only readback cannot establish isolation. Keep this token
+out of secret-free validation jobs and public-canary processes.
+
+Target publisher/rendezvous Workers must have an empty provider secret
+inventory. Pin any unchanged non-target legacy secret names as observed; their
+presence does not authorize cleanup in another environment. Required core
+secret names must match the policy. Provider APIs cannot read their values, so
+successful inventory comparison cannot prove secret-value uniqueness. Disjoint
+key generation and assignment remain separate provisioning-receipt proof;
+never expose values to compare them. This fence grants no migrations, resource
+creation, secret rotation, deletion or extra promotion approval mechanism.
+
 ## Retire the previous production writer first
 
 Before publication of the replacement policy, an authorized provider operator

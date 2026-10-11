@@ -35,6 +35,13 @@ staging with public circuits disabled, publisher/rendezvous/core restoration,
 phase readback, private directory reconciliation and bounded public canaries.
 PROD replaces exact-current-main workflow authority with the exact promotion attempt,
 approved tag/SHA, release provenance, digests and expected predecessor.
+Both execution environments also require protected
+`ATRINIK_DELIVERY_RESOURCE_POLICY` and
+`ATRINIK_DELIVERY_RESOURCE_READ_TOKEN`. The exact all-cohort resource/config
+inventory is re-read at each phase and private reconciliation, and its digest
+is part of the approved deployable digest. Target callers require an empty
+provider secret inventory. Secret-value separation needs provisioning proof;
+provider reads cannot reveal values. See the environment checklist for scope.
 Never print private configurations, IDs, credentials or raw provider responses.
 
 ## Historical Workers Builds provisioning and recovery

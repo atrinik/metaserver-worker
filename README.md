@@ -109,7 +109,13 @@ DEV uses the existing `atrinik-metaserver-development` core and its
 `-publisher` and `-rendezvous` callers; production resources are disjoint.
 Delivery checks the exact D1 ledger without applying migrations, fences stale
 workflow runs, stages all three Workers with circuits disabled, restores callers before
-core, and reads back the coherent 100% cohort before bounded canaries.
+core, and reads back the coherent 100% cohort before bounded canaries. Protected
+`ATRINIK_DELIVERY_RESOURCE_POLICY` and
+`ATRINIK_DELIVERY_RESOURCE_READ_TOKEN` pin and freshly verify resource ownership
+and configuration across PROD, DEV and any live-review cohort at every phase.
+The approved deployable digest includes the inventory policy digest. Target
+public callers must have no provider secrets; readback verifies secret names
+and cannot establish uniqueness of secret values.
 
 Production changes require an explicit GitHub Actions workflow dispatch for an
 owner-approved immutable tag and exact SHA. Main pushes and release events

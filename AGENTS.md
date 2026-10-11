@@ -65,6 +65,16 @@
   incident verification; never reactivate it as routine policy. Stop before
   promotion until the owner reviews and approves the exact tag. Both environment
   dry runs must retain zero remote mutation paths.
+- Both GitHub execution environments require protected
+  `ATRINIK_DELIVERY_RESOURCE_POLICY` and
+  `ATRINIK_DELIVERY_RESOURCE_READ_TOKEN`. The bounded private policy pins exact
+  resource ownership/configuration for PROD, DEV and any provisioned live-review
+  cohort. Re-read every cohort at each engine phase and private reconciliation;
+  reject binding/resource/configuration drift. Bind the resource-policy digest
+  into the approved deployable digest. Target public callers must have zero
+  provider secrets; pin unchanged non-target legacy secret names without cleanup
+  authority. Provider readback exposes names, never secret values: disjoint key
+  generation requires separate provisioning-receipt proof.
 - Treat `server_presence` plus the profile-discriminated `directory_entries`
   as authoritative, profile-scoped publication state. Active profiles are Classic
   publisher v3/directory v6 and Game publisher v2/directory v2. Private presence
