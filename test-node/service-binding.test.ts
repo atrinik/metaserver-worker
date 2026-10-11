@@ -3,7 +3,7 @@ import { readFile } from "node:fs/promises";
 
 import { readD1Migrations } from "@cloudflare/vitest-pool-workers";
 import { convertV4MiniflareOptions, Miniflare } from "miniflare";
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 
 import publisherFixture from "../test/fixtures/metaserver-classic-publisher-v3.json";
 
@@ -12,6 +12,9 @@ const PREVIOUS_SECRET = "AQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQE";
 const COMPATIBILITY_DATE = "2026-08-05";
 const ROUTE_CAPABILITY = "3".repeat(64);
 const TEST_TOKEN = "a".repeat(64);
+// Keep platform alarm timestamps in the future throughout this bounded test;
+// otherwise a frozen application clock could continually reschedule past alarms.
+const CORE_TEST_NOW = Date.now() + 300_000;
 
 let miniflare: Miniflare;
 let harness: WorkerFetcher;
@@ -42,7 +45,7 @@ beforeAll(async () => {
               const forwardedHeaders = new Headers();
               const allowed = publisher
                 ? ["Atrinik-Publish-Sequence", "Atrinik-Server-ID", "Content-Digest", "Content-Type", "Signature", "Signature-Input"]
-                : ["Content-Type", "Content-Length", "Authorization", "Connection", "Sec-WebSocket-Key", "Sec-WebSocket-Protocol", "Sec-WebSocket-Version", "Upgrade"];
+                : ["Content-Type", "Content-Length", "Authorization", "Connection", "Sec-WebSocket-Key", "Sec-WebSocket-Protocol", "Sec-WebSocket-Version", "Upgrade", "X-Atrinik-Rendezvous-Admission", "X-Atrinik-Rendezvous-Ticket", "X-Atrinik-Access-Client-Nonce"];
               if (edge) allowed.push("CF-Connecting-IP");
               for (const name of allowed) {
                 const value = headers.get(name);
@@ -128,7 +131,12 @@ beforeAll(async () => {
       {
         name: "core",
         modules: true,
-        scriptPath: "dist/core/index.js",
+        // Freeze only this isolated test backend's clock. Node's test solver
+        // stays bounded by real time, while a slow test host cannot consume a
+        // production-sized fifteen-second grant before testing the boundary.
+        // The actual compiled core, including mandatory 24-bit verification,
+        // still executes unchanged after this test-only clock prefix.
+        script: `Date.now = () => ${CORE_TEST_NOW};\n${await readFile("dist/core/index.js", "utf8")}`,
         compatibilityDate: COMPATIBILITY_DATE,
         compatibilityFlags: ["nodejs_compat", "no_web_socket_compression"],
         bindings: {
@@ -180,6 +188,15 @@ afterAll(async () => {
 });
 
 describe("compiled named Worker Service Bindings", () => {
+  it("terminates the test work solver at its real-time deadline", async () => {
+    const clock = vi.spyOn(Date, "now").mockReturnValueOnce(0).mockReturnValue(60_000);
+    try {
+      await expect(solveAdmissionWork("synthetic-deadline-token"))
+        .rejects.toThrow("Admission test solver exceeded its bounded deadline");
+    } finally {
+      clock.mockRestore();
+    }
+  });
   it("carries both credential-free production canary envelopes to core", async () => {
     const serverId = "0".repeat(64);
     const publishResponse = await fetchPublisherCanary();
@@ -239,7 +256,7 @@ describe("compiled named Worker Service Bindings", () => {
 
   it("keeps edge control signaling usable after idle and reconnect across real bindings", async () => {
     const bindings = await miniflare.getBindings<{ DB: D1Database }>("core");
-    const now = Math.floor(Date.now() / 1_000);
+    const now = Math.floor(CORE_TEST_NOW / 1_000);
     const tokenHash = createHash("sha256").update(TEST_TOKEN).digest("hex");
     await bindings.DB.batch([
       bindings.DB.prepare(
@@ -285,13 +302,13 @@ describe("compiled named Worker Service Bindings", () => {
       .bind(index,publisherFixture.server_id,"4".repeat(32),"5".repeat(32),now+60,now).run();
     const protocol = "atrinik-access-rendezvous-v1";
     const sockets: WebSocket[] = [];
-    const connect = async (role: "server" | "client"): Promise<WebSocket> => {
+    const connect = async (role: "server" | "client", clientHeaders: Record<string, string> = {}): Promise<WebSocket> => {
       const target = role === "server"
         ? `https://rendezvous.meta.atrinik.org/v1/classic/servers/${publisherFixture.server_id}?role=server`
         : `https://rendezvous.meta.atrinik.org/v1/access/rendezvous/classic/${publisherFixture.server_id}`;
       const response = await harness.fetch("http://service-binding.test/forward", {
         headers: {
-          ...(role === "server" ? { Authorization: `Bearer ${TEST_TOKEN}` } : {}),
+          ...(role === "server" ? { Authorization: `Bearer ${TEST_TOKEN}` } : clientHeaders),
           "CF-Connecting-IP": "192.0.2.211",
           Cookie: "must-not-cross=value",
           "X-Atrinik-Test-Edge": "1",
@@ -317,7 +334,24 @@ describe("compiled named Worker Service Bindings", () => {
         body:JSON.stringify({schema:"atrinik-access-resolve-v1",routeCapability:ROUTE_CAPABILITY,clientNonce})});
       expect(resolved.status,await resolved.clone().text()).toBe(200);
       const {grant:ticket}=await resolved.json() as {grant:string};
-      const client = await connect("client");
+      const ticketHash = createHash("sha256").update(Buffer.from(ticket, "hex")).digest("hex");
+      const challengeResponse = await harness.fetch("http://service-binding.test/forward", {
+        method: "POST", headers: { "Content-Type": "application/json", "X-Atrinik-Test-Edge": "1",
+          "X-Atrinik-Test-Target": `https://rendezvous.meta.atrinik.org/v1/rendezvous/challenge/classic/${publisherFixture.server_id}` },
+        body: JSON.stringify({ schema: "atrinik-rendezvous-admission-v1", ticketHash }),
+      });
+      expect(challengeResponse.status, await challengeResponse.clone().text()).toBe(200);
+      const challenge = await challengeResponse.json() as {
+        schema: string; challenge: string; difficulty: number; expiresAt: string;
+      };
+      expect(challenge.schema).toBe("atrinik-rendezvous-admission-v1");
+      expect(challenge.difficulty).toBe(24);
+      const solution = await solveAdmissionWork(challenge.challenge);
+      const client = await connect("client", {
+        Authorization: `Bearer ${ticket}`,
+        "X-Atrinik-Access-Client-Nonce": clientNonce,
+        "X-Atrinik-Rendezvous-Admission": `${challenge.challenge}.${solution}`,
+      });
       const ready=socketEvent(client,"message");
       client.send(JSON.stringify({type:"access_init",version:1,grant:ticket,client_nonce:clientNonce}));
       await expect(ready).resolves.toMatchObject({data:JSON.stringify({type:"access_ready",version:1})});
@@ -361,7 +395,7 @@ describe("compiled named Worker Service Bindings", () => {
         }
       }
     }
-  });
+  }, 180_000);
 
   it("keeps the v3 publisher canary independent of inert legacy retirement", async () => {
     const bindings = await miniflare.getBindings<{ DB: D1Database }>("core");
@@ -403,6 +437,27 @@ function socketEvent(socket: WebSocket, type: "message" | "close"): Promise<Even
     socket.addEventListener("error", failed);
     if (type !== "close") socket.addEventListener("close", failed);
   });
+}
+
+/** Test-only solver: fixed production difficulty, bounded trials and real time. */
+async function solveAdmissionWork(token: string): Promise<string> {
+  const base = createHash("sha256").update(`atrinik-rendezvous-work-v1\0${token}\0`, "ascii");
+  const solution = Buffer.from("0000000000000000", "ascii");
+  const deadline = Date.now() + 60_000;
+  for (let trial = 0; trial < 2 ** 27; trial += 1) {
+    if ((trial & 4095) === 0) {
+      if (Date.now() >= deadline) throw new Error("Admission test solver exceeded its bounded deadline");
+      await new Promise<void>(resolve => setImmediate(resolve));
+    }
+    const digest = base.copy().update(solution).digest();
+    if (digest[0] === 0 && digest[1] === 0 && digest[2] === 0) return solution.toString("ascii");
+    for (let digit = 15; digit >= 0; digit -= 1) {
+      if (solution[digit] === 102) { solution[digit] = 48; continue; }
+      solution[digit] += solution[digit] === 57 ? 40 : 1;
+      break;
+    }
+  }
+  throw new Error("Admission test solver exhausted its bounded trial count");
 }
 
 async function fetchPublisherCanary(): Promise<Response> {
