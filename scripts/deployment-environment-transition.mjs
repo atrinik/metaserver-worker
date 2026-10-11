@@ -126,7 +126,9 @@ function snapshotCheck(snapshot, coordinates, now) {
     const roles = coordinates.workers[target].map((w) => w.role).sort();
     if (!same(roles, ["core", "publisher", "rendezvous"])) fail("worker roles mismatch");
     for (const worker of coordinates.workers[target]) {
-      if (!identifier.test(worker.name) || !identifier.test(worker.tag)) fail("invalid worker identity");
+      const expectedName = `atrinik-metaserver${target === "development" ? "-development" : ""}${worker.role === "core" ? "" : `-${worker.role}`}`;
+      if (worker.name !== expectedName || !identifier.test(worker.name) || !/^[0-9a-f]{32}$/u.test(worker.tag))
+        fail("invalid worker role identity");
       const active = snapshot.activeVersions?.[worker.name];
       if (!uuid.test(active)) fail("missing exact active worker version");
     }
@@ -134,7 +136,10 @@ function snapshotCheck(snapshot, coordinates, now) {
   const workers = Object.values(coordinates.workers).flat();
   if (new Set(workers.map((w) => w.name)).size !== 6 ||
       new Set(workers.map((w) => w.tag)).size !== 6) fail("cross-environment worker identity");
-  if (!/^[0-9a-f]{32}$/u.test(coordinates.accountId)) fail("invalid account identity");
+  if (!/^[0-9a-f]{32}$/u.test(coordinates.accountId) ||
+      !uuid.test(coordinates.productionTriggerUuid) || !uuid.test(coordinates.reviewTriggerUuid) ||
+      coordinates.productionTriggerUuid === coordinates.reviewTriggerUuid ||
+      !uuid.test(coordinates.repositoryConnectionUuid)) fail("invalid account or trigger identity");
   const prodCore = coordinates.workers.production.find((w) => w.role === "core");
   for (const worker of workers.filter((w) => w.tag !== prodCore.tag)) {
     const inventory = snapshot.otherWorkers?.[worker.tag];

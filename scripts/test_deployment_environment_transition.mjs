@@ -182,3 +182,10 @@ test("active review builds require immutable safe launch commands and token, not
   build.build_trigger_metadata.deploy_command = "npm run deploy:production";
   assert.throws(() => validateProductionWriterFence(input, policy), /launch authority/);
 });
+
+test("rejects role swaps even with otherwise valid environment name sets", () => {
+  const f = fixture();
+  [f.coordinates.workers.production[0].role, f.coordinates.workers.production[1].role] = ["publisher", "core"];
+  f.snapshot.workers = clone(f.coordinates.workers);
+  assert.throws(() => createTransitionPlan(f), /role identity/);
+});
