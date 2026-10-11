@@ -168,8 +168,11 @@
   review inactive: fresh readback includes an encrypted Builds secret and a
   shared wrapper with unreadable policy, so never call it credential-free.
   Both retained Cloudflare triggers require literal `exit 1` build/deploy,
-  `SKIP_DEPENDENCY_INSTALL=1`, all branches excluded, sealed bounded startup
-  environment/configuration digests and every Build stopped, including review.
+  `SKIP_DEPENDENCY_INSTALL=1`, preserved valid selectors (production main/no
+  exclusions; review wildcard/exclude-main), sealed bounded startup environment/
+  configuration digests and every Build stopped at each fence, including review.
+  Apply only the documented two-field commands PATCH. Builds may still enqueue
+  or start and fail immediately; never claim that branch pushes are disabled.
   Branch pause alone cannot fence manual/retried Builds. Retain unknown
   credentials unread and uncalled; this policy authorizes no authentication
   removal, secret copying or new PROD deployment. A rejected partial PATCH is

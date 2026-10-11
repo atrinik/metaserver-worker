@@ -139,11 +139,11 @@ connection and histories are inactive until a separately authorized restoration
 proves credential-free policy. Fresh provider readback instead includes an
 encrypted Builds secret and a shared wrapper with unreadable policy. Both
 retained Cloudflare triggers require literal `exit 1` build/deploy commands,
-skipped installation, excluded branches, sealed private configuration/environment
-digests and stopped Builds before promotion. A branch pause cannot fence manual
-runs or retries. The attempted partial PATCH was rejected with provider 12002
-and fresh readback showed unchanged provider state; no completed fence is
-claimed. See [deployment environments](docs/deployment-environments.md) for the
+skipped installation, preserved existing branch selectors, sealed private
+configuration/environment digests and stopped Builds at each promotion fence. A branch pause cannot fence manual
+runs or retries. The commands-only PATCH does not disable branch pushes:
+Builds may enqueue/start and fail immediately. No completed provider fence is
+claimed by this source. See [deployment environments](docs/deployment-environments.md) for the
 retained-inert alternative. Historical
 [review-environment design](docs/review-environment.md) remains evidence,
 not proof of the current credential boundary.

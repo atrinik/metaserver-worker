@@ -949,8 +949,10 @@ GitHub Actions is the sole active PR/source-validation path. Cloudflare review
 remains retained but inactive under the
 [retained-inert fence](docs/deployment-environments.md#retire-the-previous-production-writer-first).
 Both exact trigger build/deploy commands must be literal `exit 1`, installation
-skipped, all branches excluded, private config/environment digests sealed and
-all Builds stopped. Manual/retry paths require this command fence; a branch
+skipped, valid existing selectors preserved, private config/environment digests
+sealed and all Builds stopped at every fence. Apply only the documented
+two-field commands PATCH. Builds may still enqueue/start and fail immediately;
+branch pushes are not disabled. Manual/retry paths require this command fence; a branch
 pause alone is insufficient. The current encrypted Builds secret and shared
 wrapper with unreadable policy must never be called credential-free.
 Restoration requires separate authorization and proven policy.
@@ -958,8 +960,8 @@ Restoration requires separate authorization and proven policy.
 The remaining section records the historical
 [`deployment/workers-builds-review.json`](deployment/workers-builds-review.json)
 and [`docs/review-environment.md`](docs/review-environment.md) design. It grants
-no current activation or secret mutation. The partial provider PATCH rejected
-with 12002 and unchanged readback is not completed transition evidence.
+no current activation or secret mutation. A rejected PATCH is no completed
+transition proof; stop unsupported retries and preserve exact private readback.
 
 The Builds trigger request uses `/deployment/review-check` as its exact
 provider-canonical repository root. The leading slash is part of the reviewed

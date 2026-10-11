@@ -75,18 +75,27 @@ creation, secret rotation, deletion or extra promotion approval mechanism.
 ## Retire the previous production writer first
 
 Before publication of the replacement policy, an authorized provider operator
-must fence **both** retained Cloudflare production and review triggers and drain
-all queued/running Builds, including review. Branch exclusion alone does not
-fence manual builds or retries. For the retained-inert alternative, both exact
-trigger build and deploy commands must be literal `exit 1`, build caching
-must be disabled, implicit installation
-must be disabled with `SKIP_DEPENDENCY_INSTALL=1`, and all branches excluded.
-Seal exact private trigger/configuration/environment digests, including a bounded
-startup-environment allowlist, and freshly verify them before promotion. No
-repository code or dependency installation may run in either retained trigger.
-Set the protected `ATRINIK_PRODUCTION_WRITER_FENCE_POLICY` disposition explicitly
-to `retained-inert-builds`; never infer this exception from shared wrapper IDs.
-Require no additional trigger or active Build across the six PROD/DEV Workers.
+must fence both retained Cloudflare production and review commands and drain
+all queued/running Builds, including review. For `retained-inert-builds`, both
+exact trigger build and deploy commands must be literal `exit 1`; no repository
+code or dependency installation may run. Disable implicit installation through
+`SKIP_DEPENDENCY_INSTALL=1` and pin the existing caching/environment settings.
+Preserve the valid existing selectors: production includes `main` with no
+exclusions; review includes `*` and excludes `main`. Seal exact private trigger,
+selector, configuration and environment digests, including a bounded startup
+allowlist. Do not broaden a rejected branch-filter patch or alter provider
+identity to make it pass.
+
+Apply only the documented two-field commands PATCH:
+`{build_command: "exit 1", deploy_command: "exit 1"}` to each exact trigger,
+with fresh per-operation readback and the helper's private receipts. Commands
+are the fence for manual builds and retries as well as push-triggered builds.
+Builds may still enqueue or automatically start and fail immediately; this
+policy does not disable branch pushes or guarantee an empty queue. Require all
+Builds stopped at every promotion fence, and no additional trigger or active
+Build across the six PROD/DEV Workers. Set the protected
+`ATRINIK_PRODUCTION_WRITER_FENCE_POLICY` disposition explicitly to
+`retained-inert-builds`; never infer the exception from shared wrapper IDs.
 
 Retries use the configuration current when retried, so fresh command/config
 readback is part of the fence, not a historical build-start snapshot. See
@@ -109,11 +118,17 @@ not the names alone, to bind the approved fence.
 
 Unknown retained credentials remain unread and uncalled. This alternative does
 not remove authentication, copy credentials, create a new production deploy
-path or grant secret deletion. Keep unrelated connections intact. The attempted
-partial trigger PATCH was rejected with provider 12002; subsequent fresh
-readback showed existing versions, environments and branch settings unchanged.
-That attempt establishes no completed transition or fence. Publication requires
-successful fresh acceptance of the full retained-inert policy.
+path or grant secret deletion. Keep unrelated connections intact. A rejected
+PATCH is no transition proof: preserve its private receipt, read back exact
+provider state, and stop unsupported retries. Publication requires successful
+fresh acceptance of the full command, configuration and stopped-Build fence.
+
+The distinct `credential-free-review` disposition is available only with proven
+credential-free review policy and separately authorized restoration. Its former
+production trigger still requires literal `exit 1` build/deploy commands and
+skipped installation while preserving the valid main selector. Retaining the
+main selector never restores automatic PROD deployment. Neither disposition
+proves unreadable token scope or authorizes restoring Builds from history.
 
 The old v1 production contract, accepted setup/rotation authorities, applied
 migration history and incident journals remain historical evidence under their
@@ -129,7 +144,8 @@ Workers, and the repository-connection API inventory cannot establish a
 per-Worker identity. Keep the historical review connection and trigger in place, with the retained
 inactive fence above.
 
-The operator transition interface emits a plan or the next exact API operation:
+The operator transition interface emits a plan or the next exact API operation;
+use the final commands-only operation without changing the pinned selectors:
 
 ```sh
 node scripts/deployment-environment-transition.mjs --plan /absolute/private-input.json /absolute/new-plan.json
