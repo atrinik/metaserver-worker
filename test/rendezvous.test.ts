@@ -801,7 +801,7 @@ describe("RendezvousRoom HTTP and admission boundary", () => {
       if (attack === "expired") headers.set("X-Atrinik-Rendezvous-V5-Admission-Expires", String(Math.floor(Date.now() / 1000)));
       if (attack === "future") headers.set("X-Atrinik-Rendezvous-V5-Admission-Expires", String(Math.floor(Date.now() / 1000) + 61));
       const responses = await Promise.all(Array.from({ length: 32 }, () => stub.fetch(new Request(request.url, { headers }))));
-      expect(responses.every(response => response.status === 400 && response.webSocket === null)).toBe(true);
+      expect(responses.every(response => response.status === 403 && response.webSocket === null)).toBe(true);
       expect(await admissionCount(stub)).toBe(0);
       expect(await runInDurableObject(stub, (_instance, state) => state.getWebSockets("client").length)).toBe(0);
     } finally { closeForCleanup(server); }
@@ -920,12 +920,17 @@ describe("RendezvousRoom HTTP and admission boundary", () => {
         authorizationRequired: boolean,
         accessProtocol: boolean,
         generation: string,
+        admission: { ticket: string; expiresAt: number; clientNonce: null },
       ) => Promise<Response>;
       try {
         await expect(acceptClient.call(instance, Date.now(), {
           rendezvousActiveClientLimit: 16,
           rendezvousClientSessionSeconds: 15,
-        }, false, false, "0".repeat(64))).rejects.toMatchObject({
+        }, false, false, "0".repeat(64), {
+          ticket: ticket(++admissionTicketSequence),
+          expiresAt: Math.floor(Date.now() / 1000) + 60,
+          clientNonce: null,
+        })).rejects.toMatchObject({
           name: "RendezvousTeardownIntegrityError",
           message: "Rendezvous duplicate controls were not retired",
         });
@@ -934,7 +939,7 @@ describe("RendezvousRoom HTTP and admission boundary", () => {
         )).toBe(true);
         expect(state.storage.sql.exec<{ count: number }>(
           "SELECT COUNT(*) AS count FROM rendezvous_admissions",
-        ).one().count).toBe(0);
+        ).one().count).toBe(1);
       } finally {
         for (const restore of faultRestorers.reverse()) {
           restore();
@@ -1070,7 +1075,10 @@ describe("RendezvousRoom access grants", () => {
       if (attack === "expired") await env.DB.prepare("UPDATE access_grants SET expires_at=? WHERE server_id=?").bind(now, f.serverId).run();
       if (attack === "generation") await env.DB.prepare("UPDATE server_presence SET rendezvous_generation=? WHERE server_id=?").bind("c".repeat(64), f.serverId).run();
       const response = await f.stub.fetch(grantRequest(f, attack === "invalid" ? "f".repeat(64) : f.grant));
-      expect(response.status).toBe(403); expect(response.webSocket).toBeNull();
+      // A stale control generation is retired before grant redemption; the
+      // unavailable response preserves that existing room-generation boundary.
+      expect(response.status).toBe(attack === "generation" ? 503 : 403);
+      expect(response.webSocket).toBeNull();
       expect(await admissionCount(f.stub)).toBe(0);
       expect(await runInDurableObject(f.stub, (_instance, state) => state.getWebSockets("client").length)).toBe(0);
     } finally { closeForCleanup(f.server); }
