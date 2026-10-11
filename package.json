@@ -81,6 +81,7 @@
     "provision:workers-builds:verify-configured": "node scripts/workers-builds-provisioning.mjs --verify-configured",
     "test:maintenance": "node --test development/maintenance.test.mjs development/runtime.test.mjs && vitest run --config development/vitest.config.ts && tsc -p development/tsconfig.json",
     "deploy:development": "node scripts/production-delivery.mjs --environment development",
+    "deploy:development:validate": "node scripts/production-delivery.mjs --environment development --validate-only",
     "deploy:development:dry-run": "node scripts/production-delivery.mjs --environment development --dry-run"
   },
   "engines": {
