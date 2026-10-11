@@ -55,7 +55,7 @@ function ancestor(comparison, sha) {
 }
 
 export function validatePromotionEvidence({ environment, event, inputs, evidence, now = Date.now() }) {
-  const { repo, branch, run, release, tagSha, sourceComparison, controllerComparison, checks, protection, jobs, approvals } = evidence;
+  const { repo, branch, run, release, tagSha, sourceComparison, controllerComparison, checks, protection, jobs, approvals, actorPermission } = evidence;
   const created = Date.parse(run?.created_at);
   if (repo?.full_name !== repository || repo.default_branch !== "main" || repo.fork !== false ||
       branch?.name !== "main" || branch.protected !== true ||
@@ -65,6 +65,8 @@ export function validatePromotionEvidence({ environment, event, inputs, evidence
       run.repository?.full_name !== repository || run.head_repository?.full_name !== repository ||
       run.status !== "in_progress" || run.conclusion !== null ||
       run.actor?.id !== event.sender.id || run.triggering_actor?.id !== event.sender.id ||
+      actorPermission?.user?.id !== event.sender.id ||
+      !["admin", "write", "maintain"].includes(actorPermission.permission) ||
       !Number.isFinite(created) || created > now || now - created > 60 * 60 * 1000)
     fail("dispatch identity, first attempt or one-hour freshness fence failed");
   if (tagSha !== inputs.source_sha || release?.tag_name !== inputs.tag ||
@@ -81,18 +83,21 @@ export function validatePromotionEvidence({ environment, event, inputs, evidence
     check.status === "completed" && check.conclusion === "success" &&
     Number.isFinite(Date.parse(check.updated_at)) && Date.parse(check.updated_at) <= created))
     fail("selected source lacks successful protected-main Check before dispatch");
-  const reviewers = protection?.protection_rules?.find((rule) => rule.type === "required_reviewers");
   if (protection?.name !== "production" || !Number.isSafeInteger(protection.id) ||
       protection.deployment_branch_policy?.protected_branches !== true ||
-      protection.deployment_branch_policy?.custom_branch_policies !== false ||
-      reviewers?.prevent_self_review !== true || !Array.isArray(reviewers.reviewers) ||
-      reviewers.reviewers.length < 1)
-    fail("production environment requires independent review and protected branches");
-  const reviews = Array.isArray(approvals) ? approvals.filter((approval) =>
-    approval.environments?.some((entry) => entry.id === protection.id && entry.name === "production")) : [];
-  if (reviews.length !== 1 || reviews[0].state !== "approved" ||
-      !Number.isSafeInteger(reviews[0].user?.id) || reviews[0].user.id === event.sender.id)
-    fail("this dispatch lacks one independent production environment approval");
+      protection.deployment_branch_policy?.custom_branch_policies !== false)
+    fail("production environment must restrict deployment to protected branches");
+  // The authenticated manual dispatch is the operator's approval. Honor any
+  // existing environment review policy without imposing a second human operator.
+  const reviewers = protection.protection_rules?.find((rule) => rule.type === "required_reviewers");
+  if (reviewers) {
+    const reviews = Array.isArray(approvals) ? approvals.filter((approval) =>
+      approval.environments?.some((entry) => entry.id === protection.id && entry.name === "production")) : [];
+    if (reviews.length !== 1 || reviews[0].state !== "approved" ||
+        !Number.isSafeInteger(reviews[0].user?.id) ||
+        (reviewers.prevent_self_review === true && reviews[0].user.id === event.sender.id))
+      fail("this dispatch lacks its configured production environment approval");
+  }
   if (!Array.isArray(jobs) || jobs.filter((job) => job.name === "validate").length !== 1 ||
       !jobs.some((job) => job.name === "validate" && job.run_id === run.id &&
         job.run_attempt === 1 && job.head_sha === environment.GITHUB_SHA &&
@@ -156,6 +161,9 @@ export async function readPromotionEvidence(environment, inputs, fetcher = fetch
       github(`/actions/runs/${environment.GITHUB_RUN_ID}/attempts/1/jobs?per_page=100`),
       github(`/actions/runs/${environment.GITHUB_RUN_ID}/approvals`),
     ]);
+  if (typeof run.actor?.login !== "string" || !/^[a-zA-Z0-9][a-zA-Z0-9-]{0,38}$/u.test(run.actor.login))
+    fail("manual operator identity is invalid");
+  const actorPermission = await github(`/collaborators/${encodeURIComponent(run.actor.login)}/permission`);
   let object = tag.object;
   for (let depth = 0; object?.type === "tag" && depth < 4; depth += 1) {
     if (!shaPattern.test(object.sha ?? "")) fail("invalid annotated tag");
@@ -167,7 +175,7 @@ export async function readPromotionEvidence(environment, inputs, fetcher = fetch
   return { repo, branch, run, release, tagSha: object.sha, sourceComparison, controllerComparison,
     checks: checkPage.workflow_runs, protection,
     jobs: Number.isSafeInteger(jobPage.total_count) && jobPage.total_count <= 100 ? jobPage.jobs : null,
-    approvals };
+    approvals, actorPermission };
 }
 
 export async function createProductionAuthority({ environment = process.env, checkoutHead, dirty,
@@ -198,8 +206,8 @@ export async function assertProductionWriterFence(environment, fetcher = fetch) 
 }
 
 async function main() {
-  if (process.argv.length !== 3 || !["--dry-run", "--execute"].includes(process.argv[2]))
-    fail("usage: production-promotion.mjs --dry-run|--execute");
+  if (process.argv.length !== 3 || !["--dry-run", "--plan", "--execute"].includes(process.argv[2]))
+    fail("usage: production-promotion.mjs --dry-run|--plan|--execute");
   if (process.argv[2] === "--dry-run") {
     const inputs = Object.fromEntries(Object.entries(fields).map(([key, name]) => [key, process.env[name]]));
     validatePromotionInputs(inputs);
@@ -207,7 +215,8 @@ async function main() {
     return;
   }
   const { runDelivery } = await import("./production-delivery.mjs");
-  await runDelivery({ target: "production", sourceRoot: process.env.ATRINIK_DELIVERY_SOURCE_ROOT });
+  await runDelivery({ target: "production", sourceRoot: process.env.ATRINIK_DELIVERY_SOURCE_ROOT,
+    ...(process.argv[2] === "--plan" ? { mode: "plan" } : {}) });
 }
 
 if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url))

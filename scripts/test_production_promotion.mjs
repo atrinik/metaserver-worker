@@ -37,7 +37,7 @@ function fixture() {
     run: { id: 1234, run_attempt: 1, event: "workflow_dispatch", head_branch: "main",
       head_sha: controller, path: ".github/workflows/promote-production.yml",
       repository: { full_name: repository }, head_repository: { full_name: repository },
-      status: "in_progress", conclusion: null, actor: { id: 123 }, triggering_actor: { id: 123 },
+      status: "in_progress", conclusion: null, actor: { id: 123, login: "operator" }, triggering_actor: { id: 123 },
       created_at: "2026-10-11T19:30:00Z" },
     release: { id: 7, tag_name: inputs.tag, immutable: true, draft: false, prerelease: false,
       published_at: "2026-10-10T12:00:00Z" }, tagSha: source,
@@ -46,6 +46,7 @@ function fixture() {
     checks: [{ path: ".github/workflows/check.yml", event: "push", head_branch: "main", head_sha: source,
       repository: { full_name: repository }, head_repository: { full_name: repository },
       status: "completed", conclusion: "success", updated_at: "2026-10-10T11:00:00Z" }],
+    actorPermission: { permission: "admin", user: { id: 123 } },
     jobs: [{ name: "validate", run_id: 1234, run_attempt: 1, head_sha: controller,
       status: "completed", conclusion: "success" }],
     approvals: [{ state: "approved", user: { id: 456 }, environments: [{ id: 999, name: "production" }] }],
@@ -74,6 +75,7 @@ function fakeFetch(f, mutate = () => {}) {
       "/environments/production": e.protection,
       "/actions/runs/1234/attempts/1/jobs": { total_count: e.jobs.length, jobs: e.jobs },
       "/actions/runs/1234/approvals": e.approvals,
+      "/collaborators/operator/permission": e.actorPermission,
     };
     assert(Object.hasOwn(routes, path), path);
     let value = structuredClone(routes[path]);
@@ -125,7 +127,7 @@ for (const [name, modify] of [
   ["stale queued dispatch", (e) => { e.run.created_at = "2026-10-11T18:00:00Z"; }],
   ["future dispatch", (e) => { e.run.created_at = "2026-10-11T21:00:00Z"; }],
   ["environment confusion", (e) => { e.protection.name = "development"; }],
-  ["self approval", (e) => { e.protection.protection_rules[0].prevent_self_review = false; }],
+  ["unprotected environment branches", (e) => { e.protection.deployment_branch_policy.protected_branches = false; }],
   ["admin bypass without approval", (e) => { e.approvals = []; }],
   ["wrong environment approval", (e) => { e.approvals[0].environments[0].id = 998; }],
   ["self-approved dispatch", (e) => { e.approvals[0].user.id = 123; }],
@@ -133,10 +135,21 @@ for (const [name, modify] of [
   ["replayed validation", (e) => { e.jobs[0].run_attempt = 2; }],
   ["failed selected validation", (e) => { e.jobs[0].conclusion = "failure"; }],
   ["missing selected validation", (e) => { e.jobs = []; }],
-  ["no reviewer", (e) => { e.protection.protection_rules = []; }],
+  ["read-only operator", (e) => { e.actorPermission.permission = "read"; }],
 ]) test(`rejects live authority: ${name}`, () => {
   const f = fixture(); modify(f.evidence);
   assert.throws(() => validatePromotionEvidence(f));
+});
+
+
+test("solo operator manual approval needs no invented second-person gate", () => {
+  const f = fixture();
+  f.evidence.protection.protection_rules = [];
+  f.evidence.approvals = [];
+  validatePromotionEvidence(f);
+  f.evidence.protection.protection_rules = [{ type: "required_reviewers", prevent_self_review: false }];
+  f.evidence.approvals = [{ state: "approved", user: { id: 123 }, environments: [{ id: 999, name: "production" }] }];
+  validatePromotionEvidence(f);
 });
 
 test("each artifact dimension and the queued predecessor are independently fenced", () => {
