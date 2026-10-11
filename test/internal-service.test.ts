@@ -93,6 +93,14 @@ describe("internal service boundary", () => {
     expect(() => publisherServiceRequest(request)).toThrow(
       "The request is invalid.",
     );
+    for (const name of ["X-Atrinik-Rendezvous-V4-Role", "X-Atrinik-Rendezvous-V5-Admission",
+      "X-Atrinik-Rendezvous-V5-Ticket", "X-Atrinik-Rendezvous-V5-Admission-Expires",
+      "X-Atrinik-Rendezvous-V5-Client-Nonce", "X-Atrinik-Rendezvous-V5-Generation"]) {
+      expect(() => rendezvousServiceRequest(new Request(
+        `https://rendezvous.meta.atrinik.org/v1/classic/servers/${"1".repeat(64)}?role=client`,
+        { headers: { ...admissionHeaders(), [name]: "work-v1-24" } },
+      ), "client")).toThrow("The request is invalid.");
+    }
   });
 
   it("rejects any request header outside the coordinator envelopes", () => {
