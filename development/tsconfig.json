@@ -1,0 +1,19 @@
+{
+  "extends": "../tsconfig.json",
+  "include": [
+    "../worker-runtime.d.ts",
+    "../worker-configuration.d.ts",
+    "./core.ts",
+    "./maintenance.ts",
+    "../src/**/*.ts"
+  ],
+  "exclude": [
+    "../src/publisher-worker.ts",
+    "../src/rendezvous-worker.ts"
+  ],
+  "compilerOptions": {
+    "types": [
+      "../worker-configuration.d.ts"
+    ]
+  }
+}
