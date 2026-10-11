@@ -15,4 +15,9 @@ rendezvous.CLASSIC_DIRECTORY_PUBLIC;
 // @ts-expect-error The rendezvous project's ambient Env is also state-free.
 ambientRendezvous.DB;
 
+// @ts-expect-error Signing secrets belong only to the core.
+rendezvous.SOURCE_TAG_KEY_CURRENT;
+// @ts-expect-error Replay key IDs belong only to the core.
+rendezvous.SOURCE_TAG_KEY_CURRENT_ID;
+
 export {};

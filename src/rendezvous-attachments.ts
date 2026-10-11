@@ -12,7 +12,7 @@ import {
 } from "./rendezvous-contract";
 import type { RendezvousTerminalOutcome } from "./rendezvous-contract";
 
-export const ATTACHMENT_VERSION = 2;
+export const ATTACHMENT_VERSION = 4;
 // Tickets live only for the 15-second signaling attempt. This independent
 // attachment ceiling is not a player-facing daily admission quota.
 export const MAX_RETAINED_TICKETS = 50;
@@ -28,21 +28,8 @@ export type ClientStage =
   | "candidate_exchange"
   | "terminal";
 export type TicketStage = "active" | "terminal";
-export type AuthorizationState =
-  | "not_required"
-  | "awaiting_init"
-  | "awaiting_challenge"
-  | "awaiting_proof"
-  | "awaiting_result"
-  | "authorized"
-  | "terminal";
-export type TicketAuthorizationState =
-  | "not_required"
-  | "awaiting_challenge"
-  | "awaiting_proof"
-  | "awaiting_result"
-  | "authorized"
-  | "denied";
+export type AuthorizationState = "not_required" | "awaiting_init" | "terminal";
+export type TicketAuthorizationState = "not_required";
 
 export interface ClientAttachment {
   readonly v: typeof ATTACHMENT_VERSION;
@@ -52,7 +39,12 @@ export interface ClientAttachment {
   readonly connectionId: string;
   readonly admissionId: number;
   readonly openedAt: number;
-  readonly expiresAt: number;
+  expiresAt: number;
+  boundTicketHash: string | null;
+  accessClientNonce?: string | null;
+  accessExpiresAt?: number | null;
+  accessGrant?: string | null;
+  accessRedemption?: string | null;
   ticket: string | null;
   ticketDigest: string | null;
   stage: ClientStage;
@@ -87,7 +79,7 @@ export interface ServerAttachment {
   readonly v: typeof ATTACHMENT_VERSION;
   readonly role: "server";
   current: boolean;
-  readonly inviteProtocol: boolean;
+  readonly accessProtocol: boolean;
   readonly controlId: string;
   readonly generation: string;
   readonly openedAt: number;
@@ -113,6 +105,11 @@ export type StoredTicketState = [
 export interface StoredClientAttachment {
   readonly v: typeof ATTACHMENT_VERSION;
   readonly r: "c";
+  readonly u: string | null;
+  readonly e: string | null;
+  readonly l: string | null;
+  readonly w: string | null;
+  readonly ae: number | null;
   readonly c: string;
   readonly g: string;
   readonly i: string;
@@ -239,10 +236,15 @@ function decodeClientAttachment(
   if (
     !hasExactKeys(value, [
       "v", "r", "c", "g", "i", "a", "o", "x", "t", "d", "s", "p", "h",
-      "j", "n", "q", "z", "b", "f", "m", "y", "k",
+      "j", "n", "q", "z", "b", "f", "m", "y", "k", "u", "e", "l", "w", "ae",
     ]) ||
     value.v !== ATTACHMENT_VERSION ||
     value.r !== "c" ||
+    !((value.u === null && value.e === null && value.w === null && value.ae === null) ||
+      (isHex64(value.u) && isHex64(value.e) && isHex64(value.w) &&
+        isTimestamp(value.ae) && isTimestamp(value.o) && value.ae > value.o && value.ae - value.o <= MAX_SESSION_MS)) ||
+    (value.s === 2 && (value.u !== null || value.e !== null || value.w !== null)) ||
+    !(value.s === 2 ? value.l === null : isHex64(value.l)) ||
     !isConnectionId(value.c) ||
     !isHex64(value.g) ||
     !isConnectionId(value.i) ||
@@ -316,13 +318,7 @@ function decodeClientAttachment(
     (authorization === "not_required" &&
       ((value.s === 0 && !ticketIsNull) ||
         (value.s === 1 && ticketIsNull))) ||
-    ((authorization === "awaiting_challenge" ||
-      authorization === "awaiting_proof" ||
-      authorization === "awaiting_result") &&
-      (value.s !== 0 || ticketIsNull)) ||
-    (authorization === "authorized" && ticketIsNull) ||
-    (value.s === 1 &&
-      authorization !== "not_required" && authorization !== "authorized")
+    (value.s === 1 && authorization !== "not_required")
   ) {
     return null;
   }
@@ -330,6 +326,11 @@ function decodeClientAttachment(
   return {
     v: ATTACHMENT_VERSION,
     role: "client",
+    boundTicketHash: value.l as string | null,
+    accessClientNonce: value.w as string | null,
+    accessExpiresAt: value.ae as number | null,
+    accessGrant: value.u as string | null,
+    accessRedemption: value.e as string | null,
     controlId: value.c,
     generation: value.g,
     connectionId: value.i,
@@ -385,7 +386,7 @@ function decodeServerAttachment(
     v: ATTACHMENT_VERSION,
     role: "server",
     current: value.u,
-    inviteProtocol: value.p,
+    accessProtocol: value.p,
     controlId: value.c,
     generation: value.g,
     openedAt: value.o,
@@ -422,12 +423,6 @@ function isStoredTicketState(value: unknown): value is StoredTicketState {
       clientAuthorizationFrames,
       serverAuthorizationFrames,
     ) &&
-    !(stage === 0 && authorization === "denied") &&
-    !((authorization === "awaiting_challenge" ||
-      authorization === "awaiting_proof" ||
-      authorization === "awaiting_result" ||
-      authorization === "denied") &&
-      (serverCandidates !== 0 || completionCount !== 0)) &&
     isBoundedInteger(
       signalBytes,
       1,
@@ -461,6 +456,11 @@ function encodeClientAttachment(
   return {
     v: ATTACHMENT_VERSION,
     r: "c",
+    l: attachment.boundTicketHash,
+    w: attachment.accessClientNonce ?? null,
+    ae: attachment.accessExpiresAt ?? null,
+    u: attachment.accessGrant ?? null,
+    e: attachment.accessRedemption ?? null,
     c: attachment.controlId,
     g: attachment.generation,
     i: attachment.connectionId,
@@ -493,7 +493,7 @@ function encodeServerAttachment(
     v: ATTACHMENT_VERSION,
     r: "s",
     u: attachment.current,
-    p: attachment.inviteProtocol,
+    p: attachment.accessProtocol,
     c: attachment.controlId,
     g: attachment.generation,
     o: attachment.openedAt,
@@ -523,137 +523,25 @@ function decodeClientStage(stage: 0 | 1 | 2): ClientStage {
     stage === 1 ? "candidate_exchange" : "terminal";
 }
 
-function encodeAuthorizationState(
-  state: AuthorizationState,
-): 0 | 1 | 2 | 3 | 4 | 5 | 6 {
-  switch (state) {
-    case "not_required":
-      return 0;
-    case "awaiting_init":
-      return 1;
-    case "awaiting_challenge":
-      return 2;
-    case "awaiting_proof":
-      return 3;
-    case "awaiting_result":
-      return 4;
-    case "authorized":
-      return 5;
-    case "terminal":
-      return 6;
-  }
+function encodeAuthorizationState(state: AuthorizationState): 0 | 1 | 6 {
+  return state === "not_required" ? 0 : state === "awaiting_init" ? 1 : 6;
 }
-
-function encodeTicketAuthorizationState(
-  state: TicketAuthorizationState,
-): 0 | 2 | 3 | 4 | 5 | 6 {
-  switch (state) {
-    case "not_required":
-      return 0;
-    case "awaiting_challenge":
-      return 2;
-    case "awaiting_proof":
-      return 3;
-    case "awaiting_result":
-      return 4;
-    case "authorized":
-      return 5;
-    case "denied":
-      return 6;
-  }
+function encodeTicketAuthorizationState(_state: TicketAuthorizationState): 0 { return 0; }
+function decodeTicketAuthorizationState(value: unknown): TicketAuthorizationState | null {
+  return value === 0 ? "not_required" : null;
 }
-
-function decodeTicketAuthorizationState(
-  value: unknown,
-): TicketAuthorizationState | null {
-  switch (value) {
-    case 0:
-      return "not_required";
-    case 2:
-      return "awaiting_challenge";
-    case 3:
-      return "awaiting_proof";
-    case 4:
-      return "awaiting_result";
-    case 5:
-      return "authorized";
-    case 6:
-      return "denied";
-    default:
-      return null;
-  }
-}
-
 function decodeAuthorizationState(value: unknown): AuthorizationState | null {
-  switch (value) {
-    case 0:
-      return "not_required";
-    case 1:
-      return "awaiting_init";
-    case 2:
-      return "awaiting_challenge";
-    case 3:
-      return "awaiting_proof";
-    case 4:
-      return "awaiting_result";
-    case 5:
-      return "authorized";
-    case 6:
-      return "terminal";
-    default:
-      return null;
-  }
+  return value === 0 ? "not_required" : value === 1 ? "awaiting_init" : value === 6 ? "terminal" : null;
 }
-
 function authorizationFrameCountsAreValid(
-  state: AuthorizationState,
-  clientFrames: unknown,
-  serverFrames: unknown,
+  _state: AuthorizationState, clientFrames: unknown, serverFrames: unknown,
 ): boolean {
-  if (
-    !isBoundedInteger(clientFrames, 0, MAX_CLIENT_AUTHORIZATION_FRAMES) ||
-    !isBoundedInteger(serverFrames, 0, MAX_SERVER_AUTHORIZATION_FRAMES)
-  ) {
-    return false;
-  }
-  switch (state) {
-    case "not_required":
-    case "awaiting_init":
-      return clientFrames === 0 && serverFrames === 0;
-    case "awaiting_challenge":
-      return clientFrames === 1 && serverFrames === 0;
-    case "awaiting_proof":
-      return clientFrames === 1 && serverFrames === 1;
-    case "awaiting_result":
-      return clientFrames === 2 && serverFrames === 1;
-    case "authorized":
-      return clientFrames === 2 && serverFrames === 2;
-    case "terminal":
-      return (clientFrames === 0 && serverFrames === 0) ||
-        (clientFrames === 1 && serverFrames === 0) ||
-        (clientFrames === 1 && serverFrames === 1) ||
-        (clientFrames === 2 && serverFrames === 1) ||
-        (clientFrames === 2 && serverFrames === 2);
-  }
+  // Grant admission terminates at the coordinator; no authorization frames are relayed.
+  return clientFrames === 0 && serverFrames === 0;
 }
-
 function ticketAuthorizationFrameCountsAreValid(
-  state: TicketAuthorizationState | null,
-  clientFrames: unknown,
-  serverFrames: unknown,
-): boolean {
-  if (state === null) {
-    return false;
-  }
-  if (state === "denied") {
-    return clientFrames === 2 && serverFrames === 2;
-  }
-  return authorizationFrameCountsAreValid(
-    state,
-    clientFrames,
-    serverFrames,
-  );
-}
+  state: TicketAuthorizationState | null, clientFrames: unknown, serverFrames: unknown,
+): boolean { return state !== null && clientFrames === 0 && serverFrames === 0; }
 
 function encodeTerminalOutcome(outcome: RendezvousTerminalOutcome): number {
   const code = RENDEZVOUS_TERMINAL_OUTCOMES.indexOf(outcome);
@@ -712,7 +600,7 @@ function isClientStage(value: unknown): value is 0 | 1 | 2 {
 function isAuthorizationState(
   value: unknown,
 ): value is 0 | 1 | 2 | 3 | 4 | 5 | 6 {
-  return Number.isInteger(value) && Number(value) >= 0 && Number(value) <= 6;
+  return value === 0 || value === 1 || value === 6;
 }
 
 function isTicketStage(value: unknown): value is 0 | 1 {

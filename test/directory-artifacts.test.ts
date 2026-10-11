@@ -1,16 +1,16 @@
 import { describe, expect, it } from "vitest";
 
-import classicJsonFixture from "./fixtures/classic-directory-v4/index.json?raw";
-import classicXmlFixture from "./fixtures/classic-directory-v4/index.xml?raw";
-import classicV5HtmlFixture from "./fixtures/classic-directory-v5/index.html?raw";
-import classicV5JsonFixture from "./fixtures/classic-directory-v5/index.json?raw";
-import classicV5XmlFixture from "./fixtures/classic-directory-v5/index.xml?raw";
-import gameJsonFixture from "./fixtures/game-directory-v1/canonical.json?raw";
-import invalidAlabelFixture from "./fixtures/game-directory-v1/negative-invalid-alabel.json?raw";
-import invalidXmlNoncharacterFixture from "./fixtures/game-directory-v1/negative-xml-noncharacter.json?raw";
-import gameXmlFixture from "./fixtures/game-directory-v1/projection.xml?raw";
-import protocolManifestFixture from "./fixtures/game-directory-v1/manifest.json?raw";
-import protocolSource from "./fixtures/game-directory-v1/protocol-source.json";
+import classicJsonFixture from "./fixtures/classic-directory-v6-baseline/index.json?raw";
+import classicXmlFixture from "./fixtures/classic-directory-v6-baseline/index.xml?raw";
+import classicV5HtmlFixture from "./fixtures/classic-directory-v6/index.html?raw";
+import classicV5JsonFixture from "./fixtures/classic-directory-v6/index.json?raw";
+import classicV5XmlFixture from "./fixtures/classic-directory-v6/index.xml?raw";
+import gameJsonFixture from "./fixtures/game-directory-v2/canonical.json?raw";
+import invalidAlabelFixture from "./fixtures/game-directory-v2/negative-invalid-alabel.json?raw";
+import invalidXmlNoncharacterFixture from "./fixtures/game-directory-v2/negative-xml-noncharacter.json?raw";
+import gameXmlFixture from "./fixtures/game-directory-v2/projection.xml?raw";
+import protocolManifestFixture from "./fixtures/game-directory-v2/manifest.json?raw";
+import protocolSource from "./fixtures/game-directory-v2/protocol-source.json";
 
 import {
   type ClassicDirectoryServer,
@@ -37,7 +37,7 @@ function classicSnapshot(
   servers: readonly ClassicDirectoryServer[] = [],
 ): ClassicDirectorySnapshot {
   return {
-    profile: "classic-v1",
+    profile: "classic-v3",
     revision: 19,
     generation: "42",
     generatedAt: GENERATED_AT,
@@ -50,7 +50,7 @@ function classicV2Snapshot(
   servers: readonly ClassicDirectoryServer[] = [],
 ): DirectorySnapshot {
   return {
-    profile: "classic-v2",
+    profile: "classic-v3",
     revision: 19,
     generation: "42",
     generatedAt: GENERATED_AT,
@@ -63,7 +63,7 @@ function gameSnapshot(
   servers: readonly GameDirectoryServer[] = [],
 ): GameDirectorySnapshot {
   return {
-    profile: "game-v1",
+    profile: "game-v2",
     revision: 19,
     generation: "42",
     generatedAt: GENERATED_AT,
@@ -83,7 +83,7 @@ function classicServer(
     version: "3.0",
     textComment: "Welcome",
     certificateSha256: serverId,
-    passwordRequired: false,
+    accessRequired: false,
     ...overrides,
   };
 }
@@ -101,7 +101,7 @@ function gameServer(
     content: { id: "atrinik", revisionSha256: "1".repeat(64) },
     players: { online: 0, capacity: 20 },
     status: "online",
-    passwordRequired: false,
+    accessRequired: false,
     ...overrides,
   };
 }
@@ -122,8 +122,8 @@ async function expectValidArtifact(
 
 describe("static directory artifact rendering", () => {
   it.each([
-    ["classic-v1", classicSnapshot()],
-    ["game-v1", gameSnapshot()],
+    ["classic-v3", classicSnapshot()],
+    ["game-v2", gameSnapshot()],
   ] as const)("renders one coherent empty %s generation", async (_, input) => {
     const rendered = await renderDirectoryArtifacts(input);
 
@@ -147,8 +147,8 @@ describe("static directory artifact rendering", () => {
     const json = JSON.parse(rendered.artifacts.json.body) as Record<string, unknown>;
     expect(json).not.toHaveProperty("revision");
     expect(json.generation).toBe("42");
-    expect(json.generatedAt).toBe(input.profile === "game-v1" ? String(GENERATED_AT) : GENERATED_AT);
-    expect(json.expiresAt).toBe(input.profile === "game-v1" ? String(EXPIRES_AT) : EXPIRES_AT);
+    expect(json.generatedAt).toBe(input.profile === "game-v2" ? String(GENERATED_AT) : GENERATED_AT);
+    expect(json.expiresAt).toBe(input.profile === "game-v2" ? String(EXPIRES_AT) : EXPIRES_AT);
     expect(rendered.artifacts.html.body).not.toContain("Revision");
     expect(rendered.artifacts.xml.body).not.toContain(" revision=");
     expect(rendered.artifacts.xml.body).toContain(`generation="42"`);
@@ -159,7 +159,7 @@ describe("static directory artifact rendering", () => {
   it("emits the exact canonical empty game JSON and body digest", async () => {
     const artifact = (await renderDirectoryArtifacts(gameSnapshot())).artifacts.json;
     const expected =
-      '{"schema":"atrinik-directory-v1","generation":"42",' +
+      '{"schema":"atrinik-game-directory-v2","generation":"42",' +
       `"generatedAt":"${GENERATED_AT}","expiresAt":"${EXPIRES_AT}",` +
       '"servers":[]}\n';
 
@@ -169,7 +169,7 @@ describe("static directory artifact rendering", () => {
     );
   });
 
-  it("matches the exact Classic v5 JSON, XML, and HTML fixtures", async () => {
+  it("matches the exact Classic v6 JSON, XML, and HTML fixtures", async () => {
     const rendered = await renderDirectoryArtifacts(classicV2Snapshot([
       {
         serverId: ID_A,
@@ -178,7 +178,7 @@ describe("static directory artifact rendering", () => {
         version: "6.0",
         textComment: "Welcome",
         certificateSha256: ID_A,
-        accessCodeRequired: false,
+        accessRequired: false,
       },
       {
         serverId: ID_B,
@@ -187,24 +187,24 @@ describe("static directory artifact rendering", () => {
         version: "6.0",
         textComment: "",
         certificateSha256: ID_B,
-        accessCodeRequired: true,
+        accessRequired: true,
         endpoint: { hostname: "play.example.net", port: 13_327 },
       },
     ]));
     expect(rendered).toMatchObject({
-      profile: "classic-v2",
-      schema: "atrinik-classic-directory-v5",
+      profile: "classic-v3",
+      schema: "atrinik-classic-directory-v6",
       serverCount: 2,
     });
     expect(rendered.artifacts.json.body).toBe(classicV5JsonFixture);
     expect(rendered.artifacts.xml.body).toBe(classicV5XmlFixture);
     expect(rendered.artifacts.html.body).toBe(classicV5HtmlFixture);
-    expect(rendered.artifacts.json.body).toContain("accessCodeRequired");
-    expect(rendered.artifacts.xml.body).toContain("AccessCodeRequired");
-    expect(rendered.artifacts.html.body).toContain("Access code");
+    expect(rendered.artifacts.json.body).toContain("accessRequired");
+    expect(rendered.artifacts.xml.body).toContain("AccessRequired");
+    expect(rendered.artifacts.html.body).toContain("Access");
     for (const body of Object.values(rendered.artifacts).map(({ body }) => body)) {
       expect(body).not.toContain("passwordRequired");
-      expect(body).not.toContain("PasswordRequired");
+      expect(body).not.toContain("AccessCodeRequired");
     }
   });
 
@@ -212,7 +212,7 @@ describe("static directory artifact rendering", () => {
     const firstId = "1".repeat(64);
     const secondId = "2".repeat(64);
     const input: GameDirectorySnapshot = {
-      profile: "game-v1",
+      profile: "game-v2",
       revision: 101,
       generation: "42",
       generatedAt: 1_786_219_200,
@@ -240,7 +240,7 @@ describe("static directory artifact rendering", () => {
           },
           players: { online: 64, capacity: 64 },
           status: "full",
-          passwordRequired: true,
+          accessRequired: true,
         }),
       ],
     };
@@ -251,17 +251,17 @@ describe("static directory artifact rendering", () => {
     expect(rendered.artifacts.json.body).toBe(expectedJson);
     expect(rendered.artifacts.xml.body).toBe(expectedXml);
     expect(rendered.artifacts.json.sha256).toBe(
-      "059f559d0fe439576cae10bd623eb79ab6dfd6d0a78420563730c07cf9727d78",
+      "4fa5013b204c97668b8a3ff719b5b0aaa33dbe8b5cf90d2e90bb436a91d406fa",
     );
   });
 
   it("pins the selected producer fixtures to one reviewed protocol revision", async () => {
     expect(protocolSource).toMatchObject({
       repository: "atrinik/protocol",
-      commit: "8942912d55bc571213836bf1ad4ae7663d60b2a4",
+      commit: "b7c8d22ed9acd53bf31818bca5eda10a6f51d3e2",
       manifest: {
-        path: "fixtures/metaserver-directory-v1.json",
-        sha256: "0aa322621a3057dbeb0e738c7d54e7239c87be20933a2938e626c816e25c51ae",
+        path: "fixtures/metaserver-directory-v2.json",
+        sha256: "19ef15b7c3a97db28bb42eb87dd7a253e848a1a003d1f320dbdd31f289f5cf89",
       },
     });
     const protocolManifest = JSON.parse(protocolManifestFixture) as {
@@ -274,7 +274,7 @@ describe("static directory artifact rendering", () => {
       .toBe(protocolSource.manifest.sha256);
     expect(protocolManifest).toMatchObject({
       fixture_version: 2,
-      schema: "atrinik-directory-v1",
+      schema: "atrinik-game-directory-v2",
       positive: {
         body_sha256: protocolSource.fixtures["canonical.json"],
         http_strong_etag: "\"0123456789abcdef0123456789abcdef\"",
@@ -389,7 +389,7 @@ describe("static directory artifact rendering", () => {
     ]));
     const xml = rendered.artifacts.xml.body;
 
-    expect(xml).toContain('<Servers protocol="4" schema="atrinik-classic-directory-v4"');
+    expect(xml).toContain('<Servers protocol="6" schema="atrinik-classic-directory-v6"');
     expect(xml.match(/<Server>/gu)).toHaveLength(2);
     expect(xml.match(/<Address>/gu)).toHaveLength(1);
     expect(xml.match(/<Port>/gu)).toHaveLength(1);
@@ -404,7 +404,7 @@ describe("static directory artifact rendering", () => {
         name: "Public fallback",
         playersCount: 4_294_967_295,
         textComment: "",
-        passwordRequired: true,
+        accessRequired: true,
         endpoint: { hostname: "play.example.net", port: 13_327 },
       }),
     ]);
@@ -426,17 +426,17 @@ describe("static directory artifact rendering", () => {
     const rendered = await renderDirectoryArtifacts(input);
     expect(rendered.serverCount).toBe(512);
     expect(rendered.artifacts.json.byteLength).toBeLessThanOrEqual(
-      input.profile === "game-v1"
+      input.profile === "game-v2"
         ? MAX_GAME_DIRECTORY_JSON_BYTES
         : MAX_CLASSIC_DIRECTORY_ARTIFACT_BYTES,
     );
     expect(rendered.artifacts.html.byteLength).toBeLessThanOrEqual(
-      input.profile === "game-v1"
+      input.profile === "game-v2"
         ? MAX_GAME_DIRECTORY_PROJECTION_BYTES
         : MAX_CLASSIC_DIRECTORY_ARTIFACT_BYTES,
     );
     expect(rendered.artifacts.xml.byteLength).toBeLessThanOrEqual(
-      input.profile === "game-v1"
+      input.profile === "game-v2"
         ? MAX_GAME_DIRECTORY_PROJECTION_BYTES
         : MAX_CLASSIC_DIRECTORY_ARTIFACT_BYTES,
     );
@@ -461,7 +461,7 @@ describe("static directory artifact rendering", () => {
       .join(".");
     expect(new TextEncoder().encode(maximumHostname)).toHaveLength(253);
     const input: GameDirectorySnapshot = {
-      profile: "game-v1",
+      profile: "game-v2",
       revision: Number.MAX_SAFE_INTEGER,
       generation: "18446744073709551615",
       generatedAt: 253_402_286_399,

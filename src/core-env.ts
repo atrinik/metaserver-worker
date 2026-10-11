@@ -33,6 +33,7 @@ export type CoreEnv =
     readonly RENDEZVOUS_METRICS: AnalyticsEngineDataset;
     readonly DIRECTORY_METRICS: AnalyticsEngineDataset;
     readonly PUBLISH_IDENTITY_RATE_LIMITER: RateLimit;
+    readonly ACCESS_ROUTE_RATE_LIMITER: RateLimit;
     readonly RENDEZVOUS_SERVER_RATE_LIMITER: RateLimit;
     readonly RENDEZVOUS: DurableObjectNamespace<RendezvousRoom>;
     readonly DIRECTORY_BUILDER: DurableObjectNamespace<DirectoryBuilder>;

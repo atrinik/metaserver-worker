@@ -5,21 +5,19 @@ import {
 } from "./directory-state";
 import { isCanonicalHostname } from "./hostname";
 
-export const CLASSIC_DIRECTORY_SCHEMA = "atrinik-classic-directory-v4";
-export const CLASSIC_DIRECTORY_PROTOCOL = 4;
-export const CLASSIC_V2_DIRECTORY_SCHEMA = "atrinik-classic-directory-v5";
-export const CLASSIC_V2_DIRECTORY_PROTOCOL = 5;
-export const GAME_DIRECTORY_SCHEMA = "atrinik-directory-v1";
+export const CLASSIC_DIRECTORY_SCHEMA = "atrinik-classic-directory-v6";
+export const CLASSIC_DIRECTORY_PROTOCOL = 6;
+export const GAME_DIRECTORY_SCHEMA = "atrinik-game-directory-v2";
 export const MAX_CLASSIC_DIRECTORY_ARTIFACT_BYTES = 4 * 1024 * 1024;
 export const MAX_GAME_DIRECTORY_JSON_BYTES = 262_144;
 export const MAX_GAME_DIRECTORY_PROJECTION_BYTES = 4 * 1024 * 1024;
 export const MAX_DIRECTORY_LIFETIME_SECONDS = 14_400;
-// The maximum-size canonical envelope with an empty server array is 139 bytes.
+// The maximum-size canonical envelope with an empty server array is 144 bytes.
 // Reserving that full amount (rather than subtracting the two array brackets)
 // leaves a small fail-closed margin while D1 accounts for server objects and
 // their separating commas.
 export const MAX_GAME_DIRECTORY_JSON_SERVER_SET_BYTES =
-  MAX_GAME_DIRECTORY_JSON_BYTES - 139;
+  MAX_GAME_DIRECTORY_JSON_BYTES - 144;
 
 const MAX_DIRECTORY_TIMESTAMP = 253_402_300_799;
 const MAX_CLASSIC_PLAYERS = 4_294_967_295;
@@ -30,7 +28,7 @@ const REGION = /^[a-z0-9](?:[a-z0-9-]{0,30}[a-z0-9])?$/;
 const CONTENT_ID = /^[a-z0-9](?:[a-z0-9._-]{0,62}[a-z0-9])?$/;
 const TEXT_ENCODER = new TextEncoder();
 
-export type DirectoryArtifactProfile = "classic-v1" | "classic-v2" | "game-v1";
+export type DirectoryArtifactProfile = "classic-v3" | "game-v2";
 export type DirectoryArtifactFormat = "html" | "json" | "xml";
 
 export interface DirectDirectoryEndpoint {
@@ -48,10 +46,9 @@ interface ClassicDirectoryServerBase {
   readonly endpoint?: DirectDirectoryEndpoint;
 }
 
-export type ClassicDirectoryServer = ClassicDirectoryServerBase & (
-  | { readonly passwordRequired: boolean }
-  | { readonly accessCodeRequired: boolean }
-);
+export type ClassicDirectoryServer = ClassicDirectoryServerBase & {
+  readonly accessRequired: boolean;
+};
 
 export interface GameDirectoryServer {
   readonly serverId: string;
@@ -72,7 +69,7 @@ export interface GameDirectoryServer {
     readonly capacity: number;
   };
   readonly status: "online" | "full" | "maintenance";
-  readonly passwordRequired: boolean;
+  readonly accessRequired: boolean;
   readonly endpoint?: DirectDirectoryEndpoint;
 }
 
@@ -84,23 +81,17 @@ interface DirectorySnapshotMetadata {
 }
 
 export interface ClassicDirectorySnapshot extends DirectorySnapshotMetadata {
-  readonly profile: "classic-v1";
-  readonly servers: readonly ClassicDirectoryServer[];
-}
-
-export interface ClassicV2DirectorySnapshot extends DirectorySnapshotMetadata {
-  readonly profile: "classic-v2";
+  readonly profile: "classic-v3";
   readonly servers: readonly ClassicDirectoryServer[];
 }
 
 export interface GameDirectorySnapshot extends DirectorySnapshotMetadata {
-  readonly profile: "game-v1";
+  readonly profile: "game-v2";
   readonly servers: readonly GameDirectoryServer[];
 }
 
 export type DirectorySnapshot =
   | ClassicDirectorySnapshot
-  | ClassicV2DirectorySnapshot
   | GameDirectorySnapshot;
 
 export interface DirectoryArtifactDescriptor {
@@ -138,16 +129,14 @@ export async function renderDirectoryArtifacts(
   snapshot: DirectorySnapshot,
 ): Promise<RenderedDirectoryGeneration> {
   const canonical = canonicalizeSnapshot(snapshot);
-  const schema = canonical.profile === "classic-v1"
+  const schema = canonical.profile === "classic-v3"
     ? CLASSIC_DIRECTORY_SCHEMA
-    : canonical.profile === "classic-v2"
-    ? CLASSIC_V2_DIRECTORY_SCHEMA
     : GAME_DIRECTORY_SCHEMA;
   const htmlBody = renderHtml(canonical);
-  const jsonBody = canonical.profile !== "game-v1"
+  const jsonBody = canonical.profile !== "game-v2"
     ? renderClassicJson(canonical)
     : renderGameJson(canonical);
-  const xmlBody = canonical.profile !== "game-v1"
+  const xmlBody = canonical.profile !== "game-v2"
     ? renderClassicXml(canonical)
     : renderGameXml(canonical);
 
@@ -198,26 +187,19 @@ function canonicalizeSnapshot(snapshot: DirectorySnapshot): DirectorySnapshot {
     "servers",
   );
 
-  if (value.profile === "classic-v1") {
+  if (value.profile === "classic-v3") {
     const servers = serverInputs.map((server, index) =>
-      canonicalizeClassicServer(server, index, "classic-v1")
+      canonicalizeClassicServer(server, index, "classic-v3")
     );
     preserveAndRejectDuplicateServers(servers);
-    return { profile: "classic-v1", ...metadata, servers };
+    return { profile: "classic-v3", ...metadata, servers };
   }
-  if (value.profile === "classic-v2") {
-    const servers = serverInputs.map((server, index) =>
-      canonicalizeClassicServer(server, index, "classic-v2")
-    );
-    preserveAndRejectDuplicateServers(servers);
-    return { profile: "classic-v2", ...metadata, servers };
-  }
-  if (value.profile === "game-v1") {
+  if (value.profile === "game-v2") {
     const servers = serverInputs.map((server, index) =>
       canonicalizeGameServer(server, index)
     );
     preserveAndRejectDuplicateServers(servers);
-    return { profile: "game-v1", ...metadata, servers };
+    return { profile: "game-v2", ...metadata, servers };
   }
   return invalidModel("profile");
 }
@@ -262,12 +244,10 @@ function canonicalizeMetadata(
 function canonicalizeClassicServer(
   input: unknown,
   index: number,
-  profile: "classic-v1" | "classic-v2",
+  profile: "classic-v3",
 ): ClassicDirectoryServer {
   const context = `classic server ${index}`;
-  const policyKey = profile === "classic-v2"
-    ? "accessCodeRequired"
-    : "passwordRequired";
+  const policyKey = "accessRequired";
   const value = exactRecord(input, [
     "serverId",
     "name",
@@ -319,9 +299,7 @@ function canonicalizeClassicServer(
     version,
     textComment,
     certificateSha256,
-    ...(profile === "classic-v2"
-      ? { accessCodeRequired: value.accessCodeRequired as boolean }
-      : { passwordRequired: value.passwordRequired as boolean }),
+    accessRequired: value.accessRequired as boolean,
     ...(endpoint === undefined ? {} : { endpoint }),
   };
 }
@@ -340,7 +318,7 @@ function canonicalizeGameServer(
     "content",
     "players",
     "status",
-    "passwordRequired",
+    "accessRequired",
   ], ["region", "endpoint"], context);
   const serverId = digest(value.serverId, `${context} identity`);
   const certificateSha256 = digest(
@@ -398,8 +376,8 @@ function canonicalizeGameServer(
   ) {
     invalidModel(`${context} status`);
   }
-  if (typeof value.passwordRequired !== "boolean") {
-    invalidModel(`${context} password requirement`);
+  if (typeof value.accessRequired !== "boolean") {
+    invalidModel(`${context} access requirement`);
   }
   let region: string | undefined;
   if (Object.hasOwn(value, "region")) {
@@ -442,7 +420,7 @@ function canonicalizeGameServer(
     },
     players: { online, capacity },
     status: value.status,
-    passwordRequired: value.passwordRequired,
+    accessRequired: value.accessRequired,
     ...(endpoint === undefined ? {} : { endpoint }),
   };
 }
@@ -462,12 +440,11 @@ function canonicalizeEndpoint(
 }
 
 function renderClassicJson(
-  snapshot: ClassicDirectorySnapshot | ClassicV2DirectorySnapshot,
+  snapshot: ClassicDirectorySnapshot,
 ): string {
-  const v2 = snapshot.profile === "classic-v2";
   return JSON.stringify({
-    schema: v2 ? CLASSIC_V2_DIRECTORY_SCHEMA : CLASSIC_DIRECTORY_SCHEMA,
-    protocol: v2 ? CLASSIC_V2_DIRECTORY_PROTOCOL : CLASSIC_DIRECTORY_PROTOCOL,
+    schema: CLASSIC_DIRECTORY_SCHEMA,
+    protocol: CLASSIC_DIRECTORY_PROTOCOL,
     generation: snapshot.generation,
     generatedAt: snapshot.generatedAt,
     expiresAt: snapshot.expiresAt,
@@ -478,9 +455,7 @@ function renderClassicJson(
       version: server.version,
       textComment: server.textComment,
       certificateSha256: server.certificateSha256,
-      ...(v2
-        ? { accessCodeRequired: classicAuthorizationRequired(server) }
-        : { passwordRequired: classicAuthorizationRequired(server) }),
+      accessRequired: server.accessRequired,
       ...(server.endpoint === undefined
         ? {}
         : { endpoint: { ...server.endpoint } }),
@@ -509,7 +484,7 @@ function gameJsonServer(server: GameDirectoryServer): object {
     content: { ...server.content },
     players: { ...server.players },
     status: server.status,
-    passwordRequired: server.passwordRequired,
+    accessRequired: server.accessRequired,
     ...(server.endpoint === undefined
       ? {}
       : { endpoint: { ...server.endpoint } }),
@@ -517,15 +492,12 @@ function gameJsonServer(server: GameDirectoryServer): object {
 }
 
 function classicAuthorizationRequired(server: ClassicDirectoryServer): boolean {
-  return "accessCodeRequired" in server
-    ? server.accessCodeRequired
-    : server.passwordRequired;
+  return server.accessRequired;
 }
 
 function renderClassicXml(
-  snapshot: ClassicDirectorySnapshot | ClassicV2DirectorySnapshot,
+  snapshot: ClassicDirectorySnapshot,
 ): string {
-  const v2 = snapshot.profile === "classic-v2";
   const servers = snapshot.servers.map((server) => {
     const endpoint = server.endpoint === undefined
       ? ""
@@ -540,16 +512,16 @@ function renderClassicXml(
       `    <TextComment>${escapeXml(server.textComment)}</TextComment>` +
       endpoint + "\n" +
       `    <CertificateSha256>${server.certificateSha256}</CertificateSha256>\n` +
-      `    <${v2 ? "AccessCodeRequired" : "PasswordRequired"}>` +
+      `    <AccessRequired>` +
       `${classicAuthorizationRequired(server)}` +
-      `</${v2 ? "AccessCodeRequired" : "PasswordRequired"}>\n` +
+      `</AccessRequired>\n` +
       "  </Server>"
     );
   }).join("\n");
   return (
     '<?xml version="1.0" encoding="UTF-8"?>\n' +
-    `<Servers protocol="${v2 ? CLASSIC_V2_DIRECTORY_PROTOCOL : CLASSIC_DIRECTORY_PROTOCOL}" ` +
-    `schema="${v2 ? CLASSIC_V2_DIRECTORY_SCHEMA : CLASSIC_DIRECTORY_SCHEMA}" ` +
+    `<Servers protocol="${CLASSIC_DIRECTORY_PROTOCOL}" ` +
+    `schema="${CLASSIC_DIRECTORY_SCHEMA}" ` +
     `generation="${snapshot.generation}" ` +
     `generated-at="${snapshot.generatedAt}" ` +
     `expires-at="${snapshot.expiresAt}">` +
@@ -571,7 +543,7 @@ function renderGameXml(snapshot: GameDirectorySnapshot): string {
       `  <server id="${server.serverId}" ` +
       `certificate-sha256="${server.certificateSha256}" ` +
       `status="${server.status}" ` +
-      `password-required="${server.passwordRequired}">\n` +
+      `access-required="${server.accessRequired}">\n` +
       `    <name>${escapeXml(server.name)}</name>\n` +
       `    <description>${escapeXml(server.description)}</description>` +
       region + "\n" +
@@ -596,12 +568,9 @@ function renderGameXml(snapshot: GameDirectorySnapshot): string {
 }
 
 function renderHtml(snapshot: DirectorySnapshot): string {
-  const isClassic = snapshot.profile !== "game-v1";
-  const isClassicV2 = snapshot.profile === "classic-v2";
-  const schema = snapshot.profile === "classic-v1"
+  const isClassic = snapshot.profile !== "game-v2";
+  const schema = snapshot.profile === "classic-v3"
     ? CLASSIC_DIRECTORY_SCHEMA
-    : isClassicV2
-    ? CLASSIC_V2_DIRECTORY_SCHEMA
     : GAME_DIRECTORY_SCHEMA;
   const title = isClassic ? "Atrinik Classic servers" : "Atrinik servers";
   const headings = isClassic
@@ -613,7 +582,7 @@ function renderHtml(snapshot: DirectorySnapshot): string {
       "Comment",
       "Certificate SHA-256",
       "Status",
-      isClassicV2 ? "Access code" : "Password",
+      "Access",
       "Direct endpoint",
     ]
     : [
@@ -627,12 +596,12 @@ function renderHtml(snapshot: DirectorySnapshot): string {
       "Content revision SHA-256",
       "Players",
       "Status",
-      "Password",
+      "Access",
       "Direct endpoint",
     ];
   const rows = isClassic
     ? snapshot.servers.map((server) =>
-      renderClassicHtmlRow(server, isClassicV2)
+      renderClassicHtmlRow(server)
     )
     : snapshot.servers.map(renderGameHtmlRow);
   return (
@@ -668,7 +637,6 @@ function renderHtml(snapshot: DirectorySnapshot): string {
 
 function renderClassicHtmlRow(
   server: ClassicDirectoryServer,
-  accessCode: boolean,
 ): string {
   return (
     "      <tr>" +
@@ -680,8 +648,7 @@ function renderClassicHtmlRow(
     `<td><code>${server.certificateSha256}</code></td>` +
     "<td>listed</td>" +
     `<td>${classicAuthorizationRequired(server)
-      ? accessCode ? "protected" : "required"
-      : accessCode ? "open" : "not required"}</td>` +
+      ? "protected" : "open"}</td>` +
     `<td>${renderHtmlEndpoint(server.endpoint)}</td>` +
     "</tr>"
   );
@@ -700,7 +667,7 @@ function renderGameHtmlRow(server: GameDirectoryServer): string {
     `<td><code>${server.content.revisionSha256}</code></td>` +
     `<td>${server.players.online}/${server.players.capacity}</td>` +
     `<td>${server.status}</td>` +
-    `<td>${server.passwordRequired ? "required" : "not required"}</td>` +
+    `<td>${server.accessRequired ? "protected" : "open"}</td>` +
     `<td>${renderHtmlEndpoint(server.endpoint)}</td>` +
     "</tr>"
   );
@@ -719,7 +686,7 @@ async function createArtifact(
 ): Promise<DirectoryArtifactDescriptor> {
   const bodyBytes = TEXT_ENCODER.encode(body);
   const byteLength = bodyBytes.byteLength;
-  const maximum = profile !== "game-v1"
+  const maximum = profile !== "game-v2"
     ? MAX_CLASSIC_DIRECTORY_ARTIFACT_BYTES
     : format === "json"
     ? MAX_GAME_DIRECTORY_JSON_BYTES

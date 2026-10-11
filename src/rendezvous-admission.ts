@@ -244,6 +244,20 @@ export class RendezvousAdmissionStore {
     });
   }
 
+  /** A replay never leaves an unclaimed capacity reservation, even after a crash. */
+  consumeAndClaim(nowMs: number, tags: RendezvousReplayTags):
+    RendezvousAdmissionConsumeResult | { readonly accepted: false; readonly reason: "replay" } {
+    return this.storage.transactionSync(() => {
+      const admission = this.consume(nowMs);
+      if (!admission.accepted) return admission;
+      const claim = this.claimReplayTags(admission.admissionId, tags);
+      if (claim.claimed) return admission;
+      if (claim.reason !== "replay") throw corruptSchema();
+      this.release(admission.admissionId);
+      return { accepted: false, reason: "replay" };
+    });
+  }
+
   /** Release only a reservation that has not acquired replay tags. */
   release(admissionId: number): boolean {
     assertAdmissionId(admissionId);

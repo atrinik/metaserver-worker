@@ -14,7 +14,7 @@ describe("directory cache purge", () => {
     const fetcher = vi.fn().mockResolvedValue(success({ id: "b".repeat(32) }));
     await expect(purgeDirectoryAliases(
       ENVIRONMENT,
-      "classic-v1",
+      "classic-v3",
       fetcher,
     )).resolves.toBeUndefined();
     expect(fetcher).toHaveBeenCalledTimes(1);
@@ -24,16 +24,16 @@ describe("directory cache purge", () => {
     const fetcher = vi.fn().mockResolvedValue(success({ id: "b".repeat(32) }));
     await purgeDirectoryAliases(
       ENVIRONMENT,
-      "classic-v2",
+      "classic-v3",
       fetcher,
-      "canary-v5/",
+      "canary-v6/",
     );
     const [, init] = fetcher.mock.calls[0] as [string, RequestInit];
     expect(JSON.parse(String(init.body))).toEqual({
       files: [
-        "https://classic.meta.atrinik.org/canary-v5/index.html",
-        "https://classic.meta.atrinik.org/canary-v5/index.json",
-        "https://classic.meta.atrinik.org/canary-v5/index.xml",
+        "https://classic.meta.atrinik.org/canary-v6/index.html",
+        "https://classic.meta.atrinik.org/canary-v6/index.json",
+        "https://classic.meta.atrinik.org/canary-v6/index.xml",
       ],
     });
   });
@@ -80,7 +80,7 @@ describe("directory cache purge", () => {
   ])("rejects %s", async (_name, purgeResponse) => {
     await expect(purgeDirectoryAliases(
       ENVIRONMENT,
-      "classic-v1",
+      "classic-v3",
       vi.fn().mockResolvedValue(purgeResponse),
     )).rejects.toThrow();
   });
@@ -103,7 +103,7 @@ describe("directory cache purge", () => {
     const fetcher = vi.fn();
     await expect(purgeDirectoryAliases(
       { ...ENVIRONMENT, ...mutation },
-      "classic-v1",
+      "classic-v3",
       fetcher,
     )).rejects.toThrow();
     expect(fetcher).not.toHaveBeenCalled();

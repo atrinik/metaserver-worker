@@ -7,14 +7,6 @@ export const RENDEZVOUS_POLICY_MAXIMUMS = Object.freeze({
   rendezvousClientSessionSeconds: 15,
 } as const);
 
-export const RENDEZVOUS_COOLDOWN_POLICY_MAXIMUMS = Object.freeze({
-  rendezvousClientPairBurstLimit: 20,
-  rendezvousClientPairWindowSeconds: 60,
-  rendezvousClientPairInitialCooldownSeconds: 30,
-  rendezvousClientPairMaximumCooldownSeconds: 900,
-  rendezvousClientPairResetSeconds: 1_800,
-} as const);
-
 export const CANONICAL_POLICY_MAXIMUMS = Object.freeze({
   listingTtlSeconds: 86_400,
   publishServerDaily: 48,
@@ -34,12 +26,14 @@ export const MINIMUM_LISTING_TTL_SECONDS =
 
 export interface DirectoryArtifactConfigurationInput {
   readonly CLASSIC_DIRECTORY_CUTOVER_MODE?: string;
+  readonly GAME_DIRECTORY_CUTOVER_MODE?: string;
   readonly DIRECTORY_REFRESH_LEAD_SECONDS?: string;
   readonly LISTING_TTL_SECONDS?: string;
 }
 
 export interface DirectoryArtifactConfiguration {
-  readonly classicDirectoryCutoverMode: "v4-production" | "v5-production";
+  readonly gameDirectoryCutoverMode: "v1-production" | "v2-production";
+  readonly classicDirectoryCutoverMode: "v4-production" | "v5-production" | "v6-production";
   readonly refreshLeadSeconds: number;
   readonly listingTtlSeconds: number;
   readonly artifactLifetimeSeconds: number;
@@ -91,11 +85,6 @@ export interface RendezvousCoordinatorConfigurationInput {
   readonly RENDEZVOUS_HOSTNAME?: string;
   readonly LISTING_TTL_SECONDS?: string;
   readonly ROUTE_DISABLED_RETRY_SECONDS?: string;
-  readonly RENDEZVOUS_CLIENT_PAIR_BURST_LIMIT?: string;
-  readonly RENDEZVOUS_CLIENT_PAIR_WINDOW_SECONDS?: string;
-  readonly RENDEZVOUS_CLIENT_PAIR_INITIAL_COOLDOWN_SECONDS?: string;
-  readonly RENDEZVOUS_CLIENT_PAIR_MAXIMUM_COOLDOWN_SECONDS?: string;
-  readonly RENDEZVOUS_CLIENT_PAIR_RESET_SECONDS?: string;
   readonly RENDEZVOUS_SERVER_DAILY_LIMIT?: string;
 }
 
@@ -103,11 +92,6 @@ export interface RendezvousCoordinatorConfiguration {
   readonly authority: string;
   readonly listingTtlSeconds: number;
   readonly routeDisabledRetrySeconds: number;
-  readonly rendezvousClientPairBurstLimit: number;
-  readonly rendezvousClientPairWindowSeconds: number;
-  readonly rendezvousClientPairInitialCooldownSeconds: number;
-  readonly rendezvousClientPairMaximumCooldownSeconds: number;
-  readonly rendezvousClientPairResetSeconds: number;
   readonly rendezvousServerDaily: number;
 }
 
@@ -204,20 +188,6 @@ export function publisherCoordinatorConfiguration(
 export function rendezvousCoordinatorConfiguration(
   input: RendezvousCoordinatorConfigurationInput,
 ): RendezvousCoordinatorConfiguration {
-  const initialCooldown = strictInteger(
-    input.RENDEZVOUS_CLIENT_PAIR_INITIAL_COOLDOWN_SECONDS,
-    "RENDEZVOUS_CLIENT_PAIR_INITIAL_COOLDOWN_SECONDS",
-    1,
-    RENDEZVOUS_COOLDOWN_POLICY_MAXIMUMS
-      .rendezvousClientPairInitialCooldownSeconds,
-  );
-  const maximumCooldown = strictInteger(
-    input.RENDEZVOUS_CLIENT_PAIR_MAXIMUM_COOLDOWN_SECONDS,
-    "RENDEZVOUS_CLIENT_PAIR_MAXIMUM_COOLDOWN_SECONDS",
-    initialCooldown,
-    RENDEZVOUS_COOLDOWN_POLICY_MAXIMUMS
-      .rendezvousClientPairMaximumCooldownSeconds,
-  );
   return Object.freeze({
     authority: strictDynamicAuthority(
       input.RENDEZVOUS_HOSTNAME,
@@ -229,26 +199,6 @@ export function rendezvousCoordinatorConfiguration(
       "ROUTE_DISABLED_RETRY_SECONDS",
       1,
       MAXIMUM_RETRY_AFTER_SECONDS,
-    ),
-    rendezvousClientPairBurstLimit: strictInteger(
-      input.RENDEZVOUS_CLIENT_PAIR_BURST_LIMIT,
-      "RENDEZVOUS_CLIENT_PAIR_BURST_LIMIT",
-      1,
-      RENDEZVOUS_COOLDOWN_POLICY_MAXIMUMS.rendezvousClientPairBurstLimit,
-    ),
-    rendezvousClientPairWindowSeconds: strictInteger(
-      input.RENDEZVOUS_CLIENT_PAIR_WINDOW_SECONDS,
-      "RENDEZVOUS_CLIENT_PAIR_WINDOW_SECONDS",
-      1,
-      RENDEZVOUS_COOLDOWN_POLICY_MAXIMUMS.rendezvousClientPairWindowSeconds,
-    ),
-    rendezvousClientPairInitialCooldownSeconds: initialCooldown,
-    rendezvousClientPairMaximumCooldownSeconds: maximumCooldown,
-    rendezvousClientPairResetSeconds: strictInteger(
-      input.RENDEZVOUS_CLIENT_PAIR_RESET_SECONDS,
-      "RENDEZVOUS_CLIENT_PAIR_RESET_SECONDS",
-      maximumCooldown,
-      RENDEZVOUS_COOLDOWN_POLICY_MAXIMUMS.rendezvousClientPairResetSeconds,
     ),
     rendezvousServerDaily: strictInteger(
       input.RENDEZVOUS_SERVER_DAILY_LIMIT,
@@ -285,10 +235,15 @@ export function directoryArtifactConfiguration(
     ),
   );
   return Object.freeze({
+    gameDirectoryCutoverMode: strictChoice(
+      input.GAME_DIRECTORY_CUTOVER_MODE ?? "v1-production",
+      "GAME_DIRECTORY_CUTOVER_MODE",
+      ["v1-production", "v2-production"] as const,
+    ),
     classicDirectoryCutoverMode: strictChoice(
       input.CLASSIC_DIRECTORY_CUTOVER_MODE,
       "CLASSIC_DIRECTORY_CUTOVER_MODE",
-      ["v4-production", "v5-production"] as const,
+      ["v4-production", "v5-production", "v6-production"] as const,
     ),
     refreshLeadSeconds,
     listingTtlSeconds,

@@ -377,9 +377,8 @@ function validateResources(resources) {
   exactValue(resources.d1.migrationLedger, "independent-exact-checked-in-ledger", "review migration ledger");
   exactValue(resources.d1.reset, "fresh-d1-or-reviewed-expiry-only-no-bulk-production-copy", "review reset plan");
   exactArray(resources.d1.referenceVectorSources, [
-    "test/fixtures/metaserver-publisher-v1.json",
-    "test/fixtures/metaserver-classic-publisher-v2.json",
-    "test/fixtures/metaserver-game-publisher-v1.json",
+    "test/fixtures/metaserver-classic-publisher-v3.json",
+    "test/fixtures/metaserver-game-publisher-v2.json",
   ], "review fixture sources");
   exactKeys(resources.coordinationD1, [
     "owner", "name", "schema", "schemaPath", "schemaSha256", "operationsPath", "operationsSha256",
@@ -458,20 +457,20 @@ function validateResources(resources) {
   for (const item of resources.rateLimits)
     exactKeys(item, ["owner", "binding", "namespaceId", "simple", "productionNamespaceReuse"], "review rate limit");
   exactArray(resources.rateLimits.map(({ namespaceId }) => namespaceId), [
-    "2006", "2007", "2101", "2201",
+    "2008", "2006", "2007", "2101", "2201",
   ], "review rate namespaces");
   exactArray(resources.rateLimits.map(({ owner }) => owner), [
-    "core", "core", "publisher", "rendezvous",
+    "core", "core", "core", "publisher", "rendezvous",
   ], "review rate owners");
   exactArray(resources.rateLimits.map(({ binding }) => binding), [
-    "PUBLISH_IDENTITY_RATE_LIMITER", "RENDEZVOUS_SERVER_RATE_LIMITER",
+    "ACCESS_ROUTE_RATE_LIMITER", "PUBLISH_IDENTITY_RATE_LIMITER", "RENDEZVOUS_SERVER_RATE_LIMITER",
     "GLOBAL_RATE_LIMITER", "GLOBAL_RATE_LIMITER",
   ], "review rate bindings");
   for (const rate of [...resources.rateLimits, resources.rendezvousClientRateLimit])
     exactValue(rate.productionNamespaceReuse, false, "review rate namespace isolation");
   exactArray(resources.rateLimits.map(({ simple }) => simple), [
-    { limit: 2, period: 60 }, { limit: 3, period: 60 },
-    { limit: 10, period: 60 }, { limit: 10, period: 60 },
+    { limit: 16, period: 60 }, { limit: 2, period: 60 }, { limit: 3, period: 60 },
+    { limit: 32768, period: 60 }, { limit: 65536, period: 60 },
   ], "review rate policies");
   exactKeys(resources.rendezvousClientRateLimit, [
     "owner", "binding", "namespaceId", "simple", "countedWithinRateLimitNamespaceCeiling", "productionNamespaceReuse",
@@ -480,13 +479,13 @@ function validateResources(resources) {
   exactValue(resources.rendezvousClientRateLimit.binding, "RENDEZVOUS_CLIENT_RATE_LIMITER", "review client rate binding");
   exactValue(resources.rendezvousClientRateLimit.namespaceId, "2202", "review client rate namespace");
   exactKeys(resources.rendezvousClientRateLimit.simple, ["limit", "period"], "review client rate policy");
-  exactValue(resources.rendezvousClientRateLimit.simple.limit, 60, "review client rate limit");
+  exactValue(resources.rendezvousClientRateLimit.simple.limit, 65536, "review client rate limit");
   exactValue(resources.rendezvousClientRateLimit.simple.period, 60, "review client rate period");
   exactValue(resources.rendezvousClientRateLimit.countedWithinRateLimitNamespaceCeiling, true, "review rate ceiling accounting");
   exactKeys(resources.secrets, ["owner", "names", "epochIds", "productionValueReuse", "buildReadable"], "review secrets");
   exactArray(resources.secrets.names, ["DIRECTORY_CACHE_PURGE_TOKEN", "RENDEZVOUS_HEALTH_EXPORT_TOKEN", "SOURCE_TAG_KEY_CURRENT", "SOURCE_TAG_KEY_PREVIOUS"], "review secret bindings");
   exactArray(resources.secrets.epochIds, ["review-canary-current", "review-canary-previous"], "review secret epochs");
-  exactValue(resources.secrets.owner, "canary-cohort-only", "review secret owner");
+  exactValue(resources.secrets.owner, "core", "review secret owner");
   exactValue(resources.secrets.productionValueReuse, false, "review secret isolation");
   exactValue(resources.secrets.buildReadable, false, "review secret visibility");
   exactKeys(resources.hostnames, [
@@ -536,21 +535,21 @@ function validateConfigurationMaterialization(value) {
       workersDevPrivateSubdomain: "exact-dedicated-live-account-subdomain-readback",
     },
     sources: [
-      { role: "core", path: "wrangler.jsonc", sha256: "01aa72881ffe1144defc211beb9a6b0ad3bf6e32897de0e9cd3812939588de32" },
-      { role: "publisher", path: "wrangler.publisher.jsonc", sha256: "b847b3d35c239545ceb3ff15afa17a05e39f0de590e89a414aaf21220d56d01d" },
-      { role: "rendezvous", path: "wrangler.rendezvous.jsonc", sha256: "10b32a4c9544c8153950a25db080824a72a6f5c621688e7d8accaf8b984b4e38" },
+      { role: "core", path: "wrangler.jsonc", sha256: "1f7566c98f27258f875fdfb845a82c702ba4d8a129bf7d3fe658e5a7b6d33731" },
+      { role: "publisher", path: "wrangler.publisher.jsonc", sha256: "aa33ab454fbdc3ce8b8894fefe7d45d959f2cfbf667a03e977a94e6a6fc23bbe" },
+      { role: "rendezvous", path: "wrangler.rendezvous.jsonc", sha256: "8c015eaff5b80a3e4ad74631e50b9f912d740940aa7a2ebcf15a394245958b39" },
     ],
     common: {
       workersDev: true, previewUrls: false, routes: [], observabilityDestinations: [],
-      sourceTagCurrentId: "review-canary-current", sourceTagPreviousId: "review-canary-previous",
       routeDisabledRetrySeconds: "60",
     },
     core: {
+      sourceTagCurrentId: "review-canary-current", sourceTagPreviousId: "review-canary-previous",
       name: "atrinik-metaserver-review-canary", d1DatabaseName: "atrinik-metaserver-review-canary",
       d1DatabaseId: "<provider-issued-review-d1-uuid>",
       r2BucketNames: ["atrinik-metaserver-review-canary-generations", "atrinik-metaserver-review-canary-classic", "atrinik-metaserver-review-canary-game"],
       analyticsDatasets: ["atrinik_metaserver_rendezvous_review_canary", "atrinik_metaserver_directory_review_canary"],
-      rateNamespaceIds: ["2006", "2007"], directoryCacheZoneId: "00000000000000000000000000000000",
+      rateNamespaceIds: ["2008", "2006", "2007"], directoryCacheZoneId: "00000000000000000000000000000000",
       classicDirectoryPublicOrigin: "https://classic.review.invalid",
       gameDirectoryPublicOrigin: "https://game.review.invalid",
       publishHostname: "atrinik-metaserver-publisher-review-canary.<private-subdomain>.workers.dev",
@@ -596,13 +595,13 @@ export function materializeReviewConfiguration(source, role, materialization, li
     fail(`review ${role} source configuration shape drift`);
   config.observability.logs.destinations = structuredClone(common.observabilityDestinations);
   config.observability.traces.destinations = structuredClone(common.observabilityDestinations);
-  config.vars.SOURCE_TAG_KEY_CURRENT_ID = common.sourceTagCurrentId;
-  config.vars.SOURCE_TAG_KEY_PREVIOUS_ID = common.sourceTagPreviousId;
   config.vars.ROUTE_DISABLED_RETRY_SECONDS = common.routeDisabledRetrySeconds;
   config.name = override.name;
   if (role === "core") {
+    config.vars.SOURCE_TAG_KEY_CURRENT_ID = override.sourceTagCurrentId;
+    config.vars.SOURCE_TAG_KEY_PREVIOUS_ID = override.sourceTagPreviousId;
     if (config.d1_databases?.length !== 1 || config.r2_buckets?.length !== 3 ||
-        config.analytics_engine_datasets?.length !== 2 || config.ratelimits?.length !== 2)
+        config.analytics_engine_datasets?.length !== 2 || config.ratelimits?.length !== 3)
       fail("review core source resource shape drift");
     config.d1_databases[0].database_name = override.d1DatabaseName;
     config.d1_databases[0].database_id = override.d1DatabaseId;
@@ -618,6 +617,9 @@ export function materializeReviewConfiguration(source, role, materialization, li
     config.vars.RENDEZVOUS_HOSTNAME = override.rendezvousHostname;
     config.triggers = { crons: structuredClone(override.cronTriggers) };
   } else {
+    if ((config.secrets?.required ?? []).length !== 0 ||
+        Object.keys(config.vars).some(name => name.startsWith("SOURCE_TAG_KEY_")))
+      fail(`review ${role} must not own signing keys`);
     if (config.services?.length !== 1) fail(`review ${role} source Service Binding shape drift`);
     const [binding, serviceAndEntrypoint] = override.serviceBinding.split(":");
     const [service, entrypoint] = serviceAndEntrypoint.split("#");
@@ -790,7 +792,7 @@ export function validateLiveCanary(value) {
     "rateLimitNamespaces", "customHostnames", "accessApplications", "cohortLifetime", "quarterlyReprovisionRequired",
   ], "review resource ceilings");
   const expectedCeilings = { workers: 3, d1Databases: 2, durableObjectNamespaces: 2, r2Buckets: 3,
-    analyticsDatasets: 2, rateLimitNamespaces: 5, customHostnames: 0, accessApplications: 1 };
+    analyticsDatasets: 2, rateLimitNamespaces: 6, customHostnames: 0, accessApplications: 1 };
   for (const [key, expected] of Object.entries(expectedCeilings)) exactValue(ceilings[key], expected, `review ${key} ceiling`);
   exactValue(ceilings.cohortLifetime, "long-lived-singleton", "review cohort lifetime");
   exactValue(ceilings.quarterlyReprovisionRequired, true, "review reprovision policy");

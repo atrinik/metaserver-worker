@@ -1,0 +1,151 @@
+import { readFile } from "node:fs/promises";
+import { resolve } from "node:path";
+import { fileURLToPath } from "node:url";
+import { assertDirectoryBuildContext } from "./production-delivery.mjs";
+
+const INTERNAL_URL = "https://internal.atrinik.invalid/v1/directory-reconciliation";
+const STAGE_TIMEOUT_MS = 90_000;
+
+// This helper is only entered by the production parent after its live fences.
+// Its provider-backed observer receives the existing lease token separately from
+// proxy bindings; the token is removed from the process environment before Wrangler.
+const CLEANUP_TIMEOUT_MS = 10_000;
+export function validateDirectoryProxyInput(config, environment) {
+  if (environment.WORKERS_CI !== "1" || environment.WORKERS_CI_BRANCH !== "main" ||
+      !/^[0-9a-f]{40}$/u.test(environment.WORKERS_CI_COMMIT_SHA ?? "") ||
+      !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/u
+        .test(environment.WORKERS_CI_BUILD_UUID ?? "") ||
+      !environment.CLOUDFLARE_API_TOKEN ||
+      !/^[0-9a-f]{32}$/u.test(config?.account_id ?? "") ||
+      config.account_id !== environment.CLOUDFLARE_ACCOUNT_ID ||
+      typeof config.compatibility_date !== "string" ||
+      !/^\d{4}-\d{2}-\d{2}$/u.test(config.compatibility_date) ||
+      JSON.stringify(config) !== JSON.stringify({
+        name: "atrinik-production-directory-reconciliation",
+        account_id: config.account_id,
+        compatibility_date: config.compatibility_date,
+        workers_dev: false,
+        preview_urls: false,
+        services: [{
+          binding: "DIRECTORY_RECONCILIATION", service: "atrinik-metaserver",
+          entrypoint: "DirectoryReconciliation", remote: true,
+        }],
+      })) throw new Error("directory proxy authority rejected");
+}
+
+async function boundedCleanup(operation, milliseconds) {
+  let timer;
+  try {
+    return await Promise.race([
+      Promise.resolve().then(operation),
+      new Promise((_, reject) => {
+        timer = setTimeout(() => reject(new Error("directory proxy cleanup deadline exceeded")),
+          milliseconds);
+      }),
+    ]);
+  } finally { clearTimeout(timer); }
+}
+
+export async function invokeDirectoryProxy({ configPath, config, environment,
+  authorize, createProxy, timeoutMs = STAGE_TIMEOUT_MS, cleanupTimeoutMs = CLEANUP_TIMEOUT_MS }) {
+  validateDirectoryProxyInput(config, environment);
+  if (typeof authorize !== "function") throw new Error("directory proxy live authority missing");
+  let timer;
+  let proxy;
+  let reader;
+  let stopped = false;
+  const abort = new AbortController();
+  const assertRunning = () => {
+    if (stopped || abort.signal.aborted) throw new Error("directory proxy deadline exceeded");
+  };
+  const deadline = new Promise((_, reject) => {
+    timer = setTimeout(() => {
+      stopped = true;
+      abort.abort();
+      reject(new Error("directory proxy deadline exceeded"));
+    }, timeoutMs);
+  });
+  try {
+    const operation = (async () => {
+      await authorize();
+      assertRunning();
+      const acquired = await createProxy({ configPath, persist: false, remoteBindings: true });
+      if (stopped) {
+        await boundedCleanup(() => acquired.dispose(), cleanupTimeoutMs);
+        throw new Error("directory proxy initialization expired");
+      }
+      proxy = acquired;
+      // Initialization can take long enough to lose current-main or the lease.
+      await authorize();
+      assertRunning();
+      const response = await proxy.env.DIRECTORY_RECONCILIATION.fetch(
+        new Request(INTERNAL_URL, { method: "POST", redirect: "error", signal: abort.signal }));
+      assertRunning();
+      if (response.status !== 200 || response.headers.get("Content-Type") !== "application/json" ||
+          response.headers.get("Cache-Control") !== "no-store") {
+        if (response.body) await response.body.cancel();
+        throw new Error("directory proxy response rejected");
+      }
+      // Read a bounded receipt before parsing; raw provider output never escapes.
+      if (!response.body) throw new Error("directory proxy receipt missing");
+      reader = response.body.getReader();
+      const chunks = [];
+      let bytes = 0;
+      while (true) {
+        const { done, value } = await reader.read();
+        assertRunning();
+        if (done) break;
+        bytes += value.byteLength;
+        if (bytes > 4_096) throw new Error("directory proxy receipt too large");
+        chunks.push(value);
+      }
+      const receipt = JSON.parse(Buffer.concat(chunks).toString("utf8"));
+      await authorize();
+      assertRunning();
+      return receipt;
+    })();
+    return await Promise.race([operation, deadline]);
+  } finally {
+    stopped = true;
+    abort.abort();
+    clearTimeout(timer);
+    // Cancellation and disposal share one independent bound, even when reads or
+    // provider cleanup never settle. A cleanup timeout is a failed stage.
+    await boundedCleanup(async () => {
+      const results = await Promise.allSettled([
+        reader ? reader.cancel() : Promise.resolve(),
+        proxy ? proxy.dispose() : Promise.resolve(),
+      ]);
+      if (results.some((result) => result.status === "rejected"))
+        throw new Error("directory proxy cleanup failed");
+    }, cleanupTimeoutMs);
+  }
+}
+
+async function main() {
+  if (process.argv.length !== 3) throw new Error("directory proxy invocation rejected");
+  const configPath = resolve(process.argv[2]);
+  const config = JSON.parse(await readFile(configPath, "utf8"));
+  validateDirectoryProxyInput(config, process.env);
+  const environment = { ...process.env };
+  // The read-only authority checker retains this credential in its private
+  // closure; Wrangler and its remote-binding subprocesses cannot inherit it.
+  delete process.env.ATRINIK_WORKERS_BUILDS_API_TOKEN;
+  process.env.WRANGLER_LOG = "error";
+  const receipt = await invokeDirectoryProxy({
+    configPath, config, environment,
+    authorize: () => assertDirectoryBuildContext(config, environment),
+    createProxy: async (options) => {
+      const { getPlatformProxy } = await import("wrangler");
+      return getPlatformProxy(options);
+    },
+  });
+  console.log(JSON.stringify(receipt));
+}
+
+if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
+  main().catch(() => {
+    console.error("directory reconciliation stage failed");
+    process.exitCode = 1;
+  });
+}

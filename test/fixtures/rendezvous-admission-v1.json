@@ -1,0 +1,194 @@
+{
+  "schema": "atrinik-rendezvous-admission-fixtures-v1",
+  "synthetic": true,
+  "authority": "rendezvous.example.invalid",
+  "profile": "classic",
+  "serverId": "1111111111111111111111111111111111111111111111111111111111111111",
+  "ticket": "2222222222222222222222222222222222222222222222222222222222222222",
+  "ticketHash": "9f72ea0cf49536e3c66c787f705186df9a4378083753ae9536d65b3ad7fcddc4",
+  "keyId": "synthetic_current",
+  "keyHex": "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f",
+  "issuedAt": "1800000000",
+  "nonce": "33333333333333333333333333333333",
+  "tokenPrefix": "v1.synthetic_current.1800000000.9f72ea0cf49536e3c66c787f705186df9a4378083753ae9536d65b3ad7fcddc4.33333333333333333333333333333333",
+  "hmacInputHex": "617472696e696b2d72656e64657a766f75732d61646d697373696f6e2d76310072656e64657a766f75732e6578616d706c652e696e76616c696400636c617373696300313131313131313131313131313131313131313131313131313131313131313131313131313131313131313131313131313131313131313131313131313131310076312e73796e7468657469635f63757272656e742e313830303030303030302e396637326561306366343935333665336336366337383766373035313836646639613433373830383337353361653935333664363562336164376663646463342e3333333333333333333333333333333333333333333333333333333333333333",
+  "mac": "45548449753e9460a1b06d180786d4472060f536cf1c0f667371d3519abc4f8f",
+  "token": "v1.synthetic_current.1800000000.9f72ea0cf49536e3c66c787f705186df9a4378083753ae9536d65b3ad7fcddc4.33333333333333333333333333333333.45548449753e9460a1b06d180786d4472060f536cf1c0f667371d3519abc4f8f",
+  "solution": "000000000129985a",
+  "workInputHex": "617472696e696b2d72656e64657a766f75732d776f726b2d76310076312e73796e7468657469635f63757272656e742e313830303030303030302e396637326561306366343935333665336336366337383766373035313836646639613433373830383337353361653935333664363562336164376663646463342e33333333333333333333333333333333333333333333333333333333333333332e343535343834343937353365393436306131623036643138303738366434343732303630663533366366316330663636373337316433353139616263346638660030303030303030303031323939383561",
+  "workDigest": "000000145087ed013d9d9cec3075508e9758271c668b6c37f549d9c7d3dba0f5",
+  "expiresAt": "1800000060",
+  "difficulty": 24,
+  "cases": [
+    {
+      "name": "current-key",
+      "now": 1800000000,
+      "accepted": true
+    },
+    {
+      "name": "previous-key-overlap",
+      "now": 1800000001,
+      "keyRole": "previous",
+      "accepted": true
+    },
+    {
+      "name": "last-live-second",
+      "now": 1800000059,
+      "accepted": true
+    },
+    {
+      "name": "future",
+      "now": 1799999999,
+      "accepted": false
+    },
+    {
+      "name": "reached-expiry",
+      "now": 1800000060,
+      "accepted": false
+    },
+    {
+      "name": "retired-key",
+      "now": 1800000000,
+      "keyRole": "retired",
+      "accepted": false
+    },
+    {
+      "name": "ticket-substitution",
+      "now": 1800000000,
+      "accepted": false,
+      "override": {
+        "ticket": "4444444444444444444444444444444444444444444444444444444444444444"
+      }
+    },
+    {
+      "name": "server-substitution",
+      "now": 1800000000,
+      "accepted": false,
+      "override": {
+        "serverId": "4444444444444444444444444444444444444444444444444444444444444444"
+      }
+    },
+    {
+      "name": "authority-substitution",
+      "now": 1800000000,
+      "accepted": false,
+      "override": {
+        "authority": "other.example.invalid"
+      }
+    },
+    {
+      "name": "unknown-key",
+      "now": 1800000000,
+      "accepted": false,
+      "override": {
+        "token": "v1.unknown.1800000000.9f72ea0cf49536e3c66c787f705186df9a4378083753ae9536d65b3ad7fcddc4.33333333333333333333333333333333.45548449753e9460a1b06d180786d4472060f536cf1c0f667371d3519abc4f8f"
+      }
+    },
+    {
+      "name": "altered-mac",
+      "now": 1800000000,
+      "accepted": false,
+      "override": {
+        "token": "v1.synthetic_current.1800000000.9f72ea0cf49536e3c66c787f705186df9a4378083753ae9536d65b3ad7fcddc4.33333333333333333333333333333333.45548449753e9460a1b06d180786d4472060f536cf1c0f667371d3519abc4f80"
+      }
+    },
+    {
+      "name": "altered-work",
+      "now": 1800000000,
+      "accepted": false,
+      "override": {
+        "solution": "0000000000000000"
+      }
+    },
+    {
+      "name": "uppercase-token",
+      "now": 1800000000,
+      "accepted": false,
+      "override": {
+        "token": "V1.SYNTHETIC_CURRENT.1800000000.9F72EA0CF49536E3C66C787F705186DF9A4378083753AE9536D65B3AD7FCDDC4.33333333333333333333333333333333.45548449753E9460A1B06D180786D4472060F536CF1C0F667371D3519ABC4F8F"
+      }
+    },
+    {
+      "name": "uppercase-solution",
+      "now": 1800000000,
+      "accepted": false,
+      "override": {
+        "solution": "000000000129985A"
+      }
+    },
+    {
+      "name": "solution-too-short",
+      "now": 1800000000,
+      "accepted": false,
+      "override": {
+        "solution": "0"
+      }
+    },
+    {
+      "name": "solution-too-long",
+      "now": 1800000000,
+      "accepted": false,
+      "override": {
+        "solution": "00000000000000000"
+      }
+    },
+    {
+      "name": "extra-token-field",
+      "now": 1800000000,
+      "accepted": false,
+      "override": {
+        "token": "v1.synthetic_current.1800000000.9f72ea0cf49536e3c66c787f705186df9a4378083753ae9536d65b3ad7fcddc4.33333333333333333333333333333333.45548449753e9460a1b06d180786d4472060f536cf1c0f667371d3519abc4f8f.extra"
+      }
+    },
+    {
+      "name": "oversized-header",
+      "now": 1800000000,
+      "accepted": false,
+      "override": {
+        "token": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      }
+    },
+    {
+      "name": "noncanonical-iat",
+      "now": 1800000000,
+      "accepted": false,
+      "override": {
+        "token": "v1.synthetic_current.01800000000.9f72ea0cf49536e3c66c787f705186df9a4378083753ae9536d65b3ad7fcddc4.33333333333333333333333333333333.45548449753e9460a1b06d180786d4472060f536cf1c0f667371d3519abc4f8f"
+      }
+    },
+    {
+      "name": "zero-iat",
+      "now": 1800000000,
+      "accepted": false,
+      "override": {
+        "token": "v1.synthetic_current.0.9f72ea0cf49536e3c66c787f705186df9a4378083753ae9536d65b3ad7fcddc4.33333333333333333333333333333333.45548449753e9460a1b06d180786d4472060f536cf1c0f667371d3519abc4f8f"
+      }
+    },
+    {
+      "name": "overflow-iat",
+      "now": 1800000000,
+      "accepted": false,
+      "override": {
+        "token": "v1.synthetic_current.253402300740.9f72ea0cf49536e3c66c787f705186df9a4378083753ae9536d65b3ad7fcddc4.33333333333333333333333333333333.45548449753e9460a1b06d180786d4472060f536cf1c0f667371d3519abc4f8f"
+      }
+    },
+    {
+      "name": "malformed-ticket",
+      "now": 1800000000,
+      "accepted": false,
+      "override": {
+        "ticket": "gggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggg"
+      }
+    },
+    {
+      "name": "text-hashed-ticket",
+      "now": 1800000000,
+      "accepted": false,
+      "override": {
+        "token": "v1.synthetic_current.1800000000.4f2e8d65483c641648cdb374ae9d8abd368d269e4ddffe092a8237b8162cddd6.33333333333333333333333333333333.45548449753e9460a1b06d180786d4472060f536cf1c0f667371d3519abc4f8f"
+      }
+    }
+  ],
+  "challengeRequest": "{\"schema\":\"atrinik-rendezvous-admission-v1\",\"ticketHash\":\"9f72ea0cf49536e3c66c787f705186df9a4378083753ae9536d65b3ad7fcddc4\"}",
+  "challengeResponse": "{\"schema\":\"atrinik-rendezvous-admission-v1\",\"challenge\":\"v1.synthetic_current.1800000000.9f72ea0cf49536e3c66c787f705186df9a4378083753ae9536d65b3ad7fcddc4.33333333333333333333333333333333.45548449753e9460a1b06d180786d4472060f536cf1c0f667371d3519abc4f8f\",\"difficulty\":24,\"expiresAt\":\"1800000060\"}"
+}

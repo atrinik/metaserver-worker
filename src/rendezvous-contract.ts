@@ -14,19 +14,23 @@ import type { RendezvousRole } from "./routes";
  * rolling deployment, either version therefore fails closed instead of
  * silently entering the legacy broadcast implementation.
  */
-export const INTERNAL_RENDEZVOUS_URL = "https://rendezvous.internal/v3";
+export const INTERNAL_RENDEZVOUS_URL = "https://rendezvous.internal/v5";
 export const INTERNAL_RENDEZVOUS_PUBLISH_URL =
-  "https://rendezvous.internal/v3/publish";
+  "https://rendezvous.internal/v5/publish";
 export const INTERNAL_DIRECTORY_CHANGED_HEADER =
   "X-Atrinik-Directory-Changed";
 export const INTERNAL_RENDEZVOUS_ROLE_HEADER =
-  "X-Atrinik-Rendezvous-V3-Role";
+  "X-Atrinik-Rendezvous-V5-Role";
 export const INTERNAL_RENDEZVOUS_PROTOCOL_HEADER =
-  "X-Atrinik-Rendezvous-V3-Protocol";
+  "X-Atrinik-Rendezvous-V5-Protocol";
 export const INTERNAL_RENDEZVOUS_AUTHORIZATION_HEADER =
-  "X-Atrinik-Rendezvous-V3-Authorization";
+  "X-Atrinik-Rendezvous-V5-Authorization";
 export const INTERNAL_RENDEZVOUS_GENERATION_HEADER =
-  "X-Atrinik-Rendezvous-V3-Generation";
+  "X-Atrinik-Rendezvous-V5-Generation";
+export const INTERNAL_RENDEZVOUS_ADMISSION_HEADER = "X-Atrinik-Rendezvous-V5-Admission";
+export const INTERNAL_RENDEZVOUS_TICKET_HEADER = "X-Atrinik-Rendezvous-V5-Ticket";
+export const INTERNAL_RENDEZVOUS_EXPIRY_HEADER = "X-Atrinik-Rendezvous-V5-Admission-Expires";
+export const INTERNAL_RENDEZVOUS_NONCE_HEADER = "X-Atrinik-Rendezvous-V5-Client-Nonce";
 export const LEGACY_INTERNAL_RENDEZVOUS_ROLE_HEADER = "X-Atrinik-Role";
 export const LEGACY_INTERNAL_RENDEZVOUS_V1_ROLE_HEADER =
   "X-Atrinik-Rendezvous-V1-Role";
@@ -40,7 +44,7 @@ const LEGACY_INTERNAL_RENDEZVOUS_V2_HEADERS = Object.freeze([
 // Public update fields can contain control characters which JSON.stringify()
 // expands to six-byte escapes. The strict field maxima fit below this fixed
 // private envelope even in that worst case.
-const MAX_INTERNAL_PUBLICATION_BYTES = 4_096;
+const MAX_INTERNAL_PUBLICATION_BYTES = 8_192;
 
 export const MAX_SIGNAL_BYTES = 512;
 export const MAX_CLIENT_CANDIDATES = 1;
@@ -130,34 +134,6 @@ export interface ClientCandidateSignal {
   readonly ticket: string;
 }
 
-export interface AuthInitSignal {
-  readonly type: "auth_init";
-  readonly version: 1;
-  readonly ticket: string;
-  readonly invite_id: string;
-}
-
-export interface AuthChallengeSignal {
-  readonly type: "auth_challenge";
-  readonly version: 1;
-  readonly ticket: string;
-  readonly challenge: string;
-}
-
-export interface AuthProofSignal {
-  readonly type: "auth_proof";
-  readonly version: 1;
-  readonly ticket: string;
-  readonly proof: string;
-}
-
-export interface AuthResultSignal {
-  readonly type: "auth_result";
-  readonly version: 1;
-  readonly ticket: string;
-  readonly authorized: boolean;
-}
-
 export type ServerSignalCandidateKind = Extract<
   DirectCandidateKind,
   "lan" | "ipv6" | "mapped" | "srflx"
@@ -177,10 +153,6 @@ export interface CompleteSignal {
 }
 
 export type RendezvousSignal =
-  | AuthInitSignal
-  | AuthChallengeSignal
-  | AuthProofSignal
-  | AuthResultSignal
   | ClientCandidateSignal
   | ServerCandidateSignal
   | CompleteSignal;
@@ -225,23 +197,16 @@ const SERVER_CANDIDATE_KEYS = [
   "ticket",
 ] as const;
 const COMPLETE_KEYS = ["type", "ticket"] as const;
-const AUTH_INIT_KEYS = ["type", "version", "ticket", "invite_id"] as const;
-const AUTH_CHALLENGE_KEYS = [
-  "type", "version", "ticket", "challenge",
-] as const;
-const AUTH_PROOF_KEYS = ["type", "version", "ticket", "proof"] as const;
-const AUTH_RESULT_KEYS = [
-  "type", "version", "ticket", "authorized",
-] as const;
-
 export interface InternalRendezvousUpgrade {
   readonly role: RendezvousRole;
-  readonly inviteProtocol: boolean;
+  readonly accessProtocol: boolean;
   readonly authorizationRequired: boolean;
   readonly generation: string;
+  readonly admission: import("./rendezvous-work").ValidatedAdmission | null;
 }
 
 interface InternalPublicationBase {
+  readonly certificate: string;
   readonly serverId: string;
   readonly publisherSequence: string;
   readonly publisherNonce: string;
@@ -262,21 +227,14 @@ interface InternalPublicationBase {
 }
 
 export interface InternalClassicPublication extends InternalPublicationBase {
-  readonly directoryProfile: "classic-v1";
-  readonly playersCount: number;
-  readonly version: string;
-  readonly textComment: string;
-}
-
-export interface InternalClassicV2Publication extends InternalPublicationBase {
-  readonly directoryProfile: "classic-v2";
+  readonly directoryProfile: "classic-v3";
   readonly playersCount: number;
   readonly version: string;
   readonly textComment: string;
 }
 
 export interface InternalGamePublication extends InternalPublicationBase {
-  readonly directoryProfile: "game-v1";
+  readonly directoryProfile: "game-v2";
   readonly description: string;
   readonly region: string | null;
   readonly protocolMajor: 1;
@@ -290,10 +248,10 @@ export interface InternalGamePublication extends InternalPublicationBase {
 
 export type InternalRendezvousPublication =
   | InternalClassicPublication
-  | InternalClassicV2Publication
   | InternalGamePublication;
 
 const INTERNAL_PUBLICATION_BASE_KEYS = [
+  "certificate",
   "serverId",
   "directoryProfile",
   "publisherSequence",
@@ -369,22 +327,45 @@ export function validateInternalRendezvousUpgrade(
   );
   if (
     (role !== "client" && role !== "server") ||
-    (protocol !== "none" && protocol !== "classic-invite-v1") ||
+    (protocol !== "none" && protocol !== "access-tokens-v1") ||
     (authorization !== "not-required" && authorization !== "required") ||
     generation === null ||
     !HEX_64.test(generation)
   ) {
     return null;
   }
-  const inviteProtocol = protocol === "classic-invite-v1";
+  const accessProtocol = protocol === "access-tokens-v1";
   const authorizationRequired = authorization === "required";
   if (
     (role === "server" && authorizationRequired) ||
-    (role === "client" && inviteProtocol !== authorizationRequired)
+    (role === "client" && accessProtocol !== authorizationRequired)
   ) {
     return null;
   }
-  return { role, inviteProtocol, authorizationRequired, generation };
+  const allowed = ["Upgrade", INTERNAL_RENDEZVOUS_ROLE_HEADER,
+    INTERNAL_RENDEZVOUS_PROTOCOL_HEADER, INTERNAL_RENDEZVOUS_AUTHORIZATION_HEADER,
+    INTERNAL_RENDEZVOUS_GENERATION_HEADER];
+  let admission: import("./rendezvous-work").ValidatedAdmission | null = null;
+  if (role === "client") {
+    allowed.push(INTERNAL_RENDEZVOUS_ADMISSION_HEADER, INTERNAL_RENDEZVOUS_TICKET_HEADER,
+      INTERNAL_RENDEZVOUS_EXPIRY_HEADER);
+    const ticket = request.headers.get(INTERNAL_RENDEZVOUS_TICKET_HEADER);
+    const expires = request.headers.get(INTERNAL_RENDEZVOUS_EXPIRY_HEADER) ?? "";
+    const now = Math.floor(Date.now() / 1000);
+    if (request.headers.get(INTERNAL_RENDEZVOUS_ADMISSION_HEADER) !== "work-v1-24" ||
+        ticket === null || !HEX_64.test(ticket) || !/^[1-9][0-9]{0,11}$/.test(expires) ||
+        Number(expires) <= now || Number(expires) > now + 60) return null;
+    let clientNonce: string | null = null;
+    if (authorizationRequired) {
+      allowed.push(INTERNAL_RENDEZVOUS_NONCE_HEADER);
+      clientNonce = request.headers.get(INTERNAL_RENDEZVOUS_NONCE_HEADER);
+      if (clientNonce === null || !HEX_64.test(clientNonce)) return null;
+    }
+    admission = { ticket, expiresAt: Number(expires), clientNonce };
+  }
+  const names = new Set(allowed.map(name => name.toLowerCase()));
+  if ([...request.headers.keys()].some(name => !names.has(name.toLowerCase()))) return null;
+  return { role, accessProtocol, authorizationRequired, generation, admission };
 }
 
 /**
@@ -434,9 +415,9 @@ export async function validateInternalRendezvousPublication(
     !isJsonObject(parsed) ||
     typeof parsed.serverId !== "string" ||
     !HEX_64.test(parsed.serverId) ||
-    (parsed.directoryProfile !== "classic-v1" &&
-      parsed.directoryProfile !== "classic-v2" &&
-      parsed.directoryProfile !== "game-v1") ||
+    (parsed.directoryProfile !== "classic-v3" &&
+      parsed.directoryProfile !== "game-v2") ||
+    !isPublicationCertificate(parsed.certificate) ||
     !isPublisherReplayMetadata(parsed) ||
     typeof parsed.commitToken !== "string" ||
     !HEX_64.test(parsed.commitToken) ||
@@ -463,6 +444,7 @@ export async function validateInternalRendezvousPublication(
   }
 
   const common = {
+    certificate: parsed.certificate,
     serverId: parsed.serverId,
     publisherSequence: parsed.publisherSequence,
     publisherNonce: parsed.publisherNonce,
@@ -483,8 +465,7 @@ export async function validateInternalRendezvousPublication(
   } as const;
 
   if (
-    parsed.directoryProfile === "classic-v1" ||
-    parsed.directoryProfile === "classic-v2"
+    parsed.directoryProfile === "classic-v3"
   ) {
     if (
       !hasExactKeys(parsed, INTERNAL_CLASSIC_PUBLICATION_KEYS) ||
@@ -531,7 +512,7 @@ export async function validateInternalRendezvousPublication(
 
   return {
     ...common,
-    directoryProfile: "game-v1",
+    directoryProfile: "game-v2",
     description: parsed.description,
     region: parsed.region,
     protocolMajor: 1,
@@ -542,6 +523,18 @@ export async function validateInternalRendezvousPublication(
     playersCapacity: parsed.playersCapacity,
     status: parsed.status,
   };
+}
+
+function isPublicationCertificate(value: unknown): value is string {
+  if (typeof value !== "string" || value.length === 0 || value.length > 2_732) {
+    return false;
+  }
+  try {
+    const bytes = atob(value);
+    return bytes.length > 0 && bytes.length <= 2_048 && btoa(bytes) === value;
+  } catch {
+    return false;
+  }
 }
 
 /**
@@ -576,14 +569,16 @@ export function parseRendezvousSignal(
     return { ok: false, error: "unsupported_signal" };
   }
 
+  // Removed invitation challenge/proof frames are never accepted by v5 rooms.
+  if (typeof parsed.type === "string" && parsed.type.startsWith("auth_")) {
+    return { ok: false, error: "unsupported_signal" };
+  }
+
   const signal = parseSignalObject(parsed);
   if (signal === null) {
     return { ok: false, error: "unsupported_signal" };
   }
   const serialized = serializeRendezvousSignal(signal);
-  if (isAuthorizationSignal(signal) && message !== serialized) {
-    return { ok: false, error: "unsupported_signal" };
-  }
   return {
     ok: true,
     signal,
@@ -597,34 +592,6 @@ export function parseRendezvousSignal(
  */
 export function serializeRendezvousSignal(signal: RendezvousSignal): string {
   switch (signal.type) {
-    case "auth_init":
-      return JSON.stringify({
-        type: signal.type,
-        version: signal.version,
-        ticket: signal.ticket,
-        invite_id: signal.invite_id,
-      });
-    case "auth_challenge":
-      return JSON.stringify({
-        type: signal.type,
-        version: signal.version,
-        ticket: signal.ticket,
-        challenge: signal.challenge,
-      });
-    case "auth_proof":
-      return JSON.stringify({
-        type: signal.type,
-        version: signal.version,
-        ticket: signal.ticket,
-        proof: signal.proof,
-      });
-    case "auth_result":
-      return JSON.stringify({
-        type: signal.type,
-        version: signal.version,
-        ticket: signal.ticket,
-        authorized: signal.authorized,
-      });
     case "client_candidate":
       return JSON.stringify({
         type: signal.type,
@@ -651,70 +618,6 @@ export function serializeRendezvousSignal(signal: RendezvousSignal): string {
 function parseSignalObject(
   fields: Record<string, unknown>,
 ): RendezvousSignal | null {
-  if (fields.type === "auth_init") {
-    if (
-      !hasExactKeys(fields, AUTH_INIT_KEYS) ||
-      fields.version !== 1 ||
-      !isTicket(fields.ticket) ||
-      !isInviteId(fields.invite_id)
-    ) {
-      return null;
-    }
-    return {
-      type: "auth_init",
-      version: 1,
-      ticket: fields.ticket,
-      invite_id: fields.invite_id,
-    };
-  }
-  if (fields.type === "auth_challenge") {
-    if (
-      !hasExactKeys(fields, AUTH_CHALLENGE_KEYS) ||
-      fields.version !== 1 ||
-      !isTicket(fields.ticket) ||
-      !isTicket(fields.challenge)
-    ) {
-      return null;
-    }
-    return {
-      type: "auth_challenge",
-      version: 1,
-      ticket: fields.ticket,
-      challenge: fields.challenge,
-    };
-  }
-  if (fields.type === "auth_proof") {
-    if (
-      !hasExactKeys(fields, AUTH_PROOF_KEYS) ||
-      fields.version !== 1 ||
-      !isTicket(fields.ticket) ||
-      !isTicket(fields.proof)
-    ) {
-      return null;
-    }
-    return {
-      type: "auth_proof",
-      version: 1,
-      ticket: fields.ticket,
-      proof: fields.proof,
-    };
-  }
-  if (fields.type === "auth_result") {
-    if (
-      !hasExactKeys(fields, AUTH_RESULT_KEYS) ||
-      fields.version !== 1 ||
-      !isTicket(fields.ticket) ||
-      typeof fields.authorized !== "boolean"
-    ) {
-      return null;
-    }
-    return {
-      type: "auth_result",
-      version: 1,
-      ticket: fields.ticket,
-      authorized: fields.authorized,
-    };
-  }
   if (fields.type === "complete") {
     if (!hasExactKeys(fields, COMPLETE_KEYS) || !isTicket(fields.ticket)) {
       return null;
@@ -846,17 +749,6 @@ function isPublisherReplayMetadata(
 
 function isTicket(value: unknown): value is string {
   return typeof value === "string" && HEX_64.test(value);
-}
-
-function isInviteId(value: unknown): value is string {
-  return typeof value === "string" && HEX_32.test(value);
-}
-
-function isAuthorizationSignal(
-  signal: RendezvousSignal,
-): signal is AuthInitSignal | AuthChallengeSignal | AuthProofSignal | AuthResultSignal {
-  return signal.type === "auth_init" || signal.type === "auth_challenge" ||
-    signal.type === "auth_proof" || signal.type === "auth_result";
 }
 
 function isServerSignalCandidateKind(

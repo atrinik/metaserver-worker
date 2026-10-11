@@ -8,7 +8,7 @@ import {
 import type { DirectoryBuildSummary } from "../src/directory-metrics";
 
 describe("directory builder metrics", () => {
-  it.each(["classic-v1", "game-v1"] as const)(
+  it.each(["classic-v3", "game-v2"] as const)(
     "uses only bounded labels for %s",
     (profile) => {
       for (const outcome of DIRECTORY_BUILD_OUTCOMES) {
@@ -41,21 +41,21 @@ describe("directory builder metrics", () => {
       cleanupDeferred: true,
     } as DirectoryBuildSummary);
     expect(writeDataPoint).toHaveBeenCalledExactlyOnceWith({
-      indexes: ["directory-build-v1:classic-v1:failed:deferred"],
-      blobs: ["directory-build-v1", "classic-v1", "failed", "deferred"],
+      indexes: ["directory-build-v1:classic-v3:failed:deferred"],
+      blobs: ["directory-build-v1", "classic-v3", "failed", "deferred"],
       doubles: [1, 0, 0],
     });
 
     writeDirectoryBuildMetric({ writeDataPoint }, {
-      profile: "game-v1",
+      profile: "game-v2",
       outcome: "published",
       durationMs: 500_000.9,
       cleanupDeleted: 65,
       cleanupDeferred: false,
     });
     expect(writeDataPoint).toHaveBeenLastCalledWith({
-      indexes: ["directory-build-v1:game-v1:published:current"],
-      blobs: ["directory-build-v1", "game-v1", "published", "current"],
+      indexes: ["directory-build-v1:game-v2:published:current"],
+      blobs: ["directory-build-v1", "game-v2", "published", "current"],
       doubles: [1, 300_000, 64],
     });
   });

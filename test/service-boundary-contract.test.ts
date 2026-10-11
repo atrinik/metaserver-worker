@@ -15,9 +15,9 @@ import publisherWorker from "../src/publisher-worker";
 import rendezvousWorker from "../src/rendezvous-worker";
 import { sha256Hex } from "../src/protocol";
 import { persistRendezvousPublication } from "../src/rendezvous-publication";
-import { CLASSIC_RENDEZVOUS_INVITE_SUBPROTOCOL } from "../src/routes";
-import classicV2Fixture from "./fixtures/metaserver-classic-publisher-v2.json";
-import publisherFixture from "./fixtures/metaserver-publisher-v1.json";
+import { ACCESS_RENDEZVOUS_SUBPROTOCOL } from "../src/routes";
+import publisherFixture from "./fixtures/metaserver-classic-publisher-v3.json";
+import { admissionHeaders, admissionKeys, admissionVector } from "./admission-fixture";
 
 const CURRENT_SECRET = "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA";
 const PREVIOUS_SECRET = "AQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQE";
@@ -53,10 +53,6 @@ function publisherEnvironment(
     PUBLISH_ENABLED: "enabled",
     GAME_PUBLISH_ENABLED: "disabled",
     ROUTE_DISABLED_RETRY_SECONDS: "300",
-    SOURCE_TAG_KEY_CURRENT_ID: "2026-08-a",
-    SOURCE_TAG_KEY_PREVIOUS_ID: "2026-07-a",
-    SOURCE_TAG_KEY_CURRENT: CURRENT_SECRET,
-    SOURCE_TAG_KEY_PREVIOUS: PREVIOUS_SECRET,
   } satisfies PublisherEnv;
   return override(base, {
     PUBLISH_ENABLED: "enabled",
@@ -79,10 +75,6 @@ function rendezvousEnvironment(core: Env): RendezvousEnv {
     RENDEZVOUS_HOSTNAME: "rendezvous.meta.atrinik.org",
     RENDEZVOUS_ENABLED: "enabled",
     ROUTE_DISABLED_RETRY_SECONDS: "300",
-    SOURCE_TAG_KEY_CURRENT_ID: "2026-08-a",
-    SOURCE_TAG_KEY_PREVIOUS_ID: "2026-07-a",
-    SOURCE_TAG_KEY_CURRENT: CURRENT_SECRET,
-    SOURCE_TAG_KEY_PREVIOUS: PREVIOUS_SECRET,
   } satisfies RendezvousEnv;
   return override(base, { RENDEZVOUS_ENABLED: "enabled" });
 }
@@ -109,24 +101,6 @@ function signedPublishRequest(
   );
 }
 
-function classicV2SignedPublishRequest(
-  vector: (typeof classicV2Fixture.positive)[number],
-): Request {
-  return new Request(`https://${classicV2Fixture.authority}${vector.path}`, {
-    method: "POST",
-    headers: {
-      "Atrinik-Publish-Sequence": vector.sequence,
-      "Atrinik-Server-ID": classicV2Fixture.server_id,
-      "CF-Connecting-IP": "192.0.2.152",
-      "Content-Digest": vector.content_digest,
-      "Content-Type": classicV2Fixture.content_type,
-      Signature: vector.signature_header,
-      "Signature-Input": vector.signature_input,
-    },
-    body: vector.body,
-  });
-}
-
 function override<T extends object>(
   target: T,
   values: Partial<Record<keyof T, unknown>>,
@@ -147,11 +121,6 @@ beforeEach(async () => {
     await state.storage.deleteAll();
   });
   await evictDurableObject(stub);
-  const v2Stub = env.RENDEZVOUS.getByName(classicV2Fixture.server_id);
-  await runInDurableObject(v2Stub, async (_instance, state) => {
-    await state.storage.deleteAll();
-  });
-  await evictDurableObject(v2Stub);
   await env.DB.batch([
     env.DB.prepare("DELETE FROM directory_artifact_history"),
     env.DB.prepare("DELETE FROM directory_artifact_commits"),
@@ -165,8 +134,6 @@ beforeEach(async () => {
     env.DB.prepare("DELETE FROM directory_entries"),
     env.DB.prepare("DELETE FROM server_presence"),
     env.DB.prepare("DELETE FROM request_budgets"),
-    env.DB.prepare("DELETE FROM rendezvous_pair_attempts"),
-    env.DB.prepare("DELETE FROM rendezvous_pair_cooldowns"),
     env.DB.prepare("DELETE FROM classic_identity_modes"),
     env.DB.prepare(
       `UPDATE classic_receiver_mode
@@ -181,83 +148,64 @@ beforeEach(async () => {
 });
 
 describe("in-process service-boundary contract", () => {
-  it("selects open and access-code-protected v2 rendezvous without v1 password state", async () => {
+  it("carries a valid ordinary proof through edge, core and the actual room exactly once", async () => {
+    const v = admissionVector;
+    const stub = env.RENDEZVOUS.getByName(v.serverId);
+    await runInDurableObject(stub, async (_instance, state) => { await state.storage.deleteAll(); });
+    await evictDurableObject(stub);
+    vi.mocked(Date.now).mockReturnValue(Number(v.issuedAt) * 1000);
+    const now = Number(v.issuedAt), serverToken = "6".repeat(64);
+    await persistRendezvousPublication(env.DB, {
+      serverId: v.serverId, directoryProfile: "classic-v3", certificate: "AA==",
+      publisherSequence: "1", publisherNonce: "7".repeat(32), publisherNonceExpiresAt: now + 86400,
+      commitToken: "8".repeat(64), expectedGeneration: null, generation: "9".repeat(64),
+      tokenHash: await sha256Hex(serverToken), now, visibilityCutoff: now - 14400,
+      name: "Admission boundary vector", playersCount: 0, version: "5.9.0", textComment: "Synthetic fixture",
+      isPublic: true, quicHost: "", quicPort: 1, quicCertSha256: v.serverId,
+      authorizationRequired: false, directoryFingerprint: "a".repeat(64),
+    });
+    const core = override(coreEnvironment(), { ...admissionKeys, RENDEZVOUS_HOSTNAME: v.authority });
+    const edge = override(rendezvousEnvironment(core), { ...admissionKeys, RENDEZVOUS_HOSTNAME: v.authority });
+    const server = await rendezvousWorker.fetch(new Request(
+      `https://${v.authority}/v1/classic/servers/${v.serverId}?role=server`,
+      { headers: { Upgrade: "websocket", Authorization: `Bearer ${serverToken}` } }), edge);
+    expect(server.status).toBe(101); server.webSocket?.accept();
+    const clientRequest = () => new Request(`https://${v.authority}/v1/classic/servers/${v.serverId}?role=client`,
+      { headers: admissionHeaders() });
+    const client = await rendezvousWorker.fetch(clientRequest(), edge);
+    try {
+      expect(client.status).toBe(101); client.webSocket?.accept();
+      const replay = await rendezvousWorker.fetch(clientRequest(), edge);
+      expect(replay.status).toBe(403); expect(replay.webSocket).toBeNull();
+    } finally {
+      client.webSocket?.close(1000, "Test complete"); server.webSocket?.close(1000, "Test complete");
+    }
+  });
+  it("uses the protected access route and rejects old client admission", async () => {
     const core = coreEnvironment();
     const edge = rendezvousEnvironment(core);
-    const publish = async (name: string) => {
-      const vector = classicV2Fixture.positive.find((item) => item.name === name);
-      if (vector === undefined) {
-        throw new Error(`Classic v2 fixture omits ${name}`);
-      }
-      vi.spyOn(Date, "now").mockReturnValue(vector.created * 1_000);
-      const context = createExecutionContext();
-      const response = await publisherWorker.fetch(
-        classicV2SignedPublishRequest(vector),
-        publisherEnvironment(core, context),
-      );
-      await waitOnExecutionContext(context);
-      expect(response.status).toBe(200);
-      return response.json<{ readonly rendezvousToken: string }>();
-    };
-    const request = (role: "client" | "server", token?: string, invite = false) =>
-      new Request(
-        `https://rendezvous.meta.atrinik.org/v1/classic/servers/${classicV2Fixture.server_id}?role=${role}`,
-        {
-          headers: {
-            ...(token === undefined ? {} : { Authorization: `Bearer ${token}` }),
-            "CF-Connecting-IP": role === "client" ? "192.0.2.153" : "192.0.2.154",
-            Upgrade: "websocket",
-            ...(invite
-              ? { "Sec-WebSocket-Protocol": CLASSIC_RENDEZVOUS_INVITE_SUBPROTOCOL }
-              : {}),
-          },
-        },
-      );
-
-    const open = await publish("public-open-addressless");
-    expect((await rendezvousWorker.fetch(
-      request("server", open.rendezvousToken, true),
-      edge,
-    )).status).toBe(400);
-    const openServer = await rendezvousWorker.fetch(
-      request("server", open.rendezvousToken),
-      edge,
-    );
-    expect(openServer.status).toBe(101);
-    openServer.webSocket?.accept();
-    const openClient = await rendezvousWorker.fetch(request("client"), edge);
-    expect(openClient.status).toBe(101);
-    openClient.webSocket?.accept();
-
-    const protectedPublication = await publish("public-protected-endpoint");
-    expect((await rendezvousWorker.fetch(
-      request("server", protectedPublication.rendezvousToken),
-      edge,
-    )).status).toBe(400);
-    const protectedServer = await rendezvousWorker.fetch(
-      request("server", protectedPublication.rendezvousToken, true),
-      edge,
-    );
-    expect(protectedServer.status).toBe(101);
-    protectedServer.webSocket?.accept();
-    expect((await rendezvousWorker.fetch(request("client"), edge)).status)
-      .toBe(503);
-    const protectedClient = await rendezvousWorker.fetch(
-      request("client", undefined, true),
-      edge,
-    );
-    expect(protectedClient.status).toBe(101);
-    protectedClient.webSocket?.accept();
-
-    const row = await env.DB.prepare(
-      `SELECT access_code_required, password_required
-         FROM directory_entries
-        WHERE profile = 'classic-v2' AND server_id = ?`,
-    ).bind(classicV2Fixture.server_id).first();
-    expect(row).toEqual({ access_code_required: 1, password_required: null });
-    for (const socket of [openClient, openServer, protectedClient, protectedServer]) {
-      socket.webSocket?.close(1000, "Test complete");
-    }
+    const context = createExecutionContext();
+    const published = await publisherWorker.fetch(signedPublishRequest(),publisherEnvironment(core,context));
+    await waitOnExecutionContext(context);
+    expect(published.status).toBe(200);
+    const {rendezvousToken} = await published.json<{rendezvousToken:string}>();
+    const server = await rendezvousWorker.fetch(new Request(
+      `https://rendezvous.meta.atrinik.org/v1/classic/servers/${publisherFixture.server_id}?role=server`,
+      {headers:{Upgrade:"websocket",Authorization:`Bearer ${rendezvousToken}`,
+        "CF-Connecting-IP":"192.0.2.154","Sec-WebSocket-Protocol":ACCESS_RENDEZVOUS_SUBPROTOCOL}}),edge);
+    expect(server.status).toBe(101); server.webSocket?.accept();
+    const old = await rendezvousWorker.fetch(new Request(
+      `https://rendezvous.meta.atrinik.org/v1/classic/servers/${publisherFixture.server_id}?role=client`,
+      {headers:{Upgrade:"websocket","CF-Connecting-IP":"192.0.2.153"}}),edge);
+    expect(old.status).toBe(428);
+    const client = await rendezvousWorker.fetch(new Request(
+      `https://rendezvous.meta.atrinik.org/v1/access/rendezvous/classic/${publisherFixture.server_id}`,
+      {headers:{Upgrade:"websocket","CF-Connecting-IP":"192.0.2.153",
+        "Sec-WebSocket-Protocol":ACCESS_RENDEZVOUS_SUBPROTOCOL}}),edge);
+    expect(client.status).toBe(428);
+    expect(await env.DB.prepare(`SELECT access_required FROM directory_entries WHERE profile='classic-v3' AND server_id=?`)
+      .bind(publisherFixture.server_id).first()).toEqual({access_required:1});
+    client.webSocket?.close(1000,"Test complete"); server.webSocket?.close(1000,"Test complete");
   });
 
   it("does not let one source/day counter lock out distinct server identities", async () => {
@@ -268,7 +216,8 @@ describe("in-process service-boundary contract", () => {
       const token = String(index + 1).repeat(64);
       await persistRendezvousPublication(env.DB, {
         serverId,
-        directoryProfile: "classic-v1",
+        directoryProfile: "classic-v3",
+        certificate: "AA==",
         publisherSequence: String(index + 1),
         publisherNonce: String(index + 1).repeat(32),
         publisherNonceExpiresAt: now + 86_400,
@@ -341,14 +290,14 @@ describe("in-process service-boundary contract", () => {
           },
         },
       ), rendezvousEdge);
-      expect(offline.status).toBe(404);
+      expect(offline.status).toBe(428);
     }
     expect(await env.DB.prepare(
-      "SELECT COUNT(*) AS count FROM rendezvous_pair_attempts",
+      "SELECT COUNT(*) AS count FROM sqlite_schema WHERE name='rendezvous_pair_attempts'",
     ).first<number>("count")).toBe(0);
   });
 
-  it("preserves a fixed no-server admission response through both boundaries", async () => {
+  it("requires proof through both boundaries before revealing server state", async () => {
     const core = coreEnvironment();
     const context = createExecutionContext();
     const published = await publisherWorker.fetch(
@@ -359,19 +308,19 @@ describe("in-process service-boundary contract", () => {
     expect(published.status).toBe(200);
 
     const response = await rendezvousWorker.fetch(new Request(
-      `https://rendezvous.meta.atrinik.org/v1/classic/servers/${publisherFixture.server_id}?role=client`,
+      `https://rendezvous.meta.atrinik.org/v1/access/rendezvous/classic/${publisherFixture.server_id}`,
       {
         headers: {
           "CF-Connecting-IP": "192.0.2.151",
           "Sec-WebSocket-Protocol":
-            CLASSIC_RENDEZVOUS_INVITE_SUBPROTOCOL,
+            ACCESS_RENDEZVOUS_SUBPROTOCOL,
           Upgrade: "websocket",
         },
       },
     ), rendezvousEnvironment(core));
-    expect(response.status).toBe(503);
-    expect(response.headers.get("Retry-After")).toBe("5");
-    expect(await response.text()).toBe("Rendezvous server unavailable\n");
+    expect(response.status).toBe(428);
+    expect(response.headers.has("Retry-After")).toBe(false);
+    expect(await response.text()).toBe("Rendezvous admission required\n");
   });
 
   it("preserves a signed publish and WebSocket admission without forwarding the source address", async () => {
@@ -396,7 +345,7 @@ describe("in-process service-boundary contract", () => {
          JOIN directory_entries AS entries
            ON entries.profile = presence.profile
           AND entries.server_id = presence.server_id
-        WHERE presence.profile = 'classic-v1'
+        WHERE presence.profile = 'classic-v3'
           AND presence.server_id = ?`,
     ).bind(publisherFixture.server_id).first<{
       readonly rendezvous_generation: string;
@@ -414,7 +363,7 @@ describe("in-process service-boundary contract", () => {
           Cookie: "must-not-cross=value",
           Upgrade: "websocket",
           "Sec-WebSocket-Protocol":
-            CLASSIC_RENDEZVOUS_INVITE_SUBPROTOCOL,
+            ACCESS_RENDEZVOUS_SUBPROTOCOL,
         },
       },
     ), rendezvousEnvironment(core));
@@ -422,7 +371,7 @@ describe("in-process service-boundary contract", () => {
     expect(admitted.status).toBe(101);
     expect(admitted.headers.get("Cache-Control")).toBe("no-store");
     expect(admitted.headers.get("Sec-WebSocket-Protocol")).toBe(
-      CLASSIC_RENDEZVOUS_INVITE_SUBPROTOCOL,
+      ACCESS_RENDEZVOUS_SUBPROTOCOL,
     );
     const socket = admitted.webSocket;
     expect(socket).not.toBeNull();
@@ -430,7 +379,7 @@ describe("in-process service-boundary contract", () => {
     socket?.close(1000, "Test complete");
   });
 
-  it("applies the canonical pair cooldown only after live-target eligibility", async () => {
+  it("does not retain requester tracking or impose a retired source-pair cooldown", async () => {
     const core = coreEnvironment();
     const context = createExecutionContext();
     const published = await publisherWorker.fetch(
@@ -455,7 +404,7 @@ describe("in-process service-boundary contract", () => {
               headers: {
                 "Cache-Control": "no-store",
                 "Sec-WebSocket-Protocol":
-                  CLASSIC_RENDEZVOUS_INVITE_SUBPROTOCOL,
+                  ACCESS_RENDEZVOUS_SUBPROTOCOL,
                 "X-Content-Type-Options": "nosniff",
               },
               webSocket: pair[0],
@@ -464,23 +413,34 @@ describe("in-process service-boundary contract", () => {
         }),
       } as unknown as Env["RENDEZVOUS"],
     });
-    const edge = rendezvousEnvironment(admissionCore);
+    const edge = override(rendezvousEnvironment(admissionCore), {
+      ...admissionKeys, RENDEZVOUS_HOSTNAME: admissionVector.authority,
+    });
+    const validatedCore = override(admissionCore, {
+      DB: { prepare: () => ({ bind: () => ({ first: async () => ({ authorization_required: 1,
+        rendezvous_token_hash: "4".repeat(64), rendezvous_generation: "5".repeat(64) }) }) }) },
+      ...admissionKeys, RENDEZVOUS_HOSTNAME: admissionVector.authority,
+    });
+    const validatedEdge = override(edge, { COORDINATOR: { fetch: (request: Request) =>
+      handleRendezvousCoordinatorRequest(request, validatedCore) } });
+    vi.mocked(Date.now).mockReturnValue(Number(admissionVector.issuedAt) * 1000);
 
     const clientRequest = () => new Request(
-      `https://rendezvous.meta.atrinik.org/v1/classic/servers/${publisherFixture.server_id}?role=client`,
+      `https://${admissionVector.authority}/v1/access/rendezvous/classic/${admissionVector.serverId}`,
       {
         headers: {
+          ...admissionHeaders(true),
           "CF-Connecting-IP": "192.0.2.171",
           "Sec-WebSocket-Protocol":
-            CLASSIC_RENDEZVOUS_INVITE_SUBPROTOCOL,
+            ACCESS_RENDEZVOUS_SUBPROTOCOL,
           Upgrade: "websocket",
         },
       },
     );
     const clients: WebSocket[] = [];
     try {
-      for (let attempt = 0; attempt < 20; attempt += 1) {
-        const admitted = await rendezvousWorker.fetch(clientRequest(), edge);
+      for (let attempt = 0; attempt < 21; attempt += 1) {
+        const admitted = await rendezvousWorker.fetch(clientRequest(), validatedEdge);
         expect(admitted.status).toBe(101);
         const socket = admitted.webSocket;
         if (socket === null) {
@@ -490,27 +450,9 @@ describe("in-process service-boundary contract", () => {
         clients.push(socket);
         socket.close(1000, "Test attempt complete");
       }
-      const blocked = await rendezvousWorker.fetch(clientRequest(), edge);
-      expect(blocked.status).toBe(429);
-      expect(blocked.headers.get("Retry-After")).toBe("30");
-      expect(await blocked.json()).toEqual({
-        error: {
-          code: "rate_limited",
-          message: "The request budget has been exhausted.",
-          reason: "rendezvous_client_pair_cooldown",
-          retry_after_seconds: 30,
-        },
-      });
       expect(await env.DB.prepare(
-        `SELECT COUNT(*) AS count FROM request_budgets
-          WHERE scope IN (
-            'rendezvous-client-source',
-            'rendezvous-client-source-server'
-          )`,
+        "SELECT COUNT(*) AS count FROM sqlite_schema WHERE name IN ('rendezvous_pair_attempts','rendezvous_pair_cooldowns')",
       ).first<number>("count")).toBe(0);
-      expect(await env.DB.prepare(
-        "SELECT COUNT(*) AS count FROM rendezvous_pair_cooldowns",
-      ).first<number>("count")).toBe(2);
     } finally {
       for (const client of clients) {
         client.close(1000, "Test cleanup");

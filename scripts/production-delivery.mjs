@@ -236,9 +236,11 @@ export function validateContract(contract) {
         "python3",
         "scripts/static_origin_canary.py",
         "--profile",
-        "classic-v1",
+        "classic-v3",
         "--base-url",
         "https://classic.meta.atrinik.org",
+        "--alias-prefix",
+        "$CLASSIC_DIRECTORY_ALIAS_PREFIX",
         "--allow-production",
         "--json",
       ],
@@ -249,9 +251,11 @@ export function validateContract(contract) {
         "python3",
         "scripts/static_origin_canary.py",
         "--profile",
-        "game-v1",
+        "game-v2",
         "--base-url",
         "https://meta.atrinik.org",
+        "--alias-prefix",
+        "$GAME_DIRECTORY_ALIAS_PREFIX",
         "--allow-production",
         "--json",
       ],
@@ -358,7 +362,7 @@ export function validateContract(contract) {
     !Array.isArray(contract.workers) ||
     contract.workers.length !== 3 ||
     sha256Json(canonicalJson(contract.workers)) !==
-      "6f7c5ac09e0898c740481db5b829125b541c655f1a811ac7e0a5219f70cb72d3" ||
+      "79c113610030ae444f3e987e63068345bced7fd33819c6b66ea54792e30b19c9" ||
     JSON.stringify(contract.workers.map(({ name }) => name)) !==
       JSON.stringify(expectedWorkerNames) ||
     JSON.stringify(contract.workers.map(({ order }) => order)) !==
@@ -496,7 +500,8 @@ function validateConfigurationAuthority(worker, config) {
   }
   assertArrayObjectKeys(config.routes ?? [], ["pattern", "custom_domain"],
     `${worker.role} route`);
-  assertAllowedKeys(config.secrets, ["required"], `${worker.role} secret contract`);
+  assertAllowedKeys(config.secrets === undefined ? {} : config.secrets,
+    ["required"], `${worker.role} secret contract`);
   assertAllowedKeys(config.triggers ?? { crons: [] }, ["crons"],
     `${worker.role} trigger contract`);
   assertAllowedKeys(config.observability, ["enabled", "logs", "traces"],
@@ -526,6 +531,7 @@ function validateConfigurationAuthority(worker, config) {
     PublisherCoordinator: { type: "worker", cache: { enabled: false } },
     RendezvousCoordinator: { type: "worker", cache: { enabled: false } },
     RendezvousHealth: { type: "worker", cache: { enabled: false } },
+    DirectoryReconciliation: { type: "worker", cache: { enabled: false } },
   } : {};
   if (!sameJson(config.exports ?? {}, expectedExports))
     fail(`${worker.role} exports authority drift`);
@@ -628,26 +634,6 @@ export function validateTopology(contract, configs, { production = false } = {})
   );
   boundedIntegerVariable(core.vars, "PUBLISH_SERVER_DAILY_LIMIT", 1, 48);
   boundedIntegerVariable(core.vars, "RENDEZVOUS_SERVER_DAILY_LIMIT", 1, 50);
-  boundedIntegerVariable(core.vars, "RENDEZVOUS_CLIENT_PAIR_BURST_LIMIT", 1, 20);
-  boundedIntegerVariable(core.vars, "RENDEZVOUS_CLIENT_PAIR_WINDOW_SECONDS", 1, 60);
-  const initialCooldown = boundedIntegerVariable(
-    core.vars,
-    "RENDEZVOUS_CLIENT_PAIR_INITIAL_COOLDOWN_SECONDS",
-    1,
-    30,
-  );
-  const maximumCooldown = boundedIntegerVariable(
-    core.vars,
-    "RENDEZVOUS_CLIENT_PAIR_MAXIMUM_COOLDOWN_SECONDS",
-    initialCooldown,
-    900,
-  );
-  boundedIntegerVariable(
-    core.vars,
-    "RENDEZVOUS_CLIENT_PAIR_RESET_SECONDS",
-    maximumCooldown,
-    1_800,
-  );
   boundedIntegerVariable(core.vars, "RENDEZVOUS_ACTIVE_CLIENT_LIMIT", 1, 16);
   boundedIntegerVariable(core.vars, "RENDEZVOUS_CLIENT_SESSION_SECONDS", 1, 15);
   boundedIntegerVariable(
@@ -656,9 +642,11 @@ export function validateTopology(contract, configs, { production = false } = {})
     1,
     Math.min(7_200, 14_399, listingTtl - 900),
   );
-  if (!["v4-production", "v5-production"].includes(
+  if (!["v4-production", "v5-production", "v6-production"].includes(
     core.vars?.CLASSIC_DIRECTORY_CUTOVER_MODE,
   )) fail("Classic directory cutover policy drift");
+  if (!["v1-production", "v2-production"].includes(core.vars?.GAME_DIRECTORY_CUTOVER_MODE))
+    fail("Game directory cutover policy drift");
   if (
     production &&
     (!/^[0-9a-f]{32}$/u.test(core.vars?.DIRECTORY_CACHE_ZONE_ID ?? "") ||
@@ -677,8 +665,6 @@ export function validateTopology(contract, configs, { production = false } = {})
     "SOURCE_TAG_KEY_PREVIOUS_ID",
   ]) {
     if (
-      core.vars?.[key] !== publisher.vars?.[key] ||
-      core.vars?.[key] !== rendezvous.vars?.[key] ||
       typeof core.vars?.[key] !== "string" ||
       !core.vars[key]
     )
@@ -705,6 +691,7 @@ export function validateTopology(contract, configs, { production = false } = {})
       ["RENDEZVOUS", "DIRECTORY_BUILDER"],
     ) ||
     !sameValues(names(core, "ratelimits", "name"), [
+      "ACCESS_ROUTE_RATE_LIMITER",
       "PUBLISH_IDENTITY_RATE_LIMITER",
       "RENDEZVOUS_SERVER_RATE_LIMITER",
     ]) ||
@@ -905,6 +892,7 @@ export async function orchestrateDelivery({
   deployActive,
   readbackActive,
   verifyFinal,
+  reconcileDirectories,
   canaries,
   recover,
   completed = () => {},
@@ -931,6 +919,12 @@ export async function orchestrateDelivery({
     }
     await fence();
     await verifyFinal(decision);
+    await fence();
+    await reconcileDirectories();
+    completed("directory-reconciliation");
+    await fence();
+    await verifyFinal(decision);
+    await fence();
     await canaries();
     await fence();
     return decision === "deploy"
@@ -972,11 +966,17 @@ export function childEnvironment(input, policy = "public") {
       .filter((name) => typeof input[name] === "string")
       .map((name) => [name, input[name]]),
   );
-  if (policy === "deployment") {
+  if (policy === "deployment" || policy === "directory-reconciliation") {
     if (input.CLOUDFLARE_ACCOUNT_ID)
       environment.CLOUDFLARE_ACCOUNT_ID = input.CLOUDFLARE_ACCOUNT_ID;
     if (input.CLOUDFLARE_API_TOKEN)
       environment.CLOUDFLARE_API_TOKEN = input.CLOUDFLARE_API_TOKEN;
+    if (policy === "directory-reconciliation") {
+      for (const name of ["WORKERS_CI", "WORKERS_CI_BRANCH",
+        "WORKERS_CI_COMMIT_SHA", "WORKERS_CI_BUILD_UUID", "WRANGLER_CI_MATCH_TAG",
+        "WRANGLER_CI_OVERRIDE_NAME", "ATRINIK_WORKERS_BUILDS_API_TOKEN"])
+        if (typeof input[name] === "string") environment[name] = input[name];
+    }
   } else if (policy !== "public") {
     fail("unknown subprocess environment policy");
   }
@@ -1663,11 +1663,11 @@ async function assertBuildLease(
   contract,
   sourceSha,
   buildUuid,
-  { arbitrate = true } = {},
+  { arbitrate = true, exclusiveReadOnly = false, environment = process.env } = {},
 ) {
-  const accountId = process.env.CLOUDFLARE_ACCOUNT_ID;
+  const accountId = environment.CLOUDFLARE_ACCOUNT_ID;
   const token = validateProtectedDocument(
-    process.env[contract.protectedInputs.buildsApiTokenVariable],
+    environment[contract.protectedInputs.buildsApiTokenVariable],
     contract.protectedInputs.buildsApiTokenVariable,
   );
   const self = await cloudflareResult(
@@ -1687,7 +1687,7 @@ async function assertBuildLease(
     fail("Workers Builds execution identity or command drift");
   const liveTriggers = await cloudflareResult(
     accountId,
-    `/builds/workers/${encodeURIComponent(process.env.WRANGLER_CI_MATCH_TAG)}/triggers`,
+    `/builds/workers/${encodeURIComponent(environment.WRANGLER_CI_MATCH_TAG)}/triggers`,
     { token },
   );
   const liveTrigger = selectLiveTrigger(liveTriggers, triggerUuid);
@@ -1697,7 +1697,7 @@ async function assertBuildLease(
       build_trigger_metadata: self.build_trigger_metadata,
       trigger: liveTrigger,
     },
-    process.env.WRANGLER_CI_MATCH_TAG,
+    environment.WRANGLER_CI_MATCH_TAG,
   );
   validateBuildEnvironment(
     contract,
@@ -1707,9 +1707,17 @@ async function assertBuildLease(
       { token },
     ),
   );
-  if (!arbitrate) return;
+  if (!arbitrate && !exclusiveReadOnly) return;
   const buildsPath =
-    `/builds/workers/${encodeURIComponent(process.env.WRANGLER_CI_MATCH_TAG)}/builds`;
+    `/builds/workers/${encodeURIComponent(environment.WRANGLER_CI_MATCH_TAG)}/builds`;
+  if (exclusiveReadOnly) {
+    const builds = await cloudflareResult(accountId, buildsPath, { token });
+    if (!Array.isArray(builds) || buildLeaseDecision(
+      builds, sourceSha, triggerUuid, buildUuid).length !== 0)
+      fail("directory reconciliation production lease is not exclusive");
+    await assertCurrentMain(contract, sourceSha);
+    return;
+  }
   await arbitrateBuildLease({
     sourceSha,
     buildUuid,
@@ -1727,6 +1735,32 @@ async function assertBuildLease(
       { token },
     ),
   });
+}
+
+// A child cannot turn syntax-valid CI variables into live authority. Independently
+// authenticate the same exact running build and current-main exclusive lease.
+// This path only observes provider state; it never cancels competing builds.
+export async function assertDirectoryBuildContext(config, environment = process.env) {
+  const contract = await readJson(contractPath);
+  validateContract(contract);
+  if (config.account_id !== environment.CLOUDFLARE_ACCOUNT_ID ||
+      config.services?.[0]?.service !== contract.workers[0].name)
+    fail("directory reconciliation execution account drift");
+  validateSourceCoordinates({
+    workersCi: environment.WORKERS_CI,
+    branch: environment.WORKERS_CI_BRANCH,
+    sourceSha: environment.WORKERS_CI_COMMIT_SHA,
+    head: await git("rev-parse", "HEAD"),
+    dirty: (await git("status", "--porcelain")) !== "",
+    buildUuid: environment.WORKERS_CI_BUILD_UUID,
+    overrideName: environment.WRANGLER_CI_OVERRIDE_NAME,
+    matchTag: environment.WRANGLER_CI_MATCH_TAG,
+    accountId: environment.CLOUDFLARE_ACCOUNT_ID,
+    currentMain: await currentMainSha(contract),
+  });
+  await assertBuildLease(contract, environment.WORKERS_CI_COMMIT_SHA,
+    environment.WORKERS_CI_BUILD_UUID,
+    { arbitrate: false, exclusiveReadOnly: true, environment });
 }
 
 async function readLiveControlPlane(worker, accountId) {
@@ -2005,21 +2039,104 @@ async function deployWorker(
   return message;
 }
 
+export function resolveProductionCanaryCommand(canary, configs) {
+  const roleIndex = {
+    "publisher-service-binding": 1,
+    "rendezvous-service-binding": 2,
+  }[canary.name];
+  const variables = roleIndex === undefined ? {} : configs[roleIndex].vars;
+  const classicMode = configs[0].vars?.CLASSIC_DIRECTORY_CUTOVER_MODE;
+  const gameMode = configs[0].vars?.GAME_DIRECTORY_CUTOVER_MODE;
+  if (!["v4-production", "v5-production", "v6-production"].includes(classicMode) ||
+      !["v1-production", "v2-production"].includes(gameMode))
+    fail("directory canary cutover policy drift");
+  const resolved = canary.command.map((value) => ({
+    "$PUBLISH_ENABLED": variables.PUBLISH_ENABLED,
+    "$RENDEZVOUS_ENABLED": variables.RENDEZVOUS_ENABLED,
+    "$ROUTE_DISABLED_RETRY_SECONDS": variables.ROUTE_DISABLED_RETRY_SECONDS,
+    "$CLASSIC_DIRECTORY_ALIAS_PREFIX": classicMode === "v6-production" ? "" : "canary-v6",
+    "$GAME_DIRECTORY_ALIAS_PREFIX": gameMode === "v2-production" ? "" : "canary-v2",
+  })[value] ?? value);
+  if (resolved.some((value) => value.startsWith("$")))
+    fail(`${canary.name} has an unresolved canary input`);
+  return resolved;
+}
+
+// The temporary proxy owns no remote resources and exposes no public route.
+export function directoryReconciliationProxyConfiguration(core) {
+  if (core.name !== expectedWorkerNames[0] ||
+      !/^[0-9a-f]{32}$/u.test(core.account_id ?? ""))
+    fail("directory reconciliation target identity drift");
+  return {
+    name: "atrinik-production-directory-reconciliation",
+    account_id: core.account_id,
+    compatibility_date: core.compatibility_date,
+    workers_dev: false,
+    preview_urls: false,
+    services: [{
+      binding: "DIRECTORY_RECONCILIATION",
+      service: core.name,
+      entrypoint: "DirectoryReconciliation",
+      remote: true,
+    }],
+  };
+}
+
+export function validateDirectoryReconciliationProof(proof, core, startedAt, now) {
+  assertExactKeys(proof, ["schema", "completedAt", "configuration", "profiles"],
+    "directory reconciliation proof");
+  if (proof.schema !== "directory-reconciliation-v1" ||
+      !Number.isSafeInteger(startedAt) || !Number.isSafeInteger(now) ||
+      now < startedAt || now - startedAt > 120 ||
+      !Number.isSafeInteger(proof.completedAt) ||
+      proof.completedAt < startedAt || proof.completedAt > now)
+    fail("directory reconciliation proof freshness drift");
+  const expectedConfiguration = {
+    classicCutoverMode: core.vars.CLASSIC_DIRECTORY_CUTOVER_MODE,
+    gameCutoverMode: core.vars.GAME_DIRECTORY_CUTOVER_MODE,
+    classicOrigin: core.vars.CLASSIC_DIRECTORY_PUBLIC_ORIGIN,
+    gameOrigin: core.vars.GAME_DIRECTORY_PUBLIC_ORIGIN,
+  };
+  if (!sameJson(proof.configuration, expectedConfiguration))
+    fail("directory reconciliation environment binding drift");
+  if (!Array.isArray(proof.profiles) || proof.profiles.length !== 2)
+    fail("directory reconciliation profile cohort drift");
+  for (const [index, profile] of ["classic-v3", "game-v2"].entries()) {
+    const record = proof.profiles[index];
+    assertExactKeys(record,
+      ["profile", "outcome", "generation", "generatedAt", "expiresAt"],
+      "directory reconciliation profile proof");
+    if (record.profile !== profile ||
+        !["current", "published"].includes(record.outcome) ||
+        !Number.isSafeInteger(record.generation) || record.generation < 1 ||
+        !Number.isSafeInteger(record.generatedAt) || record.generatedAt < 0 ||
+        !Number.isSafeInteger(record.expiresAt) ||
+        record.generatedAt > proof.completedAt || record.generatedAt > now ||
+        record.expiresAt <= now)
+      fail("directory reconciliation publication proof is not current");
+  }
+  return proof;
+}
+
+async function reconcileProductionDirectories(core, directory) {
+  const configPath = resolve(directory, "directory-reconciliation-proxy.json");
+  await writeFile(configPath,
+    JSON.stringify(directoryReconciliationProxyConfiguration(core)), { mode: 0o600 });
+  const startedAt = Math.floor(Date.now() / 1_000);
+  const { stdout } = await command(process.execPath, [
+    "scripts/production-directory-reconciliation.mjs", configPath,
+  ], { environmentPolicy: "directory-reconciliation", timeout: 120_000, maxBuffer: 8_192 });
+  let proof;
+  try { proof = JSON.parse(stdout); } catch {
+    fail("directory reconciliation returned an invalid proof");
+  }
+  return validateDirectoryReconciliationProof(
+    proof, core, startedAt, Math.floor(Date.now() / 1_000));
+}
+
 async function runProductionCanaries(contract, configs) {
   for (const canary of contract.productionCanaries) {
-    const roleIndex = {
-      "publisher-service-binding": 1,
-      "rendezvous-service-binding": 2,
-    }[canary.name];
-    const variables = roleIndex === undefined ? {} : configs[roleIndex].vars;
-    const resolved = canary.command.map((value) => ({
-      "$PUBLISH_ENABLED": variables.PUBLISH_ENABLED,
-      "$RENDEZVOUS_ENABLED": variables.RENDEZVOUS_ENABLED,
-      "$ROUTE_DISABLED_RETRY_SECONDS": variables.ROUTE_DISABLED_RETRY_SECONDS,
-    })[value] ?? value);
-    if (resolved.some((value) => value.startsWith("$")))
-      fail(`${canary.name} has an unresolved canary input`);
-    const [program, ...args] = resolved;
+    const [program, ...args] = resolveProductionCanaryCommand(canary, configs);
     await command(program, args, { timeout: 120_000 });
   }
 }
@@ -2064,6 +2181,10 @@ async function main() {
         outcome: "dry-run",
         mutation: false,
         deploymentOrder: contract.invariants.deploymentOrder,
+        directoryReconciliation: {
+          entrypoint: "DirectoryReconciliation", timeoutSeconds: 120,
+          profiles: ["classic-v3", "game-v2"],
+        },
         productionCanaries: contract.productionCanaries.map(({ name }) => name),
         deployableDigest: plan.deploy,
         migrationDigest: plan.migrationDigest,
@@ -2256,6 +2377,10 @@ async function main() {
       if (finalDecision === "deploy")
         assertCoherentTopology(finalAnnotations, plan, sourceSha);
       else assertDeployableTopology(finalAnnotations, plan);
+    },
+    reconcileDirectories: async () => {
+      failureEvidence.failedRole = "directory-reconciliation";
+      await reconcileProductionDirectories(configs[0], protectedInputs.directory);
     },
     canaries: async () => {
       failureEvidence.failedRole = "canaries";

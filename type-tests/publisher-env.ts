@@ -14,4 +14,9 @@ publisher.DIRECTORY_GENERATIONS;
 // @ts-expect-error The publisher project's ambient Env is also state-free.
 ambientPublisher.DB;
 
+// @ts-expect-error Signing secrets belong only to the core.
+publisher.SOURCE_TAG_KEY_CURRENT;
+// @ts-expect-error Replay key IDs belong only to the core.
+publisher.SOURCE_TAG_KEY_CURRENT_ID;
+
 export {};

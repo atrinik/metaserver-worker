@@ -3,7 +3,6 @@ const MAXIMUM_BUDGET = 1_000_000;
 const MAXIMUM_RETRY_AFTER_SECONDS = SECONDS_PER_DAY;
 
 const AUTHENTICATED_SERVER_ACTOR_KEY = /^[0-9a-f]{64}$/;
-const VERSIONED_ACTOR_KEY = /^v1\.[A-Za-z0-9_-]{1,32}\.[A-Za-z0-9_-]{43}$/;
 
 export const REQUEST_BUDGET_SCOPES = [
   "publish-server",
@@ -14,13 +13,11 @@ export const REQUEST_BUDGET_SCOPES = [
 export type RequestBudgetScope = typeof REQUEST_BUDGET_SCOPES[number];
 export type RequestControlScope =
   | "global"
-  | "rendezvous-client-source"
-  | "rendezvous-client-pair-cooldown"
+  | "rendezvous-client"
   | RequestBudgetScope;
 
 export const REQUEST_LIMIT_REASONS = [
   "burst_limit_exceeded",
-  "cooldown_active",
   "request_budget_exceeded",
 ] as const;
 
@@ -156,26 +153,20 @@ export async function enforceNativeBurst(
   }
 }
 
-/**
- * Conservatively check every active source-tag alias against a native binding.
- *
- * The Workers Rate Limiting API accepts one key per call and is not atomic
- * across aliases. A later alias can therefore reject after an earlier alias
- * was charged. This deliberately favors fail-closed burst protection; exact
- * rotation accounting is provided by the mirrored D1 budget instead.
- */
-export async function enforceNativeBurstAliases(
+/** Shared per-location circuit breaker. No request-derived key or metadata. */
+export async function enforceSharedIngress(
   limiter: RateLimit,
-  actorKeys:
-    | readonly [current: string]
-    | readonly [current: string, previous: string],
-  scope: RequestControlScope,
-  periodSeconds: 10 | 60 = 60,
+  purpose: "publisher" | "resolve" | "rendezvous-client" | "rendezvous-server",
 ): Promise<void> {
-  const aliases = normalizeActorAliases(actorKeys);
-  for (const actorKey of aliases) {
-    await enforceNativeBurst(limiter, actorKey, scope, periodSeconds);
+  if (!["publisher", "resolve", "rendezvous-client", "rendezvous-server"].includes(purpose)) {
+    throw new TypeError("Invalid shared ingress purpose");
   }
+  const result = await executeDependency("native-rate-limit", () =>
+    limiter.limit({ key: `shared-ingress-v1.${purpose}` }));
+  if (!result.success) throw new RequestBudgetExceeded({
+    scope: "global", reason: "burst_limit_exceeded", retryAfterSeconds: 60,
+    resetAt: null, limit: null,
+  });
 }
 
 /**
@@ -274,8 +265,7 @@ export function isRequestActorKey(value: string): boolean {
   if (value.length < 8 || value.length > 128) {
     return false;
   }
-  return AUTHENTICATED_SERVER_ACTOR_KEY.test(value) ||
-    VERSIONED_ACTOR_KEY.test(value);
+  return AUTHENTICATED_SERVER_ACTOR_KEY.test(value);
 }
 
 function validateWindow(window: FixedWindow, now: number): void {
@@ -295,7 +285,7 @@ function validateWindow(window: FixedWindow, now: number): void {
 
 function requireActorKey(actorKey: string): void {
   if (!isRequestActorKey(actorKey)) {
-    throw new TypeError("actorKey must be an opaque versioned tag or server identity");
+    throw new TypeError("actorKey must be an authenticated server identity");
   }
 }
 
@@ -303,34 +293,6 @@ function requireAuthenticatedServerKey(actorKey: string): void {
   if (!AUTHENTICATED_SERVER_ACTOR_KEY.test(actorKey)) {
     throw new TypeError("actorKey must be an authenticated server identity");
   }
-}
-
-function normalizeActorAliases(
-  actorKeys:
-    | readonly [current: string]
-    | readonly [current: string, previous: string],
-): readonly [current: string] | readonly [current: string, previous: string] {
-  if (actorKeys.length < 1 || actorKeys.length > 2) {
-    throw new TypeError("actorKeys must contain one or two actor aliases");
-  }
-
-  const unique = [...new Set(actorKeys)];
-  for (const actorKey of unique) {
-    requireActorKey(actorKey);
-  }
-  if (
-    unique.length === 2 &&
-    unique.some((actorKey) => !VERSIONED_ACTOR_KEY.test(actorKey))
-  ) {
-    throw new TypeError("Only versioned source tags may have actor aliases");
-  }
-
-  const current = unique[0];
-  if (current === undefined) {
-    throw new TypeError("actorKeys must contain an actor key");
-  }
-  const previous = unique[1];
-  return previous === undefined ? [current] : [current, previous];
 }
 
 function requireBudgetScope(scope: string): asserts scope is RequestBudgetScope {
@@ -342,8 +304,7 @@ function requireBudgetScope(scope: string): asserts scope is RequestBudgetScope 
 function requireControlScope(scope: string): asserts scope is RequestControlScope {
   if (
     scope !== "global" &&
-    scope !== "rendezvous-client-source" &&
-    scope !== "rendezvous-client-pair-cooldown"
+    scope !== "rendezvous-client"
   ) {
     requireBudgetScope(scope);
   }

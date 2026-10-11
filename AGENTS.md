@@ -6,25 +6,33 @@
 - Use the `.nvmrc` Node 24.18.1 and `packageManager` npm 11.16.0 pins with the
   lockfile. Run `npm ci` for a clean dependency tree and `npm run check` before
   submitting.
-- Preserve strict request-size, identity, address, ticket, certificate-hash,
+- Preserve strict request-size, identity, candidate-address, ticket, certificate-hash,
   rate-limit, and expiry validation. Keep rendezvous state deterministic and
   bounded; test malformed and replayed input at the boundary.
 - Keep the Worker-to-rendezvous-room upgrade contract explicitly versioned and
   fail closed across deployment skew. Use hibernation attachments only for
-  bounded live-session routing and terminal-teardown state, D1 for the exact
-  eligible source/server rolling-burst cooldown, the room's SQLite ledger only
+  bounded live-session routing and terminal-teardown state, D1 for authenticated
+  identity budgets and private access state, the room's SQLite ledger only
   for bounded purpose-separated replay tags, and one alarm for expiry; never
   add candidate persistence or per-session timers.
 - `wrangler.jsonc` is the sole state-owning core configuration. It deliberately
   uses declarative `exports` for both SQLite Durable Objects and the narrow
-  publisher/rendezvous and private `RendezvousHealth` Worker entrypoints, and
-  contains a placeholder D1 ID. `RendezvousHealth` is the only owner of the
+  publisher/rendezvous and private `RendezvousHealth` and
+  `DirectoryReconciliation` Worker entrypoints, and
+  contains a placeholder D1 ID. `DirectoryReconciliation` accepts only the fixed
+  empty POST `https://internal.atrinik.invalid/v1/directory-reconciliation` through
+  a deployment-owned Service Binding; it reconciles only the two fixed current
+  profiles and verifies authoritative publication receipts without exposing
+  private revisions. Never give it a public route or caller binding, a default
+  fetch handler, or supplied profile/object/URL authority.
+  `RendezvousHealth` is the only owner of the
   versioned, bounded rendezvous-health aggregate; its exact private URL,
   required token secret, canary envelope, and redacted response are documented
   in `docs/rendezvous-health.md`. It has no public route or default fetch path.
   `wrangler.publisher.jsonc` and `wrangler.rendezvous.jsonc` are stateless,
   domainless public-edge configurations with one named service binding each;
-  never add D1, R2, Durable Object, cron, or cross-service authority to them.
+  never add D1, R2, Durable Object, cron, signing secrets/key IDs, or cross-service
+  authority to them. All grant/ticket HMACs and admission signatures belong to core.
   Do not add legacy Durable Object migration configuration alongside
   `exports`. Apply every pending D1 migration before deploying this provider;
   then deploy the core before either caller. Lifecycle changes require a direct
@@ -52,16 +60,47 @@
   former control-plane-ready secret is optional, inert transition state and
   must never influence a delivery decision.
 - Treat `server_presence` plus the profile-discriminated `directory_entries`
-  as authoritative, profile-scoped publication state. Presence retains only
-  the accepted rendezvous verifier, generation, and last-seen time for both public and
-  private publishers; `directory_entries` alone is public. Classic v1 and v2
-  share one replay lineage but have disjoint password/access-code policy rows;
-  Game remains independent. Never use sentinel fields to imitate another
-  profile. Game rows additionally retain the exact derived
+  as authoritative, profile-scoped publication state. Active profiles are Classic
+  publisher v3/directory v6 and Game publisher v2/directory v2. Private presence
+  retains the signed certificate, name, endpoint, access policy, rendezvous verifier,
+  generation and last-seen time; `directory_entries` alone is public. Historic
+  publisher profiles retain replay lineage only and have no runtime fallback.
+  Never use sentinel fields to imitate another profile. Game rows additionally retain the exact derived
   canonical-JSON byte count so D1 can reject an over-limit aggregate before it
   becomes authoritative. Visible expiry must
   advance `directory_revisions` and `directory_outbox` atomically before
   removing expired entries; stale private presence is revision-neutral.
+- Access tokens use authenticated POST route CRUD on the publisher authority and
+  bounded POST resolve plus the access rendezvous subprotocol on the rendezvous
+  authority. No secret belongs in a URL, log, public artifact or cache. Require
+  an existing publisher identity before CRUD allocation; reserve additionally
+  requires fresh signed presence. Share publisher sequence/nonce replay fences.
+  Keep reserve/activate CAS, terminal revocation, global index collision checks,
+  receipts and reserved revocation capacity in one D1 transaction. Retained
+  receipts plus nonterminal routes cannot exceed 4096 per identity or 65536
+  globally; existing-record revocation must work at capacity.
+  Publisher nonce replay rows plus reserved nonterminal-route revocation slots
+  have one atomic global ceiling of 131072. Both authenticated writers reclaim
+  at most 32 expired nonces in their transaction; never erase a live 24-hour
+  replay row early. Migration 0016 preserves populated overflow and existing
+  revocation reservations; ordinary admissions fail closed while it drains.
+  Grants are single-use, fifteen seconds, purpose-HMAC tagged in D1, and bound to
+  identity, generation, token revision and client nonce. Require blind stateless
+  admission-v1 HMAC challenges and fixed 24-bit work before any client room lookup;
+  challenge issuance must never query presence/D1/rooms or persist challenge state.
+  Admit clients only through the exact versioned v5 room attestation. Redeem
+  protected grants in D1 and atomically reserve/claim ticket replay tags before
+  socket allocation; retain claims on every later failure. Recheck expiry,
+  generation, live control, capacity and grant liveness after awaits. Candidate
+  tickets must match their prebound binary-ticket hash. Protected access_init
+  confirms the preauthorized grant/nonce; it never redeems an alternate grant.
+  Recheck denial after hashing and before candidate dispatch.
+  Raw grants may exist only in bounded live attachments and must be scrubbed at
+  terminal teardown. The retired invitation challenge/proof frames are rejected.
+  Source migrations 0013/0014 preserve populated history; 0015 physically removes
+  the obsolete IP-derived pair tables without changing replay or access state. The separately gated
+  `deployment/retirement/retire-legacy-profiles.sql` is never auto-discovered or
+  applied without the complete proof described alongside it.
 - Treat D1 revision/outbox as the static-directory authority and the
   profile-named `DirectoryBuilder` only as a serialized, retryable publisher.
   Persist pending intent before R2 awaits, publish immutable objects before
@@ -86,9 +125,17 @@
 - Route every direct-hostname write through `isCanonicalHostname()` before D1.
   SQLite independently enforces the bounded ASCII representation but has no
   Unicode/IDNA tables; direct administrative hostname writes are unsupported.
-- Treat request addresses as request-scoped data. Persist only authenticated
-  identities or purpose-separated, rotating HMAC tags with bounded retention;
-  never log raw addresses, tags, credentials, tokens, or rendezvous candidates.
+- Never extract requester or forwarded IP addresses, derive hashes/HMACs from
+  them, or store, audit, log, or metric them. Reject retired internal source/pair
+  headers without an old-envelope bridge. Anonymous edge counters use fixed
+  purpose keys per location, not requester metadata or a fairness identity.
+  Historical `SOURCE_TAG_KEY_*` names and key-ring classes serve only random
+  grant/ticket replay HMACs and separately domain-separated admission signatures; preserve their exact domain separation and strictly
+  more than 24-hour overlapping-key retirement window. Preserve authenticated
+  identity budgets. Candidate addresses are transient validated forwarding data,
+  never attachment/SQL/log/history state; operator DNS endpoints are signed
+  routing metadata. Provider-managed historical IP rules and retention remain
+  separately audited operator concerns; source changes cannot prove their removal.
 - Declare required secret names in Wrangler configuration, keep their values in
   Cloudflare secrets or ignored local development files, and fail closed when
   key material or a route circuit breaker is invalid.
@@ -96,7 +143,8 @@
   domain policy cannot be bypassed. Use an isolated Worker/Durable Object,
   custom hostname, secrets, D1 database, Analytics Engine dataset, and native
   Rate Limiting namespace IDs for canaries; reused namespace IDs share
-  counters across Workers.
+  counters across Workers. Admission work is a computational cost gate, not
+  anonymous-attacker fairness; bounded native solvers may time out on slower devices.
 - `deployment/workers-builds-review.json` owns the non-`main` review design.
   Same-repository branch automation is build-only, has no bindings, protected
   inputs, account/zone resource permission, upload, or URL, and must reject

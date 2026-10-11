@@ -8,11 +8,12 @@ import {
   INTERNAL_SOURCE_TAG_HEADER,
   INTERNAL_SOURCE_TAG_PREVIOUS_HEADER,
 } from "../src/internal-service";
-import { CLASSIC_RENDEZVOUS_INVITE_SUBPROTOCOL } from "../src/routes";
+import { ACCESS_RENDEZVOUS_SUBPROTOCOL } from "../src/routes";
+import { admissionHeaders } from "./admission-fixture";
 
 const CURRENT_SECRET = "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA";
 const PREVIOUS_SECRET = "AQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQE";
-const SERVER_ID = "4".repeat(64);
+const SERVER_ID = "1".repeat(64);
 const SAFE_DYNAMIC_HEADERS = {
   "Cache-Control": "no-store",
   "X-Content-Type-Options": "nosniff",
@@ -49,10 +50,6 @@ function publisherEnvironment(
     PUBLISH_ENABLED: "enabled",
     GAME_PUBLISH_ENABLED: "disabled",
     ROUTE_DISABLED_RETRY_SECONDS: "300",
-    SOURCE_TAG_KEY_CURRENT_ID: "2026-08-a",
-    SOURCE_TAG_KEY_PREVIOUS_ID: "2026-07-a",
-    SOURCE_TAG_KEY_CURRENT: CURRENT_SECRET,
-    SOURCE_TAG_KEY_PREVIOUS: PREVIOUS_SECRET,
   } satisfies PublisherEnv;
   return {
     env: override(base, {
@@ -81,10 +78,6 @@ function rendezvousEnvironment(
     RENDEZVOUS_HOSTNAME: "rendezvous.meta.atrinik.org",
     RENDEZVOUS_ENABLED: "enabled",
     ROUTE_DISABLED_RETRY_SECONDS: "300",
-    SOURCE_TAG_KEY_CURRENT_ID: "2026-08-a",
-    SOURCE_TAG_KEY_PREVIOUS_ID: "2026-07-a",
-    SOURCE_TAG_KEY_CURRENT: CURRENT_SECRET,
-    SOURCE_TAG_KEY_PREVIOUS: PREVIOUS_SECRET,
   } satisfies RendezvousEnv;
   return {
     env: override(base, { RENDEZVOUS_ENABLED: "enabled" }),
@@ -116,7 +109,7 @@ function publisherRequest(
   requestHeaders.set("Content-Type", "application/json");
   requestHeaders.set("Cookie", "publisher-private=value");
   return new Request(
-    `https://${authority}/v1/classic/servers/${SERVER_ID}/publish`,
+    `https://${authority}/v3/classic/servers/${SERVER_ID}/publish`,
     { method: "POST", headers: requestHeaders, body: "{}" },
   );
 }
@@ -127,7 +120,7 @@ function gamePublisherRequest(): Request {
     "Content-Type": "application/json",
   });
   return new Request(
-    `https://publish.meta.atrinik.org/v1/servers/${SERVER_ID}/publish`,
+    `https://publish.meta.atrinik.org/v2/servers/${SERVER_ID}/publish`,
     { method: "POST", headers, body: "{}" },
   );
 }
@@ -186,7 +179,7 @@ describe("publisher edge Worker", () => {
       configured.env,
     );
     expect(response.status).toBe(200);
-    expect(configured.limit).toHaveBeenCalledTimes(2);
+    expect(configured.limit).toHaveBeenCalledTimes(1);
     expect(fetch).toHaveBeenCalledTimes(1);
     expect(forwarded).toBeDefined();
     expect(forwarded?.headers.has("CF-Connecting-IP")).toBe(false);
@@ -228,7 +221,7 @@ describe("publisher edge Worker", () => {
       configured.env,
     )).status).toBe(200);
     expect(fetch).toHaveBeenCalledTimes(1);
-    expect(configured.limit).toHaveBeenCalledTimes(2);
+    expect(configured.limit).toHaveBeenCalledTimes(1);
   });
 
   it("turns an unsafe coordinator response into a fixed error", async () => {
@@ -265,7 +258,7 @@ describe("rendezvous edge Worker", () => {
     ), canary)).status).toBe(421);
   });
 
-  it("forwards a client upgrade with opaque aliases and no raw source", async () => {
+  it("forwards a client upgrade without requester identifiers", async () => {
     let forwarded: Request | undefined;
     const pair = new WebSocketPair();
     const configured = rendezvousEnvironment(async (request) => {
@@ -277,13 +270,13 @@ describe("rendezvous edge Worker", () => {
       });
     });
     const response = await rendezvousWorker.fetch(
-      rendezvousRequest("client"),
+      rendezvousRequest("client", admissionHeaders()),
       configured.env,
     );
     expect(response.status).toBe(101);
     expect(response.webSocket).not.toBeNull();
     expect(configured.globalLimit).not.toHaveBeenCalled();
-    expect(configured.clientLimit).toHaveBeenCalledTimes(2);
+    expect(configured.clientLimit).toHaveBeenCalledTimes(1);
     expect(forwarded?.headers.has("CF-Connecting-IP")).toBe(false);
     expect(forwarded?.headers.has("Cookie")).toBe(false);
     expect(forwarded?.cf).toBeUndefined();
@@ -293,9 +286,7 @@ describe("rendezvous edge Worker", () => {
       INTERNAL_PAIR_TAG_HEADER,
       INTERNAL_PAIR_TAG_PREVIOUS_HEADER,
     ]) {
-      expect(forwarded?.headers.get(header)).toMatch(
-        /^v1\.(2026-08-a|2026-07-a)\.[A-Za-z0-9_-]{43}$/,
-      );
+      expect(forwarded?.headers.has(header)).toBe(false);
     }
     pair[1].accept();
     pair[1].close(1000, "Test complete");
@@ -312,7 +303,7 @@ describe("rendezvous edge Worker", () => {
       configured.env,
     );
     expect(response.status).toBe(401);
-    expect(configured.globalLimit).toHaveBeenCalledTimes(2);
+    expect(configured.globalLimit).toHaveBeenCalledTimes(1);
     expect(configured.clientLimit).not.toHaveBeenCalled();
     expect(forwarded?.headers.has(INTERNAL_PAIR_TAG_HEADER)).toBe(false);
     expect(forwarded?.headers.has(INTERNAL_PAIR_TAG_PREVIOUS_HEADER)).toBe(false);
@@ -326,9 +317,7 @@ describe("rendezvous edge Worker", () => {
       headers: SAFE_DYNAMIC_HEADERS,
       webSocket: pair[0],
     }));
-    const response = await rendezvousWorker.fetch(rendezvousRequest("client", {
-      "Sec-WebSocket-Protocol": CLASSIC_RENDEZVOUS_INVITE_SUBPROTOCOL,
-    }), configured.env);
+    const response = await rendezvousWorker.fetch(new Request(`https://rendezvous.meta.atrinik.org/v1/access/rendezvous/classic/${SERVER_ID}`, { headers: admissionHeaders(true) }), configured.env);
     expect(response.status).toBe(500);
   });
 
