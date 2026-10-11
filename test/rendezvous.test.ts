@@ -1141,7 +1141,7 @@ describe("RendezvousRoom access grants", () => {
         response.webSocket.accept(); closeForCleanup(response.webSocket);
       }
     } finally { closeForCleanup(f.server); }
-  }
+  });
   it("redeems once, survives hibernation, and relays only the grant-bound ticket", async () => {
     const f = await fixture();
     try {
