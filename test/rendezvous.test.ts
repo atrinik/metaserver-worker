@@ -1389,6 +1389,15 @@ describe("RendezvousRoom access grants", () => {
       expect((await closed).code).toBe(4005);
     } finally { clock.mockRestore(); closeForCleanup(f.client, f.server); }
   });
+  it("rejects confirmation after its two-second deadline while the grant remains live", async () => {
+    const f = await fixture();
+    try {
+      const closed = nextClose(f.client);
+      const clock = vi.spyOn(Date, "now").mockReturnValue(Date.now() + 3_000);
+      try { f.client.send(f.init); expect((await closed).code).toBe(4005); }
+      finally { clock.mockRestore(); }
+    } finally { closeForCleanup(f.client, f.server); }
+  });
   it("expires uninitialized sockets at the two-second deadline", async () => {
     const f = await fixture();
     try {
