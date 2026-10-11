@@ -451,7 +451,6 @@ class DynamicServiceBoundaryConfigurationTests(unittest.TestCase):
             "preview_urls",
             "services",
             "ratelimits",
-            "secrets",
             "vars",
             "observability",
             "logpush",
@@ -492,7 +491,7 @@ class DynamicServiceBoundaryConfigurationTests(unittest.TestCase):
                 self.assertIs(configuration["logpush"], False)
                 self.assertEqual(configuration["tail_consumers"], [])
                 self.assertEqual(configuration["streaming_tail_consumers"], [])
-                self.assertEqual(configuration.get("secrets", {}).get("required", []), [])
+                self.assertNotIn("secrets", configuration)
                 self.assertFalse(any(name.startswith("SOURCE_TAG_KEY_")
                                      for name in configuration["vars"]))
                 self.assertNotIn("DIRECTORY_CACHE_ZONE_ID", configuration["vars"])
