@@ -63,6 +63,20 @@ function activeBuilds(builds, policy) {
         build.trigger?.external_script_id !== policy.externalScriptId)
       fail("unknown or duplicate production build identity/status");
     ids.add(build.build_uuid);
+    if (build.trigger.trigger_uuid === policy.reviewTriggerUuid && build.status !== "stopped") {
+      const review = policy.reviewTrigger;
+      const metadata = build.build_trigger_metadata;
+      const { build_token_uuid: expectedToken, ...expectedTrigger } = review ?? {};
+      const { build_token_uuid: observedToken, ...observedTrigger } = normalizeTransitionTrigger(build.trigger);
+      if (!review || !same(observedTrigger, expectedTrigger) ||
+          (observedToken !== undefined && observedToken !== expectedToken) ||
+          metadata?.build_token_uuid !== expectedToken || metadata.build_command !== "npm run build" ||
+          metadata.deploy_command !== "npm run validate" || metadata.root_directory !== "/deployment/review-check" ||
+          typeof metadata.branch !== "string" || metadata.branch === "main" ||
+          metadata.provider_type !== "github" || metadata.provider_account_name !== "atrinik" ||
+          metadata.repo_name !== "metaserver-worker")
+        fail("in-flight review build launch authority is unsafe or unproven");
+    }
     return build.trigger.trigger_uuid === policy.productionTriggerUuid && build.status !== "stopped";
   });
 }
@@ -92,7 +106,7 @@ export function validateProductionWriterFence({ triggers, builds, environments }
     if (!hash.test(expected) || transitionDigest(secretManifest(environments?.[id])) !== expected)
       fail("production environment drift");
   }
-  if (activeBuilds(builds, policy).length) fail("production writer still in flight");
+  if (activeBuilds(builds, { ...policy, reviewTrigger: review }).length) fail("production writer still in flight");
   return { outcome: "production-writer-fenced", mutation: false };
 }
 
@@ -164,7 +178,7 @@ export function createTransitionPlan({ snapshot, coordinates, now = Date.now() }
       secretManifest(snapshot.environments?.[r.trigger_uuid])])),
   };
   plan.planDigest = transitionDigest(plan);
-  activeBuilds(snapshot.productionBuilds, { ...coordinates, externalScriptId: old.external_script_id });
+  activeBuilds(snapshot.productionBuilds, { ...coordinates, externalScriptId: old.external_script_id, reviewTrigger: review });
   return plan;
 }
 function checkPlan(plan) {
@@ -203,7 +217,7 @@ export function nextTransitionOperation({ plan, snapshot, now = Date.now() }) {
   if (!same(current, fenced)) return operation(plan, snapshot, "fence-production", "PATCH",
     `/builds/triggers/${coordinates.productionTriggerUuid}`, { branch_excludes: ["*"] });
   const pending = activeBuilds(snapshot.productionBuilds,
-    { ...coordinates, externalScriptId: current.external_script_id });
+    { ...coordinates, externalScriptId: current.external_script_id, reviewTrigger: plan.review });
   if (pending.length) {
     pending.sort((a, b) => a.build_uuid.localeCompare(b.build_uuid));
     return operation(plan, snapshot, "cancel-production-build", "PUT",

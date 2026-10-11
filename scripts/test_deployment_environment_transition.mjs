@@ -166,3 +166,19 @@ test("failed journal persistence prevents execution", async () => {
   await assert.rejects(applyTransitionStep({ plan, snapshot: f.snapshot, records: [], now,
     append: async () => { throw new Error("fsync failed"); }, execute: async () => assert.fail("undurable execution") }), /fsync/);
 });
+
+test("active review builds require immutable safe launch commands and token, not merely current trigger UUID", () => {
+  const f = fixture(), plan = createTransitionPlan(f), policy = fencePolicy(plan);
+  f.snapshot.productionTriggers[0].branch_excludes = ["*"];
+  const build = { build_uuid: id(95), status: "running", trigger: clone(plan.review),
+    build_trigger_metadata: { build_token_uuid: plan.review.build_token_uuid, build_command: "npm run build",
+      deploy_command: "npm run validate", root_directory: "/deployment/review-check", branch: "feature/test",
+      provider_type: "github", provider_account_name: "atrinik", repo_name: "metaserver-worker" } };
+  const input = { triggers: f.snapshot.productionTriggers, builds: [build], environments: f.snapshot.environments };
+  assert.equal(validateProductionWriterFence(input, policy).mutation, false);
+  build.trigger.build_token_uuid = plan.predecessorProduction.build_token_uuid;
+  assert.throws(() => validateProductionWriterFence(input, policy), /launch authority/);
+  build.trigger = clone(plan.review);
+  build.build_trigger_metadata.deploy_command = "npm run deploy:production";
+  assert.throws(() => validateProductionWriterFence(input, policy), /launch authority/);
+});
