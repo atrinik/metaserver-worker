@@ -42,6 +42,7 @@ function assertSnapshot(role, value, retired = false) {
       new Set(value.code.modules.map((m) => m.name)).size !== value.code.modules.length ||
       value.code.etag !== value.resources?.script?.etag)
     fail("active identity or module proof incomplete");
+  assertServiceMetadata(value);
   const rows = bindings(value.settings?.bindings);
   bindings(value.resources?.bindings);
   if (!same(rows, value.resources.bindings)) fail("settings/version binding mismatch");
@@ -64,6 +65,64 @@ function assertSnapshot(role, value, retired = false) {
         .test(annotations["workers/message"] ?? "")) fail("selected staged annotation missing");
   if (annotations["workers/triggered_by"] !== (retired ? "secret" : "version_upload"))
     fail("unsupported exact provider operation annotation");
+}
+// The service environment endpoint embeds script deployment metadata. It is not
+// a second source of deployment authority: any nonempty deployment identifier
+// must agree with the separately read deployment/version endpoint. The legacy
+// endpoint also legitimately reports an empty deployment_id, which stays empty.
+function metadataTime(value) {
+  if (typeof value !== "string" || !/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,9})?Z$/u.test(value))
+    fail("service metadata timestamp invalid");
+  const parsed = Date.parse(value);
+  if (!Number.isFinite(parsed) || new Date(parsed).toISOString().slice(0, 19) !== value.slice(0, 19))
+    fail("service metadata timestamp invalid");
+  return parsed;
+}
+function assertServiceMetadata(snapshot) {
+  const environment = snapshot.control?.environment, script = environment?.script;
+  if (!environment || !script || environment.environment !== "production" ||
+      environment.script_tag !== snapshot.tag || script.tag !== snapshot.tag ||
+      !/^[a-f0-9]{32}$/u.test(snapshot.tag ?? "") || script.id !== snapshot.name ||
+      script.etag !== snapshot.code.etag || !same(script.handlers, snapshot.resources.script.handlers) ||
+      typeof script.deployment_id !== "string" ||
+      !["", snapshot.activeVersion, snapshot.deploymentId].includes(script.deployment_id) ||
+      !["wrangler", "api"].includes(script.last_deployed_from) ||
+      !Array.isArray(script.tags) || script.tags.some((tag) => typeof tag !== "string") ||
+      typeof script.has_modules !== "boolean" || !script.has_modules ||
+      typeof script.has_assets !== "boolean" || typeof script.logpush !== "boolean" ||
+      (script.tail_consumers !== null && !Array.isArray(script.tail_consumers)) ||
+      !script.observability || typeof script.observability !== "object" ||
+      typeof script.compatibility_date !== "string" || !Array.isArray(script.compatibility_flags) ||
+      script.compatibility_flags.some((flag) => typeof flag !== "string") || typeof script.usage_model !== "string")
+    fail("service metadata identity or schema invalid");
+  for (const value of [environment, script]) {
+    const created = metadataTime(value.created_on), modified = metadataTime(value.modified_on);
+    if (created > modified || modified > snapshot.capturedAt) fail("service metadata chronology invalid");
+  }
+}
+function expectedServiceMetadata(before, after) {
+  assertServiceMetadata(before);
+  assertServiceMetadata(after);
+  const expected = structuredClone(before.control.environment);
+  for (const [old, current, target] of [[before.control.environment, after.control.environment, expected],
+    [before.control.environment.script, after.control.environment.script, expected.script]]) {
+    if (old.modified_on !== current.modified_on) {
+      const previous = metadataTime(old.modified_on), next = metadataTime(current.modified_on);
+      if (next < previous || next < before.capturedAt || next > after.capturedAt)
+        fail("service modification outside observed transition window");
+      target.modified_on = current.modified_on;
+    }
+  }
+  const previous = before.control.environment.script, current = after.control.environment.script;
+  expected.script.deployment_id = previous.deployment_id === "" ? "" :
+    previous.deployment_id === before.activeVersion ? after.activeVersion : after.deploymentId;
+  // The documented field denotes the deployment client. The pinned Wrangler
+  // implementation recognizes `api` as an update through the script API. Only
+  // this exact transport-induced provenance transition is accepted, never dash,
+  // workersci, arbitrary strings, or a return to wrangler after an API update.
+  if (previous.last_deployed_from === "wrangler" && current.last_deployed_from === "api")
+    expected.script.last_deployed_from = "api";
+  return expected;
 }
 function withoutTime(value) {
   const copy = structuredClone(value);
@@ -92,6 +151,7 @@ export function verifyCallerRetirementPost(role, before, after) {
   for (const field of ["settings", "resources"])
     expected[field].bindings = expected[field].bindings.filter((b) => !callerRetirementSecrets.includes(b.name));
   expected.settings.annotations["workers/triggered_by"] = "secret";
+  expected.control.environment = expectedServiceMetadata(before, after);
   if (!same(expected, withoutTime(after))) fail("postwrite preservation mismatch");
   return after;
 }
@@ -336,9 +396,8 @@ export function createCallerRetirementReader({ accountId, token, role, fetcher =
           environment: environment.result, schedules: schedules.result } };
     }));
     const target = workers.find((w) => w.name === name);
-    // serviceEnvironment contains a mutable deployment's detailed script metadata.
-    // It is retained for selected-caller verification; the post comparator must
-    // reject unknown changes rather than erase this evidence wholesale.
+    // Keep full service metadata. The post comparator types the narrow timestamp,
+    // identifier and API-client transition and preserves every other field.
     return { accountId, ...target, peers: { workers: uniqueRows(workers.filter((w) => w.name !== name), "name"), namespaces: globalNamespaces } };
   };
   return async () => {

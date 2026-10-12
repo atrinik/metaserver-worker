@@ -9,6 +9,17 @@ import { callerRetirementSecrets, callerRetirementSettings, verifyCallerRetireme
   createCallerRetirementRecorder, parseCallerRetirementModules } from "./production-caller-retirement.mjs";
 const accountId = "a".repeat(32), hash = "b".repeat(64), source = "c".repeat(40);
 const oldId = "00000000-0000-0000-0000-000000000001", newId = "00000000-0000-0000-0000-000000000002";
+function serviceEnvironment(name = "atrinik-metaserver-publisher") {
+  return { environment: "production", script_tag: accountId,
+    created_on: "1970-01-01T00:00:00.000Z", modified_on: "1970-01-01T00:00:00.500Z",
+    script: { created_on: "1970-01-01T00:00:00.000Z", modified_on: "1970-01-01T00:00:00.500Z",
+      id: name, tag: accountId, tags: [], deployment_id: "", tail_consumers: null, logpush: false,
+      observability: { enabled: true, head_sampling_rate: 1, redact_query_string: false,
+        logs: { enabled: true, destinations: [], head_sampling_rate: 1, persist: true, invocation_logs: false },
+        traces: { enabled: false, destinations: [], persist: true, head_sampling_rate: 1 } },
+      has_assets: false, has_modules: true, etag: hash, handlers: ["fetch"], last_deployed_from: "wrangler",
+      compatibility_date: "2026-10-01", compatibility_flags: ["nodejs_compat"], usage_model: "standard" } };
+}
 function baseline(role = "publisher") {
   const rows = [
     ...callerRetirementSecrets.map((name) => ({ name, type: "secret_text" })),
@@ -16,10 +27,11 @@ function baseline(role = "publisher") {
     ...(role === "publisher" ? ["PUBLISH_ENABLED", "GAME_PUBLISH_ENABLED"] : ["RENDEZVOUS_ENABLED"])
       .map((name) => ({ name, type: "plain_text", text: "disabled" })),
   ];
-  return { accountId, name: `atrinik-metaserver-${role}`, activeVersion: oldId, latestVersion: oldId, deploymentId: oldId,
+  return { accountId, tag: accountId, name: `atrinik-metaserver-${role}`, activeVersion: oldId, latestVersion: oldId, deploymentId: oldId,
     settings: { bindings: rows, annotations: { "workers/tag": source, "workers/message": `atrinik-delivery-v1 source=${source} deploy=${hash} migration=${hash} horizon=16 control=${hash} role=${role} phase=staged`, "workers/triggered_by": "version_upload" }, compatibility_date: "2026-10-01" },
     resources: { bindings: structuredClone(rows), script: { etag: hash, handlers: ["fetch"] } },
     code: { etag: hash, modules: [{ name: `${role}.js`, type: "application/javascript+module", sha256: hash, bytes: 100 }] },
+    control: { environment: serviceEnvironment(`atrinik-metaserver-${role}`), routes: [], domains: [] },
     peers: { workers: [{ name: "core", signingSecrets: [...callerRetirementSecrets] }], namespaces: [] }, capturedAt: 1000 };
 }
 function retired(before = baseline()) {
@@ -164,7 +176,8 @@ test("reader verifies all six Workers/modules and complete global namespaces twi
     else if (suffix.endsWith("/versions")) result = { items: [{ id: oldId }] };
     else if (suffix.endsWith(`/versions/${oldId}`)) result = { id: oldId, resources: baseline().resources };
     else if (suffix.endsWith("/routes") || suffix.endsWith("/domains") || suffix.endsWith("/schedules")) result = [];
-    else result = { stable: true };
+    else if (suffix.endsWith("/environments/production")) result = serviceEnvironment(suffix.split("/")[3]);
+    else result = { enabled: false, previews_enabled: false };
     return Response.json({ success: true, result });
   };
   const read = createCallerRetirementReader({ accountId, token: "test-token", role: "publisher", fetcher, now: () => 1000 });
@@ -173,4 +186,49 @@ test("reader verifies all six Workers/modules and complete global namespaces twi
   const incomplete = createCallerRetirementReader({ accountId, token: "test-token", role: "publisher", now: () => 1000,
     fetcher: async (url, options) => url.includes("/namespaces") ? Response.json({ success: true, result: [], result_info: { page: 1, count: 0, total_count: 1001, per_page: 1000, total_pages: 2 } }) : fetcher(url, options) });
   await assert.rejects(incomplete());
+});
+
+
+test("realistic service metadata allows only bounded modification times and API provenance", () => {
+  const before = baseline(), after = retired(before);
+  after.capturedAt = 2000;
+  after.control.environment.modified_on = "1970-01-01T00:00:01.500000Z";
+  after.control.environment.script.modified_on = "1970-01-01T00:00:01.500000Z";
+  after.control.environment.script.last_deployed_from = "api";
+  assert.equal(verifyCallerRetirementPost("publisher", before, after), after);
+});
+for (const coordinate of ["activeVersion", "deploymentId"]) test(`service identifier tracks exact fresh ${coordinate}`, () => {
+  const before = baseline();
+  before.deploymentId = "00000000-0000-0000-0000-000000000003";
+  before.control.environment.script.deployment_id = before[coordinate];
+  const after = retired(before);
+  after.deploymentId = "00000000-0000-0000-0000-000000000004";
+  after.control.environment.script.deployment_id = after[coordinate];
+  verifyCallerRetirementPost("publisher", before, after);
+  after.control.environment.script.deployment_id = after[coordinate === "activeVersion" ? "deploymentId" : "activeVersion"];
+  assert.throws(() => verifyCallerRetirementPost("publisher", before, after));
+});
+for (const [name, change] of [
+  ["unknown environment field", (s) => { s.control.environment.unknown = true; }],
+  ["unknown script field", (s) => { s.control.environment.script.unknown = true; }],
+  ["runtime flag", (s) => { s.control.environment.script.compatibility_flags.push("unsafe"); }],
+  ["observability runtime", (s) => { s.control.environment.script.observability.logs.invocation_logs = true; }],
+  ["created time", (s) => { s.control.environment.created_on = "1970-01-01T00:00:00.100Z"; }],
+  ["pre-window modification", (s) => { s.control.environment.modified_on = "1970-01-01T00:00:00.900Z"; }],
+  ["future modification", (s) => { s.control.environment.modified_on = "1970-01-01T00:00:01.001Z"; }],
+  ["invalid modification", (s) => { s.control.environment.modified_on = "2026-02-30T00:00:00Z"; }],
+  ["mismatched deployment identifier", (s) => { s.control.environment.script.deployment_id = "00000000-0000-0000-0000-000000000009"; }],
+  ["empty identifier unexpectedly gained authority", (s) => { s.control.environment.script.deployment_id = s.activeVersion; }],
+  ["unexpected deployment client", (s) => { s.control.environment.script.last_deployed_from = "dash"; }],
+  ["script identity", (s) => { s.control.environment.script.id = "other"; }],
+  ["peer service timestamp", (s) => { s.peers.workers[0].modified_on = "1970-01-01T00:00:01.000Z"; }],
+]) test(`${name} remains outside service metadata transition`, () => {
+  const before = baseline(), after = retired(before); change(after);
+  assert.throws(() => verifyCallerRetirementPost("publisher", before, after));
+});
+test("unrecognized existing provider fields must remain byte-semantically exact", () => {
+  const before = baseline(); before.control.environment.script.future = { enabled: false };
+  const after = retired(before); verifyCallerRetirementPost("publisher", before, after);
+  after.control.environment.script.future.enabled = true;
+  assert.throws(() => verifyCallerRetirementPost("publisher", before, after));
 });
