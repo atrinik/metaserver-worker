@@ -364,3 +364,20 @@ test("workflow has a single manual serialized writer and credentials only in exe
   }
   assert.doesNotMatch(promotion, /contents: write|id-token: write/u);
 });
+
+test("retirement handoff refreshes full source authority without repeating the slow provider sweep", async () => {
+  for (const change of [
+    f => { f.evidence.tagSha = controller; },
+    f => { f.evidence.run.status = "completed"; f.evidence.run.conclusion = "cancelled"; },
+    f => { f.evidence.actorPermission.permission = "read"; },
+  ]) {
+    const f = fixture(); let sweeps = 0;
+    const authority = await createProductionAuthority({ environment: f.environment, checkoutHead: source, dirty: false,
+      readEvent: async () => JSON.stringify(f.event), fetcher: fakeFetch(f), now: () => now,
+      writerFence: async () => { sweeps++; } });
+    await authority.authorize(); assert.equal(sweeps, 1);
+    change(f); let writes = 0;
+    await assert.rejects(async () => { await authority.authorize(); writes++; });
+    assert.equal(writes, 0); assert.equal(sweeps, 1);
+  }
+});

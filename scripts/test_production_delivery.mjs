@@ -19,6 +19,8 @@ import {
   publicDeliveryWorkers,
   retainPrivateDeliveryEvidence,
   verifyPredecessorHandoff,
+  verifyStagedCallerRetirement,
+  verifyBootstrapCallerPredecessor,
   describeSubprocessFailure,
   deliveryDecision,
   directoryReconciliationProxyConfiguration,
@@ -2250,4 +2252,63 @@ test("real reconciliation child catch emits a redacted record consumed by the pa
   assert.equal(result.stderr.includes("secret-account"), false);
   assert.equal(describeSubprocessFailure({ code: result.status, stderr: result.stderr }),
     "exit=1 directory-phase=configuration directory-reason=operation-failed");
+});
+
+test("caller retirement requires exact selected disabled bundle, annotation and binding graph", () => {
+  const index = 1, worker = contract.workers[index];
+  const config = disabledCircuitConfiguration(productionConfigs()[index], worker.role);
+  const sourceSha = "1".repeat(40), bundleDigest = "2".repeat(64);
+  const expectedMessage = `atrinik-delivery-v1 source=${sourceSha} deploy=${"3".repeat(64)} migration=${"4".repeat(64)} horizon=16 control=${"5".repeat(64)} role=publisher phase=staged`;
+  const plane = liveControlPlane(index);
+  const bindings = [
+    ...Object.entries(config.vars).map(([name, text]) => ({ name, type: "plain_text", text })),
+    ...config.services.map(({ binding, ...value }) => ({ ...value, name: binding, type: "service" })),
+    ...config.ratelimits.map(value => ({ ...value, type: "ratelimit" })),
+    ...["SOURCE_TAG_KEY_CURRENT", "SOURCE_TAG_KEY_PREVIOUS"].map(name => ({ name, type: "secret_text" })),
+  ];
+  const snapshot = { accountId: config.account_id, name: config.name, activeVersion: "same", latestVersion: "same",
+    settings: { annotations: { "workers/tag": sourceSha, "workers/message": expectedMessage } },
+    resources: { bindings, script_runtime: { compatibility_date: config.compatibility_date,
+      compatibility_flags: config.compatibility_flags, exports: config.exports ?? {} } },
+    code: { modules: [{ name: "worker.js", sha256: bundleDigest }] },
+    control: { routes: plane.routes, domains: plane.customDomains, subdomain: plane.subdomainStatus,
+      environment: plane.serviceEnvironment, schedules: plane.cronTriggers } };
+  const input = { worker, config, sourceSha, bundleDigest, expectedMessage, snapshot,
+    expectedZoneId: "b".repeat(32), retired: false };
+  assert.equal(verifyStagedCallerRetirement(input), true);
+  for (const change of [
+    x => { x.snapshot.code.modules[0].sha256 = "9".repeat(64); },
+    x => { x.snapshot.code.modules.push({ name: "unapproved.js", sha256: bundleDigest }); },
+    x => { x.snapshot.settings.annotations["workers/tag"] = "8".repeat(40); },
+    x => { x.snapshot.settings.annotations["workers/message"] += "changed"; },
+    x => { x.snapshot.latestVersion = "other"; },
+    x => { x.snapshot.resources.bindings.find(v => v.name === "PUBLISH_ENABLED").text = "enabled"; },
+    x => { x.config.vars.PUBLISH_ENABLED = "enabled"; },
+    x => { x.snapshot.resources.bindings.push({ name: "UNKNOWN_SECRET", type: "secret_text" }); },
+    x => { x.snapshot.control.domains[0].zone_id = "c".repeat(32); },
+  ]) { const candidate = structuredClone(input); change(candidate); assert.throws(() => verifyStagedCallerRetirement(candidate)); }
+  const retired = structuredClone(input); retired.retired = true;
+  assert.throws(() => verifyStagedCallerRetirement(retired));
+  retired.snapshot.resources.bindings = retired.snapshot.resources.bindings.filter(v => v.type !== "secret_text");
+  assert.equal(verifyStagedCallerRetirement(retired), true);
+});
+
+test("old caller code and key-ID authority remain pinned until that role's staging handoff", async () => {
+  const worker = { role: "publisher", variables: [{ binding: "SOURCE_TAG_KEY_CURRENT_ID", value: "old-a" },
+    { binding: "SOURCE_TAG_KEY_PREVIOUS_ID", value: "old-b" }] };
+  const active = { versionId: "approved-immutable-version", version: { resources: { bindings: [
+    ...worker.variables.map(({ binding, value }) => ({ name: binding, type: "plain_text", text: value })),
+    ...["SOURCE_TAG_KEY_CURRENT", "SOURCE_TAG_KEY_PREVIOUS"].map(name => ({ name, type: "secret_text" })),
+  ] } } };
+  verifyBootstrapCallerPredecessor(active.versionId, worker, active);
+  for (const change of [
+    a => { a.versionId = "other-version-with-same-settings"; },
+    a => { a.version.resources.bindings[0].text = "changed-epoch"; },
+    a => { a.version.resources.bindings.push({ name: "EXTRA", type: "secret_text" }); },
+    a => { a.version.resources.bindings.pop(); },
+  ]) {
+    const current = structuredClone(active); change(current); let uploads = 0;
+    assert.throws(() => { verifyBootstrapCallerPredecessor(active.versionId, worker, current); uploads++; });
+    assert.equal(uploads, 0);
+  }
 });

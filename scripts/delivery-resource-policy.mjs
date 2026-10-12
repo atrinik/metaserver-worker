@@ -1,5 +1,7 @@
 // Copyright (C) 2026 Atrinik contributors
 import { createHash } from "node:crypto";
+import { validateRateBootstrap, bootstrapDesiredWorker, validateBootstrapConfiguration,
+  compareBootstrapInventory, projectNativeRates, legacyCallerSecrets } from "./production-rate-bootstrap.mjs";
 
 const roles = ["core", "publisher", "rendezvous"];
 const cohortWorkerNames = Object.freeze({
@@ -75,7 +77,8 @@ export function projectWorkerResources({ name, role, settings, routes, domains }
 }
 
 export function validateResourcePolicy(policy, target, accountId) {
-  exactKeys(policy, ["schema", "cohorts"]);
+  exactKeys(policy, policy.productionBootstrap === undefined ? ["schema", "cohorts"]
+    : ["schema", "cohorts", "productionBootstrap"]);
   if (policy.schema !== "atrinik-delivery-resources-v1" || !Array.isArray(policy.cohorts) ||
       policy.cohorts.length < 2 || policy.cohorts.length > 3 ||
       !unique(policy.cohorts.map((value) => value.environment)) ||
@@ -141,12 +144,14 @@ export function validateResourcePolicy(policy, target, accountId) {
       if (worker.secrets.some((value) => !nonempty(value))) fail("secret name invalid");
       // Older, unpromoted production may retain obsolete caller secret names.
       // Observing those names never authorizes installing them on this target.
-      if (cohort.environment === target && worker.role !== "core" && worker.secrets.length)
+      if (cohort.environment === target && worker.role !== "core" && worker.secrets.length &&
+          !(policy.productionBootstrap && target === "production" && same([...worker.secrets].sort(), legacyCallerSecrets)))
         fail("target callers retain signing or other secret authority");
     }
   }
   const cohort = policy.cohorts.find((value) => value.environment === target);
   if (!cohort || cohort.accountId !== accountId) fail("target account differs from inventory");
+  validateRateBootstrap(policy, target);
   return cohort;
 }
 
@@ -165,8 +170,10 @@ export function resourcePolicyDigest(policy) {
 export function validateResourceConfigurations(policy, target, configs) {
   const cohort = validateResourcePolicy(policy, target, configs[0]?.account_id);
   if (configs.length !== 3) fail("target configuration cohort incomplete");
+  const bootstrap = validateRateBootstrap(policy, target);
+  validateBootstrapConfiguration(bootstrap, configs);
   for (const [index, config] of configs.entries()) {
-    const expected = cohort.workers[index];
+    const expected = bootstrapDesiredWorker(cohort.workers[index], bootstrap);
     const resources = [
       ...(config.d1_databases ?? []).map((v) => ({ binding: v.binding, type: "d1", id: v.database_id })),
       ...(config.r2_buckets ?? []).map((v) => ({ binding: v.binding, type: "r2", id: v.bucket_name })),
@@ -203,25 +210,79 @@ function normalizeWorker(worker) {
     origins: sorted(worker.origins), variables: sorted(worker.variables), routes: [...worker.routes].sort(), secrets: [...worker.secrets].sort() };
 }
 
-export async function assertResourcePolicyLive(policy, { target, accountId, readWorker }) {
+export async function assertResourcePolicyLive(policy, { target, accountId, readWorker, bootstrapPhase = "baseline", retiredCallers = [], uncertainCaller = null, baseline = false }) {
   validateResourcePolicy(policy, target, accountId);
+  if (!["baseline", "added"].includes(bootstrapPhase)) fail("bootstrap phase invalid");
+  const bootstrap = validateRateBootstrap(policy, target);
   // All cohorts are re-read, so a policy edit alone cannot authorize moving a
   // resource and a previously disjoint non-target cannot silently adopt this one.
   for (const cohort of policy.cohorts) {
     for (const worker of cohort.workers) {
       const observed = await readWorker(cohort.accountId, worker.name);
       const actual = projectWorkerResources({ name: worker.name, role: worker.role, ...observed });
-      const expected = normalizeWorker(worker);
-      const compared = cohort.environment === target ? [withoutVariables(actual), withoutVariables(expected)] : [actual, expected];
+      const added = bootstrapPhase === "added" && worker.role === "core" || retiredCallers.includes(worker.role);
+      const expected = normalizeWorker(added ? bootstrapDesiredWorker(worker, bootstrap) : worker);
+      if (bootstrap && uncertainCaller === worker.role && cohort.environment === target) {
+        if (actual.secrets.some(name => !legacyCallerSecrets.includes(name))) fail("uncertain caller acquired secret authority");
+        expected.secrets = actual.secrets;
+      }
+      if (bootstrap && worker.name === "atrinik-metaserver" && bootstrapPhase === "baseline" &&
+          ["PUBLISH_ENABLED", "GAME_PUBLISH_ENABLED", "RENDEZVOUS_ENABLED"].some(binding =>
+            actual.variables.find(v => v.binding === binding)?.value !== "disabled"))
+        fail("bootstrap predecessor core must remain disabled");
+      const compared = cohort.environment === target && !baseline ? [withoutVariables(actual), withoutVariables(expected)] : [actual, expected];
       if (!same(...compared)) fail("fresh provider resource inventory drift");
     }
   }
 }
 
+// Phase ownership is local to this execution. Merely editing policy never enables adoption.
+export function createResourcePolicyFence(policy, { target, accountId, readWorker, sourceSha,
+  expectedPredecessor, completedBootstrap = false }) {
+  const bootstrap = validateRateBootstrap(policy, target, { sourceSha, expectedPredecessor });
+  if (bootstrap && (sourceSha !== bootstrap.sourceSha || expectedPredecessor !== bootstrap.expectedPredecessor ||
+      typeof readWorker.rateInventory !== "function")) fail("bootstrap execution authority missing");
+  let phase = completedBootstrap ? "added" : "baseline";
+  let proven = false;
+  const retiredCallers = completedBootstrap ? ["publisher", "rendezvous"] : [];
+  let uncertainCaller = null;
+  let uploadStarted = completedBootstrap;
+  return {
+    beginCoreUpload() {
+      if (bootstrap && (!proven || phase !== "baseline")) fail("bootstrap upload order invalid");
+      if (bootstrap) { phase = "uploading"; uploadStarted = true; }
+    },
+    beginCallerRetirement(role) {
+      if (!bootstrap) return;
+      if (phase !== "added" || !["publisher", "rendezvous"].includes(role) ||
+          retiredCallers.includes(role) || uncertainCaller !== null) fail("caller retirement phase invalid");
+      uncertainCaller = role;
+    },
+    confirmCallerRetired(role) {
+      if (!bootstrap) return;
+      if (uncertainCaller !== role) fail("caller retirement receipt missing");
+      retiredCallers.push(role); uncertainCaller = null;
+    },
+    confirmCoreAdded() {
+      if (bootstrap && phase !== "added") fail("bootstrap addition was not observed");
+    },
+    async fence() {
+      let observedPhase = phase;
+      if (bootstrap) observedPhase = compareBootstrapInventory(bootstrap,
+        await readWorker.rateInventory(accountId), phase);
+      await assertResourcePolicyLive(policy, { target, accountId, readWorker,
+        bootstrapPhase: bootstrap ? observedPhase : "baseline", retiredCallers, uncertainCaller,
+        baseline: Boolean(bootstrap) && !uploadStarted });
+      if (bootstrap && observedPhase === "added") phase = "added";
+      proven = true;
+    },
+  };
+}
+
 export function resourcePolicyReader(environment, fetcher = fetch) {
   const token = environment.ATRINIK_DELIVERY_RESOURCE_READ_TOKEN;
   if (!token) fail("read-only resource inventory token missing");
-  const get = async (accountId, path, { filteredDomains = false } = {}) => {
+  const get = async (accountId, path, { filteredDomains = false, newestOnly = false } = {}) => {
     const response = await fetcher(`https://api.cloudflare.com/client/v4/accounts/${accountId}${path}`, {
       method: "GET", redirect: "error", signal: AbortSignal.timeout(15_000),
       headers: { Authorization: `Bearer ${token}` },
@@ -246,11 +307,16 @@ export function resourcePolicyReader(environment, fetcher = fetch) {
           !Number.isSafeInteger(body.result_info?.count) ||
           body.result_info.count !== body.result.length)
         fail("filtered domain inventory incomplete");
-    } else if (body.result_info?.total_pages > 1 || body.result_info?.total_count > 100)
+    } else if (!newestOnly && (body.result_info?.total_pages > 1 || body.result_info?.total_count > 100 ||
+        body.result_info?.cursor || body.result_info?.next_cursor || body.result_info?.has_more === true ||
+        body.result_info?.next_page === true))
       fail("resource response pagination exceeds bound");
+    if (!newestOnly && !filteredDomains && Array.isArray(body.result) && body.result_info &&
+        ["count", "total_count"].some(key => body.result_info[key] !== undefined && body.result_info[key] !== body.result.length))
+      fail("resource response inventory count incomplete");
     return body.result;
   };
-  return async (accountId, name) => {
+  const readWorker = async (accountId, name) => {
     const worker = encodeURIComponent(name);
     const [settings, routes, domains] = await Promise.all([
       get(accountId, `/workers/scripts/${worker}/settings`),
@@ -259,4 +325,52 @@ export function resourcePolicyReader(environment, fetcher = fetch) {
     ]);
     return { settings, routes, domains };
   };
+  readWorker.rateInventory = async accountId => {
+    const list = async () => {
+      // Dispatch scripts have a separate inventory. This narrow bootstrap does
+      // not support them, and an unreadable inventory is never proof of absence.
+      const dispatch = await get(accountId, "/workers/dispatch/namespaces");
+      if (!Array.isArray(dispatch) || dispatch.length !== 0) fail("dispatch namespace absence unproven");
+      const scripts = await get(accountId, "/workers/scripts");
+      if (!Array.isArray(scripts) || scripts.length > 100 || scripts.length === 0 ||
+          new Set(scripts.map(v => v.id)).size !== scripts.length) fail("global Worker inventory incomplete");
+      return sorted(scripts.map(v => {
+        if (!/^[a-z0-9_][a-z0-9_-]{0,127}$/u.test(v.id ?? "") || !/^[0-9a-f]{32}$/u.test(v.tag ?? ""))
+          fail("global Worker identity invalid");
+        return { name: v.id, tag: v.tag };
+      }));
+    };
+    const before = await list();
+    const inventory = [];
+    // Bound concurrency and require a current single-version deployment. A latest
+    // settings document alone cannot prove which native namespace serves traffic.
+    for (let offset = 0; offset < before.length; offset += 4) {
+      await Promise.all(before.slice(offset, offset + 4).map(async worker => {
+      const script = `/workers/scripts/${encodeURIComponent(worker.name)}`;
+      const current = async () => {
+        const [versions, deployments] = await Promise.all([
+          get(accountId, `${script}/versions?per_page=1`, { newestOnly: true }),
+          get(accountId, `${script}/deployments?per_page=1`, { newestOnly: true }),
+        ]);
+        const latest = versions?.items?.[0]?.id;
+        const active = deployments?.deployments?.[0]?.versions;
+        if (!/^[0-9a-f-]{36}$/u.test(latest ?? "") || !Array.isArray(active) || active.length !== 1 ||
+            active[0].percentage !== 100 || active[0].version_id !== latest)
+          fail("global native binding active version ambiguous");
+        return latest;
+      };
+      const versionId = await current();
+      const [settings, version] = await Promise.all([
+        get(accountId, `${script}/settings`), get(accountId, `${script}/versions/${versionId}`),
+      ]);
+      const rates = projectNativeRates(settings?.bindings);
+      if (version.id !== versionId || !same(rates, projectNativeRates(version.resources?.bindings)) ||
+          versionId !== await current()) fail("global native binding version changed");
+      inventory.push({ ...worker, rates });
+      }));
+    }
+    if (!same(before, await list())) fail("global Worker inventory changed");
+    return sorted(inventory);
+  };
+  return readWorker;
 }

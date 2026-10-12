@@ -214,3 +214,202 @@ test("target staged circuits may change while origin and non-target plaintext st
   await assert.rejects(assertResourcePolicyLive(policy, { target: "development", accountId,
     readWorker: async (_account, name) => observed.get(name) }), /provider.*drift/);
 });
+
+// A bootstrap is a reviewed transition from observed old authority, never a
+// replacement policy that pretends the future graph already exists.
+import { createHash } from "node:crypto";
+import { createResourcePolicyFence } from "./delivery-resource-policy.mjs";
+import { productionAccessRate, legacyCallerSecrets, validateRateBootstrap,
+  compareBootstrapInventory, projectNativeRates } from "./production-rate-bootstrap.mjs";
+function bootstrapFixture() {
+  const value = fixture();
+  const { policy, observed } = value;
+  for (const worker of policy.cohorts[0].workers) {
+    const live = observed.get(worker.name);
+    live.settings.bindings.find(v => v.name === "PUBLISH_ENABLED").text = "disabled";
+    for (const binding of live.settings.bindings.filter(v => v.type === "ratelimit")) binding.simple = { limit: 16, period: 60 };
+    if (worker.role === "core") {
+      live.settings.bindings.push(...["GAME_PUBLISH_ENABLED", "RENDEZVOUS_ENABLED"]
+        .map(name => ({ type: "plain_text", name, text: "disabled" })));
+    } else {
+      live.settings.bindings.push(...legacyCallerSecrets.map(name => ({ name, type: "secret_text" })),
+        ...["SOURCE_TAG_KEY_CURRENT_ID", "SOURCE_TAG_KEY_PREVIOUS_ID"].map((name, i) => ({ name, type: "plain_text", text: `epoch-${i}` })));
+    }
+    Object.assign(worker, projectWorkerResources({ name: worker.name, role: worker.role, ...live }));
+  }
+  for (const live of observed.values()) for (const binding of live.settings.bindings)
+    if (binding.type === "ratelimit") binding.simple = { limit: 16, period: 60 };
+  const versions = [1, 2, 3].map(n => `${String(n).repeat(8)}-aaaa-bbbb-cccc-${String(n).repeat(12)}`);
+  const bootstrap = policy.productionBootstrap = {
+    schema: "production-core-and-callers-bootstrap-v1", sourceSha: "1".repeat(40),
+    expectedPredecessor: createHash("sha256").update(JSON.stringify(versions)).digest("hex"),
+    predecessorVersions: versions,
+    workers: [...observed].map(([name, live], index) => ({ name,
+      tag: (index + 1).toString(16).repeat(32), rates: projectNativeRates(live.settings.bindings) })),
+  };
+  const inventory = () => bootstrap.workers.map(worker => ({ ...worker,
+    rates: projectNativeRates(observed.get(worker.name).settings.bindings) }));
+  const readWorker = Object.assign(async (_account, name) => observed.get(name), { rateInventory: async () => inventory() });
+  const options = { target: "production", accountId, readWorker, sourceSha: bootstrap.sourceSha,
+    expectedPredecessor: bootstrap.expectedPredecessor };
+  const gate = () => createResourcePolicyFence(policy, options);
+  const add = () => observed.get("atrinik-metaserver").settings.bindings.push({ type: "ratelimit", ...structuredClone(productionAccessRate) });
+  const retire = role => { const live = observed.get(`atrinik-metaserver-${role}`);
+    live.settings.bindings = live.settings.bindings.filter(v => v.type !== "secret_text"); };
+  return { ...value, bootstrap, inventory, options, gate, add, retire };
+}
+
+test("bootstrap binds source and approved predecessor and requires an observed old authority graph", () => {
+  const { policy, bootstrap, options } = bootstrapFixture();
+  assert.doesNotThrow(() => validateResourcePolicy(policy, "production", accountId));
+  assert.throws(() => validateResourcePolicy(policy, "development", accountId));
+  assert.throws(() => createResourcePolicyFence(policy, { ...options, sourceSha: "2".repeat(40) }));
+  assert.throws(() => createResourcePolicyFence(policy, { ...options, expectedPredecessor: "2".repeat(64) }));
+  assert.throws(() => createResourcePolicyFence(policy, { ...options, sourceSha: undefined }));
+  const previous = resourcePolicyDigest(policy);
+  bootstrap.sourceSha = "3".repeat(40);
+  assert.notEqual(resourcePolicyDigest(policy), previous);
+  bootstrap.predecessorVersions.reverse();
+  assert.throws(() => validateResourcePolicy(policy, "production", accountId));
+});
+
+test("bootstrap cannot grant another namespace, omit an account peer or relax caller authority", () => {
+  for (const change of [
+    x => { x.bootstrap.workers[0].rates.push({ ...productionAccessRate }); },
+    x => { x.bootstrap.workers.pop(); },
+    x => { x.policy.cohorts[0].workers[1].secrets.push("EXTRA"); },
+    x => { x.policy.cohorts[0].workers[1].variables = x.policy.cohorts[0].workers[1].variables.filter(v => !v.binding.endsWith("_ID")); },
+    x => { x.bootstrap.workers[1].tag = x.bootstrap.workers[0].tag; },
+    x => { x.policy.cohorts[0].workers[0].resources.push({ binding: "WRONG", type: "rate-limit", id: "1008" }); },
+  ]) { const x = bootstrapFixture(); change(x); assert.throws(() => validateResourcePolicy(x.policy, "production", accountId)); }
+});
+
+test("bootstrap starts disabled, admits only its own addition, and never returns to missing namespace", async () => {
+  const x = bootstrapFixture(); const gate = x.gate();
+  assert.throws(() => gate.beginCoreUpload());
+  await gate.fence(); gate.beginCoreUpload();
+  await gate.fence(); // failed upload before any remote effect can still recover disabled
+  assert.throws(() => gate.confirmCoreAdded());
+  x.add(); await gate.fence(); gate.confirmCoreAdded();
+  x.observed.get("atrinik-metaserver").settings.bindings.pop();
+  await assert.rejects(gate.fence());
+  const next = bootstrapFixture(); next.add();
+  await assert.rejects(next.gate().fence()); // existing native binding is not an initial bootstrap
+  const enabled = bootstrapFixture();
+  enabled.observed.get("atrinik-metaserver").settings.bindings.find(v => v.name === "PUBLISH_ENABLED").text = "true";
+  await assert.rejects(enabled.gate().fence());
+});
+
+test("bootstrap fences every peer and only consumes exact caller secret retirements", async () => {
+  const x = bootstrapFixture(); const gate = x.gate();
+  await gate.fence(); gate.beginCoreUpload(); x.add(); await gate.fence();
+  x.retire("publisher"); await assert.rejects(gate.fence());
+  gate.beginCallerRetirement("publisher"); await gate.fence();
+  gate.confirmCallerRetired("publisher"); await gate.fence();
+  assert.throws(() => gate.beginCallerRetirement("publisher"));
+  const caller = x.observed.get("atrinik-metaserver-publisher");
+  caller.settings.bindings.push({ type: "secret_text", name: legacyCallerSecrets[0] });
+  await assert.rejects(gate.fence()); caller.settings.bindings.pop();
+  gate.beginCallerRetirement("rendezvous");
+  const peer = x.observed.get("atrinik-metaserver-development");
+  peer.settings.bindings.find(v => v.name === "PUBLISH_ENABLED").text = "true";
+  await assert.rejects(gate.fence());
+});
+
+test("ambiguous retirement can preserve a partial subset for disabled recovery, but never extra authority", async () => {
+  const x = bootstrapFixture(); const gate = x.gate();
+  await gate.fence(); gate.beginCoreUpload(); x.add(); await gate.fence();
+  gate.beginCallerRetirement("publisher");
+  const caller = x.observed.get("atrinik-metaserver-publisher");
+  caller.settings.bindings = caller.settings.bindings.filter(v => v.name !== legacyCallerSecrets[0]);
+  await gate.fence();
+  caller.settings.bindings.push({ type: "secret_text", name: "NEW_SECRET" });
+  await assert.rejects(gate.fence());
+});
+
+test("reconciliation requires completed native addition and both zero-secret callers", async () => {
+  const x = bootstrapFixture(); const gate = createResourcePolicyFence(x.policy, { ...x.options, completedBootstrap: true });
+  await assert.rejects(gate.fence()); x.add();
+  await assert.rejects(gate.fence()); x.retire("publisher");
+  await assert.rejects(gate.fence()); x.retire("rendezvous"); await gate.fence();
+});
+
+test("bootstrap rejects a new or replaced global Worker and a peer collision even outside governed cohorts", () => {
+  const { bootstrap, inventory } = bootstrapFixture();
+  const collision = inventory(); collision.push({ name: "unmanaged-peer", tag: "f".repeat(32), rates: [productionAccessRate] });
+  assert.throws(() => compareBootstrapInventory(bootstrap, collision, "baseline"));
+  const replaced = inventory(); replaced[0].tag = "f".repeat(32);
+  assert.throws(() => compareBootstrapInventory(bootstrap, replaced, "baseline"));
+  const changed = structuredClone(inventory()); changed[1].rates[0].simple.limit++;
+  assert.throws(() => compareBootstrapInventory(bootstrap, changed, "baseline"));
+});
+
+test("bootstrap desired configs differ only by exact core1008 and zero caller secrets", () => {
+  const { policy, observed } = bootstrapFixture();
+  const configs = policy.cohorts[0].workers.map(worker => ({
+    name: worker.name, account_id: accountId,
+    d1_databases: worker.resources.filter(v => v.type === "d1").map(v => ({ binding: v.binding, database_id: v.id })),
+    r2_buckets: worker.resources.filter(v => v.type === "r2").map(v => ({ binding: v.binding, bucket_name: v.id })),
+    analytics_engine_datasets: worker.resources.filter(v => v.type === "analytics").map(v => ({ binding: v.binding, dataset: v.id })),
+    durable_objects: { bindings: worker.resources.filter(v => v.type === "durable-object").map(v => ({ name: v.binding, class_name: v.className })) },
+    ratelimits: projectNativeRates(observed.get(worker.name).settings.bindings), services: worker.services,
+    vars: Object.fromEntries(worker.variables.map(v => [v.binding, v.value])),
+    secrets: { required: worker.role === "core" ? worker.secrets : [] }, routes: worker.routes.map(pattern => ({ pattern, custom_domain: true })),
+  }));
+  configs[0].ratelimits.push(structuredClone(productionAccessRate));
+  validateResourceConfigurations(policy, "production", configs);
+  for (const change of [
+    c => { c[0].ratelimits.pop(); },
+    c => { c[0].ratelimits.at(-1).namespace_id = "1009"; },
+    c => { c[0].ratelimits.at(-1).simple.limit = 17; },
+    c => { c[0].ratelimits[0].simple.limit = 17; },
+    c => { c[1].secrets.required = [...legacyCallerSecrets]; },
+    c => { c[0].r2_buckets[0].bucket_name = "replacement"; },
+  ]) { const candidate = structuredClone(configs); change(candidate); assert.throws(() => validateResourceConfigurations(policy, "production", candidate)); }
+});
+
+function globalInventoryFetch(change = () => {}) {
+  const names = ["first", "second"];
+  const versions = names.map((_, i) => `${i + 1}0000000-aaaa-bbbb-cccc-000000000000`);
+  return async (url, init) => {
+    assert.equal(init.method, "GET"); assert.equal(init.redirect, "error"); assert.equal(init.body, undefined);
+    const path = new URL(url).pathname.split(`/accounts/${accountId}`)[1];
+    let result;
+    if (path === "/workers/dispatch/namespaces") result = [];
+    else if (path === "/workers/scripts") result = names.map((id, i) => ({ id, tag: `${i + 1}`.repeat(32) }));
+    else {
+      const [, name, endpoint, version] = /^\/workers\/scripts\/([^/]+)\/([^/]+)(?:\/(.*))?$/u.exec(path);
+      const index = names.indexOf(name), id = versions[index];
+      const bindings = [{ type: "ratelimit", name: "GLOBAL", namespace_id: `50${index}`, simple: { limit: 16, period: 60 } }];
+      if (endpoint === "versions") result = version ? { id, resources: { bindings } } : { items: [{ id }] };
+      else if (endpoint === "deployments") result = { deployments: [{ versions: [{ version_id: id, percentage: 100 }] }] };
+      else if (endpoint === "settings") result = { bindings };
+      else assert.fail("unexpected request");
+    }
+    const body = { success: true, result }; change(path, body);
+    return Response.json(body);
+  };
+}
+
+test("bootstrap provider reader proves entire account identities and sole active version rate bindings", async () => {
+  const reader = resourcePolicyReader({ ATRINIK_DELIVERY_RESOURCE_READ_TOKEN: "fixture-only" }, globalInventoryFetch());
+  const result = await reader.rateInventory(accountId);
+  assert.equal(result.length, 2); assert.equal(result[1].rates[0].namespace_id, "501");
+  for (const change of [
+    (path, body) => { if (path === "/workers/dispatch/namespaces") body.result = [{ name: "hidden-peer" }]; },
+    (path, body) => { if (path.endsWith("/deployments")) body.result.deployments[0].versions[0].percentage = 50; },
+    (path, body) => { if (path.endsWith("/deployments")) body.result.deployments[0].versions[0].version_id = "changed"; },
+    (path, body) => { if (path.endsWith("/settings")) body.result.bindings[0].namespace_id = "1008"; },
+    (path, body) => { if (path === "/workers/scripts") body.result_info = { total_pages: 2 }; },
+    (path, body) => { if (path === "/workers/scripts") body.result_info = { total_count: 3 }; },
+    (path, body) => { if (path === "/workers/scripts") body.result_info = { cursor: "next" }; },
+    (path, body) => { if (path === "/workers/scripts") body.result.push(body.result[0]); },
+  ]) {
+    await assert.rejects(resourcePolicyReader({ ATRINIK_DELIVERY_RESOURCE_READ_TOKEN: "fixture-only" },
+      globalInventoryFetch(change)).rateInventory(accountId));
+  }
+  let listReads = 0;
+  await assert.rejects(resourcePolicyReader({ ATRINIK_DELIVERY_RESOURCE_READ_TOKEN: "fixture-only" }, globalInventoryFetch((path, body) => {
+    if (path === "/workers/scripts" && ++listReads === 2) body.result.pop();
+  })).rateInventory(accountId));
+});

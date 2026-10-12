@@ -8,8 +8,11 @@ import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 import { parseDirectoryFailure } from "./directory-reconciliation-diagnostics.mjs";
 import { readDirectoryInterface, incompatibleDirectoryInterface } from "./directory-reconciliation-interface.mjs";
+import { retireCallerSecrets, createCallerRetirementReader, createCallerRetirementPatch,
+  createCallerRetirementRecorder } from "./production-caller-retirement.mjs";
+import { validateRateBootstrap, legacyCallerSecrets } from "./production-rate-bootstrap.mjs";
 import { parseResourcePolicy, resourcePolicyDigest as digestResourcePolicy, validateResourceConfigurations,
-  assertResourcePolicyLive, resourcePolicyReader } from "./delivery-resource-policy.mjs";
+  resourcePolicyReader, createResourcePolicyFence } from "./delivery-resource-policy.mjs";
 import { developmentWorkerNames, promotionEnvironmentNames, targetContract, developmentFixture, deliveryTarget } from "./delivery-targets.mjs";
 
 const execFileAsync = promisify(execFile);
@@ -1852,8 +1855,9 @@ export async function assertDirectoryBuildContext(config, environment = process.
     fail("directory reconciliation execution account drift");
   const authority = await createDeliveryAuthority(contract, environment, { directory: true });
   const policy = parseResourcePolicy(environment.ATRINIK_DELIVERY_RESOURCE_POLICY, target, config.account_id);
-  await assertResourcePolicyLive(policy, { target, accountId: config.account_id,
-    readWorker: resourcePolicyReader(environment) });
+  await createResourcePolicyFence(policy, { target, accountId: config.account_id,
+    readWorker: resourcePolicyReader(environment), sourceSha: authority.sourceSha,
+    expectedPredecessor: environment.ATRINIK_PROMOTION_PREDECESSOR, completedBootstrap: true }).fence();
   await authority.fence();
 }
 
@@ -2132,6 +2136,39 @@ async function deployWorker(
   return message;
 }
 
+export function verifyBootstrapCallerPredecessor(expectedVersion, worker, active) {
+  const bindings = active.version?.resources?.bindings;
+  if (!["publisher", "rendezvous"].includes(worker.role) || active.versionId !== expectedVersion ||
+      !Array.isArray(bindings)) fail("bootstrap caller predecessor changed before staging");
+  const variables = bindings.filter(value => value.type === "plain_text")
+    .map(value => ({ binding: value.name, value: value.text })).sort((a, b) => a.binding.localeCompare(b.binding));
+  if (!sameJson(variables, [...worker.variables].sort((a, b) => a.binding.localeCompare(b.binding))) ||
+      !sameValues(remoteSecretNames(active.version), legacyCallerSecrets))
+    fail("bootstrap caller predecessor authority changed before staging");
+}
+
+// Prove the uploaded, disabled selected artifact before deleting any retained
+// predecessor secret. A self-reported version message is not module-byte proof.
+export function verifyStagedCallerRetirement({ worker, config, expectedMessage, sourceSha,
+  bundleDigest, snapshot, retired, expectedZoneId }) {
+  if (!["publisher", "rendezvous"].includes(worker.role) || snapshot.accountId !== config.account_id ||
+      snapshot.name !== config.name || snapshot.activeVersion !== snapshot.latestVersion ||
+      snapshot.settings?.annotations?.["workers/tag"] !== sourceSha ||
+      snapshot.code?.modules?.length !== 1 || snapshot.code.modules[0].sha256 !== bundleDigest ||
+      !["PUBLISH_ENABLED", "GAME_PUBLISH_ENABLED", "RENDEZVOUS_ENABLED"].filter(key => key in config.vars)
+        .every(key => config.vars[key] === "disabled"))
+    fail("selected disabled caller module identity drift");
+  const expected = { ...config, secrets: { required: retired ? [] : [...legacyCallerSecrets] } };
+  validateReadback(worker, expected, { versionId: snapshot.activeVersion,
+    version: { resources: snapshot.resources, annotations: snapshot.settings.annotations } }, expectedMessage);
+  validateLiveControlPlane(worker, config, {
+    routes: snapshot.control.routes, customDomains: snapshot.control.domains,
+    subdomainStatus: snapshot.control.subdomain, serviceEnvironment: snapshot.control.environment,
+    cronTriggers: snapshot.control.schedules,
+  }, { expectedZoneId });
+  return true;
+}
+
 export function resolveProductionCanaryCommand(canary, configs) {
   const roleIndex = {
     "publisher-service-binding": 1,
@@ -2322,6 +2359,8 @@ export async function runDelivery({ target = "production", sourceRoot, mode = "d
       const configs = await Promise.all(protectedInputs.configPaths.map(readJsonc));
       validateTopology(contract, configs, { production: true });
       const policy = parseResourcePolicy(process.env.ATRINIK_DELIVERY_RESOURCE_POLICY, target, configs[0].account_id);
+      validateRateBootstrap(policy, target, { sourceSha,
+        expectedPredecessor: process.env.ATRINIK_PROMOTION_PREDECESSOR });
       validateResourceConfigurations(policy, target, configs);
       const { stagedConfigs, stagedPaths } = await materializeStagedConfigurations(
         protectedInputs.directory, configs, contract.workers);
@@ -2360,8 +2399,16 @@ export async function runDelivery({ target = "production", sourceRoot, mode = "d
   const policy = parseResourcePolicy(process.env.ATRINIK_DELIVERY_RESOURCE_POLICY, target, configs[0].account_id);
   validateResourceConfigurations(policy, target, configs);
   validateResourceConfigurations(policy, target, stagedConfigs);
-  const resourceFence = () => assertResourcePolicyLive(policy, { target, accountId: configs[0].account_id,
-    readWorker: resourcePolicyReader(process.env) });
+  const resourceTransition = createResourcePolicyFence(policy, { target, accountId: configs[0].account_id,
+    readWorker: resourcePolicyReader(process.env), sourceSha,
+    expectedPredecessor: process.env.ATRINIK_PROMOTION_PREDECESSOR });
+  const resourceFence = () => resourceTransition.fence();
+  const bootstrap = validateRateBootstrap(policy, target, { sourceSha,
+    expectedPredecessor: process.env.ATRINIK_PROMOTION_PREDECESSOR });
+  const predecessorConfig = index => bootstrap && index > 0
+    ? { ...configs[index], secrets: { required: [...legacyCallerSecrets] } } : configs[index];
+  const stagedReadbackConfig = index => bootstrap && index > 0
+    ? { ...stagedConfigs[index], secrets: { required: [...legacyCallerSecrets] } } : stagedConfigs[index];
   for (const [index, config] of configs.entries()) {
     if (config.account_id !== process.env.CLOUDFLARE_ACCOUNT_ID)
       fail(`${contract.workers[index].role} account identity drift`);
@@ -2404,11 +2451,12 @@ export async function runDelivery({ target = "production", sourceRoot, mode = "d
     const value = await readActive(configPaths[index]);
     predecessorVersions.push(value.versionId);
     annotations.push(
-      validateReadback(worker, configs[index], value, null, { exact: false }),
+      validateReadback(worker, predecessorConfig(index), value, null, { exact: false }),
     );
   }
   await authority.validatePredecessor(annotations, { versions: predecessorVersions, workers: contract.workers });
   const decision = deliveryDecision(annotations, plan, target === "production" ? { sourceSha } : {});
+  if (bootstrap && decision !== "deploy") fail("production bootstrap requires a new staged deployment");
   const apiHandoffRoles = selectApiHandoffRoles(
     contract.workers,
     liveControlPlanes,
@@ -2418,6 +2466,12 @@ export async function runDelivery({ target = "production", sourceRoot, mode = "d
   const expectedActiveMessages = new Map();
   let finalReadback = [];
   let coreStaged = false;
+  let bootstrapEvidenceDirectory;
+  if (bootstrap) {
+    if (typeof authority.authorize !== "function") fail("bootstrap source handoff authority unavailable");
+    bootstrapEvidenceDirectory = await mkdtemp(resolve(process.env.RUNNER_TEMP ?? tmpdir(), "atrinik-bootstrap-evidence-"));
+    await chmod(bootstrapEvidenceDirectory, 0o700);
+  }
   const fence = async () => { await resourceFence(); await authority.fence(); };
   const outcome = await orchestrateDelivery({
     workers: contract.workers,
@@ -2428,12 +2482,19 @@ export async function runDelivery({ target = "production", sourceRoot, mode = "d
       for (const [index, worker] of contract.workers.entries()) {
         const active = await readActive(configPaths[index]);
         current.versions.push(active.versionId);
-        current.annotations.push(validateReadback(worker, configs[index], active, null, { exact: false }));
+        current.annotations.push(validateReadback(worker, predecessorConfig(index), active, null, { exact: false }));
       }
       return current;
     }, (currentAnnotations, current) => authority.validatePredecessor(currentAnnotations,
       { ...current, workers: contract.workers })),
     deployStaged: async (worker, index) => {
+      if (bootstrap && index > 0) {
+        const predecessor = await readActive(configPaths[index]);
+        const expected = policy.cohorts.find(cohort => cohort.environment === target).workers[index];
+        verifyBootstrapCallerPredecessor(bootstrap.predecessorVersions[index], expected, predecessor);
+        await authority.authorize();
+      }
+      if (index === 0) resourceTransition.beginCoreUpload();
       failureEvidence.failedRole = `staged:${worker.role}`;
       expectedStagedMessages.set(
         worker.role,
@@ -2449,9 +2510,10 @@ export async function runDelivery({ target = "production", sourceRoot, mode = "d
       );
     },
     readbackStaged: async (worker, index) => {
+      if (index === 0) resourceTransition.confirmCoreAdded();
       validateReadback(
         worker,
-        stagedConfigs[index],
+        stagedReadbackConfig(index),
         await readActive(stagedPaths[index]),
         expectedStagedMessages.get(worker.role),
       );
@@ -2461,6 +2523,34 @@ export async function runDelivery({ target = "production", sourceRoot, mode = "d
         await readLiveControlPlane(worker, process.env.CLOUDFLARE_ACCOUNT_ID),
         { expectedZoneId: configs[0].vars.DIRECTORY_CACHE_ZONE_ID },
       );
+      if (bootstrap && index > 0) {
+        failureEvidence.failedRole = `retirement:${worker.role}`;
+        resourceTransition.beginCallerRetirement(worker.role);
+        const accountId = configs[0].account_id;
+        try {
+          await retireCallerSecrets({
+            role: worker.role, fence, authorize: authority.authorize,
+            read: createCallerRetirementReader({ accountId,
+              token: process.env.ATRINIK_DELIVERY_RESOURCE_READ_TOKEN, role: worker.role }),
+            patch: createCallerRetirementPatch({ accountId,
+              token: process.env.CLOUDFLARE_API_TOKEN, role: worker.role }),
+            ...createCallerRetirementRecorder({ directory: bootstrapEvidenceDirectory, role: worker.role }),
+            verifyStaged: (snapshot, { retired }) => verifyStagedCallerRetirement({
+              worker, config: stagedConfigs[index], sourceSha, bundleDigest: plan.stagedBundles[index],
+              expectedMessage: expectedStagedMessages.get(worker.role), snapshot, retired,
+              expectedZoneId: configs[0].vars.DIRECTORY_CACHE_ZONE_ID,
+            }),
+          });
+        } catch (error) {
+          const stopped = new DeliveryError("production caller retirement stopped; preserve private intent and do not retry");
+          stopped.cause = error;
+          throw stopped;
+        }
+        resourceTransition.confirmCallerRetired(worker.role);
+        await fence();
+        validateReadback(worker, stagedConfigs[index], await readActive(stagedPaths[index]),
+          expectedStagedMessages.get(worker.role));
+      }
     },
     verifyStaged: async () => {
       const annotations = [];
@@ -2587,7 +2677,7 @@ export async function runDelivery({ target = "production", sourceRoot, mode = "d
     outcome, environment: target, sourceSha: checkoutHead, deployableDigest: plan.deploy,
     executionId: failureEvidence.buildUuid,
     completedRoles: failureEvidence.completedRoles, recoveryOutcome: failureEvidence.recoveryOutcome,
-    workers: finalReadback,
+    workers: finalReadback, bootstrapEvidenceDirectory,
   });
   const result = {
     outcome,
