@@ -157,7 +157,7 @@ export async function downloadRecoveryArtifact({ artifactId, archiveDigest, cont
     archiveDigest, context, now, minimumRetentionDays });
   const downloadDirectory = await mkdtemp(path.join(directory, "recovery-download-"));
   const client = artifactClient ?? await defaultClient();
-  const result = await client.downloadArtifact(artifactId, { path: downloadDirectory, expectedHash: archiveDigest,
+  const result = await client.downloadArtifact(artifactId, { path: downloadDirectory, expectedHash: `sha256:${archiveDigest}`,
     findBy: { token: environment.GITHUB_TOKEN, workflowRunId: Number(context.runId),
       repositoryOwner: "atrinik", repositoryName: "metaserver-worker" } });
   if (result?.digestMismatch !== false || result.downloadPath !== downloadDirectory)
