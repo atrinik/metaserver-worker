@@ -97,6 +97,16 @@ Build across the six PROD/DEV Workers. Set the protected
 `ATRINIK_PRODUCTION_WRITER_FENCE_POLICY` disposition explicitly to
 `retained-inert-builds`; never infer the exception from shared wrapper IDs.
 
+The deployment authority may drain known running inert Builds using read-only
+checks for at most 60 seconds. Eligibility requires each recorded launch to
+match the sealed inert commands, identity and environment; a new or unknown
+build, control drift or provider/authentication error stops immediately. This
+wait never retries an upload, secret removal or other provider mutation. All
+Builds must still be stopped before proceeding. After any wait, repeat the
+resource, current source/run, writer and clean-checkout proofs; the final
+handoff disables draining, so another build cannot introduce a second wait
+between those fresh proofs and a mutation or recovery operation.
+
 Retries use the configuration current when retried, so fresh command/config
 readback is part of the fence, not a historical build-start snapshot. See
 [Cloudflare build settings](https://developers.cloudflare.com/workers/ci-cd/builds/configuration/#build-settings).
@@ -309,6 +319,12 @@ keep the core access-rate binding absent. The only permitted addition is core
 The controller checks the ordinary-Worker inventory for competing use and proves
 the disabled predecessor before the first upload. Governed DEV/PROD resource
 isolation remains required, and any known namespace conflict blocks the upgrade.
+Governed cohorts must retain one 100% active version equal to latest. An unrelated
+Worker's latest version may differ from its sole active version only when both
+version-specific binding reads and current settings prove identical native-rate
+tuples. Recheck latest, active and deployment identities after those reads; any
+change, mixed deployment or differing native resource graph stops the census.
+This inspects existing versions without changing unrelated Workers.
 
 The approved `recovery` policy pins the owner's RSA public SPKI fingerprint and
 90-day retention. Supply only the public recipient in the protected production

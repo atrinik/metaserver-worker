@@ -500,3 +500,154 @@ for (const created_on of [
   assert.deepEqual(normalizeBuildEnvironment({ SECRET: { is_secret: true, value: null, created_on } }),
     { SECRET: { is_secret: true, value: null } });
 });
+
+function drainFixture(role = 1) {
+  const { input, policy } = inertFixture();
+  const trigger = clone(input.triggers[role]);
+  const token = trigger.build_token_uuid;
+  delete trigger.build_token_uuid;
+  input.builds = [{ build_uuid: id(500), status: "running", trigger,
+    build_trigger_metadata: { build_token_uuid: token, build_command: "exit 1", deploy_command: "exit 1",
+      root_directory: trigger.root_directory, provider_type: "github", provider_account_name: "atrinik",
+      repo_name: "metaserver-worker", branch: role === 0 ? "main" : "fix/inert-build",
+      environment_variables: Object.fromEntries(Object.entries(input.environments[trigger.trigger_uuid])
+        .map(([name, value]) => [name, { ...value, created_on: "2026-10-11T12:00:00Z" }])) } }];
+  let clock = 0, waits = 0, captures = 0, reads = 0;
+  const environment = { CLOUDFLARE_ACCOUNT_ID: policy.accountId, ATRINIK_PRODUCTION_BUILDS_READ_TOKEN: "test-only",
+    ATRINIK_PRODUCTION_WRITER_FENCE_POLICY: JSON.stringify(policy) };
+  const options = { environment, allowDrain: true, now: () => clock,
+    wait: async milliseconds => { clock += milliseconds; waits++; },
+    fetcher: async (url, init) => {
+      assert.equal(init.method, undefined);
+      assert.equal(init.signal.aborted, false);
+      reads++;
+      let result;
+      if (url.includes("/workers/scripts")) {
+        captures++;
+        result = [...policy.workers, ...policy.developmentWorkers].map(w => ({ id: w.name, tag: w.tag }));
+      } else if (url.endsWith(`/workers/${policy.externalScriptId}/triggers`)) result = input.triggers;
+      else if (url.includes("/environment_variables")) result = input.environments[url.split("/").at(-2)];
+      else if (url.includes(`/workers/${policy.externalScriptId}/builds?`)) result = input.builds;
+      else result = [];
+      return Response.json({ success: true, errors: [], result, result_info: Array.isArray(result)
+        ? { page: 1, count: result.length, total_count: result.length, total_pages: 1 } : undefined });
+    } };
+  return { input, policy, options, advance: milliseconds => { clock += milliseconds; },
+    counts: () => ({ clock, waits, captures, reads }) };
+}
+for (const role of [0, 1]) test(`read-only drain accepts only stopped completion of inert role ${role}`, async () => {
+  const f = drainFixture(role), wait = f.options.wait;
+  f.options.wait = async milliseconds => {
+    await wait(milliseconds);
+    f.input.builds[0].status = "stopped";
+  };
+  const result = await assertProductionPromotionWriterFence(f.options);
+  assert.equal(result.waited, true);
+  assert.equal(result.mutation, false);
+  assert.deepEqual(f.counts(), { clock: 5000, waits: 1, captures: 3, reads: 45 });
+});
+test("strict writer observation never waits for an inert active build", async () => {
+  const f = drainFixture();
+  await assert.rejects(assertProductionPromotionWriterFence({ ...f.options, allowDrain: false }));
+  assert.equal(f.counts().waits, 0);
+});
+test("inert drain has one finite deadline and does not retry expired reads", async () => {
+  const f = drainFixture();
+  await assert.rejects(assertProductionPromotionWriterFence(f.options));
+  assert.equal(f.counts().clock, 60_000);
+  assert.equal(f.counts().waits, 12);
+  assert.equal(f.counts().captures, 12);
+  const slow = drainFixture(), fetcher = slow.options.fetcher;
+  slow.options.fetcher = async (...args) => {
+    const result = await fetcher(...args);
+    if (slow.counts().waits > 0) slow.advance(60_000);
+    return result;
+  };
+  await assert.rejects(assertProductionPromotionWriterFence(slow.options));
+  assert.equal(slow.counts().waits, 1);
+  assert.equal(slow.counts().reads, 16);
+});
+for (const [name, change] of [
+  ["recorded build command", f => { f.input.builds[0].build_trigger_metadata.build_command = "npm ci"; }],
+  ["recorded deploy command", f => { f.input.builds[0].build_trigger_metadata.deploy_command = "exit 1; deploy"; }],
+  ["recorded token", f => { f.input.builds[0].build_trigger_metadata.build_token_uuid = id(700); }],
+  ["recorded root", f => { f.input.builds[0].build_trigger_metadata.root_directory = "/other"; }],
+  ["recorded provider", f => { f.input.builds[0].build_trigger_metadata.provider_type = "other"; }],
+  ["recorded repository", f => { f.input.builds[0].build_trigger_metadata.repo_name = "other"; }],
+  ["recorded environment", f => { f.input.builds[0].build_trigger_metadata.environment_variables.BASH_ENV = { is_secret: true, value: null }; }],
+  ["recorded skip", f => { f.input.builds[0].build_trigger_metadata.environment_variables.SKIP_DEPENDENCY_INSTALL.value = "0"; }],
+  ["missing launch metadata", f => { delete f.input.builds[0].build_trigger_metadata; }],
+  ["unknown status", f => { f.input.builds[0].status = "unknown"; }],
+  ["unknown trigger", f => { f.input.builds[0].trigger.trigger_uuid = id(700); }],
+  ["current command", f => { f.input.triggers[1].build_command = "npm ci"; }],
+  ["current cache", f => { f.input.triggers[1].build_caching_enabled = true; }],
+  ["current environment", f => { f.input.environments[id(2)].SKIP_DEPENDENCY_INSTALL.value = "0"; }],
+  ["original credential-free disposition", f => {
+    f.policy.disposition = "credential-free-review";
+    f.options.environment.ATRINIK_PRODUCTION_WRITER_FENCE_POLICY = JSON.stringify(f.policy);
+  }],
+]) test(`unsafe ${name} fails immediately without draining`, async () => {
+  const f = drainFixture(); change(f);
+  await assert.rejects(assertProductionPromotionWriterFence(f.options));
+  assert.equal(f.counts().waits, 0);
+});
+for (const [name, change] of [
+  ["new build identity", f => { f.input.builds.push({ ...clone(f.input.builds[0]), build_uuid: id(501) }); }],
+  ["missing build", f => { f.input.builds = []; }],
+  ["launch metadata", f => { f.input.builds[0].build_trigger_metadata.root_directory = "/changed"; }],
+  ["control", f => { f.input.triggers[1].trigger_name = "changed"; }],
+  ["environment", f => { f.input.environments[id(2)].SKIP_DEPENDENCY_INSTALL.value = "0"; }],
+]) test(`drain stops on ${name} drift without another wait`, async () => {
+  const f = drainFixture(), wait = f.options.wait;
+  f.options.wait = async milliseconds => { await wait(milliseconds); change(f); };
+  await assert.rejects(assertProductionPromotionWriterFence(f.options));
+  assert.equal(f.counts().waits, 1);
+});
+test("drain never retries provider failure", async () => {
+  for (const duringWait of [false, true]) {
+    const f = drainFixture(), fetcher = f.options.fetcher;
+    f.options.fetcher = async (...args) => {
+      if (!duringWait || f.counts().waits > 0) return Response.json({ success: false }, { status: 403 });
+      return fetcher(...args);
+    };
+    await assert.rejects(assertProductionPromotionWriterFence(f.options));
+    assert.equal(f.counts().waits, Number(duringWait));
+  }
+});
+
+test("drain deadline includes final strict response body consumption", async () => {
+  const f = drainFixture(), wait = f.options.wait, fetcher = f.options.fetcher;
+  f.options.wait = async milliseconds => { await wait(milliseconds); f.input.builds[0].status = "stopped"; };
+  f.options.fetcher = async (...args) => {
+    const response = await fetcher(...args);
+    if (f.counts().captures === 3 && args[0].includes(`/workers/${f.policy.externalScriptId}/builds?`)) {
+      const body = await response.text();
+      return new Response(new ReadableStream({ start(controller) {
+        f.advance(60_000);
+        controller.enqueue(new TextEncoder().encode(body)); controller.close();
+      } }));
+    }
+    return response;
+  };
+  await assert.rejects(assertProductionPromotionWriterFence(f.options));
+  assert.equal(f.counts().waits, 1);
+});
+test("strict post-drain handoff rejects newly active work without another wait", async () => {
+  const f = drainFixture(), wait = f.options.wait;
+  f.options.wait = async milliseconds => { await wait(milliseconds); f.input.builds[0].status = "stopped"; };
+  assert.equal((await assertProductionPromotionWriterFence(f.options)).waited, true);
+  f.input.builds.push({ ...clone(f.input.builds[0]), build_uuid: id(501), status: "queued" });
+  await assert.rejects(assertProductionPromotionWriterFence({ ...f.options, allowDrain: false }));
+  assert.equal(f.counts().waits, 1);
+});
+test("new stopped build in terminal drain capture is still unknown", async () => {
+  const f = drainFixture(), wait = f.options.wait, fetcher = f.options.fetcher;
+  f.options.wait = async milliseconds => { await wait(milliseconds); f.input.builds[0].status = "stopped"; };
+  f.options.fetcher = async (...args) => {
+    if (f.counts().captures === 2 && args[0].includes("/workers/scripts"))
+      f.input.builds.push({ ...clone(f.input.builds[0]), build_uuid: id(501) });
+    return fetcher(...args);
+  };
+  await assert.rejects(assertProductionPromotionWriterFence(f.options));
+  assert.equal(f.counts().waits, 1);
+});

@@ -340,8 +340,11 @@ export function resourcePolicyReader(environment, fetcher = fetch) {
     };
     const before = await list();
     const inventory = [];
-    // Bound concurrency and require a current single-version deployment. A latest
-    // settings document alone cannot prove which native namespace serves traffic.
+    // Bound concurrency and require a current single-version deployment. An
+    // unrelated Worker may have an undeployed latest version, but both versions
+    // must independently prove the same native resource graph as its settings.
+    const governed = new Set(Object.values(cohortWorkerNames).flat());
+    const versionPattern = /^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/u;
     for (let offset = 0; offset < before.length; offset += 4) {
       await Promise.all(before.slice(offset, offset + 4).map(async worker => {
       const script = `/workers/scripts/${encodeURIComponent(worker.name)}`;
@@ -350,20 +353,30 @@ export function resourcePolicyReader(environment, fetcher = fetch) {
           get(accountId, `${script}/versions?per_page=1`, { newestOnly: true }),
           get(accountId, `${script}/deployments?per_page=1`, { newestOnly: true }),
         ]);
-        const latest = versions?.items?.[0]?.id;
-        const active = deployments?.deployments?.[0]?.versions;
-        if (!/^[0-9a-f-]{36}$/u.test(latest ?? "") || !Array.isArray(active) || active.length !== 1 ||
-            active[0].percentage !== 100 || active[0].version_id !== latest)
+        const latestVersion = versions?.items?.[0]?.id;
+        const deployment = deployments?.deployments?.[0];
+        const active = deployment?.versions;
+        if (versions?.items?.length !== 1 || deployments?.deployments?.length !== 1 ||
+            !versionPattern.test(latestVersion ?? "") || !versionPattern.test(deployment?.id ?? "") ||
+            !Array.isArray(active) || active.length !== 1 || active[0].percentage !== 100 ||
+            !versionPattern.test(active[0].version_id ?? "") ||
+            (governed.has(worker.name) && active[0].version_id !== latestVersion))
           fail("ordinary native binding active version ambiguous");
-        return latest;
+        return { latestVersion, activeVersion: active[0].version_id, deploymentId: deployment.id };
       };
-      const versionId = await current();
-      const [settings, version] = await Promise.all([
-        get(accountId, `${script}/settings`), get(accountId, `${script}/versions/${versionId}`),
+      const coordinate = await current();
+      const [settings, latest, active] = await Promise.all([
+        get(accountId, `${script}/settings`),
+        get(accountId, `${script}/versions/${coordinate.latestVersion}`),
+        coordinate.activeVersion === coordinate.latestVersion ? null :
+          get(accountId, `${script}/versions/${coordinate.activeVersion}`),
       ]);
       const rates = projectNativeRates(settings?.bindings);
-      if (version.id !== versionId || !same(rates, projectNativeRates(version.resources?.bindings)) ||
-          versionId !== await current()) fail("ordinary native binding version changed");
+      if (latest.id !== coordinate.latestVersion ||
+          !same(rates, projectNativeRates(latest.resources?.bindings)) ||
+          (active !== null && (active.id !== coordinate.activeVersion ||
+            !same(rates, projectNativeRates(active.resources?.bindings)))) ||
+          !same(coordinate, await current())) fail("ordinary native binding version changed");
       inventory.push({ ...worker, rates });
       }));
     }
