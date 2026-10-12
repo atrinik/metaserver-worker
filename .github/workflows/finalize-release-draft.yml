@@ -1,0 +1,50 @@
+name: Finalize verified release draft
+run-name: Finalize ${{ inputs.tag }} at ${{ inputs.source_sha }}
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Exact existing verified draft tag
+        required: true
+        type: string
+      source_sha:
+        description: Exact selected source commit
+        required: true
+        type: string
+      archive_sha256:
+        description: Approved archive SHA-256
+        required: true
+        type: string
+      checksums_sha256:
+        description: Approved SHA256SUMS file SHA-256
+        required: true
+        type: string
+permissions:
+  contents: write
+  actions: read
+concurrency:
+  group: semantic-release
+  cancel-in-progress: false
+jobs:
+  finalize:
+    if: github.repository == 'atrinik/metaserver-worker' && github.ref == 'refs/heads/main' && github.run_attempt == 1
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version-file: .nvmrc
+          package-manager-cache: false
+      - name: Finalize exact approved draft after governed activation
+        env:
+          GH_TOKEN: ${{ github.token }}
+          ATRINIK_RELEASE_IMMUTABILITY_ACTIVE: ${{ vars.ATRINIK_RELEASE_IMMUTABILITY_ACTIVE }}
+          ATRINIK_RELEASE_DRAFT_TAG: ${{ inputs.tag }}
+          ATRINIK_RELEASE_DRAFT_SHA: ${{ inputs.source_sha }}
+          ATRINIK_RELEASE_ARCHIVE_SHA256: ${{ inputs.archive_sha256 }}
+          ATRINIK_RELEASE_CHECKSUMS_SHA256: ${{ inputs.checksums_sha256 }}
+        run: node scripts/release/publish-complete-release.mjs --finalize-draft

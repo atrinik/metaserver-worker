@@ -37,6 +37,7 @@ jobs:
       - name: Analyze commits and publish
         env:
           GH_TOKEN: ${{ github.token }}
+          ATRINIK_RELEASE_IMMUTABILITY_ACTIVE: ${{ vars.ATRINIK_RELEASE_IMMUTABILITY_ACTIVE }}
         run: >-
           npx --yes
           --package=semantic-release@25.0.9
