@@ -309,6 +309,12 @@ keep the core access-rate binding absent. The only permitted addition is core
 The controller checks the ordinary-Worker inventory for competing use and proves
 the disabled predecessor before the first upload. Governed DEV/PROD resource
 isolation remains required, and any known namespace conflict blocks the upgrade.
+Governed cohorts must retain one 100% active version equal to latest. An unrelated
+Worker's latest version may differ from its sole active version only when both
+version-specific binding reads and current settings prove identical native-rate
+tuples. Recheck latest, active and deployment identities after those reads; any
+change, mixed deployment or differing native resource graph stops the census.
+This inspects existing versions without changing unrelated Workers.
 
 The approved `recovery` policy pins the owner's RSA public SPKI fingerprint and
 90-day retention. Supply only the public recipient in the protected production

@@ -386,7 +386,7 @@ function globalInventoryFetch(change = () => {}) {
       const index = names.indexOf(name), id = versions[index];
       const bindings = [{ type: "ratelimit", name: "GLOBAL", namespace_id: `50${index}`, simple: { limit: 16, period: 60 } }];
       if (endpoint === "versions") result = version ? { id, resources: { bindings } } : { items: [{ id }] };
-      else if (endpoint === "deployments") result = { deployments: [{ versions: [{ version_id: id, percentage: 100 }] }] };
+      else if (endpoint === "deployments") result = { deployments: [{ id: `d${index}000000-aaaa-bbbb-cccc-000000000000`, versions: [{ version_id: id, percentage: 100 }] }] };
       else if (endpoint === "settings") result = { bindings };
       else assert.fail("unexpected request");
     }
@@ -415,4 +415,81 @@ test("bootstrap provider reader proves ordinary Worker identities and sole activ
   await assert.rejects(resourcePolicyReader({ ATRINIK_DELIVERY_RESOURCE_READ_TOKEN: "fixture-only" }, globalInventoryFetch((path, body) => {
     if (path === "/workers/scripts" && ++listReads === 2) body.result.pop();
   })).rateInventory(accountId));
+});
+
+function undeployedInventoryFetch({ name = "unrelated-preview", change = () => {} } = {}) {
+  const latest = "10000000-aaaa-bbbb-cccc-000000000000";
+  const active = "20000000-aaaa-bbbb-cccc-000000000000";
+  const deployment = "30000000-aaaa-bbbb-cccc-000000000000";
+  const calls = [];
+  const fetcher = async (url, init) => {
+    assert.equal(init.method, "GET"); assert.equal(init.body, undefined);
+    const endpoint = new URL(url).pathname.split(`/workers/scripts/${name}/`)[1];
+    calls.push(endpoint ?? "scripts");
+    let result;
+    if (endpoint === undefined) result = [{ id: name, tag: "a".repeat(32) }];
+    else if (endpoint === "versions") result = { items: [{ id: latest }] };
+    else if (endpoint === "deployments") result = { deployments: [{ id: deployment, versions: [{ version_id: active, percentage: 100 }] }] };
+    else if (endpoint === "settings") result = { bindings: [] };
+    else if (endpoint === `versions/${latest}` || endpoint === `versions/${active}`)
+      result = { id: endpoint.slice(9), resources: { bindings: [] } };
+    else assert.fail(`unexpected fixture endpoint ${endpoint}`);
+    change({ endpoint, result, calls, latest, active, deployment });
+    return Response.json({ success: true, result });
+  };
+  return { fetcher, calls, latest, active };
+}
+
+test("unrelated undeployed latest version requires independent active and latest rate proofs", async () => {
+  const fixture = undeployedInventoryFetch();
+  const inventory = await resourcePolicyReader({ ATRINIK_DELIVERY_RESOURCE_READ_TOKEN: "fixture-only" }, fixture.fetcher).rateInventory(accountId);
+  assert.deepEqual(inventory, [{ name: "unrelated-preview", tag: "a".repeat(32), rates: [] }]);
+  assert.equal(fixture.calls.filter(v => v === `versions/${fixture.latest}`).length, 1);
+  assert.equal(fixture.calls.filter(v => v === `versions/${fixture.active}`).length, 1);
+  assert.equal(fixture.calls.filter(v => v === "deployments").length, 2);
+});
+
+for (const name of ["atrinik-metaserver", "atrinik-metaserver-publisher", "atrinik-metaserver-rendezvous",
+  "atrinik-metaserver-development", "atrinik-metaserver-development-publisher", "atrinik-metaserver-development-rendezvous",
+  "atrinik-metaserver-review-canary", "atrinik-metaserver-publisher-review-canary", "atrinik-metaserver-rendezvous-review-canary"])
+  test(`governed Worker still rejects active/latest skew: ${name}`, async () => {
+    const fixture = undeployedInventoryFetch({ name });
+    await assert.rejects(resourcePolicyReader({ ATRINIK_DELIVERY_RESOURCE_READ_TOKEN: "fixture-only" }, fixture.fetcher).rateInventory(accountId), /active version ambiguous/u);
+  });
+
+for (const [name, change] of [
+  ["active-only 1008 collision", ({ endpoint, result, active }) => {
+    if (endpoint === `versions/${active}`) result.resources.bindings.push({ type: "ratelimit", ...productionAccessRate });
+  }],
+  ["latest and settings 1008 collision", ({ endpoint, result, latest }) => {
+    if (endpoint === `versions/${latest}`) result.resources.bindings.push({ type: "ratelimit", ...productionAccessRate });
+    if (endpoint === "settings") result.bindings.push({ type: "ratelimit", ...productionAccessRate });
+  }],
+  ["missing active resource proof", ({ endpoint, result, active }) => {
+    if (endpoint === `versions/${active}`) delete result.resources.bindings;
+  }],
+  ["wrong active response identity", ({ endpoint, result, active, latest }) => {
+    if (endpoint === `versions/${active}`) result.id = latest;
+  }],
+  ["latest changes during sweep", ({ endpoint, result, calls, active }) => {
+    if (endpoint === "versions" && calls.filter(v => v === endpoint).length === 2) result.items[0].id = active;
+  }],
+  ["active changes during sweep", ({ endpoint, result, calls, latest }) => {
+    if (endpoint === "deployments" && calls.filter(v => v === endpoint).length === 2) result.deployments[0].versions[0].version_id = latest;
+  }],
+  ["deployment changes with same active version", ({ endpoint, result, calls }) => {
+    if (endpoint === "deployments" && calls.filter(v => v === endpoint).length === 2) result.deployments[0].id = "40000000-aaaa-bbbb-cccc-000000000000";
+  }],
+  ["mixed deployment", ({ endpoint, result, latest }) => {
+    if (endpoint === "deployments") result.deployments[0].versions.push({ version_id: latest, percentage: 0 });
+  }],
+  ["ambiguous latest response", ({ endpoint, result, active }) => {
+    if (endpoint === "versions") result.items.push({ id: active });
+  }],
+  ["missing deployment identity", ({ endpoint, result }) => {
+    if (endpoint === "deployments") delete result.deployments[0].id;
+  }],
+]) test(`unrelated version census rejects ${name}`, async () => {
+  const fixture = undeployedInventoryFetch({ change });
+  await assert.rejects(resourcePolicyReader({ ATRINIK_DELIVERY_RESOURCE_READ_TOKEN: "fixture-only" }, fixture.fetcher).rateInventory(accountId));
 });
