@@ -297,15 +297,28 @@ The initial legacy PROD upgrade may use the reviewed one-use
 `productionBootstrap` policy extension with schema
 `production-core-and-callers-bootstrap-v1`. It binds selected source SHA,
 expected predecessor digest, the three predecessor versions and the complete
-account Worker/tag/native-rate inventory. Keep actual legacy caller secret names
-and key-ID variables in the baseline policy; keep the core access-rate binding
-absent. The only permitted addition is core `ACCESS_ROUTE_RATE_LIMITER`, native
-namespace `1008`, with limit 16 per 60 seconds. The controller proves global
-absence and the disabled predecessor before the first upload. After new code is
-staged disabled, a single guarded operation per caller removes its two obsolete
-signing secrets and proves the exact empty inventory before activation. An
-uncertain or partial cleanup blocks activation and uses new-code disabled-core
-recovery. No manual binding preprovisioning or legacy rollback is part of this
+ordinary-Worker/tag/native-rate inventory. The policy declares
+`nativeInventoryScope: "ordinary-workers"` and `dispatchNamespaces: "unassessed"`;
+it does not claim account-wide namespace uniqueness or dispatch absence. Keep
+actual legacy caller secret names and key-ID variables in the baseline policy;
+keep the core access-rate binding absent. The only permitted addition is core
+`ACCESS_ROUTE_RATE_LIMITER`, native namespace `1008`, with limit 16 per 60 seconds.
+The controller checks the ordinary-Worker inventory for competing use and proves
+the disabled predecessor before the first upload. Governed DEV/PROD resource
+isolation remains required, and any known namespace conflict blocks the upgrade.
+
+The approved `recovery` policy pins the owner's RSA public SPKI fingerprint and
+90-day retention. Supply only the public recipient in the protected production
+variable `ATRINIK_PRODUCTION_RECOVERY_PUBLIC_KEY`; retain the private key locally
+and rehearse decryption before live use. After new code is staged disabled, each
+caller's consumed intent must be encrypted and its immutable GitHub Actions
+artifact finalized and verified before the single guarded operation removes the
+two obsolete signing secrets. Verify and retain a separate encrypted receipt and
+prove the exact empty secret inventory before activation. No raw private policy
+is uploaded. Uncertain intent persistence stops before removal; uncertain removal
+or receipt persistence blocks activation and uses new-code disabled-core recovery.
+Preserve the artifact provenance and export recoverable records before retention
+expires. No manual binding preprovisioning or legacy rollback is part of this
 path. After successful transition, retire the bootstrap extension in favor of a
 fresh strict observed policy and new approved plan before another promotion.
 
