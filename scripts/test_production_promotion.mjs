@@ -350,7 +350,14 @@ test("workflow has a single manual serialized writer and credentials only in exe
   assert.doesNotMatch(preparation, /secrets\./u);
   assert.match(execution, /ATRINIK_DELIVERY_RESOURCE_POLICY: \$\{\{ secrets\.ATRINIK_DELIVERY_RESOURCE_POLICY \}\}/u);
   assert.match(execution, /ATRINIK_DELIVERY_RESOURCE_READ_TOKEN: \$\{\{ secrets\.ATRINIK_DELIVERY_RESOURCE_READ_TOKEN \}\}/u);
-  assert.match(execution, /node scripts\/production-promotion.mjs --execute/u);
+  assert.match(execution, /uses: \.\/controller\/\.github\/actions\/promote-production/u);
+  assert.match(execution, /ATRINIK_PRODUCTION_RECOVERY_PUBLIC_KEY: \$\{\{ vars\.ATRINIK_PRODUCTION_RECOVERY_PUBLIC_KEY \}\}/u);
+  const action = await readFile(new URL("../.github/actions/promote-production/action.yml", import.meta.url), "utf8");
+  assert.match(action, /using: node24/u);
+  assert.match(action, /main: \.\.\/\.\.\/\.\.\/scripts\/production-promotion-action\.mjs/u);
+  const entry = await readFile(new URL("./production-promotion-action.mjs", import.meta.url), "utf8");
+  assert.match(entry, /import \{ runPromotionDelivery \} from "\.\/production-promotion\.mjs"/u);
+  assert.match(entry, /process\.exitCode = await runPromotionDelivery\(\)/u);
   assert.doesNotMatch(execution, /npm (?:ci|run check)/u);
   assert.match(promotion, /path: controller/u);
   assert.match(promotion, /path: selected/u);
@@ -363,4 +370,21 @@ test("workflow has a single manual serialized writer and credentials only in exe
     assert(preflight < job.indexOf("run: npm install"));
   }
   assert.doesNotMatch(promotion, /contents: write|id-token: write/u);
+});
+
+test("retirement handoff refreshes full source authority without repeating the slow provider sweep", async () => {
+  for (const change of [
+    f => { f.evidence.tagSha = controller; },
+    f => { f.evidence.run.status = "completed"; f.evidence.run.conclusion = "cancelled"; },
+    f => { f.evidence.actorPermission.permission = "read"; },
+  ]) {
+    const f = fixture(); let sweeps = 0;
+    const authority = await createProductionAuthority({ environment: f.environment, checkoutHead: source, dirty: false,
+      readEvent: async () => JSON.stringify(f.event), fetcher: fakeFetch(f), now: () => now,
+      writerFence: async () => { sweeps++; } });
+    await authority.authorize(); assert.equal(sweeps, 1);
+    change(f); let writes = 0;
+    await assert.rejects(async () => { await authority.authorize(); writes++; });
+    assert.equal(writes, 0); assert.equal(sweeps, 1);
+  }
 });

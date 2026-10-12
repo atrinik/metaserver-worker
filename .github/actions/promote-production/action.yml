@@ -1,0 +1,5 @@
+name: Trusted production promotion
+description: Execute the controller with private finalized recovery artifacts
+runs:
+  using: node24
+  main: ../../../scripts/production-promotion-action.mjs

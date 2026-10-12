@@ -82,6 +82,30 @@
   provider secrets; pin unchanged non-target legacy secret names without cleanup
   authority. Provider readback exposes names, never secret values: disjoint key
   generation requires separate provisioning-receipt proof.
+- The optional private `productionBootstrap` record authorizes only the reviewed
+  old-production transition: selected immutable source and exact three-version
+  predecessor, core `ACCESS_ROUTE_RATE_LIMITER` native namespace `1008` at 16/60,
+  and retirement of the two exact legacy caller signing-secret bindings. Pin the
+  observed graph, all ordinary Worker identities/native-rate tuples, and old
+  caller key-ID variables; never describe future resources as already existing.
+  Before upload prove the entire baseline, disabled core, sole active/latest
+  versions and ordinary-Worker native-namespace isolation. The bootstrap policy
+  explicitly records this limited census and dispatch namespaces as unassessed;
+  never claim account-wide uniqueness or interpret a forbidden read as absence.
+  Stage the new disabled core first, then each new disabled stateless caller
+  while retaining its old secrets. Verify selected code and complete readback
+  before a fresh, one-use settings PATCH removes that caller's two secrets.
+  Require zero-secret readback before activation. Encrypt mutation intents and
+  receipts using standard JWE (RSA-OAEP-256/A256GCM) to the approved owner public
+  SPKI key; the private key stays outside Actions. Before dispatch, finalize and
+  verify the ciphertext intent in an immutable Actions artifact, with the
+  approved 90-day effective retention. Only ciphertext may leave the runner.
+  Require an owner decryption rehearsal and export before expiry. Unknown or
+  partial outcomes stop activation without retrying
+  deletion. Recover only the new disabled core, never old caller code. There is
+  no remote compare-and-swap: preserve the fixed promotion concurrency and fresh
+  exclusive-writer/source fences at each intent. Retire this one-use policy to a
+  newly observed ordinary inventory and approved plan before later promotions.
 - Treat `server_presence` plus the profile-discriminated `directory_entries`
   as authoritative, profile-scoped publication state. Active profiles are Classic
   publisher v3/directory v6 and Game publisher v2/directory v2. Private presence
@@ -317,6 +341,18 @@
 - Preserve unrelated work and finish with `git diff --check`.
 - Update this `AGENTS.md` in the same change when major rework alters platform
   ownership, bindings, state/migration policy, protocol, or validation.
+
+- Release publication is draft-first: semantic-release selects the version and
+  uploads the exact archive/checksum cohort with `draftRelease: true`, then
+  `scripts/release/publish-complete-release.cjs` verifies source identity and
+  complete uploaded asset digests before publishing. Publication also requires
+  the governed immutable-release activation variable; verify the final immutable
+  state and locked tag SHA. Manual existing-draft recovery uses repository-authorized
+  dispatch and refreshes protected current-main/source-check and active first-attempt
+  run authority after downloads, immediately before publication. Failed verification retains
+  the draft; never repair it by publishing partial assets or rewriting historical
+  releases. Immutable-release policy is managed by the governance repository;
+  successful source publication does not authorize production promotion.
 
 Dependency review is advisory. Before merge, the Codex implementer reads its PR
 comment or job summary, fixes actionable introduced dependency risk, or records
