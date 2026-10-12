@@ -86,16 +86,22 @@
   old-production transition: selected immutable source and exact three-version
   predecessor, core `ACCESS_ROUTE_RATE_LIMITER` native namespace `1008` at 16/60,
   and retirement of the two exact legacy caller signing-secret bindings. Pin the
-  observed graph, all account Worker identities/native-rate tuples, and old
+  observed graph, all ordinary Worker identities/native-rate tuples, and old
   caller key-ID variables; never describe future resources as already existing.
   Before upload prove the entire baseline, disabled core, sole active/latest
-  versions and global native-namespace isolation, including an empty readable
-  dispatch-namespace inventory. A forbidden read is not proof of absence.
+  versions and ordinary-Worker native-namespace isolation. The bootstrap policy
+  explicitly records this limited census and dispatch namespaces as unassessed;
+  never claim account-wide uniqueness or interpret a forbidden read as absence.
   Stage the new disabled core first, then each new disabled stateless caller
   while retaining its old secrets. Verify selected code and complete readback
   before a fresh, one-use settings PATCH removes that caller's two secrets.
-  Require zero-secret readback before activation. Persist private mutation
-  intents/receipts; unknown or partial outcomes stop activation without retrying
+  Require zero-secret readback before activation. Encrypt mutation intents and
+  receipts using standard JWE (RSA-OAEP-256/A256GCM) to the approved owner public
+  SPKI key; the private key stays outside Actions. Before dispatch, finalize and
+  verify the ciphertext intent in an immutable Actions artifact, with the
+  approved 90-day effective retention. Only ciphertext may leave the runner.
+  Require an owner decryption rehearsal and export before expiry. Unknown or
+  partial outcomes stop activation without retrying
   deletion. Recover only the new disabled core, never old caller code. There is
   no remote compare-and-swap: preserve the fixed promotion concurrency and fresh
   exclusive-writer/source fences at each intent. Retire this one-use policy to a

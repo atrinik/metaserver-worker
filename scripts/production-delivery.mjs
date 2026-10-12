@@ -8,8 +8,8 @@ import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 import { parseDirectoryFailure } from "./directory-reconciliation-diagnostics.mjs";
 import { readDirectoryInterface, incompatibleDirectoryInterface } from "./directory-reconciliation-interface.mjs";
-import { retireCallerSecrets, createCallerRetirementReader, createCallerRetirementPatch,
-  createCallerRetirementRecorder } from "./production-caller-retirement.mjs";
+import { retireCallerSecrets, createCallerRetirementReader, createCallerRetirementPatch } from "./production-caller-retirement.mjs";
+import { createDurableCallerRetirementRecorder } from "./production-recovery-artifacts.mjs";
 import { validateRateBootstrap, legacyCallerSecrets } from "./production-rate-bootstrap.mjs";
 import { parseResourcePolicy, resourcePolicyDigest as digestResourcePolicy, validateResourceConfigurations,
   resourcePolicyReader, createResourcePolicyFence } from "./delivery-resource-policy.mjs";
@@ -2466,11 +2466,23 @@ export async function runDelivery({ target = "production", sourceRoot, mode = "d
   const expectedActiveMessages = new Map();
   let finalReadback = [];
   let coreStaged = false;
+  const retirementRecorders = new Map();
   let bootstrapEvidenceDirectory;
   if (bootstrap) {
     if (typeof authority.authorize !== "function") fail("bootstrap source handoff authority unavailable");
     bootstrapEvidenceDirectory = await mkdtemp(resolve(process.env.RUNNER_TEMP ?? tmpdir(), "atrinik-bootstrap-evidence-"));
     await chmod(bootstrapEvidenceDirectory, 0o700);
+    // Validate recovery ownership and runtime capability before the first upload.
+    // Only finalized encrypted artifacts can authorize a retirement PATCH.
+    for (const role of ["publisher", "rendezvous"]) {
+      retirementRecorders.set(role, await createDurableCallerRetirementRecorder({
+        directory: bootstrapEvidenceDirectory, role, recovery: bootstrap.recovery,
+        publicKey: process.env.ATRINIK_PRODUCTION_RECOVERY_PUBLIC_KEY,
+        context: { repository: process.env.GITHUB_REPOSITORY,
+          runId: process.env.GITHUB_RUN_ID, runAttempt: process.env.GITHUB_RUN_ATTEMPT,
+          controllerSha: process.env.GITHUB_SHA, sourceSha, deployableDigest: plan.deploy },
+      }));
+    }
   }
   const fence = async () => { await resourceFence(); await authority.fence(); };
   const outcome = await orchestrateDelivery({
@@ -2534,7 +2546,7 @@ export async function runDelivery({ target = "production", sourceRoot, mode = "d
               token: process.env.ATRINIK_DELIVERY_RESOURCE_READ_TOKEN, role: worker.role }),
             patch: createCallerRetirementPatch({ accountId,
               token: process.env.CLOUDFLARE_API_TOKEN, role: worker.role }),
-            ...createCallerRetirementRecorder({ directory: bootstrapEvidenceDirectory, role: worker.role }),
+            ...retirementRecorders.get(worker.role),
             verifyStaged: (snapshot, { retired }) => verifyStagedCallerRetirement({
               worker, config: stagedConfigs[index], sourceSha, bundleDigest: plan.stagedBundles[index],
               expectedMessage: expectedStagedMessages.get(worker.role), snapshot, retired,

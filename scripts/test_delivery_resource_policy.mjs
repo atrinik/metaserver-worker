@@ -244,6 +244,8 @@ function bootstrapFixture() {
     schema: "production-core-and-callers-bootstrap-v1", sourceSha: "1".repeat(40),
     expectedPredecessor: createHash("sha256").update(JSON.stringify(versions)).digest("hex"),
     predecessorVersions: versions,
+    nativeInventoryScope: "ordinary-workers", dispatchNamespaces: "unassessed",
+    recovery: { recipientSpkiSha256: "4".repeat(64), retentionDays: 90 },
     workers: [...observed].map(([name, live], index) => ({ name,
       tag: (index + 1).toString(16).repeat(32), rates: projectNativeRates(live.settings.bindings) })),
   };
@@ -275,6 +277,9 @@ test("bootstrap binds source and approved predecessor and requires an observed o
 
 test("bootstrap cannot grant another namespace, omit an account peer or relax caller authority", () => {
   for (const change of [
+    x => { x.bootstrap.nativeInventoryScope = "entire-account"; },
+    x => { x.bootstrap.dispatchNamespaces = "absent"; },
+    x => { x.bootstrap.recovery.retentionDays = 1; },
     x => { x.bootstrap.workers[0].rates.push({ ...productionAccessRate }); },
     x => { x.bootstrap.workers.pop(); },
     x => { x.policy.cohorts[0].workers[1].secrets.push("EXTRA"); },
@@ -375,8 +380,7 @@ function globalInventoryFetch(change = () => {}) {
     assert.equal(init.method, "GET"); assert.equal(init.redirect, "error"); assert.equal(init.body, undefined);
     const path = new URL(url).pathname.split(`/accounts/${accountId}`)[1];
     let result;
-    if (path === "/workers/dispatch/namespaces") result = [];
-    else if (path === "/workers/scripts") result = names.map((id, i) => ({ id, tag: `${i + 1}`.repeat(32) }));
+    if (path === "/workers/scripts") result = names.map((id, i) => ({ id, tag: `${i + 1}`.repeat(32) }));
     else {
       const [, name, endpoint, version] = /^\/workers\/scripts\/([^/]+)\/([^/]+)(?:\/(.*))?$/u.exec(path);
       const index = names.indexOf(name), id = versions[index];
@@ -391,12 +395,11 @@ function globalInventoryFetch(change = () => {}) {
   };
 }
 
-test("bootstrap provider reader proves entire account identities and sole active version rate bindings", async () => {
+test("bootstrap provider reader proves ordinary Worker identities and sole active version rate bindings", async () => {
   const reader = resourcePolicyReader({ ATRINIK_DELIVERY_RESOURCE_READ_TOKEN: "fixture-only" }, globalInventoryFetch());
   const result = await reader.rateInventory(accountId);
   assert.equal(result.length, 2); assert.equal(result[1].rates[0].namespace_id, "501");
   for (const change of [
-    (path, body) => { if (path === "/workers/dispatch/namespaces") body.result = [{ name: "hidden-peer" }]; },
     (path, body) => { if (path.endsWith("/deployments")) body.result.deployments[0].versions[0].percentage = 50; },
     (path, body) => { if (path.endsWith("/deployments")) body.result.deployments[0].versions[0].version_id = "changed"; },
     (path, body) => { if (path.endsWith("/settings")) body.result.bindings[0].namespace_id = "1008"; },

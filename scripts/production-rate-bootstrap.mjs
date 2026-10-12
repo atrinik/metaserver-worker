@@ -30,7 +30,7 @@ function validateRate(rate) {
 export function validateRateBootstrap(policy, target, { sourceSha, expectedPredecessor } = {}) {
   const bootstrap = policy.productionBootstrap;
   if (bootstrap === undefined) return null;
-  keys(bootstrap, ["schema", "sourceSha", "expectedPredecessor", "predecessorVersions", "workers"]);
+  keys(bootstrap, ["schema", "sourceSha", "expectedPredecessor", "predecessorVersions", "workers", "nativeInventoryScope", "dispatchNamespaces", "recovery"]);
   if (target !== "production" || bootstrap.schema !== "production-core-and-callers-bootstrap-v1" ||
       !/^[0-9a-f]{40}$/u.test(bootstrap.sourceSha) || !/^[0-9a-f]{64}$/u.test(bootstrap.expectedPredecessor) ||
       (sourceSha !== undefined && sourceSha !== bootstrap.sourceSha) ||
@@ -39,6 +39,9 @@ export function validateRateBootstrap(policy, target, { sourceSha, expectedPrede
   if (!Array.isArray(bootstrap.predecessorVersions) || bootstrap.predecessorVersions.length !== 3 ||
       bootstrap.predecessorVersions.some(v => !/^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/u.test(v)) ||
       createHash("sha256").update(JSON.stringify(bootstrap.predecessorVersions)).digest("hex") !== bootstrap.expectedPredecessor) fail();
+  keys(bootstrap.recovery, ["recipientSpkiSha256", "retentionDays"]);
+  if (bootstrap.nativeInventoryScope !== "ordinary-workers" || bootstrap.dispatchNamespaces !== "unassessed" ||
+      !/^[0-9a-f]{64}$/u.test(bootstrap.recovery.recipientSpkiSha256) || bootstrap.recovery.retentionDays !== 90) fail();
   const names = new Set(), tags = new Set();
   for (const worker of bootstrap.workers) {
     keys(worker, ["name", "tag", "rates"]);

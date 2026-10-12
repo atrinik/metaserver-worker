@@ -327,16 +327,14 @@ export function resourcePolicyReader(environment, fetcher = fetch) {
   };
   readWorker.rateInventory = async accountId => {
     const list = async () => {
-      // Dispatch scripts have a separate inventory. This narrow bootstrap does
-      // not support them, and an unreadable inventory is never proof of absence.
-      const dispatch = await get(accountId, "/workers/dispatch/namespaces");
-      if (!Array.isArray(dispatch) || dispatch.length !== 0) fail("dispatch namespace absence unproven");
+      // This census covers ordinary Workers only. The approved policy explicitly
+      // records dispatch namespaces as unassessed, never absent after a 403.
       const scripts = await get(accountId, "/workers/scripts");
       if (!Array.isArray(scripts) || scripts.length > 100 || scripts.length === 0 ||
-          new Set(scripts.map(v => v.id)).size !== scripts.length) fail("global Worker inventory incomplete");
+          new Set(scripts.map(v => v.id)).size !== scripts.length) fail("ordinary Worker inventory incomplete");
       return sorted(scripts.map(v => {
         if (!/^[a-z0-9_][a-z0-9_-]{0,127}$/u.test(v.id ?? "") || !/^[0-9a-f]{32}$/u.test(v.tag ?? ""))
-          fail("global Worker identity invalid");
+          fail("ordinary Worker identity invalid");
         return { name: v.id, tag: v.tag };
       }));
     };
@@ -356,7 +354,7 @@ export function resourcePolicyReader(environment, fetcher = fetch) {
         const active = deployments?.deployments?.[0]?.versions;
         if (!/^[0-9a-f-]{36}$/u.test(latest ?? "") || !Array.isArray(active) || active.length !== 1 ||
             active[0].percentage !== 100 || active[0].version_id !== latest)
-          fail("global native binding active version ambiguous");
+          fail("ordinary native binding active version ambiguous");
         return latest;
       };
       const versionId = await current();
@@ -365,11 +363,11 @@ export function resourcePolicyReader(environment, fetcher = fetch) {
       ]);
       const rates = projectNativeRates(settings?.bindings);
       if (version.id !== versionId || !same(rates, projectNativeRates(version.resources?.bindings)) ||
-          versionId !== await current()) fail("global native binding version changed");
+          versionId !== await current()) fail("ordinary native binding version changed");
       inventory.push({ ...worker, rates });
       }));
     }
-    if (!same(before, await list())) fail("global Worker inventory changed");
+    if (!same(before, await list())) fail("ordinary Worker inventory changed");
     return sorted(inventory);
   };
   return readWorker;

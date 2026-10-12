@@ -517,6 +517,14 @@ test("scrubs Workers Builds name and tag overrides from every child", () => {
   });
 });
 
+test("artifact runtime authority never reaches application or provider subprocesses", () => {
+  const privateRuntime = { ACTIONS_RUNTIME_TOKEN: "artifact-only-token",
+    ACTIONS_RESULTS_URL: "https://artifact-runtime.invalid/", ACTIONS_RUNTIME_URL: "https://runtime.invalid/",
+    ATRINIK_PRODUCTION_RECOVERY_PUBLIC_KEY: "public-recipient-but-parent-only" };
+  for (const policy of ["public", "deployment", "directory-reconciliation"])
+    assert.deepEqual(childEnvironment(privateRuntime, policy), {});
+});
+
 test("rejects every unmodeled Wrangler authority family", () => {
   for (const field of [
     "kv_namespaces", "queues", "vectorize", "hyperdrive", "workflows",
