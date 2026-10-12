@@ -5,7 +5,7 @@ import { mkdtemp, mkdir, readFile, rm, symlink, writeFile } from "node:fs/promis
 import { tmpdir } from "node:os";
 import { resolve } from "node:path";
 import test from "node:test";
-import { publishCompleteRelease, releaseAssets, finalizeExistingDraft, selectDraft } from "./publish-complete-release.mjs";
+import { publishCompleteRelease, releaseAssets, finalizeExistingDraft, selectDraft, discoverDraft } from "./publish-complete-release.mjs";
 const sha = "a".repeat(40);
 const assets = [{ name: "atrinik-metaserver-worker-4.35.0.tar.gz", size: 50, digest: `sha256:${"b".repeat(64)}` },
   { name: "SHA256SUMS", size: 120, digest: `sha256:${"c".repeat(64)}` }];
@@ -26,7 +26,7 @@ function fixture() {
       assert.deepEqual(JSON.parse(options.body), { draft: false });
       release.draft = false; release.immutable = true;
     }
-    return new Response(JSON.stringify(url.includes("/git/ref/") ? tag : url.endsWith("/releases?per_page=100") ? [release] : release));
+    return new Response(JSON.stringify(url.includes("/git/ref/") ? tag : url.endsWith("/releases?per_page=20&page=1") ? [release] : release));
   };
   return { context, release, tag, calls, fetcher };
 }
@@ -245,4 +245,82 @@ test("recovery authority callback is the final observation immediately before PA
   assert(finalReads.some((call) => call.url.endsWith("/branches/main")));
   assert(finalReads.some((call) => call.url.endsWith("/actions/runs/456")));
   assert.equal(finalReads.filter((call) => call.url.includes("/actions/workflows/check.yml/")).length, 2);
+});
+
+function history(count) {
+  return Array.from({ length: count }, (_, index) => ({ id: 1000 + index,
+    tag_name: `v0.0.${index}`, draft: false, body: "release notes ".repeat(500) }));
+}
+function paginatedFetcher(f, releases) {
+  return async (url, options) => {
+    const parsed = new URL(url);
+    if (parsed.pathname.endsWith("/releases")) {
+      assert.equal(parsed.searchParams.get("per_page"), "20");
+      const page = Number(parsed.searchParams.get("page"));
+      assert(Number.isSafeInteger(page) && page >= 1 && page <= 50);
+      return Response.json(releases.slice((page - 1) * 20, page * 20));
+    }
+    return f.fetcher(url, options);
+  };
+}
+
+test("normal publication exhausts multiple bounded pages even when one-page history exceeds response cap", async () => {
+  const f = fixture(); const releases = [f.release, ...history(120)];
+  assert(Buffer.byteLength(JSON.stringify(releases)) > 256 * 1024);
+  await publishCompleteRelease(f.context, { fetcher: paginatedFetcher(f, releases), readAssets: async () => assets });
+  assert.equal(f.release.immutable, true);
+});
+
+test("manual recovery finds an older exact draft across complete paginated history", async () => {
+  const f = recoveryFixture(); const releases = [...history(120), f.release];
+  await finalizeExistingDraft(f.context.env, { fetcher: paginatedFetcher(f, releases) });
+  assert.equal(f.release.immutable, true);
+});
+
+test("a full final page requires an additional empty page to prove completeness", async () => {
+  const f = fixture(); const releases = [f.release, ...history(19)]; const pages = [];
+  const result = await discoverDraft(async (path) => {
+    const page = Number(new URL(path, "https://fixture.invalid").searchParams.get("page"));
+    pages.push(page); return releases.slice((page - 1) * 20, page * 20);
+  }, f.release.tag_name);
+  assert.equal(result, f.release); assert.deepEqual(pages, [1, 2]);
+});
+
+for (const invalid of ["duplicate-id", "duplicate-tag", "later-read-failure", "malformed-page", "oversized-page", "invalid-id"])
+  test(`early matching draft never permits publication with ${invalid} on later page`, async () => {
+    const f = fixture(); let page = 0;
+    const fetcher = async (url, options) => {
+      if (new URL(url).pathname.endsWith("/releases")) {
+        page += 1;
+        if (page === 1) return Response.json([f.release, ...history(19)]);
+        if (invalid === "later-read-failure") throw new Error("PRIVATE fixture-secret");
+        return Response.json(invalid === "duplicate-id" ? [f.release] :
+          invalid === "duplicate-tag" ? [{ ...f.release, id: 999 }] :
+          invalid === "malformed-page" ? { releases: [] } :
+          invalid === "oversized-page" ? history(21) : [{ id: "999", tag_name: "v0.0.1" }]);
+      }
+      return f.fetcher(url, options);
+    };
+    await assert.rejects(publishCompleteRelease(f.context, { fetcher, readAssets: async () => assets }),
+      (error) => !/PRIVATE|fixture-secret/u.test(error.message));
+    assert.equal(f.calls.filter((call) => call.method === "PATCH").length, 0);
+    assert.equal(f.release.draft, true);
+  });
+
+test("pagination exhaustion rejects a matching draft without partial success", async () => {
+  const f = fixture(); let pages = 0;
+  await assert.rejects(discoverDraft(async () => {
+    const releases = Array.from({ length: 20 }, (_, index) => ({ id: pages * 20 + index + 1000,
+      tag_name: `v0.0.${pages * 20 + index}`, draft: false }));
+    if (pages === 0) releases[0] = f.release;
+    pages += 1; return releases;
+  }, f.release.tag_name), /pagination bound/);
+  assert.equal(pages, 50);
+});
+
+test("individual inventory pages retain the 256 KiB response cap", async () => {
+  const f = fixture();
+  await assert.rejects(publishCompleteRelease(f.context, { readAssets: async () => assets,
+    fetcher: paginatedFetcher(f, [{ ...f.release, body: "x".repeat(256 * 1024) }]) }), /retain draft/);
+  assert.equal(f.calls.filter((call) => call.method === "PATCH").length, 0);
 });

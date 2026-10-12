@@ -228,8 +228,11 @@ A repository-authorized dispatcher can finalize an existing qualified draft thro
 `finalize-release-draft.yml` with exact `tag`, `source_sha`, `archive_sha256` and
 `checksums_sha256` inputs. This trusted current-main controller verifies its own
 and the selected source's successful protected-main checks, bounded authenticated
-draft inventory, downloaded asset hashes and checksum binding before using the
-same finalizer. After asset downloads and immediately before publication, it
+draft inventory (20 records per page, at most 50 pages, each response at most
+256 KiB), downloaded asset hashes and checksum binding before using the
+same finalizer. Both paths require a terminal short inventory page, reject
+repeated identities or ambiguous tags, and never select an early match from an
+incomplete inventory. After asset downloads and immediately before publication, it
 re-reads current main and its protection, source/controller Check results, and
 the original authenticated dispatch run. That run must still be in progress,
 on its first attempt, with the exact controller SHA and dispatcher identity.
