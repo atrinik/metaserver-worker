@@ -1855,10 +1855,26 @@ export async function assertDirectoryBuildContext(config, environment = process.
     fail("directory reconciliation execution account drift");
   const authority = await createDeliveryAuthority(contract, environment, { directory: true });
   const policy = parseResourcePolicy(environment.ATRINIK_DELIVERY_RESOURCE_POLICY, target, config.account_id);
-  await createResourcePolicyFence(policy, { target, accountId: config.account_id,
+  const resourceTransition = createResourcePolicyFence(policy, { target, accountId: config.account_id,
     readWorker: resourcePolicyReader(environment), sourceSha: authority.sourceSha,
-    expectedPredecessor: environment.ATRINIK_PROMOTION_PREDECESSOR, completedBootstrap: true }).fence();
-  await authority.fence();
+    expectedPredecessor: environment.ATRINIK_PROMOTION_PREDECESSOR, completedBootstrap: true });
+  await fenceDeliveryMutation(authority, () => resourceTransition.fence());
+}
+
+// A drain is read-only, but its wait invalidates every earlier resource proof.
+// The second pass cannot wait: new work or drift stops the mutation handoff.
+export async function fenceDeliveryMutation(authority, resourceFence,
+  readSource = async () => ({ head: await git("rev-parse", "HEAD"),
+    dirty: await git("status", "--porcelain") !== "" })) {
+  await resourceFence();
+  const result = await authority.fence();
+  if (result?.waited === true) {
+    await resourceFence();
+    const final = await authority.fence({ allowDrain: false });
+    if (final?.waited === true) fail("delivery authority unexpectedly waited at final handoff");
+  }
+  const source = await readSource();
+  if (source.head !== authority.sourceSha || source.dirty !== false) fail("delivery source checkout drift");
 }
 
 async function readLiveControlPlane(worker, accountId) {
@@ -2428,8 +2444,7 @@ export async function runDelivery({ target = "production", sourceRoot, mode = "d
   );
   failureEvidence.deployableDigest = plan.deploy;
   await authority.validatePlan(plan);
-  await resourceFence();
-  await authority.fence();
+  await fenceDeliveryMutation(authority, resourceFence);
   const remoteMigrations = await readRemoteMigrations(configPaths[0]);
   validateRemoteMigrations(
     remoteMigrations,
@@ -2484,7 +2499,7 @@ export async function runDelivery({ target = "production", sourceRoot, mode = "d
       }));
     }
   }
-  const fence = async () => { await resourceFence(); await authority.fence(); };
+  const fence = () => fenceDeliveryMutation(authority, resourceFence);
   const outcome = await orchestrateDelivery({
     workers: contract.workers,
     decision,

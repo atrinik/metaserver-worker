@@ -118,3 +118,45 @@ test("slow provider writer readback cannot carry DEV authority past its deadline
     readEvent: async () => JSON.stringify(event), fetcher, now: () => clock,
     writerFence: async () => { clock += 2000; } }), /freshness/u);
 });
+
+function authorityFetch(evidence) {
+  return async url => {
+    const path = new URL(url).pathname.replace(`/repos/${repository.full_name}`, "");
+    const routes = {
+      "": evidence.repo, "/branches/main": evidence.branch, "/actions/runs/12": evidence.run,
+      "/actions/runs/11": evidence.check, "/actions/runs/11/jobs": { total_count: 1, jobs: evidence.jobs },
+      "/actions/runs/12/attempts/1/jobs": { total_count: 1, jobs: evidence.deployJobs },
+      "/actions/workflows/deploy-development.yml/runs": { total_count: 1, workflow_runs: evidence.activeRuns },
+      "/environments/development": evidence.protection,
+    };
+    return Response.json(routes[path]);
+  };
+}
+test("DEV propagates drain completion and supports a strict final authority pass", async () => {
+  const { environment, event, evidence } = fixture(); environment.GITHUB_TOKEN = "test-only";
+  const seen = [];
+  const authority = await createDevelopmentAuthority({ environment, checkoutHead: sha, dirty: false,
+    readEvent: async () => JSON.stringify(event), fetcher: authorityFetch(evidence), now: () => now,
+    writerFence: async (_input, options) => { seen.push(options.allowDrain); return { waited: options.allowDrain }; } });
+  assert.deepEqual(await authority.fence(), { waited: true });
+  assert.deepEqual(await authority.fence({ allowDrain: false }), { waited: false });
+  assert.deepEqual(seen, [true, true, false]);
+});
+for (const [name, change] of [
+  ["main", value => { value.branch.commit.sha = "b".repeat(40); }],
+  ["run", value => { value.run.status = "completed"; }],
+  ["Check source", value => { value.check.head_sha = "b".repeat(40); }],
+  ["protection", value => { value.protection.deployment_branch_policy.protected_branches = false; }],
+]) test(`DEV ${name} drift during drain blocks the mutation handoff`, async () => {
+  const { environment, event, evidence } = fixture(); environment.GITHUB_TOKEN = "test-only";
+  let draining = false, clock = now, mutations = 0;
+  const authority = await createDevelopmentAuthority({ environment, checkoutHead: sha, dirty: false,
+    readEvent: async () => JSON.stringify(event), fetcher: authorityFetch(evidence), now: () => clock,
+    writerFence: async () => {
+      if (draining) { clock += 5000; change(evidence); }
+      return { waited: draining };
+    } });
+  draining = true;
+  await assert.rejects(async () => { await authority.fence(); mutations++; });
+  assert.equal(mutations, 0);
+});

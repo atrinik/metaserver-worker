@@ -7,6 +7,7 @@ import { resolve } from "node:path";
 import test from "node:test";
 import {
   activeVersionId,
+  fenceDeliveryMutation,
   arbitrateBuildLease,
   assertCoherentTopology,
   buildLeaseDecision,
@@ -2319,4 +2320,97 @@ test("old caller code and key-ID authority remain pinned until that role's stagi
     assert.throws(() => { verifyBootstrapCallerPredecessor(active.versionId, worker, current); uploads++; });
     assert.equal(uploads, 0);
   }
+});
+
+for (const waited of [false, true]) test(`mutation fence refreshes resource and source after drain=${waited}`, async () => {
+  const events = [], sourceSha = "a".repeat(40);
+  const authority = { sourceSha, fence: async options => {
+    events.push(options?.allowDrain === false ? "strict-authority" : "drain-authority");
+    return { waited: options?.allowDrain === false ? false : waited };
+  } };
+  await fenceDeliveryMutation(authority, async () => events.push("resource"), async () => {
+    events.push("source"); return { head: sourceSha, dirty: false };
+  });
+  events.push("mutation");
+  assert.deepEqual(events, waited
+    ? ["resource", "drain-authority", "resource", "strict-authority", "source", "mutation"]
+    : ["resource", "drain-authority", "source", "mutation"]);
+});
+for (const drift of ["resource", "main", "run", "release", "new-build", "source", "dirty", "second-wait"])
+  test(`post-drain ${drift} drift stops mutation and disabled recovery`, async () => {
+    for (const recovery of [false, true]) {
+      let waited = false, mutations = 0;
+      const sourceSha = "a".repeat(40);
+      const authority = { sourceSha, fence: async options => {
+        if (options?.allowDrain !== false) { waited = true; return { waited: true }; }
+        if (["main", "run", "release", "new-build"].includes(drift)) throw new Error("authority drift");
+        return { waited: drift === "second-wait" };
+      } };
+      const fence = () => fenceDeliveryMutation(authority, async () => {
+        if (waited && drift === "resource") throw new Error("resource drift");
+      }, async () => ({ head: drift === "source" ? "b".repeat(40) : sourceSha, dirty: drift === "dirty" }));
+      if (recovery) {
+        await assert.rejects(recoverDisabledCore({ coreStaged: true, fence,
+          deployStaged: async () => { mutations++; }, readActive: async () => {}, validateStaged: async () => {} }));
+      } else await assert.rejects(async () => { await fence(); mutations++; });
+      assert.equal(mutations, 0);
+    }
+  });
+test("a no-op still refreshes post-drain authority before private reconciliation", async () => {
+  let calls = 0, reconciliations = 0;
+  const sourceSha = "a".repeat(40);
+  const authority = { sourceSha, fence: async options => {
+    calls++;
+    if (options?.allowDrain === false) throw new Error("new writer after drain");
+    return { waited: true };
+  } };
+  await assert.rejects(orchestrateDelivery({ decision: "no-op", workers: [],
+    fence: () => fenceDeliveryMutation(authority, async () => {}, async () => ({ head: sourceSha, dirty: false })),
+    verifyFinal: async () => {}, reconcileDirectories: async () => { reconciliations++; },
+    canaries: async () => {}, recover: async () => assert.fail("no-op recovery") }));
+  assert.equal(calls, 2);
+  assert.equal(reconciliations, 0);
+});
+
+for (const drift of ["head", "dirty"]) test(`default Git source reader rejects ${drift} changes during drain`, async () => {
+  const directory = await mkdtemp(resolve(tmpdir(), "atrinik-fence-source-"));
+  const git = (...args) => {
+    const result = spawnSync("/usr/bin/git", ["-C", directory, "-c", "core.hooksPath=/dev/null",
+      "-c", "commit.gpgsign=false", "-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid", ...args],
+    { encoding: "utf8" });
+    assert.equal(result.status, 0, result.stderr); return result.stdout.trim();
+  };
+  try {
+    git("init", "--quiet");
+    await writeFile(resolve(directory, "tracked"), "first"); git("add", "tracked"); git("commit", "--quiet", "-m", "first");
+    const first = git("rev-parse", "HEAD");
+    await writeFile(resolve(directory, "tracked"), "second"); git("commit", "--quiet", "-am", "second");
+    const second = git("rev-parse", "HEAD"); git("checkout", "--quiet", first);
+    const bin = resolve(directory, "bin"); await mkdir(bin);
+    // Exercise the default reader against an isolated real Git repository.
+    await writeFile(resolve(bin, "git"), `#!${process.execPath}
+const { spawnSync } = require("node:child_process");
+process.exit(spawnSync("/usr/bin/git", ["-C", ${JSON.stringify(directory)}, ...process.argv.slice(2)], { stdio: "inherit" }).status);
+`, { mode: 0o700 });
+    git("add", "bin/git"); git("commit", "--quiet", "-m", "fixture wrapper");
+    const selected = git("rev-parse", "HEAD");
+    const script = `
+      import assert from "node:assert/strict";
+      import { writeFileSync } from "node:fs";
+      import { execFileSync } from "node:child_process";
+      import { fenceDeliveryMutation } from ${JSON.stringify(new URL("./production-delivery.mjs", import.meta.url).href)};
+      let mutated = false;
+      const authority = { sourceSha: ${JSON.stringify(selected)}, fence: async options => {
+        if (options?.allowDrain === false) return { waited: false };
+        ${drift === "head" ? `execFileSync("/usr/bin/git", ["-C", ${JSON.stringify(directory)}, "update-ref", "HEAD", ${JSON.stringify(second)}]);`
+          : `writeFileSync(${JSON.stringify(resolve(directory, "tracked"))}, "changed during drain");`}
+        return { waited: true };
+      } };
+      await assert.rejects(async () => { await fenceDeliveryMutation(authority, async () => {}); mutated = true; }, /source checkout drift/);
+      assert.equal(mutated, false);
+    `;
+    const result = spawnSync(process.execPath, ["--input-type=module", "-e", script], {
+      env: { PATH: bin }, encoding: "utf8", timeout: 10_000 });
+    assert.equal(result.status, 0, result.stderr);
+  } finally { await rm(directory, { recursive: true, force: true }); }
 });

@@ -388,3 +388,15 @@ test("retirement handoff refreshes full source authority without repeating the s
     assert.equal(writes, 0); assert.equal(sweeps, 1);
   }
 });
+
+test("PROD propagates drain completion and supports a strict final authority pass", async () => {
+  const f = fixture(), seen = [];
+  const authority = await createProductionAuthority({ environment: f.environment, checkoutHead: source, dirty: false,
+    readEvent: async () => JSON.stringify(f.event), fetcher: fakeFetch(f), now: () => now,
+    writerFence: async (_environment, _fetcher, options) => {
+      seen.push(options.allowDrain); return { waited: options.allowDrain };
+    } });
+  assert.deepEqual(await authority.fence(), { waited: true });
+  assert.deepEqual(await authority.fence({ allowDrain: false }), { waited: false });
+  assert.deepEqual(seen, [true, true, false]);
+});
