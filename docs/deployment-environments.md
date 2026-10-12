@@ -395,6 +395,48 @@ private artifact metadata. A failed upload/readback still consumes the intent;
 never retry it. Observe the current topology and existing attempt evidence before
 preparing any newly authorized attempt coordinate.
 
+The production controller shares a single GET scheduler across its account API
+resource and native-rate inventories, writer fence, native control-plane reads
+and six-Worker caller snapshots. Starts are at least 334 milliseconds apart,
+without burst credits, regardless of credential. At most 128 outstanding governed
+calls are admitted. Queue waits count against the original request signal; no
+request deadline is renewed. Both captures and all PROD/DEV peers remain required.
+A caller snapshot still expires after 120 seconds, and the final GitHub-only
+authority check must leave the current snapshot within its 10-second handoff age.
+The 54-request capture fanout leaves about 2.3 seconds for the last response under
+its existing 20-second deadline. Slower tails stop before PATCH instead of widening
+that deadline. A 3,400-read pacing model takes about 19 minutes before additional
+network/build time; the 30-minute workflow and 60-minute authority caps remain.
+
+[Cloudflare documents a cumulative 1,200-request five-minute API limit](https://developers.cloudflare.com/fundamentals/api/reference/limits/).
+The controller's budget covers fewer than 900 GET starts in that interval.
+Wrangler subprocess traffic, the separate private-reconciliation process and
+other clients sharing an identity remain outside this controller's budget.
+Private reconciliation shares one local scheduler between its own resource and
+writer readers. Neither local budget nor spare capacity guarantees the global
+quota when other clients are active. Read volume alone does not establish a 429
+as the cause of an earlier failure.
+
+An observed 429 closes the scheduler to pending and new account GETs. It does not
+retry, drain, honor a response header as authority to continue, or reuse a cached
+fence. Other failed reads also fail their operation. This can prevent proof of
+disabled-core recovery; retain the uncertain state and obtain fresh operator
+observations before any newly authorized attempt. Mutation methods and GitHub
+requests retain their existing transport, and no write retries are introduced.
+
+Retirement failure records retain their existing reason and add an optional
+`retirement` object only for a privately branded failure. Its closed `phase`
+identifies the initial proof, intent proof, post-intent fence, current read or
+comparison, staged proof, final authority, freshness, PATCH, post-read,
+post-verification, post-fence or receipt proof. Closed `category`, `mutationState`
+and optional `readTransportState` distinguish a rejected proof from a queued,
+attempted or rejected GET. Only allowlisted integer HTTP statuses may accompany
+a GET transport failure. No arbitrary error property, provider body/header,
+URL, token or private document digest is reflected. PATCH transport state
+distinguishes no dispatch, an unknown attempted outcome, a received response and
+an accepted response; even acceptance still requires strict post-read comparison
+and durable receipt proof. None of these fields grants intent-replay authority.
+
 The trusted controller owns the Wrangler executable, its working directory and
 validated toolchain pins. The selected release supplies absolute application
 entrypoints, migrations and application dependency inputs. An older release's

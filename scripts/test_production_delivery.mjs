@@ -1515,6 +1515,23 @@ test("failure evidence never includes raw subprocess or protected input text", (
   assert.equal(JSON.stringify(record).includes(secret), false);
 });
 
+test("retirement failure evidence emits only branded closed diagnostics alongside the existing reason", async () => {
+  const { retireCallerSecrets } = await import("./production-caller-retirement.mjs");
+  const { createProductionReadPacer } = await import("./production-read-pacing.mjs");
+  const paced = createProductionReadPacer({ fetcher: async () => new Response("private provider text", { status: 429 }) });
+  let cause;
+  const noop = async () => {};
+  try { await retireCallerSecrets({ role: "publisher", fence: () => paced(`https://api.cloudflare.com/client/v4/accounts/${"a".repeat(32)}/workers/scripts`),
+    read: noop, verifyStaged: noop, patch: noop, recordIntent: noop, recordReceipt: noop, authorize: noop }); }
+  catch (error) { cause = error; }
+  const evidence = { sourceSha: null, deployableDigest: null, failedRole: "retirement:publisher", completedRoles: [], recoveryOutcome: "failed" };
+  const record = deliveryFailureRecord(new Error("private wrapper", { cause }), evidence);
+  assert.equal(record.reason, "unexpected-internal-error");
+  assert.deepEqual(record.retirement, { phase: "initial-fence", category: "rate-limited", mutationState: "not-invoked", readTransportState: "response-received", httpStatus: 429 });
+  assert.equal(JSON.stringify(record).includes("private"), false);
+  assert.equal(deliveryFailureRecord({ retirement: record.retirement }, evidence).retirement, undefined);
+});
+
 test("nested artifact retention failure exposes only its branded fixed reason", async () => {
   const { verifyRecoveryArtifactProof } = await import("./production-recovery-artifacts.mjs");
   const secret = "private account/token/path";

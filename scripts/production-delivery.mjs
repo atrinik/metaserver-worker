@@ -1,3 +1,5 @@
+import { createProductionReadPacer, productionReadFailure } from "./production-read-pacing.mjs";
+import { retirementFailureDiagnostic, preserveRetirementFailure } from "./production-retirement-diagnostics.mjs";
 import { execFile } from "node:child_process";
 import { createHash } from "node:crypto";
 import { chmod, mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
@@ -20,6 +22,7 @@ const controllerRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 let root = controllerRoot;
 let contractPath = resolve(controllerRoot, "deployment/workers-builds-production.json");
 let deliveryRunning = false;
+let deliveryFetch = fetch;
 const shaPattern = /^[0-9a-f]{40}$/u;
 const uuidPattern = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/u;
 const placeholderPattern = /(?:^0{16,}$|\.example(?:\.|$)|placeholder)/iu;
@@ -57,7 +60,9 @@ const failureEvidence = {
 };
 
 export function deliveryFailureRecord(error, evidence) {
+  const retirement = retirementFailureDiagnostic(error);
   return {
+    ...(retirement ? { retirement } : {}),
     outcome: "production-delivery-stopped",
     reason:
       recoveryArtifactFailureReason(error) ??
@@ -991,10 +996,10 @@ export async function orchestrateDelivery({
       try {
         await recover(error);
       } catch {
-        fail(
+        throw preserveRetirementFailure(new DeliveryError(
           `production delivery stopped and disabled-circuit recovery was not proven; ` +
           `initial failure: ${initialFailure}`,
-        );
+        ), error);
       }
     }
     throw error;
@@ -1515,7 +1520,7 @@ async function cloudflareResult(
   if (!token) fail("Workers Builds Cloudflare API token is missing");
   let response;
   try {
-    response = await fetch(
+    response = await deliveryFetch(
       `https://api.cloudflare.com/client/v4/accounts/${accountId}${path}`,
       {
         method,
@@ -1523,7 +1528,8 @@ async function cloudflareResult(
         signal: AbortSignal.timeout(15_000),
       },
     );
-  } catch {
+  } catch (error) {
+    if (productionReadFailure(error)) throw error;
     fail("Cloudflare control-plane request failed");
   }
   if (!response.ok)
@@ -1822,12 +1828,12 @@ async function assertBuildLease(
 // authenticate the same exact running build and current-main exclusive lease.
 // This path only observes provider state; it never cancels competing builds.
 export async function createDeliveryAuthority(contract, environment = process.env,
-  { directory = false } = {}) {
+  { directory = false, fetcher = deliveryFetch } = {}) {
   const checkoutHead = await git("rev-parse", "HEAD");
   const dirty = (await git("status", "--porcelain")) !== "";
   if (contract.target === "production") {
     const { createProductionAuthority } = await import("./production-promotion-authority.mjs");
-    const authority = await createProductionAuthority({ environment, checkoutHead, dirty });
+    const authority = await createProductionAuthority({ environment, checkoutHead, dirty, fetcher });
     if (!shaPattern.test(authority?.sourceSha ?? "") ||
         typeof authority.executionId !== "string" ||
         typeof authority.fence !== "function" ||
@@ -1854,10 +1860,11 @@ export async function assertDirectoryBuildContext(config, environment = process.
   if (config.account_id !== environment.CLOUDFLARE_ACCOUNT_ID ||
       config.services?.[0]?.service !== contract.workers[0].name)
     fail("directory reconciliation execution account drift");
-  const authority = await createDeliveryAuthority(contract, environment, { directory: true });
+  const fetcher = target === "production" ? createProductionReadPacer() : fetch;
+  const authority = await createDeliveryAuthority(contract, environment, { directory: true, fetcher });
   const policy = parseResourcePolicy(environment.ATRINIK_DELIVERY_RESOURCE_POLICY, target, config.account_id);
   const resourceTransition = createResourcePolicyFence(policy, { target, accountId: config.account_id,
-    readWorker: resourcePolicyReader(environment), sourceSha: authority.sourceSha,
+    readWorker: resourcePolicyReader(environment, fetcher), sourceSha: authority.sourceSha,
     expectedPredecessor: environment.ATRINIK_PROMOTION_PREDECESSOR, completedBootstrap: true });
   await fenceDeliveryMutation(authority, () => resourceTransition.fence());
 }
@@ -2310,6 +2317,7 @@ export async function runDelivery({ target = "production", sourceRoot, mode = "d
   if (target === "production" && ["deploy", "plan"].includes(mode) && !isAbsolute(sourceRoot ?? ""))
     fail("production requires an explicit selected source checkout");
   deliveryRunning = true;
+  deliveryFetch = target === "production" && mode === "deploy" ? createProductionReadPacer() : fetch;
   root = sourceRoot ? resolve(sourceRoot) : controllerRoot;
   contractPath = resolve(controllerRoot, `deployment/workers-builds-${target}.json`);
   process.env.ATRINIK_DELIVERY_ENVIRONMENT = target;
@@ -2417,7 +2425,7 @@ export async function runDelivery({ target = "production", sourceRoot, mode = "d
   validateResourceConfigurations(policy, target, configs);
   validateResourceConfigurations(policy, target, stagedConfigs);
   const resourceTransition = createResourcePolicyFence(policy, { target, accountId: configs[0].account_id,
-    readWorker: resourcePolicyReader(process.env), sourceSha,
+    readWorker: resourcePolicyReader(process.env, deliveryFetch), sourceSha,
     expectedPredecessor: process.env.ATRINIK_PROMOTION_PREDECESSOR });
   const resourceFence = () => resourceTransition.fence();
   const bootstrap = validateRateBootstrap(policy, target, { sourceSha,
@@ -2559,7 +2567,7 @@ export async function runDelivery({ target = "production", sourceRoot, mode = "d
           await retireCallerSecrets({
             role: worker.role, fence, authorize: authority.authorize,
             read: createCallerRetirementReader({ accountId,
-              token: process.env.ATRINIK_DELIVERY_RESOURCE_READ_TOKEN, role: worker.role }),
+              token: process.env.ATRINIK_DELIVERY_RESOURCE_READ_TOKEN, role: worker.role, fetcher: deliveryFetch }),
             patch: createCallerRetirementPatch({ accountId,
               token: process.env.CLOUDFLARE_API_TOKEN, role: worker.role }),
             ...retirementRecorders.get(worker.role),
@@ -2723,7 +2731,7 @@ export async function runDelivery({ target = "production", sourceRoot, mode = "d
   } finally {
     await rm(protectedInputs.directory, { recursive: true, force: true });
   }
-  } finally { root = controllerRoot; deliveryRunning = false; }
+  } finally { root = controllerRoot; deliveryRunning = false; deliveryFetch = fetch; }
 }
 
 async function main() {

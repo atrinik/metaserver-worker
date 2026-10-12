@@ -1,6 +1,7 @@
 // Copyright (C) 2026 Atrinik contributors
 // Source-only machinery: no provider access occurs on import. The caller supplies
 // selected-source/config/module verification and the complete authority/global fence.
+import { markRetirementFailure, markRetirementPatchFailure } from "./production-retirement-diagnostics.mjs";
 import { createHash } from "node:crypto";
 import { lstat, open, readFile } from "node:fs/promises";
 import path from "node:path";
@@ -170,36 +171,56 @@ export async function retireCallerSecrets({ role, read, fence, verifyStaged, pat
   workerName(role);
   if ([read, fence, verifyStaged, patch, recordIntent, recordReceipt, authorize].some((f) => typeof f !== "function"))
     fail("required authority or durable recorder missing");
-  await fence();
-  const before = await read();
-  fresh(before, now);
-  assertSnapshot(role, before);
-  if (await verifyStaged(before, { retired: false }) !== true) fail("selected staged proof rejected");
-  const settings = callerRetirementSettings(role, before);
-  const intent = { schema: "atrinik-production-caller-retirement-v1", role, accountId: before.accountId,
-    name: workerName(role), method: "PATCH", path: `/workers/scripts/${workerName(role)}/settings`,
-    before: withoutTime(before), beforeDigest: callerRetirementDigest(withoutTime(before)), settingsDigest: callerRetirementDigest(settings) };
-  await recordIntent(intent);
-  // Intent is consumed first. Re-read module, latest, bindings and peers, then do
-  // the final authority/global fence. Neither check is permission to retry.
-  await fence();
-  const current = await read();
-  fresh(current, now);
-  assertSnapshot(role, current);
-  if (!same(withoutTime(before), withoutTime(current))) fail("predecessor changed after intent");
-  if (await verifyStaged(current, { retired: false }) !== true) fail("staged proof changed after intent");
-  await authorize();
-  fresh(current, now);
-  await patch({ role, accountId: before.accountId, name: workerName(role), settings });
-  const after = await read();
-  fresh(after, now);
-  verifyCallerRetirementPost(role, before, after);
-  if (await verifyStaged(after, { retired: true }) !== true) fail("retired staged proof rejected");
-  await fence();
-  const receipt = { ...intent, status: "observed-disabled-caller-secrets-retired",
-    afterDigest: callerRetirementDigest(withoutTime(after)), capturedAt: after.capturedAt };
-  await recordReceipt(receipt);
-  return { snapshot: after, receipt };
+  let phase = "initial-fence", mutationState = "not-invoked";
+  try {
+    await fence();
+    phase = "initial-read";
+    const before = await read();
+    phase = "initial-compare";
+    fresh(before, now);
+    assertSnapshot(role, before);
+    phase = "initial-staged-proof";
+    if (await verifyStaged(before, { retired: false }) !== true) fail("selected staged proof rejected");
+    const settings = callerRetirementSettings(role, before);
+    const intent = { schema: "atrinik-production-caller-retirement-v1", role, accountId: before.accountId,
+      name: workerName(role), method: "PATCH", path: `/workers/scripts/${workerName(role)}/settings`,
+      before: withoutTime(before), beforeDigest: callerRetirementDigest(withoutTime(before)), settingsDigest: callerRetirementDigest(settings) };
+    phase = "intent-proof";
+    await recordIntent(intent);
+    // Intent is consumed first. Re-read module, latest, bindings and peers, then do
+    // the final authority/global fence. Neither check is permission to retry.
+    phase = "post-intent-fence";
+    await fence();
+    phase = "current-read";
+    const current = await read();
+    phase = "current-compare";
+    fresh(current, now);
+    assertSnapshot(role, current);
+    if (!same(withoutTime(before), withoutTime(current))) fail("predecessor changed after intent");
+    phase = "staged-proof";
+    if (await verifyStaged(current, { retired: false }) !== true) fail("staged proof changed after intent");
+    phase = "final-authority";
+    await authorize();
+    phase = "freshness";
+    fresh(current, now);
+    phase = "patch";
+    mutationState = "dispatched-outcome-unknown";
+    await patch({ role, accountId: before.accountId, name: workerName(role), settings });
+    mutationState = "response-accepted";
+    phase = "post-read";
+    const after = await read();
+    phase = "postverify";
+    fresh(after, now);
+    verifyCallerRetirementPost(role, before, after);
+    if (await verifyStaged(after, { retired: true }) !== true) fail("retired staged proof rejected");
+    phase = "post-fence";
+    await fence();
+    const receipt = { ...intent, status: "observed-disabled-caller-secrets-retired",
+      afterDigest: callerRetirementDigest(withoutTime(after)), capturedAt: after.capturedAt };
+    phase = "receipt-proof";
+    await recordReceipt(receipt);
+    return { snapshot: after, receipt };
+  } catch (error) { throw markRetirementFailure(error, phase, mutationState); }
 }
 
 // An ambiguous prior dispatch may only be OBSERVED, never replayed. A successful
@@ -228,32 +249,37 @@ export function createCallerRetirementPatch({ accountId, token, role, fetcher = 
     fail("mutation transport authority invalid");
   let consumed = false;
   return async (request) => {
-    if (consumed) fail("mutation transport already consumed");
-    if (request?.role !== role || request.accountId !== accountId || request.name !== name ||
-        !request.settings || !same(Object.keys(request.settings).sort(), ["annotations", "bindings"]) ||
-        request.settings.bindings.some((b) => b.type === "secret_text" || callerRetirementSecrets.includes(b.name)) ||
-        Object.hasOwn(request.settings.annotations, "workers/triggered_by")) fail("mutation request authority drift");
-    const data = JSON.stringify(request.settings);
-    if (Buffer.byteLength(data) > 65536) fail("settings request exceeds bound");
-    const form = new FormData();
-    form.set("settings", new Blob([data], { type: "application/json" }));
-    consumed = true;
-    // Exactly one request, bounded response, no redirect or automatic retry.
-    const response = await fetcher(`https://api.cloudflare.com/client/v4/accounts/${accountId}/workers/scripts/${name}/settings`, {
-      method: "PATCH", headers: { Authorization: `Bearer ${token}` }, body: form,
-      redirect: "error", signal: AbortSignal.timeout(20000),
-    });
-    let length = 0;
-    const chunks = [];
-    for await (const chunk of response.body) {
-      length += chunk.length;
-      if (length > 1024 * 1024) fail("provider response exceeds bound; completion unknown");
-      chunks.push(Buffer.from(chunk));
-    }
-    let envelope;
-    try { envelope = JSON.parse(Buffer.concat(chunks)); } catch { fail("provider response invalid; completion unknown"); }
-    if (!response.ok || envelope.success !== true || envelope.errors?.length)
-      fail("provider rejected request; preserve intent and do not retry");
+    let transportState = "not-dispatched";
+    try {
+      if (consumed) fail("mutation transport already consumed");
+      if (request?.role !== role || request.accountId !== accountId || request.name !== name ||
+          !request.settings || !same(Object.keys(request.settings).sort(), ["annotations", "bindings"]) ||
+          request.settings.bindings.some((b) => b.type === "secret_text" || callerRetirementSecrets.includes(b.name)) ||
+          Object.hasOwn(request.settings.annotations, "workers/triggered_by")) fail("mutation request authority drift");
+      const data = JSON.stringify(request.settings);
+      if (Buffer.byteLength(data) > 65536) fail("settings request exceeds bound");
+      const form = new FormData();
+      form.set("settings", new Blob([data], { type: "application/json" }));
+      consumed = true;
+      // Exactly one request, bounded response, no redirect or automatic retry.
+      transportState = "dispatched-outcome-unknown";
+      const response = await fetcher(`https://api.cloudflare.com/client/v4/accounts/${accountId}/workers/scripts/${name}/settings`, {
+        method: "PATCH", headers: { Authorization: `Bearer ${token}` }, body: form,
+        redirect: "error", signal: AbortSignal.timeout(20000),
+      });
+      transportState = "response-received";
+      let length = 0;
+      const chunks = [];
+      for await (const chunk of response.body) {
+        length += chunk.length;
+        if (length > 1024 * 1024) fail("provider response exceeds bound; completion unknown");
+        chunks.push(Buffer.from(chunk));
+      }
+      let envelope;
+      try { envelope = JSON.parse(Buffer.concat(chunks)); } catch { fail("provider response invalid; completion unknown"); }
+      if (!response.ok || envelope.success !== true || envelope.errors?.length)
+        fail("provider rejected request; preserve intent and do not retry");
+    } catch (error) { throw markRetirementPatchFailure(error, transportState); }
   };
 }
 
