@@ -165,7 +165,9 @@ test("substituted ciphertext, extra artifact file and nonregular payload fail re
 test("decryption rejects unauthenticated proof, tamper, wrong key and wrong context", async (t) => {
   const f = await fixture(t), proof = await (await createDurableCallerRetirementRecorder(f.options)).recordIntent(document);
   const ciphertext = f.archives.get(proof.artifactId).ciphertext;
-  for (const patch of [ { artifactProof: { ...proof } }, { ciphertext: `${ciphertext.slice(0, -2)}AA` },
+  const tampered = `${ciphertext.slice(0, -1)}${ciphertext.endsWith("A") ? "B" : "A"}`;
+  assert.notEqual(tampered, ciphertext);
+  for (const patch of [ { artifactProof: { ...proof } }, { ciphertext: tampered },
     { expectedContext: { ...context, sourceSha: "d".repeat(40) } }, { expectedKind: "receipt" },
     { recovery: { ...recovery, recipientSpkiSha256: "d".repeat(64) } } ])
     await assert.rejects(decryptRecoveryDocument({ ...decryptOptions, ciphertext, artifactProof: proof, ...patch }));
