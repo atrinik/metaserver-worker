@@ -88,6 +88,13 @@
   and retirement of the two exact legacy caller signing-secret bindings. Pin the
   observed graph, all ordinary Worker identities/native-rate tuples, and old
   caller key-ID variables; never describe future resources as already existing.
+  Only explicit `productionBootstrap.nativeRateAlreadyProvisioned: true` permits
+  a newly observed baseline whose core already owns the sole exact `1008` binding
+  at 16/60. Both callers must still retain the exact legacy secret pair. A caller
+  may have no key-ID bindings only under this opt-in and with every role-specific
+  circuit explicitly disabled; otherwise retain the valid distinct key-ID pair.
+  The opt-in binds a new policy/plan and actual predecessor approval, never replays
+  an old intent or skips new staging, core confirmation, or caller retirement.
   Before upload prove the entire baseline, disabled core, sole active/latest
   versions for governed Workers and ordinary-Worker native-namespace isolation.
   An unrelated Worker may have a newer undeployed version only when independently
@@ -202,7 +209,9 @@
 - Historical provisioning/rotation procedures below preserve immutable incident
   evidence; references to the old production automatic trigger describe that
   historical state and grant no current activation authority.
-- GitHub Actions is the sole active PR/source-validation path. Retain Cloudflare
+- GitHub Actions is the sole active PR/source-validation path.
+  Check runs for pull requests targeting any base branch, including dependent
+  stacks; push validation remains limited to `main`. Retain Cloudflare
   review inactive: fresh readback includes an encrypted Builds secret and a
   shared wrapper with unreadable policy, so never call it credential-free.
   Both retained Cloudflare triggers require literal `exit 1` build/deploy,
