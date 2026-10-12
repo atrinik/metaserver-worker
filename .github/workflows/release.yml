@@ -32,6 +32,8 @@ jobs:
       - run: npm ci
       - name: Verify release branch policy
         run: node scripts/release/test-release-policy.cjs
+      - name: Verify complete release publication contract
+        run: node --test scripts/release/test-publish-complete-release.mjs
       - name: Analyze commits and publish
         env:
           GH_TOKEN: ${{ github.token }}

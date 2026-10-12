@@ -317,3 +317,11 @@
 - Preserve unrelated work and finish with `git diff --check`.
 - Update this `AGENTS.md` in the same change when major rework alters platform
   ownership, bindings, state/migration policy, protocol, or validation.
+
+- Release publication is draft-first: semantic-release selects the version and
+  uploads the exact archive/checksum cohort with `draftRelease: true`, then
+  `scripts/release/publish-complete-release.cjs` verifies source identity and
+  complete uploaded asset digests before publishing. Failed verification retains
+  the draft; never repair it by publishing partial assets or rewriting historical
+  releases. Immutable-release policy is managed by the governance repository;
+  successful source publication does not authorize production promotion.

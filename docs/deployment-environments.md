@@ -209,6 +209,17 @@ mutation. A local invocation grants no remote access.
 
 ## Review and dispatch a PROD promotion
 
+Release production uses semantic-release's draft mode followed by the trusted
+`scripts/release/publish-complete-release.cjs` finalizer. Before publication it
+verifies the exact tag/commit, archive plus `SHA256SUMS`, complete upload states,
+byte lengths and GitHub asset digests. Missing, partial or mismatched assets
+leave the release as a draft. An ambiguous publication response requires fresh
+readback, not an automatic retry. Existing mutable releases remain historical;
+enabling repository immutability applies to future publication and does not
+make an old release eligible automatically. Governance activates that policy
+only after the reviewed producer is merged and qualified. Release publication
+and production promotion remain separate operations.
+
 The owner must review and approve the exact immutable stable `vN.N.N` release
 tag and SHA before promotion. Stop at that boundary; preparing a tag, artifact,
 workflow or pull request does not grant deployment approval. Never merge a PR
