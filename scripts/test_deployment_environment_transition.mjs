@@ -535,6 +535,18 @@ function drainFixture(role = 1) {
   return { input, policy, options, advance: milliseconds => { clock += milliseconds; },
     counts: () => ({ clock, waits, captures, reads }) };
 }
+test("shared paced 429 remains branded through the writer fence and never retries", async () => {
+  const { createProductionReadPacer, productionReadFailure } = await import("./production-read-pacing.mjs");
+  const f = drainFixture(); let calls = 0;
+  const fetcher = createProductionReadPacer({ fetcher: async () => {
+    calls++; return new Response("private provider body", { status: 429 });
+  } });
+  await assert.rejects(assertProductionPromotionWriterFence({ ...f.options, fetcher }), error => {
+    assert.deepEqual(productionReadFailure(error), { category: "rate-limited", transportState: "response-received", httpStatus: 429 });
+    return true;
+  });
+  assert.equal(calls, 1);
+});
 for (const role of [0, 1]) test(`read-only drain accepts only stopped completion of inert role ${role}`, async () => {
   const f = drainFixture(role), wait = f.options.wait;
   f.options.wait = async milliseconds => {

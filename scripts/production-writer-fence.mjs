@@ -1,4 +1,5 @@
 // Copyright (C) 2026 Atrinik contributors
+import { productionReadFailure } from "./production-read-pacing.mjs";
 import { normalizeTransitionTrigger, transitionDigest, validateProductionWriterFence } from "./deployment-environment-transition.mjs";
 
 const stop = () => { throw new Error("production writer fence could not be verified"); };
@@ -214,5 +215,8 @@ export async function assertProductionPromotionWriterFence({ environment, fetche
         transitionDigest({ triggers: second.triggers, environments: second.environments, peers: second.peers })) stop();
     if (waited) remaining();
     return { ...validation, waited };
-  } catch { stop(); }
+  } catch (error) {
+    if (productionReadFailure(error)) throw error;
+    stop();
+  }
 }

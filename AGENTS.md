@@ -82,6 +82,19 @@
   provider secrets; pin unchanged non-target legacy secret names without cleanup
   authority. Provider readback exposes names, never secret values: disjoint key
   generation requires separate provisioning-receipt proof.
+- Production controller account-API GETs share one explicit fetch scheduler
+  across resource/native-rate inventories, writer fences, native control-plane
+  reads and caller snapshots, regardless of token. Space actual starts by at
+  least 334 ms; retain original request deadlines including queue time, the
+  120-second double-snapshot limit and 10-second retirement handoff. A 429 stops
+  pending/new governed reads without retries. Never cache a fence or retry a
+  mutation. Wrangler and other processes/clients are outside this local budget;
+  headroom is not proof of global quota safety. Private reconciliation uses its
+  own shared scheduler and retains its existing command timeout.
+  Retirement failures expose only branded closed phase/category/transport
+  fields alongside the existing reason. Never reflect provider text, error
+  getters, private identities, URLs, headers or credentials. A received PATCH
+  response is not proof of the final state; consumed intents remain non-replayable.
 - The optional private `productionBootstrap` record authorizes only the reviewed
   old-production transition: selected immutable source and exact three-version
   predecessor, core `ACCESS_ROUTE_RATE_LIMITER` native namespace `1008` at 16/60,

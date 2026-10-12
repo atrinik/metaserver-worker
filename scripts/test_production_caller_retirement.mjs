@@ -1,5 +1,9 @@
 // Copyright (C) 2026 Atrinik contributors
 import test from "node:test";
+import { createProductionReadPacer } from "./production-read-pacing.mjs";
+import { retirementFailureDiagnostic } from "./production-retirement-diagnostics.mjs";
+import { virtualClock } from "./production-test-clock.mjs";
+import { orchestrateDelivery, deliveryFailureRecord } from "./production-delivery.mjs";
 import assert from "node:assert/strict";
 import { mkdtemp, chmod, readFile, rm } from "node:fs/promises";
 import os from "node:os";
@@ -179,8 +183,7 @@ test("module parser hashes every binary part and rejects duplicates", async () =
   await assert.rejects(parseCallerRetirementModules(Buffer.from(await duplicate.arrayBuffer()), duplicate.headers.get("content-type"), `"${hash}"`));
 });
 
-test("reader verifies all six Workers/modules and complete global namespaces twice", async () => {
-  const { createCallerRetirementReader } = await import("./production-caller-retirement.mjs");
+function readerFixture() {
   const names = ["atrinik-metaserver", "atrinik-metaserver-publisher", "atrinik-metaserver-rendezvous",
     "atrinik-metaserver-development", "atrinik-metaserver-development-publisher", "atrinik-metaserver-development-rendezvous"];
   let requests = 0;
@@ -202,9 +205,16 @@ test("reader verifies all six Workers/modules and complete global namespaces twi
     else result = { enabled: false, previews_enabled: false };
     return Response.json({ success: true, result });
   };
+  return { fetcher, get requests() { return requests; } };
+}
+
+test("reader verifies all six Workers/modules and complete global namespaces twice", async () => {
+  const { createCallerRetirementReader } = await import("./production-caller-retirement.mjs");
+  const fixture = readerFixture();
+  const fetcher = fixture.fetcher;
   const read = createCallerRetirementReader({ accountId, token: "test-token", role: "publisher", fetcher, now: () => 1000 });
   const value = await read(); assert.equal(value.peers.workers.length, 5); assert.deepEqual(value.peers.namespaces, []);
-  assert.equal(value.code.modules.length, 1); assert.equal(value.capturedAt, 1000); assert.equal(requests, 124);
+  assert.equal(value.code.modules.length, 1); assert.equal(value.capturedAt, 1000); assert.equal(fixture.requests, 124);
   const incomplete = createCallerRetirementReader({ accountId, token: "test-token", role: "publisher", now: () => 1000,
     fetcher: async (url, options) => url.includes("/namespaces") ? Response.json({ success: true, result: [], result_info: { page: 1, count: 0, total_count: 1001, per_page: 1000, total_pages: 2 } }) : fetcher(url, options) });
   await assert.rejects(incomplete());
@@ -253,4 +263,155 @@ test("unrecognized existing provider fields must remain byte-semantically exact"
   const after = retired(before); verifyCallerRetirementPost("publisher", before, after);
   after.control.environment.script.future.enabled = true;
   assert.throws(() => verifyCallerRetirementPost("publisher", before, after));
+});
+
+for (const latency of [0, 1000, 2000]) test(`actual six-Worker double snapshot completes at ${latency}ms response latency under original deadlines`, async (t) => {
+  const { createCallerRetirementReader } = await import("./production-caller-retirement.mjs");
+  const clock = virtualClock(), fixture = readerFixture(), starts = [];
+  t.mock.method(AbortSignal, "timeout", ms => clock.timeout(ms));
+  const fetcher = createProductionReadPacer({ ...clock, fetcher: async (url, options) => {
+    starts.push(clock.now()); await clock.wait(latency, options.signal); return fixture.fetcher(url, options);
+  } });
+  const read = createCallerRetirementReader({ accountId, token: "fixture", role: "publisher", fetcher, now: clock.now });
+  const result = await clock.run(read);
+  assert.equal(result.peers.workers.length, 5);
+  assert.equal(fixture.requests, 124); assert.equal(starts.length, 124);
+  assert.ok(clock.now() >= 123 * 334); assert.ok(clock.now() < 120000);
+  for (let i = 1; i < starts.length; i++) assert.ok(starts[i] - starts[i - 1] >= 334);
+});
+
+test("actual reader tail network timeout reports current-read and never PATCHes", async (t) => {
+  const { createCallerRetirementReader } = await import("./production-caller-retirement.mjs");
+  const clock = virtualClock(), fixture = readerFixture();
+  t.mock.method(AbortSignal, "timeout", ms => clock.timeout(ms));
+  const fetcher = createProductionReadPacer({ ...clock, fetcher: async (url, options) => {
+    await clock.wait(3000, options.signal); return fixture.fetcher(url, options);
+  } });
+  const read = createCallerRetirementReader({ accountId, token: "fixture", role: "publisher", fetcher, now: clock.now });
+  let reads = 0;
+  const h = harness({ read: () => ++reads === 1 ? baseline() : read() });
+  await assert.rejects(clock.run(() => retireCallerSecrets(h.options)), e => {
+    const diagnostic = retirementFailureDiagnostic(e);
+    assert.equal(diagnostic.phase, "current-read"); assert.equal(diagnostic.category, "deadline-expired");
+    assert.equal(diagnostic.mutationState, "not-invoked"); return true;
+  });
+  assert.equal(h.writes, 0); assert.ok(h.intent);
+});
+
+test("full double-snapshot 120-second expiry still prevents PATCH despite successful individual reads", async (t) => {
+  const { createCallerRetirementReader } = await import("./production-caller-retirement.mjs");
+  const clock = virtualClock(), fixture = readerFixture();
+  t.mock.method(AbortSignal, "timeout", ms => clock.timeout(ms));
+  const fetcher = createProductionReadPacer({ ...clock, fetcher: async (url, options) => {
+    if (url.includes("/namespaces?")) {
+      await clock.wait(10000, options.signal);
+      const page = Number(new URL(url).searchParams.get("page"));
+      return Response.json({ success: true,
+        result: Array.from({ length: 1000 }, (_, i) => ({ id: String((page - 1) * 1000 + i) })),
+        result_info: { page, per_page: 1000, total_count: 5000, total_pages: 5, count: 1000 } });
+    }
+    return fixture.fetcher(url, options);
+  } });
+  const read = createCallerRetirementReader({ accountId, token: "fixture", role: "publisher", fetcher, now: clock.now });
+  let reads = 0;
+  const h = harness({ read: () => ++reads === 1 ? baseline() : read() });
+  await assert.rejects(clock.run(() => retireCallerSecrets(h.options)), e => {
+    assert.equal(retirementFailureDiagnostic(e).phase, "current-read");
+    return /read expired/u.test(e.message);
+  });
+  assert.ok(clock.now() > 120000); assert.equal(h.writes, 0); assert.ok(h.intent);
+});
+
+test("every retirement boundary has closed diagnostics without changing write ordering", async () => {
+  for (const [phase, key, nth] of [["initial-fence","fence",1],["initial-read","read",1],
+    ["initial-staged-proof","verifyStaged",1],["intent-proof","recordIntent",1],
+    ["post-intent-fence","fence",2],["current-read","read",2],["staged-proof","verifyStaged",2],
+    ["final-authority","authorize",1],["patch","patch",1],["post-read","read",3],
+    ["postverify","verifyStaged",3],["post-fence","fence",3],["receipt-proof","recordReceipt",1]]) {
+    const h = harness(), original = h.options[key]; let calls = 0;
+    h.options[key] = async (...args) => { if (++calls === nth) throw Error("private-token/body/url"); return original(...args); };
+    await assert.rejects(retireCallerSecrets(h.options), error => {
+      const diagnostic = retirementFailureDiagnostic(error);
+      assert.equal(diagnostic.phase, phase);
+      assert.equal(diagnostic.category, "verification-failed");
+      assert.equal(JSON.stringify(diagnostic).includes("private"), false);
+      assert.equal(diagnostic.mutationState, phase === "patch" ? "dispatched-outcome-unknown" :
+        ["post-read","postverify","post-fence","receipt-proof"].includes(phase) ? "response-accepted" : "not-invoked");
+      return true;
+    });
+    assert.ok(h.writes <= 1);
+  }
+});
+
+test("comparison and freshness rejections are distinct; causes cannot forge or leak diagnostics", async () => {
+  let reads = 0;
+  const h = harness({ read: async () => { const value = baseline(); if (++reads === 2) value.peers.changed = true; return value; } });
+  let branded;
+  await assert.rejects(retireCallerSecrets(h.options), e => { branded = e; return retirementFailureDiagnostic(e).phase === "current-compare"; });
+  let clock = 1000;
+  const expired = harness({ now: () => clock, authorize: async () => { clock = 12000; } });
+  await assert.rejects(retireCallerSecrets(expired.options), e => retirementFailureDiagnostic(e).phase === "freshness");
+  assert.equal(expired.writes, 0);
+  const hostile = { get cause() { throw Error("getter must not execute"); }, phase: "patch", mutationState: "response-accepted" };
+  assert.equal(retirementFailureDiagnostic(hostile), null);
+  assert.equal(retirementFailureDiagnostic(Object.create({ cause: branded })), null);
+  assert.deepEqual(retirementFailureDiagnostic({ cause: { cause: { cause: branded } } }), retirementFailureDiagnostic(branded));
+  assert.equal(retirementFailureDiagnostic({ cause: { cause: { cause: { cause: branded } } } }), null);
+  assert.equal(retirementFailureDiagnostic(new Proxy({}, { getOwnPropertyDescriptor() { throw Error("private"); } })), null);
+});
+
+test("PATCH diagnostics distinguish pre-dispatch validation, attempted transport, and received response", async () => {
+  for (const [state, fetcher, wrongAccount] of [
+    ["not-dispatched", async () => { throw Error("must not fetch"); }, true],
+    ["dispatched-outcome-unknown", async () => { throw Error("private token"); }, false],
+    ["response-received", async () => Response.json({ success: false, errors: ["private provider text"] }, { status: 429 }), false],
+  ]) {
+    const patch = createCallerRetirementPatch({ accountId, token: "fixture", role: "publisher", fetcher });
+    const h = harness({ patch: request => patch({ ...request, ...(wrongAccount ? { accountId: "wrong" } : {}) }) });
+    await assert.rejects(retireCallerSecrets(h.options), e => {
+      assert.equal(retirementFailureDiagnostic(e).phase, "patch");
+      assert.equal(retirementFailureDiagnostic(e).mutationState, state);
+      assert.equal(JSON.stringify(retirementFailureDiagnostic(e)).includes("private"), false);
+      return true;
+    });
+  }
+});
+
+for (const stage of ["post-intent-fence", "patch", "post-read"]) test(`failed disabled-core recovery retains original ${stage} diagnostic`, async () => {
+  let calls = 0, fences = 0, reads = 0, patches = 0;
+  const url = `https://api.cloudflare.com/client/v4/accounts/${accountId}/workers/scripts`;
+  const paced = createProductionReadPacer({ fetcher: async () => {
+    calls++; return new Response("private provider response", { status: 429 });
+  } });
+  const h = harness({
+    fence: async () => { if (++fences === 2 && stage === "post-intent-fence") await paced(url); },
+    read: async () => { if (++reads === 3 && stage === "post-read") await paced(url); return baseline(); },
+    patch: createCallerRetirementPatch({ accountId, token: "fixture", role: "publisher", fetcher: async () => {
+      patches++;
+      if (stage === "patch") throw Error("private network ambiguity");
+      return Response.json({ success: true });
+    } }),
+  });
+  const noop = async () => {};
+  await assert.rejects(orchestrateDelivery({ workers: ["core", "publisher", "rendezvous"], decision: "deploy",
+    fence: noop, deployStaged: noop, readbackStaged: () => retireCallerSecrets(h.options),
+    recover: () => paced(url),
+  }), error => {
+    const evidence = { sourceSha: null, deployableDigest: null, failedRole: "retirement:publisher", completedRoles: [], recoveryOutcome: "failed" };
+    const record = deliveryFailureRecord(error, evidence);
+    assert.match(record.reason, /disabled-circuit recovery was not proven/u);
+    assert.equal(record.recoveryOutcome, "failed");
+    assert.equal(record.retirement.phase, stage);
+    assert.equal(record.retirement.mutationState, stage === "patch" ? "dispatched-outcome-unknown" :
+      stage === "post-read" ? "response-accepted" : "not-invoked");
+    if (stage !== "patch") {
+      assert.equal(record.retirement.category, "rate-limited");
+      assert.equal(record.retirement.httpStatus, 429);
+      assert.equal(record.retirement.readTransportState, "response-received");
+    }
+    assert.equal(JSON.stringify(record).includes("private"), false);
+    return true;
+  });
+  assert.equal(patches, stage === "post-intent-fence" ? 0 : 1);
+  assert.equal(calls, 1); assert.ok(h.intent);
 });
