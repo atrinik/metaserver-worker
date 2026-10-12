@@ -39,9 +39,12 @@ export function validateRateBootstrap(policy, target, { sourceSha, expectedPrede
   if (!Array.isArray(bootstrap.predecessorVersions) || bootstrap.predecessorVersions.length !== 3 ||
       bootstrap.predecessorVersions.some(v => !/^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/u.test(v)) ||
       createHash("sha256").update(JSON.stringify(bootstrap.predecessorVersions)).digest("hex") !== bootstrap.expectedPredecessor) fail();
-  keys(bootstrap.recovery, ["recipientSpkiSha256", "retentionDays"]);
+  const minimumRetention = bootstrap.recovery?.minimumEffectiveRetentionDays;
+  keys(bootstrap.recovery, minimumRetention === undefined ? ["recipientSpkiSha256", "retentionDays"] :
+    ["recipientSpkiSha256", "retentionDays", "minimumEffectiveRetentionDays"]);
   if (bootstrap.nativeInventoryScope !== "ordinary-workers" || bootstrap.dispatchNamespaces !== "unassessed" ||
-      !/^[0-9a-f]{64}$/u.test(bootstrap.recovery.recipientSpkiSha256) || bootstrap.recovery.retentionDays !== 90) fail();
+      !/^[0-9a-f]{64}$/u.test(bootstrap.recovery.recipientSpkiSha256) || bootstrap.recovery.retentionDays !== 90 ||
+      (minimumRetention !== undefined && minimumRetention !== 89)) fail();
   const names = new Set(), tags = new Set();
   for (const worker of bootstrap.workers) {
     keys(worker, ["name", "tag", "rates"]);

@@ -103,7 +103,10 @@
   receipts using standard JWE (RSA-OAEP-256/A256GCM) to the approved owner public
   SPKI key; the private key stays outside Actions. Before dispatch, finalize and
   verify the ciphertext intent in an immutable Actions artifact, with the
-  approved 90-day effective retention. Only ciphertext may leave the runner.
+  approved effective retention: legacy policies require 90 days; only an explicit
+  `recovery.minimumEffectiveRetentionDays: 89` permits a full 89-day minimum,
+  while `retentionDays: 90` still requests the public-repository maximum.
+  The opt-in changes the policy/plan digest and requires fresh approval. Only ciphertext may leave the runner.
   Require an owner decryption rehearsal and export before expiry. Unknown or
   partial outcomes stop activation without retrying
   deletion. Recover only the new disabled core, never old caller code. There is

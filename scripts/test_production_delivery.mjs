@@ -1515,6 +1515,26 @@ test("failure evidence never includes raw subprocess or protected input text", (
   assert.equal(JSON.stringify(record).includes(secret), false);
 });
 
+test("nested artifact retention failure exposes only its branded fixed reason", async () => {
+  const { verifyRecoveryArtifactProof } = await import("./production-recovery-artifacts.mjs");
+  const secret = "private account/token/path";
+  const context = { repository: "atrinik/metaserver-worker", runId: "1", runAttempt: "1",
+    controllerSha: "a".repeat(40), sourceSha: "b".repeat(40), deployableDigest: "c".repeat(64) };
+  let branded;
+  try { verifyRecoveryArtifactProof({ artifactId: 1, artifactName: secret, archiveDigest: "d".repeat(64),
+    context, now: () => 1000, metadata: { id: 1, name: secret, expired: false, digest: `sha256:${"d".repeat(64)}`,
+      workflow_run: { id: 1, head_sha: context.controllerSha }, created_at: new Date(1000).toISOString(),
+      expires_at: new Date(1000 + 89 * 86400000).toISOString() } }); } catch (error) { branded = error; }
+  assert(branded);
+  const evidence = { sourceSha: context.sourceSha, deployableDigest: context.deployableDigest,
+    failedRole: "retirement:publisher", completedRoles: ["staged:core"], recoveryOutcome: "disabled-core-proven" };
+  const error = new Error(secret, { cause: new Error(secret, { cause: branded }) });
+  assert.deepEqual(deliveryFailureRecord(error, evidence), { outcome: "production-delivery-stopped",
+    reason: "recovery-artifact-effective-retention-rejected", ...evidence });
+  assert.equal(deliveryFailureRecord(new Error(branded.message), evidence).reason, "unexpected-internal-error");
+  assert.equal(JSON.stringify(deliveryFailureRecord(error, evidence)).includes(secret), false);
+});
+
 test("subprocess diagnostics expose only bounded stage metadata", () => {
   const secret = "private-config-secret";
   const detail = describeSubprocessFailure({
