@@ -1,8 +1,12 @@
 // Copyright (C) 2026 Atrinik contributors
 import assert from "node:assert/strict";
-import { readFile } from "node:fs/promises";
+import { chmod, copyFile, mkdir, mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises";
 import { spawnSync } from "node:child_process";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { fileURLToPath } from "node:url";
 import test from "node:test";
+import { runPinnedPromotion } from "./production-promotion-action.mjs";
 import {
   createProductionAuthority, promotionDigest, readPromotionEvidence,
   validatePromotionContext, validatePromotionEvidence, validatePromotionInputs,
@@ -356,8 +360,8 @@ test("workflow has a single manual serialized writer and credentials only in exe
   assert.match(action, /using: node24/u);
   assert.match(action, /main: \.\.\/\.\.\/\.\.\/scripts\/production-promotion-action\.mjs/u);
   const entry = await readFile(new URL("./production-promotion-action.mjs", import.meta.url), "utf8");
-  assert.match(entry, /import \{ runPromotionDelivery \} from "\.\/production-promotion\.mjs"/u);
-  assert.match(entry, /process\.exitCode = await runPromotionDelivery\(\)/u);
+  assert.match(entry, /process\.exitCode = await runPinnedPromotion\(\)/u);
+  assert.doesNotMatch(entry, /import\s.*(?:production-promotion|production-delivery)\.mjs/u);
   assert.doesNotMatch(execution, /npm (?:ci|run check)/u);
   assert.match(promotion, /path: controller/u);
   assert.match(promotion, /path: selected/u);
@@ -370,6 +374,127 @@ test("workflow has a single manual serialized writer and credentials only in exe
     assert(preflight < job.indexOf("run: npm install"));
   }
   assert.doesNotMatch(promotion, /contents: write|id-token: write/u);
+});
+
+async function launcherFixture(t) {
+  const root = await mkdtemp(join(tmpdir(), "promotion-node-"));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const version = (await readFile(new URL("../.nvmrc", import.meta.url), "utf8")).trim();
+  const cache = join(root, "cache");
+  const bin = join(cache, "node", version, process.arch, "bin");
+  await mkdir(bin, { recursive: true });
+  const node = join(bin, "node");
+  await writeFile(node, "fixture executable", { mode: 0o700 });
+  return { root, cache, node, version, environment: { RUNNER_TOOL_CACHE: cache } };
+}
+
+test("action launcher selects the pinned cache Node and passes capabilities only to the trusted controller", async (t) => {
+  const f = await launcherFixture(t);
+  const environment = { ...f.environment, PATH: "/untrusted-path", NODE_OPTIONS: "--require /private/preload",
+    NODE_PATH: "/private/modules", ACTIONS_RUNTIME_TOKEN: "artifact-secret", ACTIONS_RUNTIME_URL: "artifact-url",
+    ACTIONS_RESULTS_URL: "results-url", GITHUB_TOKEN: "github-secret", CLOUDFLARE_API_TOKEN: "cloudflare-secret",
+    ATRINIK_DELIVERY_SOURCE_ROOT: "/selected", ATRINIK_DELIVERY_RESOURCE_POLICY: "private-policy" };
+  let calls = 0;
+  assert.equal(await runPinnedPromotion({ environment, run: (executable, args, options) => {
+    calls++;
+    assert.equal(executable, f.node);
+    assert.equal(options.shell, false);
+    assert.equal(options.cwd, fileURLToPath(new URL("../", import.meta.url)));
+    if (calls === 1) {
+      assert.deepEqual(args, ["--version"]);
+      assert.deepEqual(options.env, {});
+      assert.equal(options.timeout, 5_000);
+      assert.equal(options.maxBuffer, 1024);
+      assert.equal(options.killSignal, "SIGKILL");
+      assert.deepEqual(options.stdio, ["ignore", "pipe", "pipe"]);
+      return { status: 0, stdout: `v${f.version}\n`, stderr: "" };
+    }
+    assert.deepEqual(args, [fileURLToPath(new URL("./production-promotion.mjs", import.meta.url)), "--execute"]);
+    const expected = { ...environment }; delete expected.NODE_OPTIONS; delete expected.NODE_PATH;
+    assert.deepEqual(options.env, expected);
+    assert.equal(options.stdio, "inherit");
+    assert.equal(options.timeout, 30 * 60 * 1000);
+    assert.equal(options.killSignal, "SIGKILL");
+    return { status: 0 };
+  } }), 0);
+  assert.equal(calls, 2);
+});
+
+for (const [name, mutate] of [
+  ["missing cache", async (f) => { delete f.environment.RUNNER_TOOL_CACHE; }],
+  ["relative cache", async (f) => { f.environment.RUNNER_TOOL_CACHE = "cache"; }],
+  ["noncanonical cache", async (f) => { f.environment.RUNNER_TOOL_CACHE += "/../cache"; }],
+  ["symlinked cache", async (f) => { const link = join(f.root, "alias"); await symlink(f.cache, link); f.environment.RUNNER_TOOL_CACHE = link; }],
+  ["missing binary", async (f) => { await rm(f.node); }],
+  ["nonregular binary", async (f) => { await rm(f.node); await mkdir(f.node); }],
+  ["nonexecutable binary", async (f) => { await chmod(f.node, 0o600); }],
+  ["binary outside cache", async (f) => {
+    const outside = join(f.root, "outside"); await writeFile(outside, "private", { mode: 0o700 });
+    await rm(f.node); await symlink(outside, f.node);
+  }],
+  ["symlinked version directory", async (f) => {
+    const directory = join(f.cache, "node", f.version); const outside = join(f.root, "outside");
+    await rm(directory, { recursive: true }); await mkdir(join(outside, process.arch, "bin"), { recursive: true });
+    await writeFile(join(outside, process.arch, "bin", "node"), "private", { mode: 0o700 });
+    await symlink(outside, directory);
+  }],
+]) test(`launcher rejects ${name} before probing or loading the engine`, async (t) => {
+  const f = await launcherFixture(t); await mutate(f); let calls = 0; const records = [];
+  assert.equal(await runPinnedPromotion({ environment: f.environment,
+    run: () => { calls++; throw new Error("SECRET"); }, reportFailure: (record) => records.push(record) }), 1);
+  assert.equal(calls, 0);
+  assert.deepEqual(records.map(JSON.parse), [{ outcome: "production-promotion-stopped", reason: "pinned-node-launch-failed" }]);
+});
+
+for (const [name, result] of [
+  ["wrong version", { status: 0, stdout: "v24.0.0\n", stderr: "" }],
+  ["empty version", { status: 0, stdout: "", stderr: "" }],
+  ["extra output", { status: 0, stdout: "v24.18.1\nSECRET", stderr: "" }],
+  ["stderr", { status: 0, stdout: "v24.18.1\n", stderr: "SECRET" }],
+  ["nonzero status", { status: 1, stdout: "v24.18.1\n", stderr: "" }],
+  ["signal", { status: null, signal: "SIGKILL", stdout: "", stderr: "" }],
+  ["timeout or oversized output", { error: new Error("SECRET private path"), status: null }],
+]) test(`launcher rejects probe ${name} without starting the controller`, async (t) => {
+  const f = await launcherFixture(t); let calls = 0; const records = [];
+  assert.equal(await runPinnedPromotion({ environment: f.environment, run: () => { calls++; return result; },
+    reportFailure: (record) => records.push(record) }), 1);
+  assert.equal(calls, 1);
+  assert.deepEqual(records.map(JSON.parse), [{ outcome: "production-promotion-stopped", reason: "pinned-node-launch-failed" }]);
+});
+
+test("launcher propagates controller exit status and signals and redacts execution failures", async (t) => {
+  const f = await launcherFixture(t);
+  for (const [result, expected, reported] of [[{ status: 7 }, 7, 0], [{ status: null, signal: "SIGTERM" }, 143, 0],
+    [{ status: null }, 1, 1], [{ error: new Error("SECRET launch path") }, 1, 1]]) {
+    let calls = 0; const records = [];
+    assert.equal(await runPinnedPromotion({ environment: f.environment,
+      run: () => ++calls === 1 ? { status: 0, stdout: `v${f.version}\n`, stderr: "" } : result,
+      reportFailure: (record) => records.push(record) }), expected);
+    assert.equal(calls, 2);
+    assert.equal(records.length, reported);
+    for (const record of records) assert.equal(JSON.parse(record).reason, "pinned-node-launch-failed");
+  }
+});
+
+test("a mismatched action-host version still selects and probes the actual pinned Node", async (t) => {
+  const f = await launcherFixture(t);
+  // Copy the actual pinned binary, then model the independently versioned
+  // action host. The child version check still runs in a real subprocess.
+  assert.equal(process.versions.node, f.version);
+  await copyFile(process.execPath, f.node); await chmod(f.node, 0o700);
+  const hostVersion = Object.getOwnPropertyDescriptor(process.versions, "node");
+  Object.defineProperty(process.versions, "node", { ...hostVersion, value: "0.0.0" });
+  t.after(() => Object.defineProperty(process.versions, "node", hostVersion));
+  let launched = false;
+  assert.equal(await runPinnedPromotion({ environment: { ...f.environment, PATH: "/absent" },
+    run: (executable, args, options) => {
+      if (args[0] === "--version") return spawnSync(executable, args, options);
+      // Exercise the chosen binary without executing the production controller.
+      const actual = spawnSync(executable, ["-p", "process.versions.node"], { env: {}, encoding: "utf8" });
+      assert.equal(actual.status, 0); assert.equal(actual.stdout, `${f.version}\n`); launched = true;
+      return { status: 0 };
+    } }), 0);
+  assert(launched);
 });
 
 test("retirement handoff refreshes full source authority without repeating the slow provider sweep", async () => {
