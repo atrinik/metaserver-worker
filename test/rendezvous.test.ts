@@ -792,8 +792,10 @@ describe("RendezvousRoom HTTP and admission boundary", () => {
 
   it.each(["missing", "invalid", "expired", "future"])("allocates no sockets or ledger rows for %s internal admission", async (attack) => {
     const stub = room(`invalid-attestation-${attack}`);
-    const server = await connect(stub, "server");
+    const dateNow = vi.spyOn(Date, "now").mockReturnValue(2_000_000_000_000);
+    let server: WebSocket | undefined;
     try {
+      server = await connect(stub, "server");
       const request = roomRequest("client");
       const headers = new Headers(request.headers);
       if (attack === "missing") headers.delete("X-Atrinik-Rendezvous-V5-Admission");
@@ -804,7 +806,10 @@ describe("RendezvousRoom HTTP and admission boundary", () => {
       expect(responses.every(response => response.status === 403 && response.webSocket === null)).toBe(true);
       expect(await admissionCount(stub)).toBe(0);
       expect(await runInDurableObject(stub, (_instance, state) => state.getWebSockets("client").length)).toBe(0);
-    } finally { closeForCleanup(server); }
+    } finally {
+      if (server !== undefined) closeForCleanup(server);
+      dateNow.mockRestore();
+    }
   });
 
   it("retains a preclaimed ticket when upgrade construction fails", async () => {

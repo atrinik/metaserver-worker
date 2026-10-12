@@ -6,7 +6,8 @@ import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 import { createDurableCallerRetirementRecorder, decryptRecoveryDocument,
-  downloadRecoveryArtifact, encryptRecoveryDocument, verifyRecoveryArtifactProof } from "./production-recovery-artifacts.mjs";
+  downloadRecoveryArtifact, encryptRecoveryDocument, verifyRecoveryArtifactProof,
+  recoveryArtifactFailureReason } from "./production-recovery-artifacts.mjs";
 
 // Disposable test keys only. Never read an owner private key or contact a provider.
 const pair = generateKeyPairSync("rsa", { modulusLength: 3072 });
@@ -130,7 +131,7 @@ test("metadata rejects wrong name, ID, run, SHA, digest, expiry and shortened re
   for (const mutate of mutations) {
     const f = await fixture(t); f.mutateMetadata(mutate);
     const recorder = await createDurableCallerRetirementRecorder(f.options);
-    await assert.rejects(recorder.recordIntent(document), /provenance or effective retention/u);
+    await assert.rejects(recorder.recordIntent(document), /effective retention/u);
     assert.equal(f.calls.includes("download"), false);
   }
 });
@@ -199,4 +200,102 @@ test("retention rounding tolerance is bounded to one second", () => {
   assert.doesNotThrow(() => verifyRecoveryArtifactProof(args));
   metadata.expires_at = new Date(instant + 90 * 86400000 - 1001).toISOString();
   assert.throws(() => verifyRecoveryArtifactProof(args));
+});
+
+test("explicit effective retention opt-in requests 90 days and requires 89 full days", async (t) => {
+  for (const duration of [90 * 86400000 - 281000, 89 * 86400000]) {
+    const f = await fixture(t);
+    const approved = { ...recovery, minimumEffectiveRetentionDays: 89 };
+    f.mutateMetadata((m) => ({ ...m, expires_at: new Date(instant + duration).toISOString() }));
+    const recorder = await createDurableCallerRetirementRecorder({ ...f.options, recovery: approved });
+    const proof = await recorder.recordIntent(document);
+    await recorder.recordReceipt({ ...document, status: "complete" });
+    assert.deepEqual(f.calls, ["upload", "metadata", "download", "upload", "metadata", "download"]);
+    const ciphertext = f.archives.get(proof.artifactId).ciphertext;
+    assert.deepEqual(await decryptRecoveryDocument({ ...decryptOptions, recovery: approved,
+      ciphertext, artifactProof: proof }), document);
+    // Owner inspection of an existing artifact is distinct from writer qualification.
+    const inspected = await downloadRecoveryArtifact({ ...f.options, kind: "intent", artifactId: proof.artifactId,
+      archiveDigest: proof.archiveDigest, minimumRetentionDays: 0 });
+    assert.deepEqual(await decryptRecoveryDocument({ ...decryptOptions, recovery: approved, ...inspected }), document);
+  }
+});
+
+test("legacy 90-day policy still rejects the observed workflow-age shortfall", async (t) => {
+  const f = await fixture(t);
+  f.mutateMetadata((m) => ({ ...m, expires_at: new Date(instant + 90 * 86400000 - 281000).toISOString() }));
+  const recorder = await createDurableCallerRetirementRecorder(f.options);
+  await assert.rejects(recorder.recordIntent(document), /effective retention/u);
+  assert.deepEqual(f.calls, ["upload", "metadata"]);
+  await assert.rejects(recorder.recordReceipt(document), /durable intent/u);
+  await assert.rejects(recorder.recordIntent(document), /EEXIST/u);
+});
+
+test("explicit 89-day policy rejects lower caps and any fractional-day shortfall before durable success", async (t) => {
+  for (const duration of [89 * 86400000 - 1, 89 * 86400000 - 1000, 88 * 86400000, 0]) {
+    const f = await fixture(t);
+    f.mutateMetadata((m) => ({ ...m, expires_at: new Date(instant + duration).toISOString() }));
+    const approved = { ...recovery, minimumEffectiveRetentionDays: 89 };
+    const recorder = await createDurableCallerRetirementRecorder({ ...f.options, recovery: approved });
+    approved.minimumEffectiveRetentionDays = 0; // Cannot alter captured writer authority.
+    await assert.rejects(recorder.recordIntent(document), /effective retention/u);
+    assert.deepEqual(f.calls, ["upload", "metadata"]);
+    await assert.rejects(recorder.recordReceipt(document), /durable intent/u);
+    await assert.rejects(recorder.recordIntent(document), /EEXIST/u);
+  }
+});
+
+test("effective-retention opt-in does not weaken provenance, digest, expiry or recipient checks", async (t) => {
+  for (const mutate of [
+    (m) => ({ ...m, workflow_run: { ...m.workflow_run, id: 999 } }),
+    (m) => ({ ...m, digest: `sha256:${"d".repeat(64)}` }),
+    (m) => ({ ...m, expired: true }),
+  ]) {
+    const f = await fixture(t); f.mutateMetadata(mutate);
+    const recorder = await createDurableCallerRetirementRecorder({ ...f.options,
+      recovery: { ...recovery, minimumEffectiveRetentionDays: 89 } });
+    await assert.rejects(recorder.recordIntent(document));
+    assert.deepEqual(f.calls, ["upload", "metadata"]);
+  }
+  const f = await fixture(t);
+  const approved = { ...recovery, minimumEffectiveRetentionDays: 89 };
+  const proof = await (await createDurableCallerRetirementRecorder({ ...f.options, recovery: approved })).recordIntent(document);
+  const ciphertext = f.archives.get(proof.artifactId).ciphertext;
+  await assert.rejects(decryptRecoveryDocument({ ...decryptOptions, ciphertext, artifactProof: { ...proof }, recovery: approved }));
+  await assert.rejects(decryptRecoveryDocument({ ...decryptOptions, ciphertext, artifactProof: proof,
+    recovery: { ...approved, recipientSpkiSha256: "d".repeat(64) } }));
+});
+
+test("writer policy accepts only the explicit 89-day floor with the 90-day upload request", async (t) => {
+  const f = await fixture(t);
+  for (const minimum of [0, 88, 90, 89.5, "89", null, undefined])
+    await assert.rejects(createDurableCallerRetirementRecorder({ ...f.options,
+      recovery: { ...recovery, minimumEffectiveRetentionDays: minimum } }));
+  for (const patch of [{ minimumRetentionDays: 0 }, { unknown: 89 },
+    { minimumEffectiveRetentionDays: 89, retentionDays: 89 }, { minimumEffectiveRetentionDays: 89, retentionDays: 91 }])
+    await assert.rejects(createDurableCallerRetirementRecorder({ ...f.options, recovery: { ...recovery, ...patch } }));
+  assert.deepEqual(f.calls, []);
+});
+
+test("retention diagnostics recognize only branded failures through bounded own data causes", () => {
+  const metadata = { id: 101, name: "name", expired: false, digest: `sha256:${"d".repeat(64)}`,
+    workflow_run: { id: 1001, head_sha: context.controllerSha }, created_at: new Date(instant).toISOString(),
+    expires_at: new Date(instant + 89 * 86400000).toISOString() };
+  let branded;
+  try { verifyRecoveryArtifactProof({ metadata, artifactId: 101, artifactName: "name",
+    archiveDigest: "d".repeat(64), context, now }); } catch (error) { branded = error; }
+  assert(branded);
+  const expected = "recovery-artifact-effective-retention-rejected";
+  assert.equal(recoveryArtifactFailureReason(branded), expected);
+  let wrapped = branded;
+  for (let i = 0; i < 3; i++) wrapped = new Error("SECRET private path", { cause: wrapped });
+  assert.equal(recoveryArtifactFailureReason(wrapped), expected);
+  assert.equal(recoveryArtifactFailureReason(new Error("SECRET", { cause: wrapped })), null);
+  assert.equal(recoveryArtifactFailureReason(new Error(branded.message)), null);
+  assert.equal(recoveryArtifactFailureReason({ ...branded }), null);
+  assert.equal(recoveryArtifactFailureReason(Object.create({ cause: branded })), null);
+  const getter = Object.defineProperty({}, "cause", { get() { throw new Error("must not execute"); } });
+  assert.equal(recoveryArtifactFailureReason(getter), null);
+  const cycle = {}; cycle.cause = cycle;
+  assert.equal(recoveryArtifactFailureReason(cycle), null);
 });

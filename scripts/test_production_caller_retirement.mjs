@@ -4,6 +4,7 @@ import assert from "node:assert/strict";
 import { mkdtemp, chmod, readFile, rm } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
+import { verifyRecoveryArtifactProof } from "./production-recovery-artifacts.mjs";
 import { callerRetirementSecrets, callerRetirementSettings, verifyCallerRetirementPost,
   retireCallerSecrets, observeCallerRetirement, createCallerRetirementPatch,
   createCallerRetirementRecorder, parseCallerRetirementModules } from "./production-caller-retirement.mjs";
@@ -96,6 +97,27 @@ test("wrong role and noop fail", () => {
 test("consumed intent cannot dispatch", async () => {
   const h = harness({ recordIntent: async () => { throw Object.assign(Error("consumed"), { code: "EEXIST" }); } });
   await assert.rejects(retireCallerSecrets(h.options)); assert.equal(h.writes, 0);
+});
+test("effective-retention proof must pass before the caller PATCH boundary", async () => {
+  const context = { repository: "atrinik/metaserver-worker", runId: "1", runAttempt: "1",
+    controllerSha: source, sourceSha: source, deployableDigest: hash };
+  for (const [minimumRetentionDays, duration, accepted] of [
+    [90, 90 * 86400000 - 281000, false],
+    [89, 90 * 86400000 - 281000, true],
+    [89, 89 * 86400000, true],
+    [89, 89 * 86400000 - 1, false],
+  ]) {
+    const h = harness({ recordIntent: async () => verifyRecoveryArtifactProof({
+      artifactId: 101, artifactName: "intent", archiveDigest: hash, context, now: () => 1000,
+      minimumRetentionDays, metadata: { id: 101, name: "intent", digest: `sha256:${hash}`, expired: false,
+        workflow_run: { id: 1, head_sha: source }, created_at: new Date(1000).toISOString(),
+        expires_at: new Date(1000 + duration).toISOString() },
+    }) });
+    if (accepted) await retireCallerSecrets(h.options);
+    else await assert.rejects(retireCallerSecrets(h.options), /effective retention/u);
+    assert.equal(h.writes, accepted ? 1 : 0);
+    assert.equal(h.events.includes("authorize"), accepted);
+  }
 });
 test("post-intent drift and final authority failure prevent mutation", async () => {
   let reads = 0;

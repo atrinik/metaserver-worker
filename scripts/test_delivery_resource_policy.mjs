@@ -289,6 +289,31 @@ test("bootstrap cannot grant another namespace, omit an account peer or relax ca
   ]) { const x = bootstrapFixture(); change(x); assert.throws(() => validateResourcePolicy(x.policy, "production", accountId)); }
 });
 
+test("bootstrap effective-retention opt-in is exact and changes the approved policy digest", () => {
+  const { policy, bootstrap } = bootstrapFixture();
+  const legacyDigest = resourcePolicyDigest(policy);
+  assert.doesNotThrow(() => validateResourcePolicy(policy, "production", accountId));
+  bootstrap.recovery.minimumEffectiveRetentionDays = 89;
+  assert.doesNotThrow(() => validateResourcePolicy(policy, "production", accountId));
+  assert.notEqual(resourcePolicyDigest(policy), legacyDigest);
+  for (const minimum of [0, 88, 90, 89.5, "89", null, undefined]) {
+    bootstrap.recovery.minimumEffectiveRetentionDays = minimum;
+    assert.throws(() => validateResourcePolicy(policy, "production", accountId));
+  }
+  delete bootstrap.recovery.minimumEffectiveRetentionDays;
+  bootstrap.recovery.minimumRetentionDays = 0;
+  assert.throws(() => validateResourcePolicy(policy, "production", accountId));
+  delete bootstrap.recovery.minimumRetentionDays;
+  bootstrap.recovery.unknown = 89;
+  assert.throws(() => validateResourcePolicy(policy, "production", accountId));
+  delete bootstrap.recovery.unknown;
+  bootstrap.recovery.minimumEffectiveRetentionDays = 89;
+  for (const requested of [89, 91]) {
+    bootstrap.recovery.retentionDays = requested;
+    assert.throws(() => validateResourcePolicy(policy, "production", accountId));
+  }
+});
+
 test("bootstrap starts disabled, admits only its own addition, and never returns to missing namespace", async () => {
   const x = bootstrapFixture(); const gate = x.gate();
   assert.throws(() => gate.beginCoreUpload());

@@ -327,7 +327,19 @@ change, mixed deployment or differing native resource graph stops the census.
 This inspects existing versions without changing unrelated Workers.
 
 The approved `recovery` policy pins the owner's RSA public SPKI fingerprint and
-90-day retention. Supply only the public recipient in the protected production
+requests 90-day artifact retention through `retentionDays: 90`. Without another
+field it also requires 90 effective days from artifact creation, retaining only
+the existing one-second timestamp rounding allowance. GitHub caps public-repository
+artifact retention at [90 days](https://docs.github.com/en/repositories/managing-your-repositorys-settings-and-features/enabling-features-for-your-repository/managing-github-actions-settings-for-a-repository#configuring-the-retention-period-for-checks-workflow-runs-commit-statuses-artifacts-and-logs-in-your-repository).
+Observed expiry can be anchored to workflow creation, shortening the interval
+after artifact creation. An explicitly approved `minimumEffectiveRetentionDays: 89`
+in `recovery` permits this case while requiring a full 89 days after artifact
+creation, with no rounding shortfall. It still requests 90 days; lower caps fail
+the metadata proof. No other explicit minimum is accepted. This opt-in changes
+the resource-policy and deployable-plan digests and requires fresh approval;
+the controller never changes the protected policy automatically.
+
+Supply only the public recipient in the protected production
 variable `ATRINIK_PRODUCTION_RECOVERY_PUBLIC_KEY`; retain the private key locally
 and rehearse decryption before live use. After new code is staged disabled, each
 caller's consumed intent must be encrypted and its immutable GitHub Actions
@@ -340,6 +352,20 @@ Preserve the artifact provenance and export recoverable records before retention
 expires. No manual binding preprovisioning or legacy rollback is part of this
 path. After successful transition, retire the bootstrap extension in favor of a
 fresh strict observed policy and new approved plan before another promotion.
+
+Owner recovery helpers validate both policy forms. For qualification, pass
+`minimumRetentionDays: recovery.minimumEffectiveRetentionDays ?? recovery.retentionDays`
+to `downloadRecoveryArtifact`; its default remains 90. For read-only inspection
+of an existing, still-live artifact, the owner may explicitly pass
+`minimumRetentionDays: 0`. Inspection still verifies the exact run/controller,
+artifact identity, archive digest and ciphertext provenance before decryption;
+it grants no mutation or intent-retry authority. The retirement writer derives
+its minimum solely from the approved policy and cannot use inspection mode.
+The closed failure reason `recovery-artifact-effective-retention-rejected`
+identifies an insufficient authenticated retention interval without exposing
+private artifact metadata. A failed upload/readback still consumes the intent;
+never retry it. Observe the current topology and existing attempt evidence before
+preparing any newly authorized attempt coordinate.
 
 The trusted controller owns the Wrangler executable, its working directory and
 validated toolchain pins. The selected release supplies absolute application

@@ -12,7 +12,22 @@ const schema = "atrinik-production-recovery-v1";
 const sha = /^[a-f0-9]{64}$/u;
 const day = 86400000;
 const proofs = new WeakSet();
+const retentionFailures = new WeakSet();
 const fail = (message) => { throw new Error(`production recovery artifact: ${message}`); };
+function failRetention() {
+  const error = new Error("production recovery artifact: effective retention mismatch");
+  retentionFailures.add(error);
+  throw error;
+}
+// Only this module can brand a verified retention failure. Inspect a bounded
+// chain of own data properties without invoking getters or reflecting messages.
+export function recoveryArtifactFailureReason(error) {
+  for (let depth = 0; depth < 4 && error && typeof error === "object"; depth++) {
+    if (retentionFailures.has(error)) return "recovery-artifact-effective-retention-rejected";
+    error = Object.getOwnPropertyDescriptor(error, "cause")?.value;
+  }
+  return null;
+}
 const digest = (bytes) => createHash("sha256").update(bytes).digest("hex");
 const exactKeys = (value, keys) => value && typeof value === "object" && !Array.isArray(value) &&
   Object.keys(value).sort().join(",") === [...keys].sort().join(",");
@@ -27,8 +42,11 @@ function validateContext(context) {
       !sha.test(context.deployableDigest)) fail("invalid exact execution context");
 }
 function validateRecovery(recovery) {
-  if (!exactKeys(recovery, ["recipientSpkiSha256", "retentionDays"]) ||
-      !sha.test(recovery.recipientSpkiSha256) || recovery.retentionDays !== 90)
+  const minimum = recovery?.minimumEffectiveRetentionDays;
+  if (!exactKeys(recovery, minimum === undefined ? ["recipientSpkiSha256", "retentionDays"] :
+    ["recipientSpkiSha256", "retentionDays", "minimumEffectiveRetentionDays"]) ||
+      !sha.test(recovery.recipientSpkiSha256) || recovery.retentionDays !== 90 ||
+      (minimum !== undefined && minimum !== 89))
     fail("invalid approved recipient or retention");
 }
 function artifactName(context, role, kind) {
@@ -112,9 +130,12 @@ export function verifyRecoveryArtifactProof({ metadata, artifactId, artifactName
       metadata.digest !== `sha256:${archiveDigest}` || metadata.workflow_run?.id !== Number(context.runId) ||
       metadata.workflow_run?.head_sha !== context.controllerSha ||
       !Number.isFinite(created) || !Number.isFinite(expires) || !Number.isFinite(current) ||
-      created > current + 1000 || expires <= current ||
-      expires - created < minimumRetentionDays * day - 1000)
+      created > current + 1000 || expires <= current)
     fail("artifact identity, digest, execution provenance or effective retention mismatch");
+  // Preserve the historical 90-day timestamp rounding allowance. The explicit
+  // 89-day policy requires the full interval, with no extra shortfall allowance.
+  const rounding = minimumRetentionDays === 90 ? 1000 : 0;
+  if (expires - created < minimumRetentionDays * day - rounding) failRetention();
   return { artifactId, artifactName: name, archiveDigest, expiresAt: metadata.expires_at };
 }
 
@@ -214,7 +235,8 @@ export async function createDurableCallerRetirementRecorder({ directory, role, c
     if (!Number.isSafeInteger(upload?.id) || upload.id < 1 || !sha.test(upload.digest) ||
         !Number.isSafeInteger(upload.size) || upload.size < 1) fail("artifact finalization incomplete");
     const downloaded = await downloadRecoveryArtifact({ artifactId: upload.id, archiveDigest: upload.digest,
-      context, role, kind, directory, artifactClient: client, fetcher, environment, now });
+      context, role, kind, directory, artifactClient: client, fetcher, environment, now,
+      minimumRetentionDays: recovery.minimumEffectiveRetentionDays ?? recovery.retentionDays });
     if (downloaded.ciphertext !== ciphertext) fail("artifact ciphertext differs from intent");
     if (kind === "intent") durableIntent = true;
     return downloaded.artifactProof;

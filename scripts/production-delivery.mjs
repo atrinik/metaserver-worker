@@ -9,7 +9,7 @@ import { promisify } from "node:util";
 import { parseDirectoryFailure } from "./directory-reconciliation-diagnostics.mjs";
 import { readDirectoryInterface, incompatibleDirectoryInterface } from "./directory-reconciliation-interface.mjs";
 import { retireCallerSecrets, createCallerRetirementReader, createCallerRetirementPatch } from "./production-caller-retirement.mjs";
-import { createDurableCallerRetirementRecorder } from "./production-recovery-artifacts.mjs";
+import { createDurableCallerRetirementRecorder, recoveryArtifactFailureReason } from "./production-recovery-artifacts.mjs";
 import { validateRateBootstrap, legacyCallerSecrets } from "./production-rate-bootstrap.mjs";
 import { parseResourcePolicy, resourcePolicyDigest as digestResourcePolicy, validateResourceConfigurations,
   resourcePolicyReader, createResourcePolicyFence } from "./delivery-resource-policy.mjs";
@@ -60,7 +60,8 @@ export function deliveryFailureRecord(error, evidence) {
   return {
     outcome: "production-delivery-stopped",
     reason:
-      error instanceof DeliveryError ? error.message : "unexpected-internal-error",
+      recoveryArtifactFailureReason(error) ??
+      (error instanceof DeliveryError ? error.message : "unexpected-internal-error"),
     sourceSha: evidence.sourceSha,
     deployableDigest: evidence.deployableDigest,
     failedRole: evidence.failedRole,
