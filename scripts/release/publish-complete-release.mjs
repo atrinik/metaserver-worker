@@ -48,7 +48,7 @@ export function validateDraft(release, assets, { tag, sourceSha, tagSha }) {
 }
 
 export async function publishCompleteRelease(context, { fetcher = fetch,
-  readAssets = releaseAssets, recovery = false } = {}) {
+  readAssets = releaseAssets, recovery = false, beforePublish } = {}) {
   const { cwd, env = process.env, nextRelease, logger } = context;
   if (!nextRelease || nextRelease.gitTag !== `v${nextRelease.version}` ||
       !/^[0-9a-f]{40}$/u.test(nextRelease.gitHead ?? "") ||
@@ -102,6 +102,10 @@ export async function publishCompleteRelease(context, { fetcher = fetch,
     return { name: "Verified GitHub draft", url: `https://github.com/${repository}/releases/tag/${nextRelease.gitTag}`,
       id: release.id, draft: true };
   }
+  // Recovery authority must be observed after all potentially slow downloads and
+  // release reads, directly before the publication request.
+  if (recovery && typeof beforePublish !== "function") fail("draft finalization authority is missing");
+  if (beforePublish) await beforePublish();
   const published = await request(`/releases/${release.id}`, {
     method: "PATCH", body: { draft: false },
   });
@@ -124,7 +128,7 @@ export async function publishCompleteRelease(context, { fetcher = fetch,
 }
 
 
-// Recovery finalizes only an owner-selected existing draft. The normal release
+// Recovery finalizes a repository-authorized dispatcher-selected draft. The normal release
 // job may already have tagged the source, so semantic-release reruns are not the
 // recovery mechanism. Approval names source and both immutable asset digests.
 export async function finalizeExistingDraft(environment = process.env, { fetcher = fetch } = {}) {
@@ -136,7 +140,9 @@ export async function finalizeExistingDraft(environment = process.env, { fetcher
       ![archiveDigest, checksumDigest].every((value) => /^[0-9a-f]{64}$/u.test(value ?? "")) ||
       environment.GITHUB_ACTIONS !== "true" || environment.GITHUB_REPOSITORY !== repository ||
       environment.GITHUB_EVENT_NAME !== "workflow_dispatch" || environment.GITHUB_REF !== "refs/heads/main" ||
-      environment.GITHUB_RUN_ATTEMPT !== "1" || environment.ATRINIK_RELEASE_IMMUTABILITY_ACTIVE !== "enabled" ||
+      environment.GITHUB_RUN_ATTEMPT !== "1" || !/^[1-9][0-9]*$/u.test(environment.GITHUB_RUN_ID ?? "") ||
+      !/^[a-zA-Z0-9][a-zA-Z0-9-]{0,38}(?:\[bot\])?$/u.test(environment.GITHUB_ACTOR ?? "") ||
+      environment.ATRINIK_RELEASE_IMMUTABILITY_ACTIVE !== "enabled" ||
       environment.GITHUB_WORKFLOW_REF !== `${repository}/.github/workflows/finalize-release-draft.yml@refs/heads/main` ||
       environment.GITHUB_WORKFLOW_SHA !== environment.GITHUB_SHA ||
       !/^[0-9a-f]{40}$/u.test(environment.GITHUB_SHA ?? ""))
@@ -144,6 +150,7 @@ export async function finalizeExistingDraft(environment = process.env, { fetcher
   const token = environment.GH_TOKEN ?? environment.GITHUB_TOKEN;
   if (!token) fail("release authentication is missing");
   const get = async (path) => {
+    try {
     const response = await fetcher(`https://api.github.com/repos/${repository}${path}`, {
       method: "GET", redirect: "error", signal: AbortSignal.timeout(30_000),
       headers: { Authorization: `Bearer ${token}`, Accept: "application/vnd.github+json",
@@ -152,20 +159,33 @@ export async function finalizeExistingDraft(environment = process.env, { fetcher
     if (!response.ok) fail("draft source authority read failed");
     const bytes = await boundedBytes(response, 256 * 1024);
     try { return JSON.parse(bytes.toString("utf8")); } catch { fail("draft source authority response invalid"); }
+    } catch { fail("draft source authority could not be verified; retain draft"); }
   };
-  const [branch, comparison, checks, releases, controllerChecks] = await Promise.all([
-    get("/branches/main"), get(`/compare/${sourceSha}...main`),
-    get(`/actions/workflows/check.yml/runs?head_sha=${sourceSha}&event=push&branch=main&status=success&per_page=100`),
-    get("/releases?per_page=100"),
-    get(`/actions/workflows/check.yml/runs?head_sha=${environment.GITHUB_SHA}&event=push&branch=main&status=success&per_page=100`),
-  ]);
-  const draft = selectDraft(releases, tag);
-  if (branch.commit?.sha !== environment.GITHUB_SHA || !successfulCheck(controllerChecks, environment.GITHUB_SHA))
-    fail("draft finalization controller is not validated current main");
-  if (branch.name !== "main" || branch.protected !== true ||
-      !["ahead", "identical"].includes(comparison.status) || comparison.merge_base_commit?.sha !== sourceSha ||
-      !successfulCheck(checks, sourceSha))
-    fail("draft source lacks successful protected-main validation");
+  const beforePublish = async () => {
+    const [branch, comparison, checks, controllerChecks, run] = await Promise.all([
+      get("/branches/main"), get(`/compare/${sourceSha}...main`),
+      get(`/actions/workflows/check.yml/runs?head_sha=${sourceSha}&event=push&branch=main&status=success&per_page=100`),
+      get(`/actions/workflows/check.yml/runs?head_sha=${environment.GITHUB_SHA}&event=push&branch=main&status=success&per_page=100`),
+      get(`/actions/runs/${environment.GITHUB_RUN_ID}`),
+    ]);
+    // GitHub's authenticated workflow_dispatch is repository release authority;
+    // no production-owner allowlist or administration-scoped token is required.
+    if (!Number.isSafeInteger(run.id) || String(run.id) !== environment.GITHUB_RUN_ID ||
+        run.run_attempt !== 1 || run.status !== "in_progress" || run.conclusion !== null ||
+        run.event !== "workflow_dispatch" || run.path !== ".github/workflows/finalize-release-draft.yml" ||
+        run.head_sha !== environment.GITHUB_SHA || run.head_branch !== "main" ||
+        run.repository?.full_name !== repository || run.head_repository?.full_name !== repository ||
+        run.actor?.login !== environment.GITHUB_ACTOR || run.triggering_actor?.login !== environment.GITHUB_ACTOR)
+      fail("draft finalization run authority is no longer active");
+    if (branch.commit?.sha !== environment.GITHUB_SHA || !successfulCheck(controllerChecks, environment.GITHUB_SHA))
+      fail("draft finalization controller is not validated current main");
+    if (branch.name !== "main" || branch.protected !== true ||
+        !["ahead", "identical"].includes(comparison.status) || comparison.merge_base_commit?.sha !== sourceSha ||
+        !successfulCheck(checks, sourceSha))
+      fail("draft source lacks successful protected-main validation");
+  };
+  await beforePublish();
+  const draft = selectDraft(await get("/releases?per_page=100"), tag);
   const archiveName = `atrinik-metaserver-worker-${tag.slice(1)}.tar.gz`;
   const expected = [{ name: archiveName, digest: `sha256:${archiveDigest}` },
     { name: "SHA256SUMS", digest: `sha256:${checksumDigest}` }];
@@ -201,7 +221,7 @@ export async function finalizeExistingDraft(environment = process.env, { fetcher
   }
   return publishCompleteRelease({ cwd: ".", env: environment,
     nextRelease: { gitTag: tag, version: tag.slice(1), gitHead: sourceSha } },
-  { fetcher, readAssets: async () => verified, recovery: true });
+  { fetcher, readAssets: async () => verified, recovery: true, beforePublish });
 }
 
 export function selectDraft(releases, tag) {

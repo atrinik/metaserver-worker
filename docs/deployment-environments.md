@@ -224,12 +224,18 @@ exact selected source SHA. A tag race is detected after publication, not
 prevented by a GitHub compare-and-swap API. A mismatched immutable release must
 never be promoted.
 
-An existing qualified draft is finalized through manual
+A repository-authorized dispatcher can finalize an existing qualified draft through manual
 `finalize-release-draft.yml` with exact `tag`, `source_sha`, `archive_sha256` and
 `checksums_sha256` inputs. This trusted current-main controller verifies its own
 and the selected source's successful protected-main checks, bounded authenticated
 draft inventory, downloaded asset hashes and checksum binding before using the
-same finalizer. It neither reruns semantic-release nor executes the draft's code.
+same finalizer. After asset downloads and immediately before publication, it
+re-reads current main and its protection, source/controller Check results, and
+the original authenticated dispatch run. That run must still be in progress,
+on its first attempt, with the exact controller SHA and dispatcher identity.
+This uses normal GitHub release authority; it adds no production-owner allowlist
+or administration-token requirement. It neither reruns semantic-release nor
+executes the draft's code.
 A missing/ambiguous draft, source mismatch or failed asset check stops before
 publication. An ambiguous publication response requires fresh readback, not an
 automatic retry. Existing mutable releases remain historical;

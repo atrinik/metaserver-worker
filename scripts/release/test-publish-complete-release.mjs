@@ -149,7 +149,7 @@ function recoveryFixture() {
     { id: 11, name: "atrinik-metaserver-worker-4.35.0.tar.gz", state: "uploaded", size: bytes.length, digest: `sha256:${archiveHash}` },
     { id: 12, name: "SHA256SUMS", state: "uploaded", size: sums.length, digest: `sha256:${sumsHash}` },
   ];
-  Object.assign(f.context.env, { GITHUB_EVENT_NAME: "workflow_dispatch", GITHUB_RUN_ATTEMPT: "1",
+  Object.assign(f.context.env, { GITHUB_EVENT_NAME: "workflow_dispatch", GITHUB_RUN_ATTEMPT: "1", GITHUB_RUN_ID: "456", GITHUB_ACTOR: "release-maintainer",
     GITHUB_WORKFLOW_SHA: sha,
     GITHUB_WORKFLOW_REF: "atrinik/metaserver-worker/.github/workflows/finalize-release-draft.yml@refs/heads/main",
     ATRINIK_RELEASE_DRAFT_TAG: "v4.35.0", ATRINIK_RELEASE_DRAFT_SHA: sha,
@@ -157,7 +157,13 @@ function recoveryFixture() {
   const check = { head_sha: sha, head_branch: "main", event: "push", path: ".github/workflows/check.yml",
     status: "completed", conclusion: "success", repository: { full_name: "atrinik/metaserver-worker" },
     head_repository: { full_name: "atrinik/metaserver-worker" } };
+  const run = { id: 456, run_attempt: 1, status: "in_progress", conclusion: null,
+    event: "workflow_dispatch", path: ".github/workflows/finalize-release-draft.yml", head_sha: sha,
+    head_branch: "main", repository: { full_name: "atrinik/metaserver-worker" },
+    head_repository: { full_name: "atrinik/metaserver-worker" }, actor: { login: "release-maintainer" },
+    triggering_actor: { login: "release-maintainer" } };
   const fetcher = async (url, options) => {
+    if (url.endsWith("/actions/runs/456")) return Response.json(run);
     if (url.endsWith("/branches/main")) return Response.json({ name: "main", protected: true, commit: { sha } });
     if (url.includes("/compare/")) return Response.json({ status: "identical", merge_base_commit: { sha } });
     if (url.includes("/actions/workflows/")) return Response.json({ total_count: 1, workflow_runs: [check] });
@@ -165,7 +171,7 @@ function recoveryFixture() {
     if (url.endsWith("/releases/assets/12")) return new Response(sums);
     return f.fetcher(url, options);
   };
-  return { ...f, fetcher, bytes, sums };
+  return { ...f, fetcher, bytes, sums, run, check };
 }
 
 test("exact existing qualified draft can be finalized without semantic-release rerun", async () => {
@@ -200,4 +206,43 @@ test("draft asset redirects never forward credentials and reject untrusted hosts
     if (allowed) { await finalizeExistingDraft(f.context.env, { fetcher }); assert.equal(signedRequests, 1); }
     else { await assert.rejects(finalizeExistingDraft(f.context.env, { fetcher }), /untrusted/); assert.equal(signedRequests, 0); }
   }
+});
+
+for (const change of ["main", "protection", "source-check", "cancel", "attempt", "controller", "actor"])
+  test(`recovery refreshes ${change} authority after asset download before publication`, async () => {
+    const f = recoveryFixture(); let downloaded = false; let finalAuthorityReads = 0;
+    const fetcher = async (url, options) => {
+      if (url.endsWith("/releases/assets/12")) downloaded = true;
+      if (downloaded && url.includes("/actions/runs/")) {
+        finalAuthorityReads += 1;
+        if (change === "cancel") { f.run.status = "completed"; f.run.conclusion = "cancelled"; }
+        if (change === "attempt") f.run.run_attempt = 2;
+        if (change === "controller") f.run.head_sha = "d".repeat(40);
+        if (change === "actor") f.run.actor.login = "different-maintainer";
+      }
+      if (downloaded && url.endsWith("/branches/main") && ["main", "protection"].includes(change))
+        return Response.json({ name: "main", protected: change !== "protection",
+          commit: { sha: change === "main" ? "d".repeat(40) : sha } });
+      if (downloaded && url.includes("/actions/workflows/") && change === "source-check")
+        return Response.json({ total_count: 0, workflow_runs: [] });
+      return f.fetcher(url, options);
+    };
+    await assert.rejects(finalizeExistingDraft(f.context.env, { fetcher }));
+    assert.equal(downloaded, true); assert.equal(finalAuthorityReads, 1);
+    assert.equal(f.calls.filter((call) => call.method === "PATCH").length, 0);
+    assert.equal(f.release.draft, true);
+  });
+
+test("recovery authority callback is the final observation immediately before PATCH", async () => {
+  const f = recoveryFixture(); const sequence = [];
+  await finalizeExistingDraft(f.context.env, { fetcher: async (url, options) => {
+    sequence.push({ url, method: options.method });
+    return f.fetcher(url, options);
+  } });
+  const publication = sequence.findIndex((call) => call.method === "PATCH");
+  const finalReads = sequence.slice(publication - 5, publication);
+  assert(finalReads.every((call) => call.method === "GET"));
+  assert(finalReads.some((call) => call.url.endsWith("/branches/main")));
+  assert(finalReads.some((call) => call.url.endsWith("/actions/runs/456")));
+  assert.equal(finalReads.filter((call) => call.url.includes("/actions/workflows/check.yml/")).length, 2);
 });
