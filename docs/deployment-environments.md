@@ -326,6 +326,34 @@ tuples. Recheck latest, active and deployment identities after those reads; any
 change, mixed deployment or differing native resource graph stops the census.
 This inspects existing versions without changing unrelated Workers.
 
+An interrupted attempt may already have provisioned the exact core rate binding
+and staged a disabled caller while leaving both callers' obsolete secrets intact.
+A separately approved `productionBootstrap.nativeRateAlreadyProvisioned: true`
+supports only that observed baseline: exactly one `ACCESS_ROUTE_RATE_LIMITER`
+binding at namespace `1008`, limit 16 and period 60, on the production core.
+Other Workers, aliases, duplicates, different tuples and missing bindings fail
+validation. With the field absent, the original baseline still forbids `1008`;
+explicit false or nonboolean values are invalid. The desired configuration retains
+the existing single binding without normalizing duplicate input.
+
+Both callers must still have exactly the two legacy signing secrets. Their key-ID
+bindings must be either the original valid distinct pair, or—only under this
+opt-in—completely absent with all role-specific circuits explicitly disabled
+(`PUBLISH_ENABLED` and `GAME_PUBLISH_ENABLED` for publisher, `RENDEZVOUS_ENABLED`
+for rendezvous). Partial, malformed or duplicate key-ID bindings fail. The new
+policy must record the actual variables, resources and three predecessor versions;
+fresh provider observations and each caller's pre-upload version/variable checks
+remain mandatory. The flag alone proves no selected-source identity.
+
+This path starts at the baseline phase. It still uploads and verifies the disabled
+core before either caller can enter retirement, then stages and proves each caller's
+selected module bytes, runtime and controls before removing its secrets. An existing
+rate cannot substitute for the core confirmation step or either retirement. Failed
+retirements retain their uncertain state and consumed intents; never replay an old
+attempt. Obtain fresh topology evidence, a new policy/plan digest and owner approval
+of the actual predecessor before a new dispatch. No automatic policy rewrite or
+completed-bootstrap shortcut is introduced.
+
 The approved `recovery` policy pins the owner's RSA public SPKI fingerprint and
 requests 90-day artifact retention through `retentionDays: 90`. Without another
 field it also requires 90 effective days from artifact creation, retaining only

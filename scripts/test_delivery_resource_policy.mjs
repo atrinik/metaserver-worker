@@ -219,7 +219,7 @@ test("target staged circuits may change while origin and non-target plaintext st
 // replacement policy that pretends the future graph already exists.
 import { createHash } from "node:crypto";
 import { createResourcePolicyFence } from "./delivery-resource-policy.mjs";
-import { productionAccessRate, legacyCallerSecrets, validateRateBootstrap,
+import { productionAccessRate, productionAccessResource, legacyCallerSecrets, validateRateBootstrap,
   compareBootstrapInventory, projectNativeRates } from "./production-rate-bootstrap.mjs";
 function bootstrapFixture() {
   const value = fixture();
@@ -260,6 +260,153 @@ function bootstrapFixture() {
     live.settings.bindings = live.settings.bindings.filter(v => v.type !== "secret_text"); };
   return { ...value, bootstrap, inventory, options, gate, add, retire };
 }
+
+function provisionedBootstrapFixture() {
+  const value = bootstrapFixture();
+  value.bootstrap.nativeRateAlreadyProvisioned = true;
+  value.add();
+  value.bootstrap.workers.find(worker => worker.name === "atrinik-metaserver").rates.push(structuredClone(productionAccessRate));
+  value.policy.cohorts[0].workers[0].resources.push(structuredClone(productionAccessResource));
+  return value;
+}
+
+function stagedBaselineCaller(x, role) {
+  const worker = x.policy.cohorts[0].workers.find(v => v.role === role);
+  const live = x.observed.get(worker.name);
+  live.settings.bindings = live.settings.bindings.filter(v => !["SOURCE_TAG_KEY_CURRENT_ID", "SOURCE_TAG_KEY_PREVIOUS_ID"].includes(v.name));
+  const circuits = role === "publisher" ? ["PUBLISH_ENABLED", "GAME_PUBLISH_ENABLED"] : ["RENDEZVOUS_ENABLED"];
+  for (const name of circuits) {
+    const previous = live.settings.bindings.find(v => v.name === name);
+    if (previous) previous.text = "disabled";
+    else live.settings.bindings.push({ name, type: "plain_text", text: "disabled" });
+  }
+  worker.variables = projectWorkerResources({ name: worker.name, role, ...live }).variables;
+  return { worker, live, circuits };
+}
+
+for (const role of ["publisher", "rendezvous"]) {
+  test(`already-provisioned bootstrap admits absent key IDs only for a freshly observed disabled ${role}`, async () => {
+    const x = provisionedBootstrapFixture();
+    const { live, circuits } = stagedBaselineCaller(x, role);
+    validateResourcePolicy(x.policy, "production", accountId);
+    const gate = x.gate(); await gate.fence();
+    live.settings.bindings.find(v => v.name === circuits[0]).text = "enabled";
+    await assert.rejects(gate.fence());
+    const legacy = bootstrapFixture(); stagedBaselineCaller(legacy, role);
+    assert.throws(() => validateResourcePolicy(legacy.policy, "production", accountId));
+  });
+
+  test(`already-provisioned ${role} rejects partial, malformed, duplicate or identical key IDs`, () => {
+    for (const change of [
+      variables => variables.filter(v => v.binding !== "SOURCE_TAG_KEY_CURRENT_ID"),
+      variables => variables.filter(v => v.binding !== "SOURCE_TAG_KEY_PREVIOUS_ID"),
+      variables => variables.map(v => v.binding === "SOURCE_TAG_KEY_CURRENT_ID" ? { ...v, value: "invalid value" } : v),
+      variables => variables.map(v => v.binding === "SOURCE_TAG_KEY_CURRENT_ID" ? { ...v, value: "epoch-1" } : v),
+      variables => [...variables, variables.find(v => v.binding === "SOURCE_TAG_KEY_CURRENT_ID")],
+    ]) {
+      const x = provisionedBootstrapFixture();
+      const caller = x.policy.cohorts[0].workers.find(v => v.role === role);
+      caller.variables = change(caller.variables);
+      assert.throws(() => validateResourcePolicy(x.policy, "production", accountId));
+    }
+  });
+
+  test(`absent key IDs require every ${role} circuit to be explicitly disabled`, () => {
+    const circuits = role === "publisher" ? ["PUBLISH_ENABLED", "GAME_PUBLISH_ENABLED"] : ["RENDEZVOUS_ENABLED"];
+    for (const circuit of circuits) for (const value of ["enabled", "false", null]) {
+      const x = provisionedBootstrapFixture(), { worker } = stagedBaselineCaller(x, role);
+      if (value === null) worker.variables = worker.variables.filter(v => v.binding !== circuit);
+      else worker.variables.find(v => v.binding === circuit).value = value;
+      assert.throws(() => validateResourcePolicy(x.policy, "production", accountId));
+    }
+  });
+}
+
+test("existing-rate completion retains exact source/predecessor binding and cannot claim completed caller retirements", async () => {
+  const x = provisionedBootstrapFixture(); stagedBaselineCaller(x, "publisher");
+  assert.throws(() => createResourcePolicyFence(x.policy, { ...x.options, sourceSha: "2".repeat(40) }));
+  assert.throws(() => createResourcePolicyFence(x.policy, { ...x.options, expectedPredecessor: "2".repeat(64) }));
+  await assert.rejects(createResourcePolicyFence(x.policy, { ...x.options, completedBootstrap: true }).fence());
+  x.bootstrap.predecessorVersions.reverse();
+  assert.throws(() => validateResourcePolicy(x.policy, "production", accountId));
+});
+
+test("already-provisioned bootstrap is explicit and retains the exact baseline rate", async () => {
+  const x = provisionedBootstrapFixture();
+  validateResourcePolicy(x.policy, "production", accountId);
+  assert.equal(compareBootstrapInventory(x.bootstrap, x.inventory(), "baseline"), "baseline");
+  assert.equal(compareBootstrapInventory(x.bootstrap, x.inventory(), "uploading"), "added");
+  assert.equal(compareBootstrapInventory(x.bootstrap, x.inventory(), "added"), "added");
+  const approved = resourcePolicyDigest(x.policy);
+  delete x.bootstrap.nativeRateAlreadyProvisioned;
+  assert.notEqual(resourcePolicyDigest(x.policy), approved);
+  assert.throws(() => validateResourcePolicy(x.policy, "production", accountId));
+  for (const value of [false, "true", 1, null, undefined]) {
+    x.bootstrap.nativeRateAlreadyProvisioned = value;
+    assert.throws(() => validateResourcePolicy(x.policy, "production", accountId));
+  }
+});
+
+for (const [name, change] of [
+  ["missing rate", x => { x.bootstrap.workers[0].rates.pop(); }],
+  ["wrong tuple limit", x => { x.bootstrap.workers[0].rates.at(-1).simple.limit = 17; }],
+  ["wrong tuple period", x => { x.bootstrap.workers[0].rates.at(-1).simple.period = 10; }],
+  ["wrong binding", x => { x.bootstrap.workers[0].rates.at(-1).name = "OTHER"; }],
+  ["wrong namespace", x => { x.bootstrap.workers[0].rates.at(-1).namespace_id = "1009"; }],
+  ["duplicate rate", x => { x.bootstrap.workers[0].rates.push(structuredClone(productionAccessRate)); }],
+  ["alias", x => { x.bootstrap.workers[0].rates.push({ ...structuredClone(productionAccessRate), name: "ALIAS" }); }],
+  ["other Worker collision", x => { x.bootstrap.workers[1].rates.push(structuredClone(productionAccessRate)); }],
+  ["unmanaged Worker collision", x => { x.bootstrap.workers.push({ name: "unmanaged", tag: "f".repeat(32), rates: [structuredClone(productionAccessRate)] }); }],
+  ["missing observed resource", x => { x.policy.cohorts[0].workers[0].resources.pop(); }],
+  ["duplicate resource", x => { x.policy.cohorts[0].workers[0].resources.push(structuredClone(productionAccessResource)); }],
+  ["already-retired publisher", x => { x.policy.cohorts[0].workers[1].secrets = []; }],
+  ["already-retired rendezvous", x => { x.policy.cohorts[0].workers[2].secrets = []; }],
+  ["partial retirement", x => { x.policy.cohorts[0].workers[1].secrets.pop(); }],
+]) test(`already-provisioned bootstrap rejects ${name}`, () => {
+  const x = provisionedBootstrapFixture(); change(x);
+  assert.throws(() => validateResourcePolicy(x.policy, "production", accountId));
+});
+
+test("an existing rate never skips fresh baseline, upload, confirmation or either retirement", async () => {
+  const x = provisionedBootstrapFixture(), gate = x.gate();
+  assert.throws(() => gate.beginCoreUpload());
+  assert.throws(() => gate.confirmCoreAdded());
+  assert.throws(() => gate.beginCallerRetirement("publisher"));
+  await gate.fence();
+  assert.throws(() => gate.confirmCoreAdded());
+  assert.throws(() => gate.beginCallerRetirement("publisher"));
+  gate.beginCoreUpload();
+  assert.throws(() => gate.confirmCoreAdded());
+  assert.throws(() => gate.beginCallerRetirement("publisher"));
+  await gate.fence();
+  assert.throws(() => gate.beginCallerRetirement("publisher"));
+  gate.confirmCoreAdded();
+  assert.throws(() => gate.beginCoreUpload());
+  gate.beginCallerRetirement("publisher");
+  assert.throws(() => gate.beginCallerRetirement("rendezvous"));
+  // A failed/partial operation preserves uncertain ownership; no second role
+  // or retry receives authority merely because the native rate already exists.
+  const publisher = x.observed.get("atrinik-metaserver-publisher");
+  publisher.settings.bindings = publisher.settings.bindings.filter(v => v.name !== legacyCallerSecrets[0]);
+  await gate.fence();
+  assert.throws(() => gate.beginCallerRetirement("publisher"));
+  x.retire("publisher"); gate.confirmCallerRetired("publisher"); await gate.fence();
+  gate.beginCallerRetirement("rendezvous");
+  x.retire("rendezvous"); gate.confirmCallerRetired("rendezvous"); await gate.fence();
+});
+
+test("already-provisioned baseline rechecks disabled core, exact native rates and every peer", async () => {
+  for (const change of [
+    x => { x.observed.get("atrinik-metaserver").settings.bindings.find(v => v.name === "PUBLISH_ENABLED").text = "enabled"; },
+    x => { x.observed.get("atrinik-metaserver").settings.bindings.find(v => v.name === productionAccessRate.name).simple.limit = 17; },
+    x => { x.observed.get("atrinik-metaserver").settings.bindings.pop(); },
+    x => { x.observed.get("atrinik-metaserver-development").settings.bindings.find(v => v.name === "PUBLISH_ENABLED").text = "enabled"; },
+    x => { x.observed.get("atrinik-metaserver-publisher").settings.bindings = x.observed.get("atrinik-metaserver-publisher").settings.bindings.filter(v => v.type !== "secret_text"); },
+  ]) {
+    const x = provisionedBootstrapFixture(), gate = x.gate();
+    await gate.fence(); change(x); await assert.rejects(gate.fence());
+  }
+});
 
 test("bootstrap binds source and approved predecessor and requires an observed old authority graph", () => {
   const { policy, bootstrap, options } = bootstrapFixture();
@@ -332,7 +479,7 @@ test("bootstrap starts disabled, admits only its own addition, and never returns
 
 test("bootstrap fences every peer and only consumes exact caller secret retirements", async () => {
   const x = bootstrapFixture(); const gate = x.gate();
-  await gate.fence(); gate.beginCoreUpload(); x.add(); await gate.fence();
+  await gate.fence(); gate.beginCoreUpload(); x.add(); await gate.fence(); gate.confirmCoreAdded();
   x.retire("publisher"); await assert.rejects(gate.fence());
   gate.beginCallerRetirement("publisher"); await gate.fence();
   gate.confirmCallerRetired("publisher"); await gate.fence();
@@ -348,7 +495,7 @@ test("bootstrap fences every peer and only consumes exact caller secret retireme
 
 test("ambiguous retirement can preserve a partial subset for disabled recovery, but never extra authority", async () => {
   const x = bootstrapFixture(); const gate = x.gate();
-  await gate.fence(); gate.beginCoreUpload(); x.add(); await gate.fence();
+  await gate.fence(); gate.beginCoreUpload(); x.add(); await gate.fence(); gate.confirmCoreAdded();
   gate.beginCallerRetirement("publisher");
   const caller = x.observed.get("atrinik-metaserver-publisher");
   caller.settings.bindings = caller.settings.bindings.filter(v => v.name !== legacyCallerSecrets[0]);
@@ -374,8 +521,9 @@ test("bootstrap rejects a new or replaced global Worker and a peer collision eve
   assert.throws(() => compareBootstrapInventory(bootstrap, changed, "baseline"));
 });
 
-test("bootstrap desired configs differ only by exact core1008 and zero caller secrets", () => {
-  const { policy, observed } = bootstrapFixture();
+for (const alreadyProvisioned of [false, true])
+test(`bootstrap desired configs preserve one exact core1008 and zero caller secrets: already provisioned=${alreadyProvisioned}`, () => {
+  const { policy, observed } = alreadyProvisioned ? provisionedBootstrapFixture() : bootstrapFixture();
   const configs = policy.cohorts[0].workers.map(worker => ({
     name: worker.name, account_id: accountId,
     d1_databases: worker.resources.filter(v => v.type === "d1").map(v => ({ binding: v.binding, database_id: v.id })),
@@ -386,12 +534,13 @@ test("bootstrap desired configs differ only by exact core1008 and zero caller se
     vars: Object.fromEntries(worker.variables.map(v => [v.binding, v.value])),
     secrets: { required: worker.role === "core" ? worker.secrets : [] }, routes: worker.routes.map(pattern => ({ pattern, custom_domain: true })),
   }));
-  configs[0].ratelimits.push(structuredClone(productionAccessRate));
+  if (!alreadyProvisioned) configs[0].ratelimits.push(structuredClone(productionAccessRate));
   validateResourceConfigurations(policy, "production", configs);
   for (const change of [
     c => { c[0].ratelimits.pop(); },
     c => { c[0].ratelimits.at(-1).namespace_id = "1009"; },
     c => { c[0].ratelimits.at(-1).simple.limit = 17; },
+    c => { c[0].ratelimits.push(structuredClone(productionAccessRate)); },
     c => { c[0].ratelimits[0].simple.limit = 17; },
     c => { c[1].secrets.required = [...legacyCallerSecrets]; },
     c => { c[0].r2_buckets[0].bucket_name = "replacement"; },

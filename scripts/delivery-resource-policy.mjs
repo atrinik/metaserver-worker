@@ -247,6 +247,7 @@ export function createResourcePolicyFence(policy, { target, accountId, readWorke
   const retiredCallers = completedBootstrap ? ["publisher", "rendezvous"] : [];
   let uncertainCaller = null;
   let uploadStarted = completedBootstrap;
+  let coreConfirmed = completedBootstrap;
   return {
     beginCoreUpload() {
       if (bootstrap && (!proven || phase !== "baseline")) fail("bootstrap upload order invalid");
@@ -254,7 +255,7 @@ export function createResourcePolicyFence(policy, { target, accountId, readWorke
     },
     beginCallerRetirement(role) {
       if (!bootstrap) return;
-      if (phase !== "added" || !["publisher", "rendezvous"].includes(role) ||
+      if (phase !== "added" || !coreConfirmed || !["publisher", "rendezvous"].includes(role) ||
           retiredCallers.includes(role) || uncertainCaller !== null) fail("caller retirement phase invalid");
       uncertainCaller = role;
     },
@@ -265,6 +266,7 @@ export function createResourcePolicyFence(policy, { target, accountId, readWorke
     },
     confirmCoreAdded() {
       if (bootstrap && phase !== "added") fail("bootstrap addition was not observed");
+      if (bootstrap) coreConfirmed = true;
     },
     async fence() {
       let observedPhase = phase;

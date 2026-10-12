@@ -30,8 +30,11 @@ function validateRate(rate) {
 export function validateRateBootstrap(policy, target, { sourceSha, expectedPredecessor } = {}) {
   const bootstrap = policy.productionBootstrap;
   if (bootstrap === undefined) return null;
-  keys(bootstrap, ["schema", "sourceSha", "expectedPredecessor", "predecessorVersions", "workers", "nativeInventoryScope", "dispatchNamespaces", "recovery"]);
+  const alreadyProvisioned = bootstrap?.nativeRateAlreadyProvisioned;
+  keys(bootstrap, ["schema", "sourceSha", "expectedPredecessor", "predecessorVersions", "workers", "nativeInventoryScope", "dispatchNamespaces", "recovery",
+    ...(alreadyProvisioned === undefined ? [] : ["nativeRateAlreadyProvisioned"])]);
   if (target !== "production" || bootstrap.schema !== "production-core-and-callers-bootstrap-v1" ||
+      (alreadyProvisioned !== undefined && alreadyProvisioned !== true) ||
       !/^[0-9a-f]{40}$/u.test(bootstrap.sourceSha) || !/^[0-9a-f]{64}$/u.test(bootstrap.expectedPredecessor) ||
       (sourceSha !== undefined && sourceSha !== bootstrap.sourceSha) ||
       (expectedPredecessor !== undefined && expectedPredecessor !== bootstrap.expectedPredecessor) ||
@@ -46,6 +49,7 @@ export function validateRateBootstrap(policy, target, { sourceSha, expectedPrede
       !/^[0-9a-f]{64}$/u.test(bootstrap.recovery.recipientSpkiSha256) || bootstrap.recovery.retentionDays !== 90 ||
       (minimumRetention !== undefined && minimumRetention !== 89)) fail();
   const names = new Set(), tags = new Set();
+  let provisionedRates = 0;
   for (const worker of bootstrap.workers) {
     keys(worker, ["name", "tag", "rates"]);
     if (!/^[a-z0-9_][a-z0-9_-]{0,127}$/u.test(worker.name) || !/^[0-9a-f]{32}$/u.test(worker.tag) ||
@@ -54,17 +58,30 @@ export function validateRateBootstrap(policy, target, { sourceSha, expectedPrede
     const bindings = new Set();
     for (const rate of worker.rates) {
       validateRate(rate);
-      if (rate.namespace_id === "1008" || bindings.has(rate.name) ||
-          (worker.name === "atrinik-metaserver" && rate.name === productionAccessRate.name)) fail();
+      if (bindings.has(rate.name)) fail();
+      if (rate.namespace_id === "1008" ||
+          (worker.name === "atrinik-metaserver" && rate.name === productionAccessRate.name)) {
+        if (!alreadyProvisioned || worker.name !== "atrinik-metaserver" ||
+            !same(rate, productionAccessRate) || ++provisionedRates !== 1) fail();
+      }
       bindings.add(rate.name);
     }
   }
+  if (alreadyProvisioned && provisionedRates !== 1) fail();
   const production = policy.cohorts.find(c => c.environment === "production");
   for (const caller of production.workers.slice(1)) {
     if (!same([...caller.secrets].sort(), [...legacyCallerSecrets])) fail();
-    const keyIds = ["SOURCE_TAG_KEY_CURRENT_ID", "SOURCE_TAG_KEY_PREVIOUS_ID"]
+    const keyNames = ["SOURCE_TAG_KEY_CURRENT_ID", "SOURCE_TAG_KEY_PREVIOUS_ID"];
+    const keyBindings = caller.variables.filter(v => keyNames.includes(v.binding));
+    const keyIds = keyNames
       .map(binding => caller.variables.find(v => v.binding === binding)?.value);
-    if (keyIds.some(v => !/^[A-Za-z0-9_-]{1,32}$/u.test(v ?? "")) || keyIds[0] === keyIds[1]) fail();
+    if (alreadyProvisioned && keyBindings.length === 0) {
+      // A previously staged caller has no key-ID variables, but still retains
+      // both secrets until a new, independently proven one-use retirement.
+      const circuits = caller.role === "publisher" ? ["PUBLISH_ENABLED", "GAME_PUBLISH_ENABLED"] : ["RENDEZVOUS_ENABLED"];
+      if (circuits.some(binding => caller.variables.find(v => v.binding === binding)?.value !== "disabled")) fail();
+    } else if (keyBindings.length !== 2 || keyIds.some(v => !/^[A-Za-z0-9_-]{1,32}$/u.test(v ?? "")) ||
+      keyIds[0] === keyIds[1]) fail();
   }
   for (const cohort of policy.cohorts.filter(c => c.accountId === production.accountId)) {
     for (const worker of cohort.workers) {
@@ -78,7 +95,8 @@ export function validateRateBootstrap(policy, target, { sourceSha, expectedPrede
 export const legacyCallerSecrets = Object.freeze(["SOURCE_TAG_KEY_CURRENT", "SOURCE_TAG_KEY_PREVIOUS"]);
 export function bootstrapDesiredWorker(worker, bootstrap) {
   if (!bootstrap) return worker;
-  if (worker.name === "atrinik-metaserver") return { ...worker, resources: [...worker.resources, productionAccessResource] };
+  if (worker.name === "atrinik-metaserver") return { ...worker,
+    resources: bootstrap.nativeRateAlreadyProvisioned ? [...worker.resources] : [...worker.resources, productionAccessResource] };
   if (["atrinik-metaserver-publisher", "atrinik-metaserver-rendezvous"].includes(worker.name)) return { ...worker, secrets: [] };
   return worker;
 }
@@ -88,7 +106,7 @@ export function validateBootstrapConfiguration(bootstrap, configs) {
   if (!same(rate, productionAccessRate)) fail();
   for (const [index, config] of configs.entries()) {
     const expected = bootstrap.workers.find(v => v.name === config.name);
-    if (!expected || !same(sorted(config.ratelimits ?? []), sorted(index === 0
+    if (!expected || !same(sorted(config.ratelimits ?? []), sorted(index === 0 && !bootstrap.nativeRateAlreadyProvisioned
       ? [...expected.rates, productionAccessRate] : expected.rates))) fail();
   }
 }
@@ -96,7 +114,8 @@ export function compareBootstrapInventory(bootstrap, inventory, phase) {
   if (!["baseline", "uploading", "added"].includes(phase) || !Array.isArray(inventory)) fail();
   const base = sorted(bootstrap.workers.map(w => ({ ...w, rates: sorted(w.rates) })));
   const added = sorted(bootstrap.workers.map(w => ({ ...w,
-    rates: sorted(w.name === "atrinik-metaserver" ? [...w.rates, productionAccessRate] : w.rates) })));
+    rates: sorted(w.name === "atrinik-metaserver" && !bootstrap.nativeRateAlreadyProvisioned
+      ? [...w.rates, productionAccessRate] : w.rates) })));
   const observed = sorted(inventory.map(w => ({ ...w, rates: sorted(w.rates) })));
   if (phase !== "baseline" && same(observed, added)) return "added";
   if (phase !== "added" && same(observed, base)) return "baseline";
