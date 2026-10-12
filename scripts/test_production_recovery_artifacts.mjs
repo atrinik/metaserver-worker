@@ -50,9 +50,10 @@ async function fixture(t, overrides = {}) {
       assert.deepEqual(options.findBy, { token: environment.GITHUB_TOKEN, workflowRunId: Number(context.runId),
         repositoryOwner: "atrinik", repositoryName: "metaserver-worker" });
       const stored = archives.get(id);
-      assert.equal(options.expectedHash, stored.archiveDigest);
       await writeFile(path.join(options.path, "recovery.jwe"), stored.ciphertext);
-      return downloadTransform({ digestMismatch: false, downloadPath: options.path });
+      // @actions/artifact 6.3.1 compares expectedHash with the qualified archive digest.
+      return downloadTransform({ digestMismatch: options.expectedHash !== `sha256:${stored.archiveDigest}`,
+        downloadPath: options.path });
     }, ...overrides,
   };
   const fetcher = async (url, options) => {
@@ -75,6 +76,7 @@ test("durable intent and receipt upload only ciphertext and require exact finali
   assert.deepEqual(f.calls, ["upload", "metadata", "download", "upload", "metadata", "download"]);
   assert.equal(intent.artifactName, "production-recovery-1001-1-publisher-intent");
   assert.notEqual(intent.archiveDigest, intent.ciphertextSha256);
+  assert.match(intent.archiveDigest, /^[a-f0-9]{64}$/u);
   assert.equal(receipt.artifactName, "production-recovery-1001-1-publisher-receipt");
   assert.equal((await stat(path.join(f.directory, "caller-retirement-publisher.intent.json"))).mode & 0o777, 0o600);
   const ciphertext = f.archives.get(intent.artifactId).ciphertext;
@@ -125,7 +127,8 @@ test("metadata rejects wrong name, ID, run, SHA, digest, expiry and shortened re
     (m) => ({ ...m, id: m.id + 1 }), (m) => ({ ...m, name: `${m.name}-other` }),
     (m) => ({ ...m, workflow_run: { ...m.workflow_run, id: 999 } }),
     (m) => ({ ...m, workflow_run: { ...m.workflow_run, head_sha: context.sourceSha } }),
-    (m) => ({ ...m, digest: `sha256:${"d".repeat(64)}` }), (m) => ({ ...m, expired: true }),
+    (m) => ({ ...m, digest: `sha256:${"d".repeat(64)}` }),
+    (m) => ({ ...m, digest: m.digest.slice("sha256:".length) }), (m) => ({ ...m, expired: true }),
     (m) => ({ ...m, expires_at: new Date(instant + 89 * 86400000).toISOString() }),
   ];
   for (const mutate of mutations) {
@@ -141,6 +144,39 @@ test("digest mismatch or missing SDK digest verification stops durable success",
     const f = await fixture(t); f.mutateDownload((r) => ({ ...r, digestMismatch }));
     const recorder = await createDurableCallerRetirementRecorder(f.options);
     await assert.rejects(recorder.recordIntent(document), /archive verification/u);
+  }
+});
+
+test("SDK qualified-hash contract rejects bare and incorrect expected hashes", async (t) => {
+  const incorrectHash = (digest) => `sha256:${digest === "d".repeat(64) ? "e".repeat(64) : "d".repeat(64)}`;
+  for (const expectedHash of [(digest) => digest, incorrectHash]) {
+    const f = await fixture(t), download = f.artifactClient.downloadArtifact;
+    f.artifactClient.downloadArtifact = (id, options) => {
+      assert.equal(options.expectedHash, `sha256:${f.archives.get(id).archiveDigest}`);
+      return download(id, { ...options, expectedHash: expectedHash(f.archives.get(id).archiveDigest) });
+    };
+    const recorder = await createDurableCallerRetirementRecorder(f.options);
+    await assert.rejects(recorder.recordIntent(document), /archive verification/u);
+    assert.deepEqual(f.calls, ["upload", "metadata", "download"]);
+    await assert.rejects(recorder.recordReceipt({ ...document, status: "complete" }), /durable intent/u);
+    await assert.rejects(recorder.recordIntent(document), /EEXIST/u);
+  }
+});
+
+test("SDK success still rejects a substituted path or a nonprivate download directory", async (t) => {
+  for (const variation of ["path", "permissions"]) {
+    const f = await fixture(t), download = f.artifactClient.downloadArtifact;
+    f.artifactClient.downloadArtifact = async (id, options) => {
+      const result = await download(id, options);
+      if (variation === "path") return { ...result, downloadPath: f.directory };
+      const { chmod } = await import("node:fs/promises");
+      await chmod(options.path, 0o755);
+      return result;
+    };
+    const recorder = await createDurableCallerRetirementRecorder(f.options);
+    await assert.rejects(recorder.recordIntent(document),
+      variation === "path" ? /archive verification/u : /owned private directory/u);
+    await assert.rejects(recorder.recordReceipt({ ...document, status: "complete" }), /durable intent/u);
   }
 });
 
