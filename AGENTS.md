@@ -317,3 +317,7 @@
 - Preserve unrelated work and finish with `git diff --check`.
 - Update this `AGENTS.md` in the same change when major rework alters platform
   ownership, bindings, state/migration policy, protocol, or validation.
+
+Dependency review is advisory. Before merge, the Codex implementer reads its PR
+comment or job summary, fixes actionable introduced dependency risk, or records
+explicit maintainer acceptance of existing risk.
