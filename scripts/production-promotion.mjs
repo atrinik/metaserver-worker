@@ -222,18 +222,20 @@ export async function createProductionAuthority({ environment = process.env, che
   try { event = JSON.parse(await readEvent(environment.GITHUB_EVENT_PATH)); }
   catch { fail("GitHub dispatch event is missing or invalid"); }
   const inputs = validatePromotionContext(environment, event, checkoutHead, dirty);
-  const fence = async () => {
+  const authorize = async () => {
     const evidence = await readPromotionEvidence(environment, inputs, fetcher);
     validatePromotionEvidence({ environment, event, inputs, evidence, now: now() });
+  };
+  const fence = async () => {
+    await authorize();
     await writerFence(environment, fetcher);
     // Provider sweeps can outlive the dispatch or race a cancellation/tag move.
     // Refresh GitHub authority, then check its deadline at the mutation handoff.
-    const currentEvidence = await readPromotionEvidence(environment, inputs, fetcher);
-    validatePromotionEvidence({ environment, event, inputs, evidence: currentEvidence, now: now() });
+    await authorize();
   };
   await fence();
   return {
-    sourceSha: inputs.source_sha, executionId: environment.GITHUB_RUN_ID, fence,
+    sourceSha: inputs.source_sha, executionId: environment.GITHUB_RUN_ID, fence, authorize,
     validatePlan: async (plan) => validatePromotionPlan(inputs, plan),
     validatePredecessor: async (_annotations, { versions }) => validatePromotionPredecessor(inputs, versions),
   };

@@ -129,7 +129,7 @@ jobs:
         working-directory: selected
         run: npm ci --ignore-scripts
       - name: Verify authority and promote the approved cohort
-        working-directory: controller
+        uses: ./controller/.github/actions/promote-production
         env:
           GITHUB_TOKEN: ${{ github.token }}
           ATRINIK_DELIVERY_SOURCE_ROOT: ${{ github.workspace }}/selected
@@ -141,6 +141,7 @@ jobs:
           ATRINIK_PROMOTION_PREDECESSOR: ${{ inputs.expected_predecessor }}
           ATRINIK_DELIVERY_RESOURCE_POLICY: ${{ secrets.ATRINIK_DELIVERY_RESOURCE_POLICY }}
           ATRINIK_DELIVERY_RESOURCE_READ_TOKEN: ${{ secrets.ATRINIK_DELIVERY_RESOURCE_READ_TOKEN }}
+          ATRINIK_PRODUCTION_RECOVERY_PUBLIC_KEY: ${{ vars.ATRINIK_PRODUCTION_RECOVERY_PUBLIC_KEY }}
           ATRINIK_PRODUCTION_WRITER_FENCE_POLICY: ${{ vars.ATRINIK_PRODUCTION_WRITER_FENCE_POLICY }}
           ATRINIK_PRODUCTION_BUILDS_READ_TOKEN: ${{ secrets.ATRINIK_PRODUCTION_BUILDS_READ_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
@@ -148,4 +149,3 @@ jobs:
           ATRINIK_PRODUCTION_CORE_CONFIG: ${{ secrets.ATRINIK_PRODUCTION_CORE_CONFIG }}
           ATRINIK_PRODUCTION_PUBLISHER_CONFIG: ${{ secrets.ATRINIK_PRODUCTION_PUBLISHER_CONFIG }}
           ATRINIK_PRODUCTION_RENDEZVOUS_CONFIG: ${{ secrets.ATRINIK_PRODUCTION_RENDEZVOUS_CONFIG }}
-        run: node scripts/production-promotion.mjs --execute
