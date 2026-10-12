@@ -209,6 +209,41 @@ mutation. A local invocation grants no remote access.
 
 ## Review and dispatch a PROD promotion
 
+Release production uses semantic-release's draft mode followed by the trusted
+`scripts/release/publish-complete-release.cjs` finalizer. Before publication it
+verifies the exact tag/commit, archive plus `SHA256SUMS`, complete upload states,
+byte lengths and GitHub asset digests. Missing, partial or mismatched assets
+leave the release as a draft. The default inactive publication gate also retains
+that verified draft: only repository variable
+`ATRINIK_RELEASE_IMMUTABILITY_ACTIVE=enabled` permits final publication. Governance
+must first qualify the merged producer/current-main Check, enable immutable
+releases for the exact repository, and freshly verify that policy before the
+owner activates this variable. The variable does not prove provider policy;
+final readback additionally requires `immutable: true` and the locked tag's
+exact selected source SHA. A tag race is detected after publication, not
+prevented by a GitHub compare-and-swap API. A mismatched immutable release must
+never be promoted.
+
+A repository-authorized dispatcher can finalize an existing qualified draft through manual
+`finalize-release-draft.yml` with exact `tag`, `source_sha`, `archive_sha256` and
+`checksums_sha256` inputs. This trusted current-main controller verifies its own
+and the selected source's successful protected-main checks, bounded authenticated
+draft inventory, downloaded asset hashes and checksum binding before using the
+same finalizer. After asset downloads and immediately before publication, it
+re-reads current main and its protection, source/controller Check results, and
+the original authenticated dispatch run. That run must still be in progress,
+on its first attempt, with the exact controller SHA and dispatcher identity.
+This uses normal GitHub release authority; it adds no production-owner allowlist
+or administration-token requirement. It neither reruns semantic-release nor
+executes the draft's code.
+A missing/ambiguous draft, source mismatch or failed asset check stops before
+publication. An ambiguous publication response requires fresh readback, not an
+automatic retry. Existing mutable releases remain historical;
+enabling repository immutability applies to future publication and does not
+make an old release eligible automatically. Governance activates that policy
+only after the reviewed producer is merged and qualified. Release publication
+and production promotion remain separate operations.
+
 The owner must review and approve the exact immutable stable `vN.N.N` release
 tag and SHA before promotion. Stop at that boundary; preparing a tag, artifact,
 workflow or pull request does not grant deployment approval. Never merge a PR
@@ -257,6 +292,22 @@ local bundle/configuration checks; it performs no remote mutation. The live `--e
 the authenticated, approved workflow, never a local deployment shortcut.
 
 ## Ordered deployment and acceptance
+
+The initial legacy PROD upgrade may use the reviewed one-use
+`productionBootstrap` policy extension with schema
+`production-core-and-callers-bootstrap-v1`. It binds selected source SHA,
+expected predecessor digest, the three predecessor versions and the complete
+account Worker/tag/native-rate inventory. Keep actual legacy caller secret names
+and key-ID variables in the baseline policy; keep the core access-rate binding
+absent. The only permitted addition is core `ACCESS_ROUTE_RATE_LIMITER`, native
+namespace `1008`, with limit 16 per 60 seconds. The controller proves global
+absence and the disabled predecessor before the first upload. After new code is
+staged disabled, a single guarded operation per caller removes its two obsolete
+signing secrets and proves the exact empty inventory before activation. An
+uncertain or partial cleanup blocks activation and uses new-code disabled-core
+recovery. No manual binding preprovisioning or legacy rollback is part of this
+path. After successful transition, retire the bootstrap extension in favor of a
+fresh strict observed policy and new approved plan before another promotion.
 
 The trusted controller owns the Wrangler executable, its working directory and
 validated toolchain pins. The selected release supplies absolute application
