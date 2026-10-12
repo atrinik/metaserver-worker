@@ -97,6 +97,16 @@ Build across the six PROD/DEV Workers. Set the protected
 `ATRINIK_PRODUCTION_WRITER_FENCE_POLICY` disposition explicitly to
 `retained-inert-builds`; never infer the exception from shared wrapper IDs.
 
+The deployment authority may drain known running inert Builds using read-only
+checks for at most 60 seconds. Eligibility requires each recorded launch to
+match the sealed inert commands, identity and environment; a new or unknown
+build, control drift or provider/authentication error stops immediately. This
+wait never retries an upload, secret removal or other provider mutation. All
+Builds must still be stopped before proceeding. After any wait, repeat the
+resource, current source/run, writer and clean-checkout proofs; the final
+handoff disables draining, so another build cannot introduce a second wait
+between those fresh proofs and a mutation or recovery operation.
+
 Retries use the configuration current when retried, so fresh command/config
 readback is part of the fence, not a historical build-start snapshot. See
 [Cloudflare build settings](https://developers.cloudflare.com/workers/ci-cd/builds/configuration/#build-settings).
@@ -228,8 +238,11 @@ A repository-authorized dispatcher can finalize an existing qualified draft thro
 `finalize-release-draft.yml` with exact `tag`, `source_sha`, `archive_sha256` and
 `checksums_sha256` inputs. This trusted current-main controller verifies its own
 and the selected source's successful protected-main checks, bounded authenticated
-draft inventory, downloaded asset hashes and checksum binding before using the
-same finalizer. After asset downloads and immediately before publication, it
+draft inventory (20 records per page, at most 50 pages, each response at most
+256 KiB), downloaded asset hashes and checksum binding before using the
+same finalizer. Both paths require a terminal short inventory page, reject
+repeated identities or ambiguous tags, and never select an early match from an
+incomplete inventory. After asset downloads and immediately before publication, it
 re-reads current main and its protection, source/controller Check results, and
 the original authenticated dispatch run. That run must still be in progress,
 on its first attempt, with the exact controller SHA and dispatcher identity.
@@ -306,6 +319,12 @@ keep the core access-rate binding absent. The only permitted addition is core
 The controller checks the ordinary-Worker inventory for competing use and proves
 the disabled predecessor before the first upload. Governed DEV/PROD resource
 isolation remains required, and any known namespace conflict blocks the upgrade.
+Governed cohorts must retain one 100% active version equal to latest. An unrelated
+Worker's latest version may differ from its sole active version only when both
+version-specific binding reads and current settings prove identical native-rate
+tuples. Recheck latest, active and deployment identities after those reads; any
+change, mixed deployment or differing native resource graph stops the census.
+This inspects existing versions without changing unrelated Workers.
 
 The approved `recovery` policy pins the owner's RSA public SPKI fingerprint and
 90-day retention. Supply only the public recipient in the protected production

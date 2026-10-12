@@ -1,5 +1,5 @@
 // Copyright (C) 2026 Atrinik contributors
-import { transitionDigest, validateProductionWriterFence } from "./deployment-environment-transition.mjs";
+import { normalizeTransitionTrigger, transitionDigest, validateProductionWriterFence } from "./deployment-environment-transition.mjs";
 
 const stop = () => { throw new Error("production writer fence could not be verified"); };
 const uuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/u;
@@ -29,8 +29,53 @@ export function normalizeBuildEnvironment(environment) {
   }));
 }
 
-export async function assertProductionPromotionWriterFence({ environment, fetcher = fetch }) {
+// This proves only eligibility to wait, never permission to write. The ordinary
+// validator still requires every build stopped at the final observation.
+function inertDrainBuilds(snapshot, policy) {
+  if (policy.disposition !== "retained-inert-builds") stop();
+  validateProductionWriterFence({ ...snapshot, builds: [] }, policy);
+  const identities = new Map();
+  for (const build of snapshot.builds) {
+    if (!uuid.test(build.build_uuid) || identities.has(build.build_uuid) ||
+        !["queued", "initializing", "running", "stopped"].includes(build.status) ||
+        ![policy.productionTriggerUuid, policy.reviewTriggerUuid].includes(build.trigger?.trigger_uuid) ||
+        build.trigger.external_script_id !== policy.externalScriptId) stop();
+    if (build.status !== "stopped") {
+      const current = snapshot.triggers.find(trigger => trigger.trigger_uuid === build.trigger.trigger_uuid);
+      const { build_token_uuid: token, ...expected } = normalizeTransitionTrigger(current);
+      const { build_token_uuid: observedToken, ...observed } = normalizeTransitionTrigger(build.trigger);
+      const metadata = build.build_trigger_metadata;
+      if (transitionDigest(expected) !== transitionDigest(observed) ||
+          (observedToken !== undefined && observedToken !== token) ||
+          metadata?.build_token_uuid !== token || metadata.build_command !== "exit 1" ||
+          metadata.deploy_command !== "exit 1" || metadata.root_directory !== current.root_directory ||
+          metadata.provider_type !== "github" || metadata.provider_account_name !== "atrinik" ||
+          metadata.repo_name !== "metaserver-worker" || typeof metadata.branch !== "string" ||
+          !metadata.branch || (build.trigger.trigger_uuid === policy.productionTriggerUuid
+            ? metadata.branch !== "main" : metadata.branch === "main") ||
+          transitionDigest(normalizeBuildEnvironment(metadata.environment_variables)) !==
+            transitionDigest(snapshot.environments[current.trigger_uuid])) stop();
+    }
+    identities.set(build.build_uuid, {
+      status: build.status,
+      launch: transitionDigest({ trigger: build.trigger, metadata: build.build_trigger_metadata }),
+    });
+  }
+  return identities;
+}
+
+export async function assertProductionPromotionWriterFence({ environment, fetcher = fetch,
+  allowDrain = false, now = () => performance.now(),
+  wait = milliseconds => new Promise(resolve => setTimeout(resolve, milliseconds)) }) {
   try {
+    let deadline;
+    let waited = false;
+    let drainedIdentities;
+    const remaining = () => {
+      const value = deadline === undefined ? 20_000 : deadline - now();
+      if (!Number.isFinite(value) || value <= 0) stop();
+      return Math.max(1, Math.ceil(Math.min(20_000, value)));
+    };
     const account = environment.CLOUDFLARE_ACCOUNT_ID;
     const token = environment.ATRINIK_PRODUCTION_BUILDS_READ_TOKEN;
     const policy = JSON.parse(environment.ATRINIK_PRODUCTION_WRITER_FENCE_POLICY);
@@ -52,7 +97,7 @@ export async function assertProductionPromotionWriterFence({ environment, fetche
         new Set([...policy.workers, ...policy.developmentWorkers].map((w) => w.tag)).size !== 6) stop();
     const get = async (path) => {
       const response = await fetcher(`https://api.cloudflare.com/client/v4/accounts/${account}${path}`, {
-        headers: { Authorization: `Bearer ${token}` }, redirect: "error", signal: AbortSignal.timeout(20_000),
+        headers: { Authorization: `Bearer ${token}` }, redirect: "error", signal: AbortSignal.timeout(remaining()),
       });
       if (!response.ok) stop();
       let bytes = 0;
@@ -127,13 +172,47 @@ export async function assertProductionPromotionWriterFence({ environment, fetche
       const builds = await list(`/builds/workers/${policy.externalScriptId}/builds`, (r) => r.build_uuid);
       return { triggers, environments, builds, peers };
     };
-    const first = await capture();
+    let first = await capture();
+    if (allowDrain && first.builds.some(build => build.status !== "stopped")) {
+      let identities = inertDrainBuilds(first, policy);
+      const controls = transitionDigest({ triggers: first.triggers, environments: first.environments, peers: first.peers });
+      deadline = now() + 60_000;
+      if (!Number.isFinite(deadline)) stop();
+      // A fixed attempt bound also fails closed if an injected clock stops advancing.
+      for (let attempt = 0; ; attempt += 1) {
+        remaining();
+        if (attempt === 12) stop();
+        await wait(Math.min(5_000, remaining()));
+        waited = true;
+        remaining();
+        const current = await capture();
+        remaining();
+        const next = inertDrainBuilds(current, policy);
+        if (transitionDigest({ triggers: current.triggers, environments: current.environments, peers: current.peers }) !== controls ||
+            identities.size !== next.size) stop();
+        for (const [id, value] of next) {
+          const previous = identities.get(id);
+          if (!previous || previous.launch !== value.launch ||
+              (previous.status === "stopped" && value.status !== "stopped")) stop();
+        }
+        first = current;
+        identities = next;
+        if (first.builds.every(build => build.status === "stopped")) break;
+      }
+      drainedIdentities = identities;
+    }
     validateProductionWriterFence(first, policy);
     const second = await capture();
     const validation = validateProductionWriterFence(second, policy);
+    if (drainedIdentities) {
+      const finalIdentities = inertDrainBuilds(second, policy);
+      if (finalIdentities.size !== drainedIdentities.size || [...finalIdentities].some(([id, value]) =>
+        value.launch !== drainedIdentities.get(id)?.launch)) stop();
+    }
     // Build status changes in the review trigger do not own PROD; control-plane equality is exact.
     if (transitionDigest({ triggers: first.triggers, environments: first.environments, peers: first.peers }) !==
         transitionDigest({ triggers: second.triggers, environments: second.environments, peers: second.peers })) stop();
-    return validation;
+    if (waited) remaining();
+    return { ...validation, waited };
   } catch { stop(); }
 }

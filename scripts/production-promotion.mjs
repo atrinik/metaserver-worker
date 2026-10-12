@@ -226,12 +226,13 @@ export async function createProductionAuthority({ environment = process.env, che
     const evidence = await readPromotionEvidence(environment, inputs, fetcher);
     validatePromotionEvidence({ environment, event, inputs, evidence, now: now() });
   };
-  const fence = async () => {
+  const fence = async ({ allowDrain = true } = {}) => {
     await authorize();
-    await writerFence(environment, fetcher);
+    const writer = await writerFence(environment, fetcher, { allowDrain });
     // Provider sweeps can outlive the dispatch or race a cancellation/tag move.
     // Refresh GitHub authority, then check its deadline at the mutation handoff.
     await authorize();
+    return { waited: writer?.waited === true };
   };
   await fence();
   return {
@@ -243,9 +244,9 @@ export async function createProductionAuthority({ environment = process.env, che
 
 // Filled from the provider's read-only transition verifier; no CF mutation API is
 // available to this adapter. The immutable controller chooses the implementation.
-export async function assertProductionWriterFence(environment, fetcher = fetch) {
+export async function assertProductionWriterFence(environment, fetcher = fetch, options = {}) {
   const { assertProductionPromotionWriterFence } = await import("./production-writer-fence.mjs");
-  await assertProductionPromotionWriterFence({ environment, fetcher });
+  return assertProductionPromotionWriterFence({ environment, fetcher, ...options });
 }
 
 const promotionFailure = () => ({ outcome: "production-promotion-stopped", reason: "authority-or-delivery-verification-failed" });

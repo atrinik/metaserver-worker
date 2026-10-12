@@ -87,10 +87,9 @@ export async function publishCompleteRelease(context, { fetcher = fetch,
     }
   };
   const tagPath = `/git/ref/tags/${encodeURIComponent(nextRelease.gitTag)}`;
-  const [releases, tag] = await Promise.all([
-    request("/releases?per_page=100"), request(tagPath),
+  const [release, tag] = await Promise.all([
+    discoverDraft(request, nextRelease.gitTag), request(tagPath),
   ]);
-  const release = selectDraft(releases, nextRelease.gitTag);
   // semantic-release creates lightweight tags. Refuse an unexpected tag object
   // rather than following a mutable, differently produced release lineage.
   if (tag.ref !== `refs/tags/${nextRelease.gitTag}` || tag.object?.type !== "commit")
@@ -185,7 +184,7 @@ export async function finalizeExistingDraft(environment = process.env, { fetcher
       fail("draft source lacks successful protected-main validation");
   };
   await beforePublish();
-  const draft = selectDraft(await get("/releases?per_page=100"), tag);
+  const draft = await discoverDraft(get, tag);
   const archiveName = `atrinik-metaserver-worker-${tag.slice(1)}.tar.gz`;
   const expected = [{ name: archiveName, digest: `sha256:${archiveDigest}` },
     { name: "SHA256SUMS", digest: `sha256:${checksumDigest}` }];
@@ -222,6 +221,31 @@ export async function finalizeExistingDraft(environment = process.env, { fetcher
   return publishCompleteRelease({ cwd: ".", env: environment,
     nextRelease: { gitTag: tag, version: tag.slice(1), gitHead: sourceSha } },
   { fetcher, readAssets: async () => verified, recovery: true, beforePublish });
+}
+
+// Keep each response within the existing 256 KiB limit, and require a terminal
+// short page before selecting a draft. Finding it early does not prove that the
+// remaining inventory is complete or unambiguous. Repeated IDs reveal pagination
+// drift; fail rather than silently skipping or adopting a different release.
+export async function discoverDraft(request, tag) {
+  const perPage = 20;
+  const maxPages = 50;
+  const seen = new Set();
+  const matches = [];
+  for (let page = 1; page <= maxPages; page += 1) {
+    const releases = await request(`/releases?per_page=${perPage}&page=${page}`);
+    if (!Array.isArray(releases) || releases.length > perPage)
+      fail("release inventory page is invalid");
+    for (const release of releases) {
+      if (!Number.isSafeInteger(release?.id) || release.id < 1 || seen.has(release.id) ||
+          typeof release.tag_name !== "string" || !release.tag_name)
+        fail("release inventory identity is invalid or repeated");
+      seen.add(release.id);
+      if (release.tag_name === tag) matches.push(release);
+    }
+    if (releases.length < perPage) return selectDraft(matches, tag);
+  }
+  fail("release inventory exceeds exhaustive pagination bound; retain draft");
 }
 
 export function selectDraft(releases, tag) {

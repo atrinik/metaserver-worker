@@ -89,7 +89,11 @@
   observed graph, all ordinary Worker identities/native-rate tuples, and old
   caller key-ID variables; never describe future resources as already existing.
   Before upload prove the entire baseline, disabled core, sole active/latest
-  versions and ordinary-Worker native-namespace isolation. The bootstrap policy
+  versions for governed Workers and ordinary-Worker native-namespace isolation.
+  An unrelated Worker may have a newer undeployed version only when independently
+  read active/latest version bindings and settings have identical native-rate
+  tuples, with stable deployment and version coordinates across the read.
+  The bootstrap policy
   explicitly records this limited census and dispatch namespaces as unassessed;
   never claim account-wide uniqueness or interpret a forbidden read as absence.
   Stage the new disabled core first, then each new disabled stateless caller
