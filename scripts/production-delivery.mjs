@@ -1758,12 +1758,17 @@ export async function completeCallerRetirement({
 }) {
   if (!["publisher", "rendezvous"].includes(role))
     fail("API handoff retirement role is invalid");
-  await retire();
+  const result = await retire();
   confirm();
   await verify();
-  // Secret retirement creates an API-provenance version even when the staged
-  // upload used Wrangler. Admit activation only after all retirement proofs.
-  apiHandoffRoles.add(role);
+  const serviceSource = result?.snapshot?.control?.environment?.script?.last_deployed_from;
+  const resourceSource = result?.snapshot?.resources?.script?.last_deployed_from;
+  if (serviceSource !== resourceSource || !["api", "wrangler"].includes(serviceSource))
+    fail("API handoff retirement provenance is invalid");
+  // Retirement may preserve Wrangler provenance. Use the verified new version,
+  // replacing any exception retained from the predecessor before staging.
+  if (serviceSource === "api") apiHandoffRoles.add(role);
+  else apiHandoffRoles.delete(role);
 }
 
 async function assertBuildLease(
@@ -2589,7 +2594,7 @@ export async function runDelivery({ target = "production", sourceRoot, mode = "d
           apiHandoffRoles,
           retire: async () => {
             try {
-              await retireCallerSecrets({
+              return await retireCallerSecrets({
                 role: worker.role, fence, authorize: authority.authorize,
                 read: createCallerRetirementReader({ accountId,
                   token: process.env.ATRINIK_DELIVERY_RESOURCE_READ_TOKEN, role: worker.role, fetcher: deliveryFetch }),

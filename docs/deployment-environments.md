@@ -82,11 +82,15 @@ and non-bootstrap predecessors retain strict deployment arguments. Existing
 unannotated API handoffs remain unchanged. Other provenance, including Wrangler
 and dashboard deployments, retains `--strict`. The handoff grants no retry or
 bypass of the existing source, resource, writer and predecessor fences.
-During the one-use bootstrap, successful caller secret retirement creates a new
-API-provenance version. Admit that caller's subsequent activation to the same
+During the one-use bootstrap, successful caller secret retirement may create a
+new API-provenance version. Admit that caller's subsequent activation to the same
 handoff only after retirement completes, the resource transition is confirmed,
-and the fresh fence and exact staged readback pass. Failed or unknown retirement
-never grants this exception; core and other callers gain no exception from it.
+and the fresh fence and exact staged readback pass. Both service-environment and
+version-resource provenance in the verified retirement snapshot must be exactly
+`api`. An unchanged `wrangler` pair restores strict activation even when the
+pre-staging predecessor qualified for handoff; missing or inconsistent provenance
+stops activation. Failed or unknown retirement never grants this exception; core
+and other callers gain no exception from it.
 
 ## Retire the previous production writer first
 

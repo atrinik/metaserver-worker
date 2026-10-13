@@ -835,7 +835,10 @@ test("only fully verified caller retirement admits a new API handoff", async () 
         if (failure === name) throw new Error(`failed ${name}`);
       };
       const complete = () => completeCallerRetirement({ role, apiHandoffRoles,
-        retire: async () => { step("retire"); },
+        retire: async () => { step("retire"); return {
+          snapshot: { control: { environment: { script: { last_deployed_from: "api" } } },
+            resources: { script: { last_deployed_from: "api" } } },
+        }; },
         confirm: () => { step("confirm"); },
         verify: async () => { step("verify"); },
       });
@@ -858,6 +861,43 @@ test("only fully verified caller retirement admits a new API handoff", async () 
     retire: unexpected, confirm: unexpected, verify: unexpected, apiHandoffRoles: new Set() }),
   /retirement role is invalid/u);
   assert.equal(called, false);
+});
+
+test("retirement activation strictness follows both verified provenance fields", async () => {
+  for (const role of ["publisher", "rendezvous"]) {
+    for (const selectedBeforeStaging of [false, true]) {
+      for (const [service, resource, valid] of [
+        ["api", "api", true], ["wrangler", "wrangler", true],
+        ["api", "wrangler", false], ["wrangler", "api", false],
+        [undefined, undefined, false], ["dash", "dash", false],
+      ]) {
+        const apiHandoffRoles = new Set(selectedBeforeStaging ? [role] : []);
+        const events = [];
+        const complete = () => completeCallerRetirement({ role, apiHandoffRoles,
+          retire: async () => {
+            events.push("retire");
+            return { snapshot: {
+              control: { environment: { script: { last_deployed_from: service } } },
+              resources: { script: { last_deployed_from: resource } },
+            } };
+          },
+          confirm: () => { events.push("confirm"); },
+          verify: async () => { events.push("verify"); },
+        });
+        if (!valid) {
+          await assert.rejects(complete, /retirement provenance is invalid/u);
+          assert.equal(apiHandoffRoles.has(role), selectedBeforeStaging);
+        } else {
+          await complete();
+          const args = wranglerDeployArguments({ configPath: "/tmp/worker.jsonc",
+            sourceSha: "a".repeat(40), message: "active delivery",
+            strict: !apiHandoffRoles.has(role) });
+          assert.equal(args.includes("--strict"), service !== "api");
+        }
+        assert.deepEqual(events, ["retire", "confirm", "verify"]);
+      }
+    }
+  }
 });
 
 test("keeps strict Wrangler arguments outside the explicit API handoff", () => {
