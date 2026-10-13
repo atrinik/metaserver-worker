@@ -1,3 +1,4 @@
+import { createRetirementCohortGuard } from "./production-retirement-cohort.mjs";
 import { createProductionReadPacer, productionReadFailure } from "./production-read-pacing.mjs";
 import { markRetirementFailure, retirementFailureDiagnostic, preserveRetirementFailure, markCallerObservationFailure, callerObservationFailureDiagnostic } from "./production-retirement-diagnostics.mjs";
 import { execFile } from "node:child_process";
@@ -10,7 +11,7 @@ import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 import { parseDirectoryFailure } from "./directory-reconciliation-diagnostics.mjs";
 import { readDirectoryInterface, incompatibleDirectoryInterface } from "./directory-reconciliation-interface.mjs";
-import { retireCallerSecrets, observeSecretFreeCaller, createCallerRetirementReader, createCallerRetirementPatch } from "./production-caller-retirement.mjs";
+import { retireCallerSecrets, observeSecretFreeCaller, createCallerRetirementReader, createCallerRetirementPatch, callerRetirementDigest, verifyCallerRetirementPostV4, requireRetiredCallerProof } from "./production-caller-retirement.mjs";
 import { createDurableCallerRetirementRecorder, recoveryArtifactFailureReason } from "./production-recovery-artifacts.mjs";
 import { loadCallerRetirementQualification, requireCallerRetirementQualification } from "./production-retirement-qualification.mjs";
 import { validateRateBootstrap, legacyCallerSecrets, bootstrapCallerDispositions } from "./production-rate-bootstrap.mjs";
@@ -1761,14 +1762,17 @@ export function selectApiHandoffRoles(
 }
 
 export async function completeCallerRetirement({
-  role, retire, confirm, verify, apiHandoffRoles,
+  role, retire, confirm, verify, apiHandoffRoles, scope, selectedIdentity,
 }) {
   if (!["publisher", "rendezvous"].includes(role))
     fail("API handoff retirement role is invalid");
   const result = await retire();
   try {
+    const identity = requireRetiredCallerProof({ proof: result?.proof, role, scope, selectedIdentity });
+    if (identity.snapshotDigest !== callerRetirementDigest(result.snapshot))
+      fail("API handoff retirement snapshot changed after receipt");
     confirm();
-    const fresh = await verify();
+    const fresh = await verify(result.proof);
     const retiredVersion = result?.snapshot?.activeVersion;
     if (typeof retiredVersion !== "string" || !uuidPattern.test(retiredVersion) ||
         fresh?.versionId !== retiredVersion)
@@ -1781,7 +1785,7 @@ export async function completeCallerRetirement({
     // replacing any exception retained from the predecessor before staging.
     if (serviceSource === "api") apiHandoffRoles.add(role);
     else apiHandoffRoles.delete(role);
-    return Object.freeze({ kind: "retired", role, versionId: retiredVersion, provenance: serviceSource });
+    return Object.freeze({ kind: "retired", role, versionId: retiredVersion, provenance: serviceSource, retirementProof: result.proof });
   } catch (error) {
     throw markRetirementFailure(error, "postverify", "response-accepted");
   }
@@ -1809,25 +1813,30 @@ export async function completeSecretFreeCallerObservation({ role, observe, verif
   } catch (error) { throw markCallerObservationFailure(error, "staged-observation"); }
 }
 
-export async function prepareBootstrapCallerHandoff({ disposition, role, observe, retire, confirm, verify, apiHandoffRoles }) {
+export async function prepareBootstrapCallerHandoff({ disposition, role, observe, retire, confirm, verify, apiHandoffRoles, scope, selectedIdentity }) {
   if (disposition?.role !== role) fail("bootstrap caller disposition role mismatch");
   if (disposition.operation === "observe-secret-free" && disposition.retirementArtifacts === 0 &&
       sameValues(disposition.baselineSecrets, []))
     return completeSecretFreeCallerObservation({ role, observe, verify, apiHandoffRoles });
   if (disposition.operation === "retire-pair" && disposition.retirementArtifacts === 2 &&
       sameValues(disposition.baselineSecrets, legacyCallerSecrets))
-    return completeCallerRetirement({ role, retire, confirm, verify, apiHandoffRoles });
+    return completeCallerRetirement({ role, retire, confirm, verify, apiHandoffRoles, scope, selectedIdentity });
   fail("bootstrap caller disposition invalid");
 }
 
-export async function verifyCallerActivationHandoff({ role, proof, verify, authorize }) {
+export async function verifyCallerActivationHandoff({ role, proof, verify, authorize, scope, selectedIdentity }) {
   try {
     if (!["publisher", "rendezvous"].includes(role) || proof?.role !== role ||
         !["retired", "observed-secret-free"].includes(proof.kind) ||
         typeof proof.versionId !== "string" || !uuidPattern.test(proof.versionId) ||
         !["api", "wrangler"].includes(proof.provenance))
       fail("API handoff activation proof is invalid");
-    const active = await verify();
+    if (proof.kind === "retired") {
+      const identity = requireRetiredCallerProof({ proof: proof.retirementProof, role, scope, selectedIdentity });
+      if (proof.versionId !== identity.versionId || proof.provenance !== identity.provenance)
+        fail("API handoff activation receipt identity changed");
+    }
+    const active = await verify(proof.retirementProof);
     if (active?.versionId !== proof.versionId)
       fail("API handoff activation version changed or is missing");
     // Keep source authority fresh at the mutation without another resource sweep
@@ -2100,6 +2109,11 @@ function validateReadback(
   const parsed = parseLiveVersionMessage(message, worker.role);
   if (expectedMessage && message !== expectedMessage)
     fail(`${worker.role} version annotation does not match this deployment`);
+  validateReadbackConfiguration(worker, config, active, { exact });
+  return parsed;
+}
+
+function validateReadbackConfiguration(worker, config, active, { exact = true } = {}) {
   if (
     exact &&
     !sameValues(remoteBindingNames(active.version), configBindingNames(config))
@@ -2117,7 +2131,6 @@ function validateReadback(
   )
     fail(`${worker.role} remote runtime configuration drift`);
   if (exact) validateRuntimeExports(worker, config, runtime.exports ?? {});
-  return parsed;
 }
 
 export function validateLiveControlPlane(
@@ -2273,22 +2286,132 @@ export function verifyBootstrapCallerPredecessor(expectedVersion, worker, active
 // Prove the uploaded, disabled selected artifact before deleting any retained
 // predecessor secret. A self-reported version message is not module-byte proof.
 export function verifyStagedCallerRetirement({ worker, config, expectedMessage, sourceSha,
-  bundleDigest, snapshot, retired, expectedZoneId }) {
+  bundleDigest, snapshot, retired, expectedZoneId, predecessor }) {
   if (!["publisher", "rendezvous"].includes(worker.role) || snapshot.accountId !== config.account_id ||
       snapshot.name !== config.name || snapshot.activeVersion !== snapshot.latestVersion ||
-      snapshot.settings?.annotations?.["workers/tag"] !== sourceSha ||
+      (predecessor ?? snapshot).settings?.annotations?.["workers/tag"] !== sourceSha ||
       snapshot.code?.modules?.length !== 1 || snapshot.code.modules[0].sha256 !== bundleDigest ||
       !["PUBLISH_ENABLED", "GAME_PUBLISH_ENABLED", "RENDEZVOUS_ENABLED"].filter(key => key in config.vars)
         .every(key => config.vars[key] === "disabled"))
     fail("selected disabled caller module identity drift");
   const expected = { ...config, secrets: { required: retired ? [] : [...legacyCallerSecrets] } };
-  validateReadback(worker, expected, { versionId: snapshot.activeVersion,
-    version: { resources: snapshot.resources, annotations: snapshot.settings.annotations } }, expectedMessage);
+  const active = { versionId: snapshot.activeVersion,
+    version: { resources: snapshot.resources, annotations: snapshot.settings.annotations } };
+  if (predecessor) {
+    if (!retired || predecessor.settings.annotations["workers/message"] !== expectedMessage)
+      fail("retired predecessor annotation mismatch");
+    verifyCallerRetirementPostV4(worker.role, predecessor, snapshot);
+    validateReadbackConfiguration(worker, expected, active);
+  } else validateReadback(worker, expected, active, expectedMessage);
   validateLiveControlPlane(worker, config, {
     routes: snapshot.control.routes, customDomains: snapshot.control.domains,
     subdomainStatus: snapshot.control.subdomain, serviceEnvironment: snapshot.control.environment,
     cronTriggers: snapshot.control.schedules,
   }, { expectedZoneId });
+  return true;
+}
+
+// This path is available only for an actual, receipt-bound retirement in this run.
+// The returned topology identity belongs to the authenticated predecessor; remote
+// annotations remain their exact observed object and are never reconstructed.
+export function verifyRetiredCallerReadback({ worker, config, snapshot, proof, scope, selectedIdentity,
+  expectedMessage, expectedZoneId, now = Date.now }) {
+  const identity = requireRetiredCallerProof({ proof, role: worker.role, scope, selectedIdentity, snapshot, now });
+  if (selectedIdentity.configurationDigest !== callerRetirementDigest(config) ||
+      identity.message !== expectedMessage || snapshot.accountId !== config.account_id || snapshot.name !== config.name)
+    fail("retired selected configuration identity drift");
+  validateReadbackConfiguration(worker, config, { version: { resources: snapshot.resources } });
+  validateLiveControlPlane(worker, config, {
+    routes: snapshot.control.routes, customDomains: snapshot.control.domains,
+    subdomainStatus: snapshot.control.subdomain, serviceEnvironment: snapshot.control.environment,
+    cronTriggers: snapshot.control.schedules,
+  }, { expectedZoneId });
+  return { versionId: identity.versionId, predecessorIdentity: parseLiveVersionMessage(identity.message, worker.role) };
+}
+
+// Closed upload delta for a caller which is a peer of a still-retired caller.
+// Configuration/annotation/module checks are necessary but cannot authorize
+// unrelated settings, provider metadata, route or service-control changes.
+export function verifyRetirementPeerUploadPreservation({ previous, current, config, versionId,
+  bundleDigest, expectedMessage, sourceSha, startedAt, capturedAt }) {
+  const uuid = value => uuidPattern.test(value ?? "");
+  if (!Number.isFinite(startedAt) || !Number.isFinite(capturedAt) || capturedAt < startedAt ||
+      !uuid(versionId) || versionId === previous.activeVersion || current.activeVersion !== versionId ||
+      current.latestVersion !== versionId || !uuid(current.deploymentId) || current.deploymentId === previous.deploymentId ||
+      current.code?.modules?.length !== 1 || current.code.modules[0].sha256 !== bundleDigest ||
+      !/^[a-f0-9]{64}$/u.test(current.code.etag ?? "") || current.resources?.script?.etag !== current.code.etag)
+    fail("retirement peer upload identity drift");
+  const module = current.code.modules[0];
+  if (!sameValues(Object.keys(module), ["name", "type", "sha256", "bytes"]) ||
+      typeof module.name !== "string" || !module.name || module.type !== "application/javascript+module" ||
+      !Number.isSafeInteger(module.bytes) || module.bytes < 1 || module.bytes > 8 * 1024 * 1024)
+    fail("retirement peer module representation drift");
+  const expected = structuredClone(previous);
+  for (const key of ["activeVersion", "latestVersion", "deploymentId"]) expected[key] = current[key];
+  expected.code = structuredClone(current.code);
+  if (!sameValues(Object.keys(expected.code), ["etag", "modules"])) fail("retirement peer code metadata drift");
+  const annotations = { "workers/tag": sourceSha, "workers/message": expectedMessage, "workers/triggered_by": "version_upload" };
+  expected.settings.annotations = annotations;
+  expected.versionAnnotations = annotations;
+  const bindingFields = expectedRemoteBindings(config);
+  const rows = current.resources.bindings;
+  if (!Array.isArray(rows) || rows.length !== bindingFields.size || new Set(rows.map(row => row.name)).size !== rows.length)
+    fail("retirement peer binding inventory drift");
+  const expectedBindings = rows.map(row => {
+    const fields = bindingFields.get(row.name);
+    if (!fields || !["plain_text", "secret_text", "service", "ratelimit"].includes(fields.type))
+      fail("retirement peer gained state authority");
+    const binding = { name: row.name, ...fields };
+    if (fields.type === "service" && Object.hasOwn(row, "environment")) binding.environment = "production";
+    return binding;
+  });
+  expected.settings.bindings = expected.resources.bindings = expectedBindings;
+  // Preserve optional settings projection presence, but update the two runtime
+  // inputs only to selected configuration values when the provider exposes them.
+  for (const key of ["compatibility_date", "compatibility_flags"]) {
+    if (Object.hasOwn(previous.settings, key)) expected.settings[key] = structuredClone(config[key]);
+  }
+  const runtime = expected.resources.script_runtime;
+  if (!runtime) fail("retirement peer runtime missing");
+  runtime.compatibility_date = config.compatibility_date;
+  runtime.compatibility_flags = structuredClone(config.compatibility_flags ?? []);
+  if (Object.hasOwn(runtime, "exports")) runtime.exports = structuredClone(config.exports ?? {});
+  if (Object.hasOwn(previous.settings, "observability")) {
+    if (!sameJson(normalizeLiveObservability(current.settings.observability), config.observability))
+      fail("retirement peer settings observability drift");
+    expected.settings.observability = structuredClone(current.settings.observability);
+  }
+  expected.resources.script.etag = current.code.etag;
+  expected.resources.script.last_deployed_from = "wrangler";
+  const oldEnvironment = previous.control.environment, environment = current.control.environment;
+  const target = expected.control.environment;
+  if (!oldEnvironment?.script || !environment?.script) fail("retirement peer service metadata missing");
+  const time = value => {
+    if (typeof value !== "string" || !/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,9})?Z$/u.test(value) ||
+        !Number.isFinite(Date.parse(value))) fail("retirement peer service timestamp invalid");
+    return Date.parse(value);
+  };
+  for (const [old, actual, next] of [[oldEnvironment, environment, target],
+    [oldEnvironment.script, environment.script, target.script]]) {
+    if (old.modified_on !== actual.modified_on) {
+      const modified = time(actual.modified_on);
+      if (modified < time(old.modified_on) || modified < startedAt || modified > capturedAt)
+        fail("retirement peer modification outside owned upload window");
+      next.modified_on = actual.modified_on;
+    }
+  }
+  target.script.etag = current.code.etag;
+  target.script.last_deployed_from = "wrangler";
+  if (!sameJson(normalizeLiveObservability(environment.script.observability), config.observability))
+    fail("retirement peer observability drift");
+  target.script.observability = structuredClone(environment.script.observability);
+  target.script.compatibility_date = config.compatibility_date;
+  target.script.compatibility_flags = structuredClone(config.compatibility_flags ?? []);
+  if (oldEnvironment.script.deployment_id === "") target.script.deployment_id = "";
+  else if (oldEnvironment.script.deployment_id === previous.activeVersion) target.script.deployment_id = versionId;
+  else if (oldEnvironment.script.deployment_id === previous.deploymentId) target.script.deployment_id = current.deploymentId;
+  else fail("retirement peer previous deployment metadata unbound");
+  if (!sameJson(expected, current)) fail("retirement peer upload preservation mismatch");
   return true;
 }
 
@@ -2614,6 +2737,12 @@ export async function runDelivery({ target = "production", sourceRoot, mode = "d
   let coreStaged = false;
   const retirementRecorders = new Map();
   const retiredCallerHandoffs = new Map();
+  const retiredCallerReaders = new Map();
+  const retirementIdentities = new Map();
+  const retirementScope = Object.freeze({});
+  const pendingRetiredRoles = new Set();
+  const callerUploadStartedAt = new Map();
+  const retirementCohort = createRetirementCohortGuard({ accountId: configs[0].account_id, scope: retirementScope });
   let bootstrapEvidenceDirectory;
   if (bootstrap) {
     if (typeof authority.authorize !== "function") fail("bootstrap source handoff authority unavailable");
@@ -2633,6 +2762,44 @@ export async function runDelivery({ target = "production", sourceRoot, mode = "d
     }
   }
   const fence = () => fenceDeliveryMutation(authority, resourceFence);
+  const readRetiredCaller = async (worker, index, proof) => {
+    try {
+      await fence();
+      const snapshot = await retiredCallerReaders.get(worker.role)();
+      retirementCohort.check(snapshot);
+      return verifyRetiredCallerReadback({ worker, config: stagedConfigs[index], snapshot, proof,
+        scope: retirementScope, selectedIdentity: retirementIdentities.get(worker.role),
+        expectedMessage: expectedStagedMessages.get(worker.role), expectedZoneId: configs[0].vars.DIRECTORY_CACHE_ZONE_ID });
+    } catch (error) { throw markRetirementFailure(error, "postverify", "response-accepted"); }
+  };
+  const recordRetirementPeerUpload = async (worker, index, active, phase) => {
+    if (!pendingRetiredRoles.size) return;
+    const config = phase === "staged" ? stagedReadbackConfig(index) : configs[index];
+    const expectedMessage = (phase === "staged" ? expectedStagedMessages : expectedActiveMessages).get(worker.role);
+    const bundleDigest = (phase === "staged" ? plan.stagedBundles : plan.bundles)[index];
+    retirementCohort.recordUpload({ name: config.name, versionId: active.versionId, validate: (snapshot, previous, capturedAt) => {
+      if (snapshot.settings.annotations?.["workers/tag"] !== sourceSha ||
+          !sameJson(snapshot.settings.annotations, snapshot.versionAnnotations) ||
+          !sameJson(snapshot.settings.bindings, snapshot.resources.bindings) ||
+          snapshot.settings.annotations?.["workers/triggered_by"] !== "version_upload" ||
+          snapshot.code.modules.length !== 1 || snapshot.code.modules[0].sha256 !== bundleDigest)
+        fail("retirement peer uploaded module or annotation drift");
+      validateReadback(worker, config, { versionId: snapshot.activeVersion,
+        version: { resources: snapshot.resources, annotations: snapshot.settings.annotations } }, expectedMessage);
+      validateLiveControlPlane(worker, config, { routes: snapshot.control.routes, customDomains: snapshot.control.domains,
+        subdomainStatus: snapshot.control.subdomain, serviceEnvironment: snapshot.control.environment,
+        cronTriggers: snapshot.control.schedules }, { expectedZoneId: configs[0].vars.DIRECTORY_CACHE_ZONE_ID });
+      verifyRetirementPeerUploadPreservation({ previous, current: snapshot, config,
+        versionId: active.versionId, bundleDigest, expectedMessage, sourceSha,
+        startedAt: callerUploadStartedAt.get(worker.role), capturedAt });
+      return true;
+    } });
+    // Admit the complete changed graph immediately after this owned readback,
+    // before any following role can open a second transition slot.
+    const pendingRole = [...pendingRetiredRoles][0];
+    const pendingIndex = contract.workers.findIndex(value => value.role === pendingRole);
+    await readRetiredCaller(contract.workers[pendingIndex], pendingIndex, retiredCallerHandoffs.get(pendingRole).retirementProof);
+  };
   const outcome = await orchestrateDelivery({
     workers: contract.workers,
     decision,
@@ -2657,6 +2824,7 @@ export async function runDelivery({ target = "production", sourceRoot, mode = "d
       }
       if (index === 0) resourceTransition.beginCoreUpload();
       failureEvidence.failedRole = `staged:${worker.role}`;
+      callerUploadStartedAt.set(worker.role, Date.now());
       expectedStagedMessages.set(
         worker.role,
         await deployStagedWithRecoveryIntent(
@@ -2685,35 +2853,47 @@ export async function runDelivery({ target = "production", sourceRoot, mode = "d
         await readLiveControlPlane(worker, process.env.CLOUDFLARE_ACCOUNT_ID),
         { expectedZoneId: configs[0].vars.DIRECTORY_CACHE_ZONE_ID },
       );
+      await recordRetirementPeerUpload(worker, index, uploaded, "staged");
       if (bootstrap && index > 0) {
         const disposition = callerDispositions[worker.role];
         failureEvidence.failedRole = `${disposition.operation === "retire-pair" ? "retirement" : "observation"}:${worker.role}`;
         const accountId = configs[0].account_id;
         const read = createCallerRetirementReader({ accountId,
           token: process.env.ATRINIK_DELIVERY_RESOURCE_READ_TOKEN, role: worker.role, fetcher: deliveryFetch });
-        const verifyStaged = (snapshot, { retired }) => {
+        retiredCallerReaders.set(worker.role, read);
+        const selectedIdentity = { sourceSha, deployableDigest: plan.deploy,
+          configurationDigest: callerRetirementDigest(stagedConfigs[index]), bundleDigest: plan.stagedBundles[index],
+          uploadedVersion: uploaded.versionId, controllerSha: process.env.GITHUB_SHA,
+          runId: process.env.GITHUB_RUN_ID, runAttempt: process.env.GITHUB_RUN_ATTEMPT };
+        retirementIdentities.set(worker.role, selectedIdentity);
+        const verifyStaged = (snapshot, { retired, predecessor }) => {
+          if (!retired || disposition.operation === "observe-secret-free") retirementCohort.check(snapshot);
           if ((!retired || disposition.operation === "observe-secret-free") && snapshot.activeVersion !== uploaded.versionId)
             fail("new staged caller version changed before observation");
           return verifyStagedCallerRetirement({ worker, config: stagedConfigs[index], sourceSha,
             bundleDigest: plan.stagedBundles[index], expectedMessage: expectedStagedMessages.get(worker.role),
-            snapshot, retired, expectedZoneId: configs[0].vars.DIRECTORY_CACHE_ZONE_ID });
+            snapshot, retired, predecessor, expectedZoneId: configs[0].vars.DIRECTORY_CACHE_ZONE_ID });
         };
         const handoff = await prepareBootstrapCallerHandoff({
-          disposition,
+          disposition, scope: retirementScope, selectedIdentity,
           role: worker.role,
           apiHandoffRoles,
           observe: () => observeSecretFreeCaller({ role: worker.role, read, fence, verifyStaged }),
           retire: async () => {
             resourceTransition.beginCallerRetirement(worker.role);
             try {
-              return await retireCallerSecrets({
-                role: worker.role, fence, authorize: authority.authorize, qualification: retirementQualification,
+              const result = await retireCallerSecrets({
+                role: worker.role, scope: retirementScope, selectedIdentity, fence, authorize: authority.authorize, qualification: retirementQualification,
                 read,
                 patch: createCallerRetirementPatch({ accountId,
                   token: process.env.CLOUDFLARE_API_TOKEN, role: worker.role, qualification: retirementQualification }),
                 ...retirementRecorders.get(worker.role),
                 verifyStaged,
               });
+              try { retirementCohort.acceptRetirement({ snapshot: result.snapshot, proof: result.proof,
+                role: worker.role, selectedIdentity });
+              } catch (error) { throw markRetirementFailure(error, "postverify", "response-accepted"); }
+              return result;
             } catch (error) {
               const stopped = new DeliveryError("production caller retirement stopped; preserve private intent and do not retry");
               stopped.cause = error;
@@ -2721,7 +2901,8 @@ export async function runDelivery({ target = "production", sourceRoot, mode = "d
             }
           },
           confirm: () => resourceTransition.confirmCallerRetired(worker.role),
-          verify: async () => {
+          verify: async (proof) => {
+            if (disposition.operation === "retire-pair") return readRetiredCaller(worker, index, proof);
             await fence();
             const active = await readActive(stagedPaths[index]);
             validateReadback(worker, stagedConfigs[index], active,
@@ -2733,15 +2914,18 @@ export async function runDelivery({ target = "production", sourceRoot, mode = "d
           await writeFile(resolve(bootstrapEvidenceDirectory, `caller-observation-${worker.role}.json`),
             JSON.stringify(handoff), { mode: 0o600, flag: "wx" });
         retiredCallerHandoffs.set(worker.role, handoff);
+        if (handoff.kind === "retired") pendingRetiredRoles.add(worker.role);
       }
     },
     verifyStaged: async () => {
       const annotations = [];
       for (const [index, worker] of contract.workers.entries()) {
-        annotations.push(validateReadback(
-          worker,
-          stagedConfigs[index],
-          await readActive(stagedPaths[index]),
+        const handoff = retiredCallerHandoffs.get(worker.role);
+        if (handoff?.kind === "retired") {
+          const retired = await readRetiredCaller(worker, index, handoff.retirementProof);
+          annotations.push(retired.predecessorIdentity);
+        } else annotations.push(validateReadback(
+          worker, stagedConfigs[index], await readActive(stagedPaths[index]),
         ));
         validateLiveControlPlane(
           worker,
@@ -2760,8 +2944,10 @@ export async function runDelivery({ target = "production", sourceRoot, mode = "d
       const apiHandoff = bootstrap && index > 0
         ? await verifyCallerActivationHandoff({
           role: worker.role,
-          proof: retiredCallerHandoffs.get(worker.role),
-          verify: async () => {
+          proof: retiredCallerHandoffs.get(worker.role), scope: retirementScope,
+          selectedIdentity: retirementIdentities.get(worker.role),
+          verify: async (proof) => {
+            if (proof) return readRetiredCaller(worker, index, proof);
             const active = await readActive(stagedPaths[index]);
             validateReadback(worker, stagedConfigs[index], active,
               expectedStagedMessages.get(worker.role));
@@ -2770,6 +2956,7 @@ export async function runDelivery({ target = "production", sourceRoot, mode = "d
           authorize: () => authority.authorize(),
         })
         : apiHandoffRoles.has(worker.role);
+      callerUploadStartedAt.set(worker.role, Date.now());
       expectedActiveMessages.set(
         worker.role,
         await deployWorker(worker, configPaths[index], sourceSha, plan, {
@@ -2778,10 +2965,11 @@ export async function runDelivery({ target = "production", sourceRoot, mode = "d
       );
     },
     readbackActive: async (worker, index) => {
+      const uploaded = await readActive(configPaths[index]);
       validateReadback(
         worker,
         configs[index],
-        await readActive(configPaths[index]),
+        uploaded,
         expectedActiveMessages.get(worker.role),
       );
       validateLiveControlPlane(
@@ -2790,6 +2978,8 @@ export async function runDelivery({ target = "production", sourceRoot, mode = "d
         await readLiveControlPlane(worker, process.env.CLOUDFLARE_ACCOUNT_ID),
         { expectedZoneId: configs[0].vars.DIRECTORY_CACHE_ZONE_ID },
       );
+      pendingRetiredRoles.delete(worker.role);
+      await recordRetirementPeerUpload(worker, index, uploaded, "active");
     },
     verifyFinal: async (finalDecision) => {
       const finalAnnotations = [];

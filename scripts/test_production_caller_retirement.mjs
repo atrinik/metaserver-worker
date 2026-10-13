@@ -9,11 +9,13 @@ import { mkdtemp, chmod, readFile, rm } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { verifyRecoveryArtifactProof } from "./production-recovery-artifacts.mjs";
-import { callerRetirementSecrets, callerRetirementBody, callerRetirementBodyV3, observeSecretFreeCaller, callerRetirementDigest, verifyCallerRetirementPost,
+import { callerRetirementSecrets, callerRetirementBody, callerRetirementBodyV3, observeSecretFreeCaller, callerRetirementDigest, verifyCallerRetirementPostV4 as verifyCallerRetirementPost, verifyCallerRetirementPost as verifyHistoricalPost,
+  requireRetiredCallerProof, verifyCallerRetirementReceiptV4,
   retireCallerSecrets, observeCallerRetirement, createCallerRetirementPatch,
   createCallerRetirementRecorder, parseCallerRetirementModules } from "./production-caller-retirement.mjs";
 import { parseCallerRetirementQualification, loadCallerRetirementQualification, requireCallerRetirementQualification } from "./production-retirement-qualification.mjs";
 import { fixtureQualification, qualificationDocument, qualificationBytes } from "./fixtures/retirement-qualification.mjs";
+import { retirementSelectedIdentity } from "./fixtures/caller-retirement.mjs";
 const qualification = await fixtureQualification();
 const accountId = "a".repeat(32), hash = "b".repeat(64), source = "c".repeat(40);
 const oldId = "00000000-0000-0000-0000-000000000001", newId = "00000000-0000-0000-0000-000000000002";
@@ -35,17 +37,20 @@ function baseline(role = "publisher") {
     ...(role === "publisher" ? ["PUBLISH_ENABLED", "GAME_PUBLISH_ENABLED"] : ["RENDEZVOUS_ENABLED"])
       .map((name) => ({ name, type: "plain_text", text: "disabled" })),
   ];
-  return { accountId, tag: accountId, name: `atrinik-metaserver-${role}`, activeVersion: oldId, latestVersion: oldId, deploymentId: oldId,
+  const value = { accountId, tag: accountId, name: `atrinik-metaserver-${role}`, activeVersion: oldId, latestVersion: oldId, deploymentId: oldId,
     settings: { bindings: rows, annotations: { "workers/tag": source, "workers/message": `atrinik-delivery-v1 source=${source} deploy=${hash} migration=${hash} horizon=16 control=${hash} role=${role} phase=staged`, "workers/triggered_by": "version_upload" }, compatibility_date: "2026-10-01" },
     resources: { bindings: structuredClone(rows), script: { etag: hash, handlers: ["fetch"] } },
     code: { etag: hash, modules: [{ name: `${role}.js`, type: "application/javascript+module", sha256: hash, bytes: 100 }] },
     control: { environment: serviceEnvironment(`atrinik-metaserver-${role}`), routes: [], domains: [] },
     peers: { workers: [{ name: "core", signingSecrets: [...callerRetirementSecrets] }], namespaces: [] }, capturedAt: 1000 };
+  value.versionAnnotations = structuredClone(value.settings.annotations);
+  return value;
 }
 function retired(before = baseline()) {
   const after = structuredClone(before);
   for (const f of ["settings", "resources"]) after[f].bindings = after[f].bindings.filter((b) => b.type !== "secret_text");
-  after.settings.annotations["workers/triggered_by"] = "secret";
+  after.settings.annotations = { "workers/triggered_by": "secret" };
+  after.versionAnnotations = structuredClone(after.settings.annotations);
   after.activeVersion = after.latestVersion = after.deploymentId = newId;
   return after;
 }
@@ -53,7 +58,7 @@ function harness(overrides = {}) {
   const before = baseline(), after = retired(before), events = [];
   let reads = 0, writes = 0, intent;
   return { events, before, after, get intent() { return intent; }, get writes() { return writes; },
-    options: { qualification, role: "publisher", now: () => 1000, fence: async () => events.push("fence"), authorize: async () => events.push("authorize"),
+    options: { qualification, scope: Object.freeze({}), selectedIdentity: retirementSelectedIdentity(before), role: "publisher", now: () => 1000, fence: async () => events.push("fence"), authorize: async () => events.push("authorize"),
       read: async () => { events.push("read"); return ++reads < 3 ? before : after; },
       verifyStaged: async () => { events.push("verify"); return true; },
       recordIntent: async (v) => { events.push("intent"); intent = v; },
@@ -89,7 +94,7 @@ for (const [name, change] of [
   ["peer change", (s) => { s.peers.workers[0].signingSecrets = []; }],
   ["provider field", (s) => { s.settings.new_field = true; }],
   ["extra annotation", (s) => { s.settings.annotations.extra = "changed"; }],
-  ["tag lost", (s) => { delete s.settings.annotations["workers/tag"]; }],
+  ["tag retained", (s) => { s.settings.annotations["workers/tag"] = source; }],
   ["unchanged active version", (s) => { s.activeVersion = s.latestVersion = oldId; }],
 ]) test(`${name} cannot become a successful receipt`, () => {
   const before = baseline(), after = retired(before); change(after);
@@ -151,15 +156,15 @@ test("read-only recovery binds original intent and rejects partial states", asyn
   await assert.rejects(observeCallerRetirement({ ...args, intent: { ...h.intent, role: "rendezvous" } }));
   await assert.rejects(observeCallerRetirement({ ...args, read: async () => h.before }));
 });
-test("v3 intent binds the full endpoint, exact request, and captured predecessor", async () => {
+test("v4 intent binds the full endpoint, exact request, and captured predecessor", async () => {
   const h = harness(); await retireCallerSecrets(h.options);
-  assert.equal(h.intent.schema, "atrinik-production-caller-retirement-v3");
+  assert.equal(h.intent.schema, "atrinik-production-caller-retirement-v4");
   assert.equal(h.intent.endpoint, `https://api.cloudflare.com/client/v4/accounts/${accountId}/workers/scripts/atrinik-metaserver-publisher/secrets-bulk`);
   assert.deepEqual(h.intent.before, h.before);
   assert.equal(h.intent.beforeDigest, callerRetirementDigest(h.before));
   assert.equal(h.intent.bodyDigest, callerRetirementDigest(h.intent.body));
   assert.equal(Object.hasOwn(h.intent, "settingsDigest"), false);
-  const { schema, before, beforeDigest, providerQualificationDigest, requestDigest, ...request } = h.intent;
+  const { schema, before, beforeDigest, providerQualificationDigest, selectedIdentity, requestDigest, ...request } = h.intent;
   assert.equal(providerQualificationDigest, qualification.digest);
   assert.equal(requestDigest, callerRetirementDigest(request));
 });
@@ -174,7 +179,7 @@ for (const [name, change] of [
   ["qualification digest", (i) => { delete i.providerQualificationDigest; }],
   ["version_tags", (i) => { i.body.version_tags = {}; }],
   ["extra field", (i) => { i.unexpected = true; }],
-]) test(`v3 recovery rejects substituted ${name} before any read`, async () => {
+]) test(`v4 recovery rejects substituted ${name} before any read`, async () => {
   const h = harness(); await retireCallerSecrets(h.options);
   const intent = structuredClone(h.intent); change(intent); let reads = 0;
   await assert.rejects(observeCallerRetirement({ role: "publisher", before: h.before, intent,
@@ -234,7 +239,7 @@ test("private durable recorder allows only one concurrent role claim and binds r
 async function requestFixture(role = "publisher") {
   const h = harness({ role, read: async () => baseline(role), patch: async () => { throw Error("fixture stop"); } });
   await assert.rejects(retireCallerSecrets(h.options));
-  const { schema, before, beforeDigest, providerQualificationDigest, ...request } = h.intent;
+  const { schema, before, beforeDigest, providerQualificationDigest, selectedIdentity, ...request } = h.intent;
   return request;
 }
 test("bounded merge-patch transport is pinned and consumed even on network ambiguity", async () => {
@@ -244,7 +249,7 @@ test("bounded merge-patch transport is pinned and consumed even on network ambig
     assert.equal(options.method, "PATCH"); assert.equal(options.redirect, "error");
     assert.equal(options.headers["Content-Type"], "application/merge-patch+json");
     assert.equal(options.headers.Authorization, "Bearer test-token");
-    assert.deepEqual(JSON.parse(options.body), callerRetirementBodyV3("publisher", baseline()));
+    assert.deepEqual(JSON.parse(options.body), callerRetirementBody("publisher", baseline()));
     throw Error("network uncertainty");
   } });
   const request = await requestFixture();
@@ -311,7 +316,7 @@ function readerFixture() {
     } else if (suffix.endsWith("/settings")) result = baseline().settings;
     else if (suffix.endsWith("/deployments")) result = { deployments: [{ id: oldId, versions: [{ version_id: oldId, percentage: 100 }] }] };
     else if (suffix.endsWith("/versions")) result = { items: [{ id: oldId }] };
-    else if (suffix.endsWith(`/versions/${oldId}`)) result = { id: oldId, resources: baseline().resources };
+    else if (suffix.endsWith(`/versions/${oldId}`)) result = { id: oldId, annotations: baseline().settings.annotations, resources: baseline().resources };
     else if (suffix.endsWith("/routes") || suffix.endsWith("/domains") || suffix.endsWith("/schedules")) result = [];
     else if (suffix.endsWith("/environments/production")) result = serviceEnvironment(suffix.split("/")[3]);
     else result = { enabled: false, previews_enabled: false };
@@ -547,8 +552,10 @@ for (const stage of ["post-intent-fence", "patch", "post-read"]) test(`failed di
   assert.equal(calls, 1); assert.ok(h.intent);
 });
 
-test("historical v2 byte contract remains readable and cannot dispatch through the v3 transport", async () => {
-  const before = baseline(), after = retired(before);
+test("historical v2 byte contract remains readable and cannot dispatch through the v4 transport", async () => {
+  const before = baseline(); delete before.versionAnnotations;
+  const after = retired(before); delete after.versionAnnotations;
+  after.settings.annotations = { ...before.settings.annotations, "workers/triggered_by": "secret" };
   const body = callerRetirementBody("publisher", before);
   const request = { role: "publisher", accountId, name: before.name, method: "PATCH",
     endpoint: `https://api.cloudflare.com/client/v4/accounts/${accountId}/workers/scripts/${before.name}/secrets-bulk`,
@@ -570,26 +577,18 @@ test("historical v2 byte contract remains readable and cannot dispatch through t
   await assert.rejects(patch(request)); assert.equal(calls, 0);
 });
 
-test("v3 emits only exact selected stage tags with deterministic bytes and bounded data properties", async () => {
+test("v4 emits only exact null pair with deterministic bytes and rejects accessors", async () => {
   const request = await requestFixture();
-  const expected = `{"secrets":{"SOURCE_TAG_KEY_CURRENT":null,"SOURCE_TAG_KEY_PREVIOUS":null},"version_tags":${JSON.stringify({
-    "workers/tag": source, "workers/message": baseline().settings.annotations["workers/message"],
-  })}}`;
+  const expected = '{"secrets":{"SOURCE_TAG_KEY_CURRENT":null,"SOURCE_TAG_KEY_PREVIOUS":null}}';
   let calls = 0;
   const patch = createCallerRetirementPatch({ qualification, accountId, role: "publisher", token: "fixture", fetcher: async (_url, options) => {
     calls++; assert.equal(options.body, expected); return Response.json({ success: true, errors: [], result: {} });
   } });
   for (const change of [
-    r => { delete r.body.version_tags; },
-    r => { delete r.body.version_tags["workers/tag"]; },
-    r => { delete r.body.version_tags["workers/message"]; },
-    r => { r.body.version_tags["workers/tag"] = "d".repeat(40); },
-    r => { r.body.version_tags["workers/message"] += "changed"; },
-    r => { r.body.version_tags["workers/triggered_by"] = "secret"; },
-    r => { r.body.version_tags.extra = undefined; },
-    r => { r.body.version_tags["workers/message"] = "x".repeat(1025); },
-    r => { Object.defineProperty(r.body.version_tags, "workers/message", { get: () => assert.fail("getter invoked") }); },
-    r => { Object.defineProperty(r.body, "version_tags", { get: () => assert.fail("getter invoked") }); },
+    r => { r.body.version_tags = {}; },
+    r => { r.body.version_tags = undefined; },
+    r => { Object.defineProperty(r.body.secrets, "SOURCE_TAG_KEY_CURRENT", { get: () => assert.fail("getter invoked") }); },
+    r => { Object.defineProperty(r.body, "secrets", { get: () => assert.fail("getter invoked") }); },
     r => { Object.defineProperty(r, "body", { get: () => assert.fail("getter invoked") }); },
   ]) { const invalid = structuredClone(request); change(invalid); await assert.rejects(patch(invalid)); }
   assert.equal(calls, 0); await patch(request); assert.equal(calls, 1);
@@ -627,6 +626,7 @@ for (const emptyRoles of [["publisher"], ["rendezvous"], ["publisher", "rendezvo
     test(`full orchestration empty=${emptyRoles.join("+")} failure=${failure}`, async () => {
       const workers = ["core", "publisher", "rendezvous"].map(role => ({ role }));
       const active = new Map(), proofs = new Map(), apiHandoffRoles = new Set();
+      const scope = Object.freeze({}), identities = new Map();
       const events = [], artifacts = [], patches = [], observations = [];
       const noop = async () => {};
       let caught;
@@ -649,15 +649,17 @@ for (const emptyRoles of [["publisher"], ["rendezvous"], ["publisher", "rendezvo
               operation: empty ? "observe-secret-free" : "retire-pair", retirementArtifacts: empty ? 0 : 2,
               baselineSecrets: empty ? [] : [...callerRetirementSecrets] };
             const read = async () => structuredClone(active.get(role));
-            const proof = await prepareBootstrapCallerHandoff({ role, disposition, apiHandoffRoles,
+            const selectedIdentity = retirementSelectedIdentity(active.get(role));
+            identities.set(role, selectedIdentity);
+            const proof = await prepareBootstrapCallerHandoff({ role, disposition, apiHandoffRoles, scope, selectedIdentity,
               observe: async () => { observations.push(role); return observeSecretFreeCaller({ role, read,
                 fence: noop, verifyStaged: async () => true, now: () => 1000 }); },
-              retire: () => retireCallerSecrets({ qualification, role, read, fence: noop, authorize: noop, now: () => 1000,
+              retire: () => retireCallerSecrets({ qualification, role, scope, selectedIdentity, read, fence: noop, authorize: noop, now: () => 1000,
                 verifyStaged: async () => true,
-                recordIntent: async i => { artifacts.push(`${role}:intent`); assert.equal(i.schema, "atrinik-production-caller-retirement-v3"); },
+                recordIntent: async i => { artifacts.push(`${role}:intent`); assert.equal(i.schema, "atrinik-production-caller-retirement-v4"); },
                 recordReceipt: async () => { artifacts.push(`${role}:receipt`); },
                 patch: async request => {
-                  patches.push(role); assert.deepEqual(request.body, callerRetirementBodyV3(role, active.get(role)));
+                  patches.push(role); assert.deepEqual(request.body, callerRetirementBody(role, active.get(role)));
                   const snapshot = retired(active.get(role));
                   snapshot.resources.script.last_deployed_from = snapshot.control.environment.script.last_deployed_from = "api";
                   active.set(role, snapshot);
@@ -669,7 +671,7 @@ for (const emptyRoles of [["publisher"], ["rendezvous"], ["publisher", "rendezvo
             proofs.set(role, proof);
           }, verifyStaged: noop,
           deployActive: async ({ role }) => {
-            if (role !== "core") await verifyCallerActivationHandoff({ role, proof: proofs.get(role),
+            if (role !== "core") await verifyCallerActivationHandoff({ role, proof: proofs.get(role), scope, selectedIdentity: identities.get(role),
               verify: async () => { events.push(`last-version:${role}`); return { versionId: active.get(role).activeVersion }; },
               authorize: async () => events.push(`authorize:${role}`) });
             events.push(`activate:${role}`);
@@ -720,9 +722,12 @@ test("unqualified, unbranded or wrong-account v3 cannot create an intent or disp
   assert.equal(requireCallerRetirementQualification(qualification, accountId), qualification.digest);
 });
 
-test("fixed checked null qualification blocks live loading without input or environment overrides", async () => {
+test("fixed reviewed qualification rejects other accounts and input or environment overrides", async () => {
   const actual = JSON.parse(await readFile(new URL("../deployment/caller-retirement-provider-qualification.json", import.meta.url)));
-  assert.equal(actual.qualification, null);
+  assert.equal(actual.schema, "atrinik-caller-retirement-provider-qualification-v2");
+  assert.equal(actual.qualification.result.contractObserved, true);
+  assert.equal(actual.qualification.result.productionAuthorized, false);
+  assert.equal(actual.qualification.result.productionContractSatisfied, false);
   await assert.rejects(loadCallerRetirementQualification({ accountId,
     document: qualificationDocument(), path: "/tmp/never-trusted-qualification.json" }), /qualification/u);
 });
@@ -737,15 +742,16 @@ for (const [name, change] of [
   ["extra request key", d => { d.qualification.contract.bodyKeys.push("other"); }],
   ["partial null pair", d => { d.qualification.contract.secretNames.pop(); }],
   ["replacement operation", d => { d.qualification.contract.secretOperation = "replace"; }],
-  ["missing message map", d => { d.qualification.contract.versionTagKeys.pop(); }],
-  ["provider trigger map", d => { d.qualification.contract.versionTagKeys.push("workers/triggered_by"); }],
+  ["missing operation annotation", d => { delete d.qualification.contract.postAnnotations["workers/triggered_by"]; }],
+  ["retained tag annotation", d => { d.qualification.contract.postAnnotations["workers/tag"] = source; }],
   ["cleanup absent", d => { d.qualification.result.status = "canary-measured"; }],
-  ["mapping false", d => { d.qualification.result.mappingObserved = false; }],
+  ["mapping false", d => { d.qualification.result.contractObserved = false; }],
   ["production authority", d => { d.qualification.result.productionAuthorized = true; }],
   ["broader scope", d => { d.qualification.result.scope = "production"; }],
   ["missing raw evidence", d => { delete d.qualification.evidence.requestSha256; }],
   ["invalid raw digest", d => { d.qualification.evidence.afterSha256 = "not-a-sha"; }],
   ["review missing", d => { delete d.qualification.review; }],
+  ["review timestamp attestation missing", d => { delete d.qualification.review.timestampAttestationSha256; }],
   ["review mismatch", d => { d.qualification.review.resultSha256 = "9".repeat(64); }],
   ["review before measurement", d => { d.qualification.measuredAt = "1970-01-01T00:00:02.000Z"; }],
   ["future review", d => { d.qualification.review.reviewedAt = "1970-01-01T00:00:02.000Z"; }],
@@ -779,4 +785,122 @@ test("qualification loader bounds regular source data and rejects ambiguous enco
   assert.notEqual(proof.digest, digestBefore);
   document.qualification.accountIdSha256 = "9".repeat(64);
   assert.equal(requireCallerRetirementQualification(qualification, accountId), digestBefore);
+});
+
+test("only a fulfilled receipt mints an immutable same-run retirement capability", async () => {
+  let release;
+  const blocked = new Promise(resolve => { release = resolve; });
+  const h = harness({ recordReceipt: () => blocked });
+  const pending = retireCallerSecrets(h.options);
+  await new Promise(resolve => setImmediate(resolve));
+  for (const proof of [undefined, {}, h.intent, { role: "publisher", versionId: newId }])
+    assert.throws(() => requireRetiredCallerProof({ proof, role: "publisher", scope: h.options.scope,
+      selectedIdentity: h.options.selectedIdentity }), /capability/u);
+  release();
+  const result = await pending;
+  assert(Object.isFrozen(result.proof));
+  assert.equal(requireRetiredCallerProof({ proof: result.proof, role: "publisher", scope: h.options.scope,
+    selectedIdentity: h.options.selectedIdentity, snapshot: h.after, now: () => 1000 }).versionId, newId);
+  for (const invalid of [{ proof: structuredClone(result.proof) }, { scope: {} }, { role: "rendezvous" },
+    { selectedIdentity: { ...h.options.selectedIdentity, runAttempt: "2" } }])
+    assert.throws(() => requireRetiredCallerProof({ proof: result.proof, role: "publisher", scope: h.options.scope,
+      selectedIdentity: h.options.selectedIdentity, ...invalid }), /capability/u);
+  assert.equal(verifyCallerRetirementReceiptV4(result.receipt, qualification.digest), true);
+  for (const field of ["settings", "versionAnnotations"]) for (const annotations of [{},
+    { "workers/tag": source }, { "workers/message": "staged" },
+    { "workers/triggered_by": "secret", "workers/tag": source }]) {
+    const receipt = structuredClone(result.receipt);
+    if (field === "settings") receipt.after.settings.annotations = annotations;
+    else receipt.after.versionAnnotations = annotations;
+    assert.throws(() => verifyCallerRetirementReceiptV4(receipt, qualification.digest));
+  }
+});
+
+test("v3 historical preservation remains read-only and cannot be reclassified as v4", async () => {
+  const before = baseline(); delete before.versionAnnotations;
+  const after = retired(before); delete after.versionAnnotations;
+  after.settings.annotations = { ...before.settings.annotations, "workers/triggered_by": "secret" };
+  const body = callerRetirementBodyV3("publisher", before);
+  const request = { role: "publisher", accountId, name: before.name, method: "PATCH",
+    endpoint: `https://api.cloudflare.com/client/v4/accounts/${accountId}/workers/scripts/${before.name}/secrets-bulk`,
+    contentType: "application/merge-patch+json", body, bodyDigest: callerRetirementDigest(body) };
+  request.requestDigest = callerRetirementDigest(request);
+  const intent = { schema: "atrinik-production-caller-retirement-v3", ...request, providerQualificationDigest: hash,
+    before, beforeDigest: callerRetirementDigest(before) };
+  const args = { role: "publisher", before, intent, read: async () => after,
+    fence: async () => {}, verifyStaged: async () => true, now: () => 1000 };
+  assert.equal((await observeCallerRetirement(args)).originalReceiptCreated, false);
+  assert.equal(verifyHistoricalPost("publisher", before, after), after);
+  await assert.rejects(observeCallerRetirement({ ...args, read: async () => retired(before) }));
+  await assert.rejects(observeCallerRetirement({ ...args, intent: { ...intent, schema: "atrinik-production-caller-retirement-v4" } }));
+});
+
+test("complete cohort guard permits only a recorded verified upload and preserves other peers", async () => {
+  const { retirementFixture } = await import("./fixtures/caller-retirement.mjs");
+  const { createRetirementCohortGuard } = await import("./production-retirement-cohort.mjs");
+  const f = await retirementFixture({ role: "rendezvous" });
+  const names = ["atrinik-metaserver", "atrinik-metaserver-publisher", "atrinik-metaserver-development",
+    "atrinik-metaserver-development-publisher", "atrinik-metaserver-development-rendezvous"];
+  f.before.peers = { workers: names.map(name => ({ name, activeVersion: oldId, latestVersion: oldId,
+    code: { sha256: hash }, controls: { disabled: true } })), namespaces: [{ id: "fixed" }] };
+  f.after.peers = structuredClone(f.before.peers);
+  const result = await f.retire();
+  const guard = createRetirementCohortGuard({ accountId, scope: f.scope });
+  guard.acceptRetirement({ snapshot: result.snapshot, proof: result.proof, role: "rendezvous",
+    selectedIdentity: f.selectedIdentity, now: () => 1000 });
+  for (const change of [
+    s => { s.peers.workers[0].activeVersion = newId; }, s => { s.peers.workers[0].code.sha256 = source; },
+    s => { s.peers.workers[0].controls.disabled = false; }, s => { s.peers.workers[0].extra = true; },
+    s => { s.peers.namespaces.push({ id: "foreign" }); }, s => { s.peers.workers.pop(); },
+    s => { s.peers.workers.push(structuredClone(s.peers.workers[0])); },
+  ]) { const invalid = structuredClone(result.snapshot); change(invalid); assert.throws(() => guard.check(invalid)); }
+  const changed = structuredClone(result.snapshot), publisher = changed.peers.workers[1];
+  publisher.activeVersion = publisher.latestVersion = newId; publisher.controls.disabled = false;
+  const expected = callerRetirementDigest(publisher);
+  guard.recordUpload({ name: publisher.name, versionId: newId, validate: row => callerRetirementDigest(row) === expected });
+  assert.throws(() => guard.recordUpload({ name: names[0], versionId: newId, validate: () => true }));
+  const invalid = structuredClone(changed); invalid.peers.workers[0].extra = true;
+  assert.throws(() => guard.check(invalid)); // failed graph does not consume the valid upload slot
+  assert.equal(guard.check(changed), true);
+  assert.equal(guard.check(changed), true);
+  assert.throws(() => guard.check(result.snapshot)); // no rollback/re-adoption
+  assert.throws(() => guard.recordUpload({ name: publisher.name, versionId: newId, validate: () => true }));
+});
+
+
+test("historical v2/v3 observations accept authenticated current-reader projections without changing old digests", async () => {
+  for (const schema of ["v2", "v3"]) {
+    const { createCallerRetirementReader } = await import("./production-caller-retirement.mjs");
+    const transport = readerFixture();
+    const currentReaderSnapshot = await createCallerRetirementReader({ accountId, token: "fixture", role: "publisher",
+      fetcher: transport.fetcher, now: () => 1000 })();
+    const before = structuredClone(currentReaderSnapshot); delete before.versionAnnotations;
+    for (const peer of before.peers.workers) delete peer.versionAnnotations;
+    const after = retired(currentReaderSnapshot);
+    after.settings.annotations = { ...before.settings.annotations, "workers/triggered_by": "secret" };
+    after.versionAnnotations = structuredClone(after.settings.annotations);
+    assert.equal(after.peers.workers.length, 5);
+    assert(after.peers.workers.every(peer => peer.versionAnnotations));
+    const body = schema === "v2" ? callerRetirementBody("publisher", before) : callerRetirementBodyV3("publisher", before);
+    const request = { role: "publisher", accountId, name: before.name, method: "PATCH",
+      endpoint: `https://api.cloudflare.com/client/v4/accounts/${accountId}/workers/scripts/${before.name}/secrets-bulk`,
+      contentType: "application/merge-patch+json", body, bodyDigest: callerRetirementDigest(body) };
+    request.requestDigest = callerRetirementDigest(request);
+    const intent = { schema: `atrinik-production-caller-retirement-${schema}`, ...request,
+      ...(schema === "v3" ? { providerQualificationDigest: hash } : {}), before, beforeDigest: callerRetirementDigest(before) };
+    const original = callerRetirementDigest(intent);
+    const args = { role: "publisher", before, intent, read: async () => after,
+      fence: async () => {}, verifyStaged: async () => true, now: () => 1000 };
+    const result = await observeCallerRetirement(args);
+    assert.equal(result.originalReceiptCreated, false);
+    assert.equal(result.snapshot, after);
+    assert.deepEqual(result.snapshot.versionAnnotations, after.settings.annotations);
+    assert.equal(callerRetirementDigest(intent), original);
+    for (const change of [
+      s => { s.versionAnnotations["workers/tag"] = "d".repeat(40); },
+      s => { s.peers.workers[0].versionAnnotations["workers/message"] = "changed"; },
+      s => { s.peers.workers[0].metadata = "changed"; },
+      s => { s.unexpected = true; },
+    ]) { const invalid = structuredClone(after); change(invalid); await assert.rejects(observeCallerRetirement({ ...args, read: async () => invalid })); }
+  }
 });

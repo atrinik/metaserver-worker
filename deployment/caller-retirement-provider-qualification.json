@@ -1,4 +1,54 @@
 {
-  "schema": "atrinik-caller-retirement-provider-qualification-v1",
-  "qualification": null
+  "schema": "atrinik-caller-retirement-provider-qualification-v2",
+  "qualification": {
+    "accountIdSha256": "0d4ad26d1da8e5111da99bdb4c15e85270340f3542420b72d11955182ad2e935",
+    "contract": {
+      "method": "PATCH",
+      "contentType": "application/merge-patch+json",
+      "endpoint": "https://api.cloudflare.com/client/v4/accounts/{account_id}/workers/scripts/{script_name}/secrets-bulk",
+      "bodyKeys": [
+        "secrets"
+      ],
+      "secretNames": [
+        "SOURCE_TAG_KEY_CURRENT",
+        "SOURCE_TAG_KEY_PREVIOUS"
+      ],
+      "secretOperation": "null-delete",
+      "postAnnotations": {
+        "workers/triggered_by": "secret"
+      }
+    },
+    "measuredAt": "2026-10-13T11:51:41.022Z",
+    "result": {
+      "status": "canary-measured-and-absent",
+      "scope": "isolated",
+      "measurement": {
+        "codeUnchanged": true,
+        "controlUnchanged": true,
+        "newVersion": true,
+        "nonsecretBindingsUnchanged": true,
+        "secretPairRemoved": true,
+        "settingsAnnotationsExact": true,
+        "soleDeployment": true,
+        "versionAnnotationsExact": true,
+        "versionSecretPairRemoved": true
+      },
+      "contractObserved": true,
+      "productionAuthorized": false,
+      "productionContractSatisfied": false
+    },
+    "evidence": {
+      "probeControllerSha256": "d7ee1d64a3439cf2681570b265ec30505eca55683c4d27343cc8189dc4bb1e46",
+      "requestSha256": "2b11a19499f3c7dad897808ae098cf70b7ead16c15bc8cb4faa264318891462d",
+      "beforeSha256": "0004bc2216dd96391d9ae93564e9564236621d97827d337f93a0e338e62430d6",
+      "afterSha256": "d5457beadeb7f32489df0e258afa3f0f6f351fb0d2bb74e41046340680b7b803",
+      "resultSha256": "da677aea2f3622e9f2cd1eee44d3d420963e79e3ef9b0c818ba614aebd3f0252"
+    },
+    "review": {
+      "reviewedAt": "2026-10-13T12:00:58.593Z",
+      "recordSha256": "3f705411a10eeab4271050cfb142921f4a54824117fb0969df253a5a85b9cc28",
+      "timestampAttestationSha256": "3a0381298941ceb04f9cb05aece287dc1d38328a9da0676fec6a1b85ae062a07",
+      "resultSha256": "da677aea2f3622e9f2cd1eee44d3d420963e79e3ef9b0c818ba614aebd3f0252"
+    }
+  }
 }

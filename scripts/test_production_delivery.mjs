@@ -1,3 +1,5 @@
+import { retirementFixture, retirementAfter } from "./fixtures/caller-retirement.mjs";
+import { callerRetirementDigest } from "./production-caller-retirement.mjs";
 import { fixtureQualification } from "./fixtures/retirement-qualification.mjs";
 const retirementQualification = await fixtureQualification();
 import assert from "node:assert/strict";
@@ -23,6 +25,8 @@ import {
   retainPrivateDeliveryEvidence,
   verifyPredecessorHandoff,
   verifyStagedCallerRetirement,
+  verifyRetiredCallerReadback,
+  verifyRetirementPeerUploadPreservation,
   verifyBootstrapCallerPredecessor,
   describeSubprocessFailure,
   deliveryDecision,
@@ -832,6 +836,7 @@ const retiredCallerVersion = "11111111-1111-4111-8111-111111111111";
 test("only fully verified caller retirement admits a new API handoff", async () => {
   for (const role of ["publisher", "rendezvous"]) {
     for (const failure of [null, "retire", "confirm", "verify"]) {
+      const fixture = await retirementFixture({ role, versionId: retiredCallerVersion });
       const apiHandoffRoles = new Set();
       const events = [];
       const step = name => {
@@ -840,10 +845,8 @@ test("only fully verified caller retirement admits a new API handoff", async () 
         if (failure === name) throw new Error(`failed ${name}`);
       };
       const complete = () => completeCallerRetirement({ role, apiHandoffRoles,
-        retire: async () => { step("retire"); return {
-          snapshot: { activeVersion: retiredCallerVersion, control: { environment: { script: { last_deployed_from: "api" } } },
-            resources: { script: { last_deployed_from: "api" } } },
-        }; },
+        scope: fixture.scope, selectedIdentity: fixture.selectedIdentity,
+        retire: async () => { step("retire"); return fixture.retire(); },
         confirm: () => { step("confirm"); },
         verify: async () => { step("verify"); return { versionId: retiredCallerVersion }; },
       });
@@ -876,21 +879,23 @@ test("retirement activation strictness follows both verified provenance fields",
         ["api", "wrangler", false], ["wrangler", "api", false],
         [undefined, undefined, false], ["dash", "dash", false],
       ]) {
+        const fixture = await retirementFixture({ role, provenance: valid ? service : "api", versionId: retiredCallerVersion });
         const apiHandoffRoles = new Set(selectedBeforeStaging ? [role] : []);
         const events = [];
         const complete = () => completeCallerRetirement({ role, apiHandoffRoles,
+          scope: fixture.scope, selectedIdentity: fixture.selectedIdentity,
           retire: async () => {
             events.push("retire");
-            return { snapshot: { activeVersion: retiredCallerVersion,
-              control: { environment: { script: { last_deployed_from: service } } },
-              resources: { script: { last_deployed_from: resource } },
-            } };
+            const result = await fixture.retire();
+            result.snapshot.control.environment.script.last_deployed_from = service;
+            result.snapshot.resources.script.last_deployed_from = resource;
+            return result;
           },
           confirm: () => { events.push("confirm"); },
           verify: async () => { events.push("verify"); return { versionId: retiredCallerVersion }; },
         });
         if (!valid) {
-          await assert.rejects(complete, /retirement provenance is invalid/u);
+          await assert.rejects(complete, /retirement snapshot changed after receipt/u);
           assert.equal(apiHandoffRoles.has(role), selectedBeforeStaging);
         } else {
           await complete();
@@ -899,7 +904,7 @@ test("retirement activation strictness follows both verified provenance fields",
             strict: !apiHandoffRoles.has(role) });
           assert.equal(args.includes("--strict"), service !== "api");
         }
-        assert.deepEqual(events, ["retire", "confirm", "verify"]);
+        assert.deepEqual(events, valid ? ["retire", "confirm", "verify"] : ["retire"]);
       }
     }
   }
@@ -909,17 +914,18 @@ test("post-retirement provenance rejection preserves consumed mutation diagnosti
   const secret = "private provider account/token/path";
   for (const role of ["publisher", "rendezvous"]) {
     for (const resourceSource of [undefined, "wrangler", secret]) {
+      const fixture = await retirementFixture({ role, versionId: retiredCallerVersion });
       const apiHandoffRoles = new Set();
       const events = [];
       let failure;
       try {
         await completeCallerRetirement({ role, apiHandoffRoles,
+          scope: fixture.scope, selectedIdentity: fixture.selectedIdentity,
           retire: async () => {
+            const result = await fixture.retire();
             events.push("retirement-receipt-verified");
-            return { snapshot: { activeVersion: retiredCallerVersion,
-              control: { environment: { script: { last_deployed_from: "api" } } },
-              resources: { script: { last_deployed_from: resourceSource } },
-            } };
+            result.snapshot.resources.script.last_deployed_from = resourceSource;
+            return result;
           },
           confirm: () => { events.push("confirm"); },
           verify: async () => { events.push("fence-and-readback"); return { versionId: retiredCallerVersion }; },
@@ -927,13 +933,13 @@ test("post-retirement provenance rejection preserves consumed mutation diagnosti
         events.push("activate");
       } catch (error) { failure = error; }
       assert(failure);
-      assert.deepEqual(events, ["retirement-receipt-verified", "confirm", "fence-and-readback"]);
+      assert.deepEqual(events, ["retirement-receipt-verified"]);
       assert.deepEqual([...apiHandoffRoles], []);
       const evidence = { sourceSha: "a".repeat(40), deployableDigest: "b".repeat(64),
         failedRole: `retirement:${role}`, completedRoles: ["staged:core"], recoveryOutcome: "proven" };
       const record = deliveryFailureRecord(failure, evidence);
       assert.deepEqual(record, { ...evidence, outcome: "production-delivery-stopped",
-        reason: "API handoff retirement provenance is invalid",
+        reason: "API handoff retirement snapshot changed after receipt",
         retirement: { phase: "postverify", category: "verification-failed", mutationState: "response-accepted" } });
       assert.equal(JSON.stringify(record).includes(secret), false);
     }
@@ -946,8 +952,9 @@ test("retirement handoff rejects replacement versions despite identical staged c
     for (const source of ["api", "wrangler"]) {
       for (const [retiredVersion, freshVersion] of [
         [retiredCallerVersion, retiredCallerVersion], [retiredCallerVersion, replacementVersion],
-        [retiredCallerVersion, undefined], [undefined, undefined], ["malformed", "malformed"],
+        [retiredCallerVersion, undefined], [retiredCallerVersion, "malformed"],
       ]) {
+        const fixture = await retirementFixture({ role, provenance: source, versionId: retiredVersion });
         const apiHandoffRoles = new Set();
         let activated = false;
         const annotations = { "workers/tag": "a".repeat(40), "workers/message": "same staged message" };
@@ -957,10 +964,8 @@ test("retirement handoff rejects replacement versions despite identical staged c
         let failure;
         try {
           await completeCallerRetirement({ role, apiHandoffRoles,
-            retire: async () => ({ snapshot: { activeVersion: retiredVersion,
-              settings: { annotations }, resources,
-              control: { environment: { script: { last_deployed_from: source } } },
-            } }),
+            scope: fixture.scope, selectedIdentity: fixture.selectedIdentity,
+            retire: fixture.retire,
             confirm: () => {},
             verify: async () => freshVersion === undefined ? undefined :
               { versionId: freshVersion, version: { annotations, resources } },
@@ -988,6 +993,7 @@ test("orchestrator rechecks the retired caller version immediately before activa
   const noop = async () => {};
   for (const provenance of ["api", "wrangler"]) {
     for (const replaced of [false, true]) {
+      const fixture = await retirementFixture({ provenance, versionId: retiredCallerVersion });
       const proofs = new Map(), apiHandoffRoles = new Set(), uploads = [], events = [];
       let retirements = 0;
       const active = { versionId: retiredCallerVersion, message: "same staged message", bindings: [] };
@@ -999,10 +1005,9 @@ test("orchestrator rechecks the retired caller version immediately before activa
         readbackStaged: async worker => {
           if (worker.role !== "publisher") return;
           const proof = await completeCallerRetirement({ role: worker.role, apiHandoffRoles,
-            retire: async () => { retirements++; return { snapshot: { activeVersion: retiredCallerVersion,
-              control: { environment: { script: { last_deployed_from: provenance } } },
-              resources: { script: { last_deployed_from: provenance } },
-            } }; }, confirm: () => {}, verify: async () => ({ ...active }),
+            scope: fixture.scope, selectedIdentity: fixture.selectedIdentity,
+            retire: async () => { retirements++; return fixture.retire(); },
+            confirm: () => {}, verify: async () => ({ ...active }),
           });
           assert(Object.isFrozen(proof));
           proofs.set(worker.role, proof);
@@ -1011,7 +1016,7 @@ test("orchestrator rechecks the retired caller version immediately before activa
         deployActive: async worker => {
           if (worker.role !== "publisher") return;
           const apiHandoff = await verifyCallerActivationHandoff({ role: worker.role,
-            proof: proofs.get(worker.role),
+            proof: proofs.get(worker.role), scope: fixture.scope, selectedIdentity: fixture.selectedIdentity,
             verify: async () => { events.push("fresh-version"); return { ...active }; },
             authorize: async () => { events.push("authorize"); },
           });
@@ -1039,6 +1044,7 @@ test("orchestrator preserves consumed retirement diagnostics after completion ba
   const workers = ["core", "publisher", "rendezvous"].map(role => ({ role }));
   const noop = async () => {};
   for (const boundary of ["confirm", "fence", "readback"]) {
+    const fixture = await retirementFixture({ versionId: retiredCallerVersion });
     const apiHandoffRoles = new Set();
     let uploads = 0, failure;
     const secret = "private provider payload";
@@ -1048,7 +1054,7 @@ test("orchestrator preserves consumed retirement diagnostics after completion ba
         readbackStaged: async worker => {
           if (worker.role !== "publisher") return;
           await completeCallerRetirement({ role: worker.role, apiHandoffRoles,
-            retire: async () => ({ snapshot: { activeVersion: retiredCallerVersion } }),
+            scope: fixture.scope, selectedIdentity: fixture.selectedIdentity, retire: fixture.retire,
             confirm: () => stop("confirm"),
             verify: async () => { stop("fence"); stop("readback"); },
           });
@@ -1076,6 +1082,51 @@ test("completion does not rebrand a failed retirement or run later barriers", as
   }), failure => failure === error);
   assert.deepEqual(deliveryFailureRecord(error, { completedRoles: [] }).retirement,
     { phase: "patch", category: "verification-failed", mutationState: "dispatched-outcome-unknown" });
+});
+
+test("retirement completion and activation reject forged, cross-role and cross-run capability", async () => {
+  const fixture = await retirementFixture({ versionId: retiredCallerVersion });
+  const result = await fixture.retire();
+  const handoff = await completeCallerRetirement({ role: "publisher", scope: fixture.scope,
+    selectedIdentity: fixture.selectedIdentity, apiHandoffRoles: new Set(), retire: async () => result,
+    confirm: () => {}, verify: async proof => { assert.equal(proof, result.proof); return { versionId: retiredCallerVersion }; } });
+  for (const change of [
+    x => { x.proof = structuredClone(handoff); },
+    x => { x.proof = { ...handoff, retirementProof: structuredClone(result.proof) }; },
+    x => { x.role = "rendezvous"; x.proof = { ...handoff, role: "rendezvous" }; },
+    x => { x.scope = Object.freeze({}); },
+    x => { x.selectedIdentity = { ...fixture.selectedIdentity, runId: "2" }; },
+    x => { x.selectedIdentity = { ...fixture.selectedIdentity, runAttempt: "2" }; },
+  ]) {
+    const input = { role: "publisher", proof: handoff, scope: fixture.scope,
+      selectedIdentity: fixture.selectedIdentity,
+      verify: () => assert.fail("invalid proof must stop before readback"),
+      authorize: () => assert.fail("invalid proof must stop before authorization") };
+    change(input);
+    await assert.rejects(() => verifyCallerActivationHandoff(input), /capability invalid/u);
+  }
+  for (const change of [
+    value => { value.versionId = "22222222-2222-4222-8222-222222222222"; },
+    value => { value.provenance = "wrangler"; },
+  ]) {
+    const altered = { ...handoff };
+    change(altered);
+    let reads = 0, authorizations = 0;
+    const input = { role: "publisher", proof: altered, scope: fixture.scope,
+      selectedIdentity: fixture.selectedIdentity,
+      verify: async () => { reads++; return { versionId: altered.versionId }; },
+      authorize: async () => { authorizations++; } };
+    await assert.rejects(() => verifyCallerActivationHandoff(input), /activation receipt identity changed/u);
+    assert.equal(reads, 0);
+    assert.equal(authorizations, 0);
+  }
+  for (const proof of [undefined, structuredClone(result.proof)]) {
+    await assert.rejects(() => completeCallerRetirement({ role: "publisher", scope: fixture.scope,
+      selectedIdentity: fixture.selectedIdentity, apiHandoffRoles: new Set(),
+      retire: async () => ({ ...result, proof }),
+      confirm: () => assert.fail("invalid proof must stop completion"), verify: () => assert.fail("invalid proof must stop readback") }),
+    /capability invalid/u);
+  }
 });
 
 test("keeps strict Wrangler arguments outside the explicit API handoff", () => {
@@ -1358,6 +1409,17 @@ test("no-op requires one coherent active topology", () => {
     /migration content is divergent/u,
   );
   assert.doesNotThrow(() => assertCoherentTopology(annotations, plan, source));
+  // The temporary retired-caller exception never applies to final active state.
+  for (const index of [1, 2]) {
+    for (const field of ["source", "deploy", "migration", "migrationHorizon", "control", "role", "phase"]) {
+      const incomplete = structuredClone(annotations);
+      delete incomplete[index][field];
+      assert.throws(() => assertCoherentTopology(incomplete, plan, source), /not one coherent/u);
+    }
+    const annotationless = structuredClone(annotations);
+    annotationless[index] = null;
+    assert.throws(() => assertCoherentTopology(annotationless, plan, source), /not one coherent/u);
+  }
   assert.throws(
     () =>
       assertCoherentTopology(
@@ -2613,6 +2675,155 @@ test("caller retirement requires exact selected disabled bundle, annotation and 
   assert.throws(() => verifyStagedCallerRetirement(retired));
   retired.snapshot.resources.bindings = retired.snapshot.resources.bindings.filter(v => v.type !== "secret_text");
   assert.equal(verifyStagedCallerRetirement(retired), true);
+});
+
+test("retirement peer upload permits only the closed selected caller delta", async () => {
+  for (const index of [1, 2]) {
+    const role = contract.workers[index].role;
+    const config = disabledCircuitConfiguration(productionConfigs()[index], role);
+    assert(Object.keys(config.vars).length > 0);
+    assert(config.services.length > 0);
+    assert(config.ratelimits.length > 0);
+    const fixture = await retirementFixture({ role });
+    const previous = fixture.before;
+    previous.deploymentId = "00000000-0000-0000-0000-000000000003";
+    previous.settings.compatibility_flags = ["nodejs_compat"];
+    previous.settings.observability = structuredClone(previous.control.environment.script.observability);
+    previous.settings.tail_consumers = [];
+    previous.settings.logpush = false;
+    previous.settings.assets = { enabled: false };
+    previous.resources.script_runtime = { compatibility_date: "2026-10-01", compatibility_flags: ["nodejs_compat"], exports: {} };
+    previous.control.routes = [{ id: "existing-route", pattern: "existing.example.invalid/*", script: config.name }];
+    const current = structuredClone(previous);
+    const versionId = "33333333-3333-4333-8333-333333333333";
+    const sourceSha = "4".repeat(40), bundleDigest = "5".repeat(64);
+    const expectedMessage = `selected staged ${role} upload`;
+    current.activeVersion = current.latestVersion = current.deploymentId = versionId;
+    current.code = { etag: "6".repeat(64), modules: [{ name: "worker.js", type: "application/javascript+module", sha256: bundleDigest, bytes: 256 }] };
+    current.settings.annotations = { "workers/tag": sourceSha, "workers/message": expectedMessage, "workers/triggered_by": "version_upload" };
+    current.versionAnnotations = structuredClone(current.settings.annotations);
+    current.settings.bindings = [
+      ...Object.entries(config.vars).map(([name, text]) => ({ name, type: "plain_text", text })),
+      ...config.services.map(({ binding, ...value }) => ({ name: binding, ...value, type: "service", environment: "production" })),
+      ...config.ratelimits.map(value => ({ ...value, type: "ratelimit" })),
+    ];
+    current.resources.bindings = structuredClone(current.settings.bindings);
+    current.settings.compatibility_date = config.compatibility_date;
+    current.settings.compatibility_flags = structuredClone(config.compatibility_flags);
+    current.settings.observability = structuredClone(config.observability);
+    Object.assign(current.resources.script_runtime, { compatibility_date: config.compatibility_date,
+      compatibility_flags: config.compatibility_flags, exports: config.exports ?? {} });
+    Object.assign(current.resources.script, { etag: current.code.etag, last_deployed_from: "wrangler" });
+    current.control.environment.modified_on = "1970-01-01T00:00:01.500Z";
+    Object.assign(current.control.environment.script, { modified_on: "1970-01-01T00:00:01.500Z",
+      etag: current.code.etag, last_deployed_from: "wrangler", compatibility_date: config.compatibility_date,
+      compatibility_flags: config.compatibility_flags, observability: structuredClone(config.observability) });
+    const input = { previous, current, config, versionId, sourceSha, bundleDigest, expectedMessage, startedAt: 1000, capturedAt: 2000 };
+    assert.equal(verifyRetirementPeerUploadPreservation(input), true);
+    const unchangedTimes = structuredClone(input);
+    unchangedTimes.current.control.environment.modified_on = previous.control.environment.modified_on;
+    unchangedTimes.current.control.environment.script.modified_on = previous.control.environment.script.modified_on;
+    assert.equal(verifyRetirementPeerUploadPreservation(unchangedTimes), true);
+    // Test the two documented nonempty deployment metadata representations too.
+    for (const field of ["activeVersion", "deploymentId"]) {
+      const candidate = { ...input, previous: structuredClone(previous), current: structuredClone(current) };
+      candidate.previous.control.environment.script.deployment_id = previous[field];
+      candidate.current.control.environment.script.deployment_id = field === "activeVersion" ? versionId : current.deploymentId;
+      assert.equal(verifyRetirementPeerUploadPreservation(candidate), true);
+    }
+    for (const change of [
+      x => { x.current.settings.tail_consumers = [{ service: "unexpected" }]; },
+      x => { x.current.settings.logpush = true; },
+      x => { x.current.settings.assets.enabled = true; },
+      x => { x.current.settings.unknown = true; },
+      x => { x.current.resources.unknown = true; },
+      x => { x.current.resources.script.unknown = true; },
+      x => { x.current.resources.script_runtime.unknown = true; },
+      x => { x.current.control.routes[0].id = "replaced-route"; },
+      x => { x.current.control.routes[0].unknown = true; },
+      x => { x.current.control.environment.unknown = true; },
+      x => { x.current.control.environment.script.unknown = true; },
+      x => { x.current.control.environment.script.created_on = "1970-01-01T00:00:01.500Z"; },
+      x => { x.current.control.environment.script.deployment_id = "unbound"; },
+      x => { x.current.settings.bindings[0].text += "changed"; },
+      x => { x.current.resources.bindings.find(row => row.type === "service").environment = "preview"; },
+      x => { x.current.resources.bindings.find(row => row.type === "ratelimit").simple.limit++; },
+      x => { x.current.settings.annotations["workers/message"] += "changed"; },
+      x => { x.current.versionAnnotations["workers/tag"] = "7".repeat(40); },
+      x => { x.current.latestVersion = previous.activeVersion; },
+      x => { x.current.activeVersion = previous.activeVersion; },
+      x => { x.current.deploymentId = previous.deploymentId; },
+      x => { x.current.code.modules[0].sha256 = "7".repeat(64); },
+      x => { x.current.code.modules[0].unknown = true; },
+      x => { x.current.code.unknown = true; },
+      x => { x.current.resources.script.etag = "7".repeat(64); },
+      x => { x.current.control.environment.modified_on = "1970-01-01T00:00:00.999Z"; },
+      x => { x.current.control.environment.script.modified_on = "1970-01-01T00:00:02.001Z"; },
+      x => { x.current.control.environment.modified_on = "invalid"; },
+      x => { x.capturedAt = 999; },
+      x => { x.startedAt = NaN; },
+    ]) {
+      const candidate = structuredClone(input);
+      change(candidate);
+      assert.throws(() => verifyRetirementPeerUploadPreservation(candidate));
+    }
+  }
+});
+
+test("retired caller readback requires receipt-bound exact configuration, modules and control", async () => {
+  for (const index of [1, 2]) {
+    const worker = contract.workers[index];
+    const config = disabledCircuitConfiguration(productionConfigs()[index], worker.role);
+    const fixture = await retirementFixture({ role: worker.role });
+    const before = fixture.before;
+    before.code.modules[0].name = "worker.js";
+    before.settings.bindings = [
+      ...Object.entries(config.vars).map(([name, text]) => ({ name, type: "plain_text", text })),
+      ...config.services.map(({ binding, ...value }) => ({ ...value, name: binding, type: "service" })),
+      ...config.ratelimits.map(value => ({ ...value, type: "ratelimit" })),
+      ...["SOURCE_TAG_KEY_CURRENT", "SOURCE_TAG_KEY_PREVIOUS"].map(name => ({ name, type: "secret_text" })),
+    ];
+    before.resources.bindings = structuredClone(before.settings.bindings);
+    before.resources.script_runtime = { compatibility_date: config.compatibility_date,
+      compatibility_flags: config.compatibility_flags, exports: config.exports ?? {} };
+    const plane = liveControlPlane(index);
+    Object.assign(before.control, { routes: plane.routes, domains: plane.customDomains,
+      subdomain: plane.subdomainStatus, schedules: plane.cronTriggers });
+    Object.assign(before.control.environment.script, plane.serviceEnvironment.script);
+    const after = retirementAfter(before);
+    after.resources.script.last_deployed_from = after.control.environment.script.last_deployed_from = "api";
+    fixture.selectedIdentity.configurationDigest = callerRetirementDigest(config);
+    let reads = 0;
+    fixture.options.read = async () => structuredClone(++reads < 3 ? before : after);
+    const result = await fixture.retire();
+    const input = { worker, config, snapshot: result.snapshot, proof: result.proof,
+      scope: fixture.scope, selectedIdentity: fixture.selectedIdentity, now: () => 1000,
+      expectedMessage: before.settings.annotations["workers/message"], expectedZoneId: "b".repeat(32) };
+    const identity = verifyRetiredCallerReadback(input);
+    assert.equal(identity.versionId, after.activeVersion);
+    assert.equal(identity.predecessorIdentity.role, worker.role);
+    assert.deepEqual(result.snapshot.settings.annotations, { "workers/triggered_by": "secret" });
+    for (const change of [
+      x => { x.config.vars.ROUTE_DISABLED_RETRY_SECONDS = "299"; },
+      x => { x.snapshot.code.modules[0].sha256 = "9".repeat(64); },
+      x => { x.snapshot.code.modules.push({ name: "other.js", sha256: "9".repeat(64), bytes: 1 }); },
+      x => { x.snapshot.resources.bindings.push({ name: "UNKNOWN", type: "secret_text" }); },
+      x => { x.snapshot.control.domains[0].zone_id = "c".repeat(32); },
+      x => { x.snapshot.settings.annotations["workers/tag"] = before.settings.annotations["workers/tag"]; },
+      x => { x.snapshot.versionAnnotations["workers/message"] = input.expectedMessage; },
+      x => { x.snapshot.activeVersion = "22222222-2222-4222-8222-222222222222"; },
+      x => { x.expectedMessage += "changed"; },
+      x => { x.now = () => 11001; },
+    ]) {
+      const candidate = { ...input, config: structuredClone(config), snapshot: structuredClone(result.snapshot) };
+      change(candidate);
+      assert.throws(() => verifyRetiredCallerReadback(candidate));
+    }
+    // The ordinary staged gate still requires the original source annotations.
+    assert.throws(() => verifyStagedCallerRetirement({ worker, config, snapshot: result.snapshot,
+      sourceSha: fixture.selectedIdentity.sourceSha, bundleDigest: fixture.selectedIdentity.bundleDigest,
+      expectedMessage: input.expectedMessage, expectedZoneId: input.expectedZoneId, retired: true }), /module identity drift|annotation drift/u);
+  }
 });
 
 test("old caller code and key-ID authority remain pinned until that role's staging handoff", async () => {

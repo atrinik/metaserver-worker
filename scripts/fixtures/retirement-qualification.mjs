@@ -7,21 +7,20 @@ import { mock } from "node:test";
 import assert from "node:assert/strict";
 import { loadCallerRetirementQualification } from "../production-retirement-qualification.mjs";
 export function qualificationDocument(accountId = "a".repeat(32)) {
-  return { schema: "atrinik-caller-retirement-provider-qualification-v1", qualification: {
+  return { schema: "atrinik-caller-retirement-provider-qualification-v2", qualification: {
     accountIdSha256: createHash("sha256").update(accountId).digest("hex"),
     contract: { method: "PATCH", contentType: "application/merge-patch+json",
       endpoint: "https://api.cloudflare.com/client/v4/accounts/{account_id}/workers/scripts/{script_name}/secrets-bulk",
-      bodyKeys: ["secrets", "version_tags"], secretNames: ["SOURCE_TAG_KEY_CURRENT", "SOURCE_TAG_KEY_PREVIOUS"],
-      secretOperation: "null-delete", versionTagKeys: ["workers/tag", "workers/message"] },
+      bodyKeys: ["secrets"], secretNames: ["SOURCE_TAG_KEY_CURRENT", "SOURCE_TAG_KEY_PREVIOUS"],
+      secretOperation: "null-delete", postAnnotations: { "workers/triggered_by": "secret" } },
     measuredAt: "1970-01-01T00:00:00.000Z",
     result: { status: "canary-measured-and-absent", scope: "isolated", measurement: {
-      secretPairRemoved: true, versionSecretPairRemoved: true, tagPreserved: true, messagePreserved: true,
-      versionTagPreserved: true, versionMessagePreserved: true, settingsTriggerSecret: true,
-      versionTriggerSecret: true, newVersion: true, codeUnchanged: true,
-    }, mappingObserved: true, productionAuthorized: false, productionContractSatisfied: false },
+      secretPairRemoved: true, versionSecretPairRemoved: true, settingsAnnotationsExact: true, versionAnnotationsExact: true,
+      newVersion: true, soleDeployment: true, codeUnchanged: true, nonsecretBindingsUnchanged: true, controlUnchanged: true,
+    }, contractObserved: true, productionAuthorized: false, productionContractSatisfied: false },
     evidence: Object.fromEntries(["probeControllerSha256", "requestSha256", "beforeSha256", "afterSha256", "resultSha256"]
       .map((name, index) => [name, String(index + 1).repeat(64)])),
-    review: { reviewedAt: "1970-01-01T00:00:01.000Z", recordSha256: "6".repeat(64), resultSha256: "5".repeat(64) },
+    review: { reviewedAt: "1970-01-01T00:00:01.000Z", recordSha256: "6".repeat(64), timestampAttestationSha256: "7".repeat(64), resultSha256: "5".repeat(64) },
   } };
 }
 export const qualificationBytes = document => Buffer.from(`${JSON.stringify(document, null, 2)}\n`);

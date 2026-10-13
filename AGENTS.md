@@ -120,13 +120,11 @@
   Stage the new disabled core first, then each new disabled stateless caller
   with its exact approved baseline secret inventory. Verify selected code and complete readback
   before a fresh, one-use `secrets-bulk` JSON Merge Patch removes that caller's
-  two exact secret names through explicit null values. New v3 requests include only
-  those deletions and `version_tags` containing the exact staged `workers/tag` and
-  `workers/message`; reject every other field, provider trigger, accessor and secret
-  substitution. The inner-key mapping requires separate authorized provider
-  qualification before production use. The fixed controller-owned
+  two exact secret names through explicit null values. New v4 requests contain
+  only those deletions in `secrets`; reject `version_tags`, every other field,
+  accessors and secret substitution. The fixed controller-owned
   `deployment/caller-retirement-provider-qualification.json` must contain a
-  reviewed source attestation of the actual isolated mapping probe, its clean
+  reviewed source attestation of the actual isolated bare-operation probe, its clean
   terminal, exact account/contract and evidence/review hashes. Keep qualification
   null until that evidence is independently reviewed; a local hash or boolean is
   not proof. No environment/path override exists. Pair-role planning and live
@@ -134,18 +132,19 @@
   paths need no retirement qualification. Only the bounded regular-file loader
   mints the capability independently required by retirement and transport.
   The document digest changes the approved plan and is bound as
-  `providerQualificationDigest` in new v3 intents. V3 binds the full endpoint,
-  request/body digests and timestamped predecessor. Keep historical v2 pair-only request decoding
-  immutable and read-only. An approved empty role instead requires a dedicated
+  `providerQualificationDigest` in new v4 intents. V4 binds the full endpoint,
+  request/body digests, timestamped predecessor and selected execution identity.
+  Keep historical v2/v3 decoding immutable and read-only. An approved empty role instead requires a dedicated
   fresh staged observation, with no PATCH, intent, receipt or uncertain-retirement
   state. Freeze its Wrangler UUID/provenance proof and require the same final
   exact-version activation guard. Evidence counts are per-role: two encrypted
   artifacts for a pair retirement, zero for an empty observation. Never infer an
   empty disposition from a failed PATCH or brand observation failures response-accepted.
   Historical v1 settings intents are read-only evidence, never bulk-delete
-  authority. Require unchanged staged source tag/message and provider trigger
-  `secret`; exact retained annotations and that trigger must be proved by live
-  readback before activation. Provider success is not guaranteed. Only service-consistent
+  authority. Require the exact annotation object `{ "workers/triggered_by": "secret" }`
+  in both settings and version data after the new v4 operation; retain staged
+  source tag/message in the authenticated predecessor, never inject them into
+  observed post-state. Provider success is not guaranteed. Only service-consistent
   `resources.script.last_deployed_from` Wrangler-to-API provenance may change;
   preserve all other resource metadata exactly.
   Require zero-secret readback before activation. Encrypt mutation intents and
@@ -162,6 +161,16 @@
   no remote compare-and-swap: preserve the fixed promotion concurrency and fresh
   exclusive-writer/source fences at each intent. Retire this one-use policy to a
   newly observed ordinary inventory and approved plan before later promotions.
+- Bootstrap caller retirement uses the reviewed v4 bare two-null secrets PATCH
+  and controller-owned v2 qualification. Preserve the exact annotation-loss
+  postcondition in both settings/version data, full timestamped before/after
+  receipts, encrypted finalization before capability creation, selected identity
+  and same-run proof. Later topology/activation reads require the exact retired
+  UUID plus full own snapshot and phase-aware complete peer graph. Never invent
+  missing annotations or turn historical v2/v3 evidence into a v4 receipt. Normal
+  staging, secret-free observations and final active versions retain annotation
+  gates. Qualification of an isolated empty-binding canary does not waive full
+  production configuration/control/module preservation or authorize deployment.
 - Treat `server_presence` plus the profile-discriminated `directory_entries`
   as authoritative, profile-scoped publication state. Active profiles are Classic
   publisher v3/directory v6 and Game publisher v2/directory v2. Private presence

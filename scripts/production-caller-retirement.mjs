@@ -35,7 +35,7 @@ function bindings(rows) {
   }
   return rows;
 }
-function assertSnapshot(role, value, retired = false, stagedEmpty = false) {
+function assertSnapshot(role, value, retired = false, stagedEmpty = false, annotationLoss = false) {
   if (!value || !Number.isFinite(value.capturedAt) || value.name !== workerName(role) || !/^[a-f0-9]{32}$/u.test(value.accountId ?? "") ||
       !uuid.test(value.activeVersion ?? "") || value.latestVersion !== value.activeVersion ||
       !uuid.test(value.deploymentId ?? "") || !value.peers || !value.code ||
@@ -62,6 +62,12 @@ function assertSnapshot(role, value, retired = false, stagedEmpty = false) {
       (services[0].environment !== undefined && services[0].environment !== "production"))
     fail("named production core authority mismatch");
   const annotations = value.settings.annotations;
+  if (annotationLoss) {
+    if (!exactKeys(annotations, ["workers/triggered_by"]) || annotations["workers/triggered_by"] !== "secret" ||
+        !exactKeys(value.versionAnnotations, ["workers/triggered_by"]) || !same(annotations, value.versionAnnotations))
+      fail("retired annotation object mismatch");
+    return;
+  }
   if (!/^[a-f0-9]{40}$/u.test(annotations?.["workers/tag"] ?? "") ||
       !new RegExp(`^atrinik-delivery-v1 source=${annotations["workers/tag"]} deploy=[a-f0-9]{64} migration=[a-f0-9]{64} horizon=[1-9][0-9]* control=[a-f0-9]{64} role=${role} phase=staged$`, "u")
         .test(annotations["workers/message"] ?? "")) fail("selected staged annotation missing");
@@ -179,6 +185,7 @@ function assertRetirementRequest(role, accountId, request) {
       !exactKeys(request.body, ["secrets"]) || !exactKeys(request.body.secrets, [...callerRetirementSecrets]) ||
       callerRetirementSecrets.some((name) => request.body.secrets[name] !== null) || !same(request, expected))
     fail("mutation request authority drift");
+  return expected;
 }
 function assertV2Intent(role, before, intent) {
   const request = retirementRequest(role, before.accountId);
@@ -233,6 +240,75 @@ function assertV3Intent(role, before, intent, expectedQualificationDigest =
   assertRetirementRequestV3(role, before.accountId, Object.fromEntries(Object.keys(request).map(key => [key, intent[key]])));
 }
 
+const retiredProofs = new WeakMap();
+function retirementRequestV4(role, accountId) {
+  const { requestDigest: _digest, ...request } = retirementRequest(role, accountId);
+  const operation = { ...request, contract: "atrinik-production-caller-retirement-v4" };
+  return { ...operation, requestDigest: callerRetirementDigest(operation) };
+}
+function assertRetirementRequestV4(role, accountId, request) {
+  const expected = retirementRequestV4(role, accountId);
+  if (!exactKeys(request, Object.keys(expected))) fail("mutation request authority drift");
+  const { contract: _contract, requestDigest: _digest, ...legacy } = request;
+  if (!exactKeys(request.body, ["secrets"]) || !exactKeys(request.body.secrets, [...callerRetirementSecrets]))
+    fail("mutation request authority drift");
+  assertRetirementRequest(role, accountId, { ...legacy, requestDigest: callerRetirementDigest(legacy) });
+  if (!same(request, expected)) fail("mutation request authority drift");
+  return expected;
+}
+function assertSelectedIdentity(role, before, selected) {
+  if (!same(before.settings.annotations, before.versionAnnotations)) fail("predecessor version annotations missing or different");
+  if (!exactKeys(selected, ["sourceSha", "deployableDigest", "configurationDigest", "bundleDigest", "uploadedVersion",
+    "controllerSha", "runId", "runAttempt"]) ||
+    !/^[a-f0-9]{40}$/u.test(selected.controllerSha ?? "") ||
+    !/^[1-9][0-9]*$/u.test(selected.runId ?? "") || !/^[1-9][0-9]*$/u.test(selected.runAttempt ?? "") ||
+    ![selected.deployableDigest, selected.configurationDigest, selected.bundleDigest].every(v => sha.test(v ?? "")) ||
+    selected.sourceSha !== before.settings.annotations["workers/tag"] || selected.uploadedVersion !== before.activeVersion ||
+    before.code.modules.length !== 1 || before.code.modules[0].sha256 !== selected.bundleDigest ||
+    !before.settings.annotations["workers/message"].includes(` deploy=${selected.deployableDigest} `))
+    fail("selected retirement identity invalid");
+}
+function assertV4Intent(role, before, intent, qualificationDigest = intent?.providerQualificationDigest) {
+  assertSnapshot(role, before);
+  assertSelectedIdentity(role, before, intent?.selectedIdentity);
+  if (!sha.test(qualificationDigest ?? "")) fail("recovery provider qualification digest invalid");
+  const request = retirementRequestV4(role, before.accountId);
+  const expected = { schema: "atrinik-production-caller-retirement-v4", ...request,
+    providerQualificationDigest: qualificationDigest, selectedIdentity: intent.selectedIdentity,
+    before: structuredClone(before), beforeDigest: callerRetirementDigest(before) };
+  if (!exactKeys(intent, Object.keys(expected)) || !same(intent, expected)) fail("recovery intent does not bind predecessor and exact request");
+  assertRetirementRequestV4(role, before.accountId, Object.fromEntries(Object.keys(request).map(key => [key, intent[key]])));
+}
+// This validator is pure evidence inspection. It cannot mint a runtime capability.
+export function verifyCallerRetirementReceiptV4(receipt, expectedQualificationDigest) {
+  if (!receipt || !sha.test(expectedQualificationDigest ?? "")) fail("receipt qualification binding missing");
+  const { status, after, afterDigest, capturedAt, ...intent } = receipt;
+  assertV4Intent(intent.role, intent.before, intent, expectedQualificationDigest);
+  verifyCallerRetirementPostV4(intent.role, intent.before, after);
+  if (status !== "observed-disabled-caller-secrets-retired" || capturedAt !== after.capturedAt ||
+      afterDigest !== callerRetirementDigest(withoutTime(after))) fail("retirement receipt mismatch");
+  return true;
+}
+function ownSnapshot(snapshot) {
+  const result = withoutTime(snapshot);
+  delete result.peers;
+  return result;
+}
+// Only a fulfilled durable receipt in this process creates the key in this map.
+// A serialized receipt, a recovered historical observation, or a new run cannot.
+export function requireRetiredCallerProof({ proof, role, scope, selectedIdentity, snapshot, now = Date.now }) {
+  const value = proof && retiredProofs.get(proof);
+  if (!value || value.role !== role || value.scope !== scope || !same(value.selectedIdentity, selectedIdentity))
+    fail("retired caller capability invalid");
+  if (snapshot) {
+    fresh(snapshot, now);
+    assertSnapshot(role, snapshot, true, false, true);
+    if (!same(ownSnapshot(snapshot), value.ownSnapshot)) fail("retired caller snapshot changed");
+  }
+  return Object.freeze({ versionId: value.versionId, message: value.message, sourceSha: value.selectedIdentity.sourceSha,
+    snapshotDigest: value.snapshotDigest, provenance: value.provenance });
+}
+
 // A distinct read-only operation for an explicitly approved empty baseline after
 // fresh Wrangler staging. No intent, receipt or retirement transport is accepted.
 export async function observeSecretFreeCaller({ role, read, fence, verifyStaged, now = Date.now }) {
@@ -252,8 +328,14 @@ export async function observeSecretFreeCaller({ role, read, fence, verifyStaged,
 }
 
 export function verifyCallerRetirementPost(role, before, after) {
+  return verifyRetirementPost(role, before, after, false);
+}
+export function verifyCallerRetirementPostV4(role, before, after) {
+  return verifyRetirementPost(role, before, after, true);
+}
+function verifyRetirementPost(role, before, after, annotationLoss) {
   assertSnapshot(role, before);
-  assertSnapshot(role, after, true);
+  assertSnapshot(role, after, true, false, annotationLoss);
   if (after.capturedAt < before.capturedAt) fail("postwrite observation predates predecessor");
   if (after.activeVersion === before.activeVersion || after.deploymentId === before.deploymentId)
     fail("no new active version observed");
@@ -261,7 +343,11 @@ export function verifyCallerRetirementPost(role, before, after) {
   for (const key of ["activeVersion", "latestVersion", "deploymentId"]) expected[key] = after[key];
   for (const field of ["settings", "resources"])
     expected[field].bindings = expected[field].bindings.filter((b) => !callerRetirementSecrets.includes(b.name));
-  expected.settings.annotations["workers/triggered_by"] = "secret";
+  if (annotationLoss) {
+    expected.settings.annotations = { "workers/triggered_by": "secret" };
+    expected.versionAnnotations = { "workers/triggered_by": "secret" };
+  }
+  else expected.settings.annotations["workers/triggered_by"] = "secret";
   expected.control.environment = expectedServiceMetadata(before, after);
   expected.resources.script = expectedResourceScript(before, after);
   if (!same(expected, withoutTime(after))) fail("postwrite preservation mismatch");
@@ -278,7 +364,7 @@ export function verifyCallerRetirementPost(role, before, after) {
  * Failure after intent is permanent: no retry or rollback is provided here.
  */
 export async function retireCallerSecrets({ role, read, fence, verifyStaged, patch,
-  recordIntent, recordReceipt, authorize, qualification, now = Date.now }) {
+  recordIntent, recordReceipt, authorize, qualification, selectedIdentity, scope, now = Date.now }) {
   workerName(role);
   if ([read, fence, verifyStaged, patch, recordIntent, recordReceipt, authorize].some((f) => typeof f !== "function"))
     fail("required authority or durable recorder missing");
@@ -294,9 +380,11 @@ export async function retireCallerSecrets({ role, read, fence, verifyStaged, pat
     requireCallerRetirementQualification(qualification, before.accountId);
     phase = "initial-staged-proof";
     if (await verifyStaged(before, { retired: false }) !== true) fail("selected staged proof rejected");
-    const request = retirementRequestV3(role, before.accountId, callerRetirementBodyV3(role, before).version_tags);
-    const intent = { schema: "atrinik-production-caller-retirement-v3", ...request,
-      providerQualificationDigest, before: structuredClone(before), beforeDigest: callerRetirementDigest(before) };
+    assertSelectedIdentity(role, before, selectedIdentity);
+    if (!scope || typeof scope !== "object") fail("retirement run scope missing");
+    const request = retirementRequestV4(role, before.accountId);
+    const intent = { schema: "atrinik-production-caller-retirement-v4", ...request,
+      providerQualificationDigest, selectedIdentity: structuredClone(selectedIdentity), before: structuredClone(before), beforeDigest: callerRetirementDigest(before) };
     phase = "intent-proof";
     await recordIntent(structuredClone(intent));
     // Intent is consumed first. Re-read module, latest, bindings and peers, then do
@@ -316,7 +404,7 @@ export async function retireCallerSecrets({ role, read, fence, verifyStaged, pat
     phase = "freshness";
     fresh(current, now);
     phase = "patch";
-    assertV3Intent(role, before, intent, requireCallerRetirementQualification(qualification, before.accountId));
+    assertV4Intent(role, before, intent, requireCallerRetirementQualification(qualification, before.accountId));
     mutationState = "dispatched-outcome-unknown";
     await patch(structuredClone(request));
     mutationState = "response-accepted";
@@ -324,23 +412,53 @@ export async function retireCallerSecrets({ role, read, fence, verifyStaged, pat
     const after = await read();
     phase = "postverify";
     fresh(after, now);
-    verifyCallerRetirementPost(role, before, after);
-    if (await verifyStaged(after, { retired: true }) !== true) fail("retired staged proof rejected");
+    verifyCallerRetirementPostV4(role, before, after);
+    if (await verifyStaged(after, { retired: true, predecessor: structuredClone(before) }) !== true) fail("retired staged proof rejected");
     phase = "post-fence";
     await fence();
     const receipt = { ...intent, status: "observed-disabled-caller-secrets-retired",
-      afterDigest: callerRetirementDigest(withoutTime(after)), capturedAt: after.capturedAt };
+      after: structuredClone(after), afterDigest: callerRetirementDigest(withoutTime(after)), capturedAt: after.capturedAt };
     phase = "receipt-proof";
-    await recordReceipt(receipt);
-    return { snapshot: after, receipt };
+    verifyCallerRetirementReceiptV4(receipt, providerQualificationDigest);
+    await recordReceipt(structuredClone(receipt));
+    const proof = Object.freeze({ role, versionId: after.activeVersion });
+    retiredProofs.set(proof, { role, scope, selectedIdentity: structuredClone(selectedIdentity),
+      versionId: after.activeVersion, ownSnapshot: ownSnapshot(after), snapshotDigest: callerRetirementDigest(after),
+      provenance: after.resources.script.last_deployed_from === after.control.environment.script.last_deployed_from
+        ? after.resources.script.last_deployed_from : undefined,
+      message: before.settings.annotations["workers/message"], receiptDigest: callerRetirementDigest(receipt) });
+    return { snapshot: after, receipt, proof };
   } catch (error) { throw markRetirementFailure(error, phase, mutationState); }
+}
+
+// The v4 reader retains a projection which historical v2/v3 snapshots never
+// contained. Authenticate that added projection against the same raw settings
+// before removing only this known derived field for the historical comparator.
+// Original intent bytes/digests and every other peer/own field remain untouched.
+function historicalObservationSnapshot(before, after) {
+  const projected = structuredClone(after);
+  const project = (old, current) => {
+    if (old && !Object.hasOwn(old, "versionAnnotations") && Object.hasOwn(current, "versionAnnotations")) {
+      if (!current.settings?.annotations || !current.versionAnnotations ||
+          !same(current.settings.annotations, current.versionAnnotations))
+        fail("historical observation version annotations mismatch");
+      delete current.versionAnnotations;
+    }
+  };
+  project(before, projected);
+  for (const peer of projected.peers?.workers ?? []) {
+    const old = before.peers?.workers?.find(value => value.name === peer.name);
+    project(old, peer);
+  }
+  return projected;
 }
 
 // An ambiguous prior dispatch may only be OBSERVED, never replayed. A successful
 // recovery terminal is a new document and is not a fabricated original receipt.
 export async function observeCallerRetirement({ role, before, intent, read, fence, verifyStaged, now = Date.now }) {
   assertSnapshot(role, before);
-  if (intent?.schema === "atrinik-production-caller-retirement-v3") assertV3Intent(role, before, intent);
+  if (intent?.schema === "atrinik-production-caller-retirement-v4") assertV4Intent(role, before, intent);
+  else if (intent?.schema === "atrinik-production-caller-retirement-v3") assertV3Intent(role, before, intent);
   else if (intent?.schema === "atrinik-production-caller-retirement-v2") assertV2Intent(role, before, intent);
   else {
     if (intent?.schema !== "atrinik-production-caller-retirement-v1" || intent.role !== role ||
@@ -356,7 +474,8 @@ export async function observeCallerRetirement({ role, before, intent, read, fenc
   await fence();
   const after = await read();
   fresh(after, now);
-  verifyCallerRetirementPost(role, before, after);
+  if (intent.schema === "atrinik-production-caller-retirement-v4") verifyCallerRetirementPostV4(role, before, after);
+  else verifyCallerRetirementPost(role, before, historicalObservationSnapshot(before, after));
   if (await verifyStaged(after, { retired: true }) !== true) fail("recovery staged proof rejected");
   await fence();
   return { status: "observed-retirement-recovery-only", originalReceiptCreated: false,
@@ -374,7 +493,7 @@ export function createCallerRetirementPatch({ accountId, token, role, qualificat
     try {
       if (consumed) fail("mutation transport already consumed");
       requireCallerRetirementQualification(qualification, accountId);
-      const validated = assertRetirementRequestV3(role, accountId, request);
+      const validated = assertRetirementRequestV4(role, accountId, request);
       // Serialize reconstructed primitives, never caller object hooks.
       const data = JSON.stringify(validated.body);
       if (Buffer.byteLength(data) > 65536) fail("bulk-secret request exceeds bound");
@@ -531,9 +650,11 @@ export function createCallerRetirementReader({ accountId, token, role, fetcher =
         fail("cohort latest is not sole active version");
       const detail = (await get(`${script}/versions/${latest.id}`)).result;
       if (detail?.id !== latest.id) fail("active detail mismatch");
+      if (!settings.result?.annotations || !detail.annotations || !same(settings.result.annotations, detail.annotations)) fail("settings/version annotations mismatch");
       const code = await parseCallerRetirementModules(raw.bytes, raw.type, raw.etag);
       if (code.etag !== detail.resources?.script?.etag) fail("active module changed during read");
       return { name: worker, tag: identity.tag, activeVersion: latest.id, latestVersion: latest.id, deploymentId: active.id,
+        versionAnnotations: structuredClone(detail.annotations),
         settings: { ...settings.result, bindings: safeBindings(settings.result?.bindings) },
         resources: { ...detail.resources, bindings: safeBindings(detail.resources?.bindings) }, code,
         control: { routes: completeRows(routes), domains: completeRows(domains), subdomain: subdomain.result,
