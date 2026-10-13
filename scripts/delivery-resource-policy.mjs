@@ -1,7 +1,7 @@
 // Copyright (C) 2026 Atrinik contributors
 import { createHash } from "node:crypto";
 import { validateRateBootstrap, bootstrapDesiredWorker, validateBootstrapConfiguration,
-  compareBootstrapInventory, projectNativeRates, legacyCallerSecrets } from "./production-rate-bootstrap.mjs";
+  compareBootstrapInventory, projectNativeRates, legacyCallerSecrets, bootstrapCallerDispositions } from "./production-rate-bootstrap.mjs";
 
 const roles = ["core", "publisher", "rendezvous"];
 const cohortWorkerNames = Object.freeze({
@@ -242,6 +242,7 @@ export function createResourcePolicyFence(policy, { target, accountId, readWorke
   const bootstrap = validateRateBootstrap(policy, target, { sourceSha, expectedPredecessor });
   if (bootstrap && (sourceSha !== bootstrap.sourceSha || expectedPredecessor !== bootstrap.expectedPredecessor ||
       typeof readWorker.rateInventory !== "function")) fail("bootstrap execution authority missing");
+  const dispositions = bootstrapCallerDispositions(policy, target, { sourceSha, expectedPredecessor });
   let phase = completedBootstrap ? "added" : "baseline";
   let proven = false;
   const retiredCallers = completedBootstrap ? ["publisher", "rendezvous"] : [];
@@ -256,7 +257,7 @@ export function createResourcePolicyFence(policy, { target, accountId, readWorke
     beginCallerRetirement(role) {
       if (!bootstrap) return;
       if (phase !== "added" || !coreConfirmed || !["publisher", "rendezvous"].includes(role) ||
-          retiredCallers.includes(role) || uncertainCaller !== null) fail("caller retirement phase invalid");
+          dispositions[role]?.operation !== "retire-pair" || retiredCallers.includes(role) || uncertainCaller !== null) fail("caller retirement phase invalid");
       uncertainCaller = role;
     },
     confirmCallerRetired(role) {

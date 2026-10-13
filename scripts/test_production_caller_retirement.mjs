@@ -1,15 +1,15 @@
 // Copyright (C) 2026 Atrinik contributors
 import test from "node:test";
 import { createProductionReadPacer } from "./production-read-pacing.mjs";
-import { retirementFailureDiagnostic } from "./production-retirement-diagnostics.mjs";
+import { retirementFailureDiagnostic, callerObservationFailureDiagnostic } from "./production-retirement-diagnostics.mjs";
 import { virtualClock } from "./production-test-clock.mjs";
-import { orchestrateDelivery, deliveryFailureRecord } from "./production-delivery.mjs";
+import { orchestrateDelivery, deliveryFailureRecord, prepareBootstrapCallerHandoff, verifyCallerActivationHandoff } from "./production-delivery.mjs";
 import assert from "node:assert/strict";
 import { mkdtemp, chmod, readFile, rm } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { verifyRecoveryArtifactProof } from "./production-recovery-artifacts.mjs";
-import { callerRetirementSecrets, callerRetirementBody, callerRetirementDigest, verifyCallerRetirementPost,
+import { callerRetirementSecrets, callerRetirementBody, callerRetirementBodyV3, observeSecretFreeCaller, callerRetirementDigest, verifyCallerRetirementPost,
   retireCallerSecrets, observeCallerRetirement, createCallerRetirementPatch,
   createCallerRetirementRecorder, parseCallerRetirementModules } from "./production-caller-retirement.mjs";
 const accountId = "a".repeat(32), hash = "b".repeat(64), source = "c".repeat(40);
@@ -148,9 +148,9 @@ test("read-only recovery binds original intent and rejects partial states", asyn
   await assert.rejects(observeCallerRetirement({ ...args, intent: { ...h.intent, role: "rendezvous" } }));
   await assert.rejects(observeCallerRetirement({ ...args, read: async () => h.before }));
 });
-test("v2 intent binds the full endpoint, exact request, and captured predecessor", async () => {
+test("v3 intent binds the full endpoint, exact request, and captured predecessor", async () => {
   const h = harness(); await retireCallerSecrets(h.options);
-  assert.equal(h.intent.schema, "atrinik-production-caller-retirement-v2");
+  assert.equal(h.intent.schema, "atrinik-production-caller-retirement-v3");
   assert.equal(h.intent.endpoint, `https://api.cloudflare.com/client/v4/accounts/${accountId}/workers/scripts/atrinik-metaserver-publisher/secrets-bulk`);
   assert.deepEqual(h.intent.before, h.before);
   assert.equal(h.intent.beforeDigest, callerRetirementDigest(h.before));
@@ -160,7 +160,7 @@ test("v2 intent binds the full endpoint, exact request, and captured predecessor
   assert.equal(requestDigest, callerRetirementDigest(request));
 });
 for (const [name, change] of [
-  ["schema", (i) => { i.schema = "atrinik-production-caller-retirement-v3"; }],
+  ["schema", (i) => { i.schema = "atrinik-production-caller-retirement-v2"; }],
   ["before digest", (i) => { i.beforeDigest = hash; }],
   ["before timestamp", (i) => { i.before.capturedAt = 999; }],
   ["missing before timestamp", (i) => { delete i.before.capturedAt; }],
@@ -169,7 +169,7 @@ for (const [name, change] of [
   ["request digest", (i) => { i.requestDigest = hash; }],
   ["version_tags", (i) => { i.body.version_tags = {}; }],
   ["extra field", (i) => { i.unexpected = true; }],
-]) test(`v2 recovery rejects substituted ${name} before any read`, async () => {
+]) test(`v3 recovery rejects substituted ${name} before any read`, async () => {
   const h = harness(); await retireCallerSecrets(h.options);
   const intent = structuredClone(h.intent); change(intent); let reads = 0;
   await assert.rejects(observeCallerRetirement({ role: "publisher", before: h.before, intent,
@@ -239,7 +239,7 @@ test("bounded merge-patch transport is pinned and consumed even on network ambig
     assert.equal(options.method, "PATCH"); assert.equal(options.redirect, "error");
     assert.equal(options.headers["Content-Type"], "application/merge-patch+json");
     assert.equal(options.headers.Authorization, "Bearer test-token");
-    assert.deepEqual(JSON.parse(options.body), callerRetirementBody("publisher", baseline()));
+    assert.deepEqual(JSON.parse(options.body), callerRetirementBodyV3("publisher", baseline()));
     throw Error("network uncertainty");
   } });
   const request = await requestFixture();
@@ -541,3 +541,159 @@ for (const stage of ["post-intent-fence", "patch", "post-read"]) test(`failed di
   assert.equal(patches, stage === "post-intent-fence" ? 0 : 1);
   assert.equal(calls, 1); assert.ok(h.intent);
 });
+
+test("historical v2 byte contract remains readable and cannot dispatch through the v3 transport", async () => {
+  const before = baseline(), after = retired(before);
+  const body = callerRetirementBody("publisher", before);
+  const request = { role: "publisher", accountId, name: before.name, method: "PATCH",
+    endpoint: `https://api.cloudflare.com/client/v4/accounts/${accountId}/workers/scripts/${before.name}/secrets-bulk`,
+    contentType: "application/merge-patch+json", body, bodyDigest: callerRetirementDigest(body) };
+  request.requestDigest = callerRetirementDigest(request);
+  const intent = { schema: "atrinik-production-caller-retirement-v2", ...request,
+    before: structuredClone(before), beforeDigest: callerRetirementDigest(before) };
+  assert.equal(JSON.stringify(body), '{"secrets":{"SOURCE_TAG_KEY_CURRENT":null,"SOURCE_TAG_KEY_PREVIOUS":null}}');
+  const args = { role: "publisher", before, intent, read: async () => after,
+    fence: async () => {}, verifyStaged: async () => true, now: () => 1000 };
+  assert.equal((await observeCallerRetirement(args)).originalReceiptCreated, false);
+  for (const change of [i => { delete i.before.capturedAt; }, i => { i.before.capturedAt++; },
+    i => { i.body.version_tags = callerRetirementBodyV3("publisher", before).version_tags; }]) {
+    const invalid = structuredClone(intent); change(invalid);
+    await assert.rejects(observeCallerRetirement({ ...args, intent: invalid, read: () => assert.fail("must reject before read") }));
+  }
+  let calls = 0;
+  const patch = createCallerRetirementPatch({ accountId, role: "publisher", token: "fixture", fetcher: () => { calls++; } });
+  await assert.rejects(patch(request)); assert.equal(calls, 0);
+});
+
+test("v3 emits only exact selected stage tags with deterministic bytes and bounded data properties", async () => {
+  const request = await requestFixture();
+  const expected = `{"secrets":{"SOURCE_TAG_KEY_CURRENT":null,"SOURCE_TAG_KEY_PREVIOUS":null},"version_tags":${JSON.stringify({
+    "workers/tag": source, "workers/message": baseline().settings.annotations["workers/message"],
+  })}}`;
+  let calls = 0;
+  const patch = createCallerRetirementPatch({ accountId, role: "publisher", token: "fixture", fetcher: async (_url, options) => {
+    calls++; assert.equal(options.body, expected); return Response.json({ success: true, errors: [], result: {} });
+  } });
+  for (const change of [
+    r => { delete r.body.version_tags; },
+    r => { delete r.body.version_tags["workers/tag"]; },
+    r => { delete r.body.version_tags["workers/message"]; },
+    r => { r.body.version_tags["workers/tag"] = "d".repeat(40); },
+    r => { r.body.version_tags["workers/message"] += "changed"; },
+    r => { r.body.version_tags["workers/triggered_by"] = "secret"; },
+    r => { r.body.version_tags.extra = undefined; },
+    r => { r.body.version_tags["workers/message"] = "x".repeat(1025); },
+    r => { Object.defineProperty(r.body.version_tags, "workers/message", { get: () => assert.fail("getter invoked") }); },
+    r => { Object.defineProperty(r.body, "version_tags", { get: () => assert.fail("getter invoked") }); },
+    r => { Object.defineProperty(r, "body", { get: () => assert.fail("getter invoked") }); },
+  ]) { const invalid = structuredClone(request); change(invalid); await assert.rejects(patch(invalid)); }
+  assert.equal(calls, 0); await patch(request); assert.equal(calls, 1);
+});
+
+function stagedEmpty(role = "publisher") {
+  const snapshot = baseline(role);
+  for (const field of ["settings", "resources"]) snapshot[field].bindings = snapshot[field].bindings.filter(b => b.type !== "secret_text");
+  snapshot.resources.script.last_deployed_from = "wrangler";
+  return snapshot;
+}
+for (const role of ["publisher", "rendezvous"]) test(`empty ${role} observation rejects partial projections, new authority and source drift`, async () => {
+  for (const change of [
+    s => { s.settings.bindings.push({ name: callerRetirementSecrets[0], type: "secret_text" }); },
+    s => { s.resources.bindings.push({ name: callerRetirementSecrets[0], type: "secret_text" }); },
+    s => { for (const field of ["settings", "resources"]) s[field].bindings.push({ name: "OTHER", type: "secret_text" }); },
+    s => { for (const field of ["settings", "resources"]) s[field].bindings.push({ name: "SOURCE_TAG_KEY_CURRENT_ID", type: "plain_text", text: "old" }); },
+    s => { for (const field of ["settings", "resources"]) s[field].bindings.find(b => b.type === "plain_text").text = "enabled"; },
+    s => { s.settings.annotations["workers/triggered_by"] = "secret"; },
+    s => { delete s.settings.annotations["workers/message"]; },
+    s => { s.code.modules = []; },
+    s => { s.latestVersion = newId; },
+  ]) {
+    const snapshot = stagedEmpty(role); change(snapshot);
+    await assert.rejects(observeSecretFreeCaller({ role, read: async () => snapshot, fence: async () => {},
+      verifyStaged: async () => true, now: () => 1000 }), error => {
+      assert.equal(retirementFailureDiagnostic(error), null);
+      assert.deepEqual(callerObservationFailureDiagnostic(error), { phase: "staged-observation", mutationState: "not-invoked" }); return true;
+    });
+  }
+});
+
+for (const emptyRoles of [["publisher"], ["rendezvous"], ["publisher", "rendezvous"]])
+  for (const failure of [null, "last-version-race", "pair-patch-failed"])
+    test(`full orchestration empty=${emptyRoles.join("+")} failure=${failure}`, async () => {
+      const workers = ["core", "publisher", "rendezvous"].map(role => ({ role }));
+      const active = new Map(), proofs = new Map(), apiHandoffRoles = new Set();
+      const events = [], artifacts = [], patches = [], observations = [];
+      const noop = async () => {};
+      let caught;
+      try {
+        await orchestrateDelivery({ workers, decision: "deploy", fence: noop,
+          deployStaged: async ({ role }) => {
+            events.push(`stage:${role}`);
+            if (role !== "core") {
+              const snapshot = emptyRoles.includes(role) ? stagedEmpty(role) : baseline(role);
+              snapshot.resources.script.last_deployed_from = "wrangler";
+              active.set(role, snapshot);
+            }
+            if (failure === "last-version-race" && role === "rendezvous") {
+              const publisher = active.get("publisher"); publisher.activeVersion = publisher.latestVersion = "00000000-0000-0000-0000-000000000009";
+            }
+          },
+          readbackStaged: async ({ role }) => {
+            if (role === "core") return;
+            const empty = emptyRoles.includes(role), disposition = { role,
+              operation: empty ? "observe-secret-free" : "retire-pair", retirementArtifacts: empty ? 0 : 2,
+              baselineSecrets: empty ? [] : [...callerRetirementSecrets] };
+            const read = async () => structuredClone(active.get(role));
+            const proof = await prepareBootstrapCallerHandoff({ role, disposition, apiHandoffRoles,
+              observe: async () => { observations.push(role); return observeSecretFreeCaller({ role, read,
+                fence: noop, verifyStaged: async () => true, now: () => 1000 }); },
+              retire: () => retireCallerSecrets({ role, read, fence: noop, authorize: noop, now: () => 1000,
+                verifyStaged: async () => true,
+                recordIntent: async i => { artifacts.push(`${role}:intent`); assert.equal(i.schema, "atrinik-production-caller-retirement-v3"); },
+                recordReceipt: async () => { artifacts.push(`${role}:receipt`); },
+                patch: async request => {
+                  patches.push(role); assert.deepEqual(request.body, callerRetirementBodyV3(role, active.get(role)));
+                  const snapshot = retired(active.get(role));
+                  snapshot.resources.script.last_deployed_from = snapshot.control.environment.script.last_deployed_from = "api";
+                  active.set(role, snapshot);
+                  if (failure === "pair-patch-failed") throw Error("unknown consumed outcome");
+                },
+              }), confirm: () => events.push(`confirm:${role}`),
+              verify: async () => ({ versionId: active.get(role).activeVersion }),
+            });
+            proofs.set(role, proof);
+          }, verifyStaged: noop,
+          deployActive: async ({ role }) => {
+            if (role !== "core") await verifyCallerActivationHandoff({ role, proof: proofs.get(role),
+              verify: async () => { events.push(`last-version:${role}`); return { versionId: active.get(role).activeVersion }; },
+              authorize: async () => events.push(`authorize:${role}`) });
+            events.push(`activate:${role}`);
+          }, readbackActive: noop, verifyFinal: noop, reconcileDirectories: noop, canaries: noop, recover: noop,
+        });
+      } catch (error) { caught = error; }
+      const failedPair = failure === "pair-patch-failed" && emptyRoles.length !== 2;
+      assert.equal(Boolean(caught), failure === "last-version-race" || failedPair);
+      if (!failedPair) assert.deepEqual(events.filter(v => v.startsWith("stage:")), ["stage:core", "stage:publisher", "stage:rendezvous"]);
+      for (const role of emptyRoles) {
+        assert.equal(patches.includes(role), false); assert.equal(artifacts.some(v => v.startsWith(`${role}:`)), false);
+        assert.equal(events.includes(`confirm:${role}`), false);
+      }
+      assert.equal(new Set(patches).size, patches.length); // no retry after a consumed pair attempt
+      if (failedPair) {
+        assert.deepEqual(artifacts, [`${patches[0]}:intent`]);
+        assert.equal(observations.includes(patches[0]), false); // no dynamic fallback
+      } else {
+        assert.equal(artifacts.length, 2 * (2 - emptyRoles.length));
+        assert.equal(observations.length, emptyRoles.length);
+      }
+      if (caught) {
+        assert.equal(events.some(v => v.startsWith("activate:")), false);
+        if (failure === "last-version-race" && emptyRoles.includes("publisher")) {
+          assert.equal(retirementFailureDiagnostic(caught), null);
+          assert.deepEqual(callerObservationFailureDiagnostic(caught), { phase: "activation", mutationState: "not-invoked" });
+        }
+      } else for (const role of ["publisher", "rendezvous"]) {
+        const index = events.indexOf(`activate:${role}`);
+        assert.deepEqual(events.slice(index - 2, index), [`last-version:${role}`, `authorize:${role}`]);
+      }
+    });

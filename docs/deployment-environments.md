@@ -353,7 +353,8 @@ change, mixed deployment or differing native resource graph stops the census.
 This inspects existing versions without changing unrelated Workers.
 
 An interrupted attempt may already have provisioned the exact core rate binding
-and staged a disabled caller while leaving both callers' obsolete secrets intact.
+and staged disabled callers, with either caller retaining the exact obsolete pair
+or already having zero secrets.
 A separately approved `productionBootstrap.nativeRateAlreadyProvisioned: true`
 supports only that observed baseline: exactly one `ACCESS_ROUTE_RATE_LIMITER`
 binding at namespace `1008`, limit 16 and period 60, on the production core.
@@ -362,9 +363,11 @@ validation. With the field absent, the original baseline still forbids `1008`;
 explicit false or nonboolean values are invalid. The desired configuration retains
 the existing single binding without normalizing duplicate input.
 
-Both callers must still have exactly the two legacy signing secrets. Their key-ID
-bindings must be either the original valid distinct pair, or—only under this
-opt-in—completely absent with all role-specific circuits explicitly disabled
+Each caller baseline must have either exactly the two legacy signing secrets or,
+only under this opt-in, zero secrets. A zero-secret caller must have no key-ID
+bindings and every role-specific circuit explicitly disabled. A pair-bearing
+caller must have either the original valid distinct key-ID pair or, under this
+opt-in, completely absent key IDs with every role-specific circuit disabled
 (`PUBLISH_ENABLED` and `GAME_PUBLISH_ENABLED` for publisher, `RENDEZVOUS_ENABLED`
 for rendezvous). Partial, malformed or duplicate key-ID bindings fail. The new
 policy must record the actual variables, resources and three predecessor versions;
@@ -374,7 +377,19 @@ remain mandatory. The flag alone proves no selected-source identity.
 This path starts at the baseline phase. It still uploads and verifies the disabled
 core before either caller can enter retirement, then stages and proves each caller's
 selected module bytes, runtime and controls before removing its secrets. An existing
-rate cannot substitute for the core confirmation step or either retirement. Failed
+rate cannot substitute for the core confirmation step or fresh caller staging.
+The approved policy fixes each role's disposition before any mutation: a pair
+requires one new retirement and two genuine encrypted artifacts (intent and receipt);
+an empty baseline requires a dedicated read-only observation and zero retirement
+artifacts. Mixed baselines therefore require two artifacts, and two empty callers
+require none. The empty role never creates a retirement recorder, calls PATCH,
+enters uncertain retirement state, or claims a completed retirement. Its new
+Wrangler version must prove both secret projections empty, no key IDs, selected
+module bytes, exact stage tag/message and disabled configuration, sole active/latest
+version, full peer invariants and fresh fences. A distinct private observation
+proof freezes that version and Wrangler provenance. Both paths recheck their exact
+UUID immediately before activation. The empty path reports failures with
+`callerObservation.mutationState=not-invoked`, never `response-accepted`. Failed
 retirements retain their uncertain state and consumed intents; never replay an old
 attempt. Obtain fresh topology evidence, a new policy/plan digest and owner approval
 of the actual predecessor before a new dispatch. No automatic policy rewrite or
@@ -396,7 +411,7 @@ the controller never changes the protected policy automatically.
 Supply only the public recipient in the protected production
 variable `ATRINIK_PRODUCTION_RECOVERY_PUBLIC_KEY`; retain the private key locally
 and rehearse decryption before live use. After new code is staged disabled, each
-caller's consumed intent must be encrypted and its immutable GitHub Actions
+pair-bearing caller's consumed intent must be encrypted and its immutable GitHub Actions
 artifact finalized and verified before the single guarded operation removes the
 two obsolete signing secrets. Verify and retain a separate encrypted receipt and
 prove the exact empty secret inventory before activation. No raw private policy
@@ -421,39 +436,39 @@ private artifact metadata. A failed upload/readback still consumes the intent;
 never retry it. Observe the current topology and existing attempt evidence before
 preparing any newly authorized attempt coordinate.
 
-Caller retirement uses exactly one
+New caller retirement writes use the v3 contract and exactly one
 `PATCH /accounts/{account_id}/workers/scripts/{script_name}/secrets-bulk`
-with `Content-Type: application/merge-patch+json` and this complete body:
+with `Content-Type: application/merge-patch+json`. Its complete body contains the
+exact null deletion pair and the two exact approved staged annotation strings:
 
 ```json
-{"secrets":{"SOURCE_TAG_KEY_CURRENT":null,"SOURCE_TAG_KEY_PREVIOUS":null}}
+{"secrets":{"SOURCE_TAG_KEY_CURRENT":null,"SOURCE_TAG_KEY_PREVIOUS":null},"version_tags":{"workers/tag":"<selected source SHA>","workers/message":"<exact staged delivery message>"}}
 ```
 
-[Cloudflare documents null-valued deletion and a single new version for bulk secret changes](https://developers.cloudflare.com/api/resources/workers/subresources/scripts/subresources/secrets/methods/bulk_update/).
-A generic settings update that omits the pair is not deletion proof. The transport
-accepts only this exact pair and body: it rejects `version_tags`, annotations,
-unknown fields, other secret names, replacement values and request substitutions.
-The body digest binds the absence of those extra fields. The v2 intent binds the
-full account-scoped HTTPS endpoint, method, content type, body and request digests,
-and the complete predecessor including its actual `capturedAt` timestamp. The
-private one-use coordinate and verified ciphertext artifact are durable before
-dispatch. A provider acceptance still needs fresh complete readback, source proof,
-a fresh writer fence and a durable encrypted receipt. The existing request and
-response bounds, 20-second deadline, redirect rejection and no-retry rule remain.
+[Cloudflare documents null-valued deletion, a single new version and the optional `version_tags` object](https://developers.cloudflare.com/api/resources/workers/subresources/scripts/subresources/secrets/methods/bulk_update/).
+That reference does not specify the object's inner-key mapping. The candidate
+`workers/tag` and `workers/message` mapping requires separate authorized provider
+qualification before production use; source fixtures alone do not establish it.
+An annotation-losing v2 outcome is not authority to retry a consumed request.
 
-Success requires both settings and active-version bindings to contain zero
+The v3 writer reconstructs the two strings from the verified predecessor. It
+rejects missing, changed or extra tags, `workers/triggered_by`, annotations,
+undefined fields, accessor properties, secret substitutions and request drift.
+The new schema binds the full account-scoped HTTPS endpoint, method, content type,
+body and request digests, and the complete predecessor including its actual
+`capturedAt` timestamp. The private one-use coordinate and verified ciphertext
+artifact are durable before dispatch. Provider acceptance still needs fresh
+complete readback, selected-source proof, a fresh writer fence and a durable
+encrypted receipt. Request/response bounds, 20-second deadline, redirect rejection
+and the no-retry rule remain.
+
+Success still requires both settings and active-version bindings to contain zero
 secrets, unchanged code and nonsecret bindings, exact staged `workers/tag` and
-`workers/message`, and `workers/triggered_by=secret`. Cloudflare's bulk API
-documentation does not establish inheritance of those staged annotations or the
-exact trigger value. The optional arbitrary `version_tags` map has no documented
-mapping to these annotations, so this writer does not send it. Source tests prove
-the fixed request and fail-closed verification; they do not qualify these live
-provider postconditions. Annotation inheritance and the exact trigger may remain
-unknown before the documented, authorized one-use attempt against the disabled
-caller. They must be qualified by strict readback before activation; no separate
-pre-dispatch qualification gate is required. Provider acceptance does not
-guarantee those postconditions. If live readback differs, stop activation with a
-consumed intent; never weaken the postconditions or retry the mutation.
+`workers/message`, and `workers/triggered_by=secret`. No fallback accepts missing
+annotations or dynamically reclassifies a failed pair retirement as a baseline
+observation. Provider acceptance does not guarantee those postconditions. If live
+readback differs, stop activation with a consumed intent; never weaken the
+postconditions or retry the mutation.
 
 Target service modification timestamps may advance only within the observed
 predecessor/post-read window. Deployment identifiers must follow the separately
@@ -465,15 +480,19 @@ control fields, peers and global namespaces remain exactly preserved, including
 unknown fields. A later observation is not proof of an earlier failed exception.
 
 Historical v1 intents retain their original settings endpoint and settings-body
-digest only in the read-only observer. They never authorize the v2 bulk-secret
+digest only in the read-only observer. They never authorize the v3 bulk-secret
 writer and cannot be relabeled as its request. V1 omitted the predecessor capture
 time, so the observer validates its historical digest binding and then stops with
 `historical intent lacks authenticated observation timestamp`. A caller-supplied
 time cannot fill that gap. Owner artifact inspection remains read-only; it cannot
 prove the original transition window. Do not invent or backdate that timestamp,
-replay an old intent or create a retrospective original receipt. A successful v2
+replay an old intent or create a retrospective original receipt. The v2 decoder retains its original exact pair-only body, full endpoint and
+timestamped predecessor digest interpretation. It remains read-only; a v2 request
+cannot dispatch through the v3 writer. A successful v2 or v3
 read-only terminal is separately labeled observational recovery and creates no
-original receipt. New v2 observation rejects missing or substituted timestamps.
+original receipt. Both timestamped schemas reject missing or substituted timestamps. The JWE outer
+envelope remains v1; the inner document identifies the operation schema without
+relabeling or rewriting historical artifacts.
 
 The production controller shares a single GET scheduler across its account API
 resource and native-rate inventories, writer fence, native control-plane reads

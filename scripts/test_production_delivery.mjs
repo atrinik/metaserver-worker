@@ -2614,7 +2614,8 @@ test("caller retirement requires exact selected disabled bundle, annotation and 
 });
 
 test("old caller code and key-ID authority remain pinned until that role's staging handoff", async () => {
-  const worker = { role: "publisher", variables: [{ binding: "SOURCE_TAG_KEY_CURRENT_ID", value: "old-a" },
+  const worker = { role: "publisher", secrets: ["SOURCE_TAG_KEY_CURRENT", "SOURCE_TAG_KEY_PREVIOUS"],
+    variables: [{ binding: "SOURCE_TAG_KEY_CURRENT_ID", value: "old-a" },
     { binding: "SOURCE_TAG_KEY_PREVIOUS_ID", value: "old-b" }] };
   const active = { versionId: "approved-immutable-version", version: { resources: { bindings: [
     ...worker.variables.map(({ binding, value }) => ({ name: binding, type: "plain_text", text: value })),
@@ -2724,4 +2725,34 @@ process.exit(spawnSync("/usr/bin/git", ["-C", ${JSON.stringify(directory)}, ...p
       env: { PATH: bin }, encoding: "utf8", timeout: 10_000 });
     assert.equal(result.status, 0, result.stderr);
   } finally { await rm(directory, { recursive: true, force: true }); }
+});
+
+test("empty caller predecessor binds exact disabled configuration and approved version", () => {
+  for (const index of [1, 2]) {
+    const role = contract.workers[index].role;
+    const config = disabledCircuitConfiguration(productionConfigs()[index], role);
+    const worker = { role, secrets: [], variables: Object.entries(config.vars).map(([binding, value]) => ({ binding, value })) };
+    const active = { versionId: "00000000-0000-0000-0000-000000000001", version: { resources: {
+      bindings: [...Object.entries(config.vars).map(([name, text]) => ({ name, type: "plain_text", text })),
+        ...config.services.map(({ binding, ...value }) => ({ ...value, name: binding, type: "service" })),
+        ...config.ratelimits.map(value => ({ ...value, type: "ratelimit" }))],
+      script_runtime: { compatibility_date: config.compatibility_date, compatibility_flags: config.compatibility_flags,
+        exports: config.exports ?? {} },
+    } } };
+    verifyBootstrapCallerPredecessor(active.versionId, worker, active, { config });
+    for (const change of [
+      a => { a.versionId = "different"; },
+      a => { a.version.resources.script_runtime.compatibility_date = "2020-01-01"; },
+      a => { a.version.resources.script_runtime.compatibility_flags.push("unapproved"); },
+      a => { a.version.resources.bindings.push({ name: "SOURCE_TAG_KEY_CURRENT", type: "secret_text" }); },
+      a => { a.version.resources.bindings.push({ name: "OTHER", type: "secret_text" }); },
+      a => { a.version.resources.bindings.push({ name: "SOURCE_TAG_KEY_CURRENT_ID", type: "plain_text", text: "old" }); },
+      a => { a.version.resources.bindings.find(b => b.name === (role === "publisher" ? "PUBLISH_ENABLED" : "RENDEZVOUS_ENABLED")).text = "enabled"; },
+      a => { a.version.resources.bindings.find(b => b.type === "service").entrypoint = "Other"; },
+    ]) {
+      const changed = structuredClone(active); change(changed);
+      assert.throws(() => verifyBootstrapCallerPredecessor(active.versionId, worker, changed, { config }));
+    }
+    assert.throws(() => verifyBootstrapCallerPredecessor(active.versionId, worker, active));
+  }
 });
