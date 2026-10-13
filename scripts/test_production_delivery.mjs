@@ -26,6 +26,7 @@ import {
   verifyPredecessorHandoff,
   verifyStagedCallerRetirement,
   verifyRetiredCallerReadback,
+  verifyRetirementPeerUploadPreservation,
   verifyBootstrapCallerPredecessor,
   describeSubprocessFailure,
   deliveryDecision,
@@ -2674,6 +2675,99 @@ test("caller retirement requires exact selected disabled bundle, annotation and 
   assert.throws(() => verifyStagedCallerRetirement(retired));
   retired.snapshot.resources.bindings = retired.snapshot.resources.bindings.filter(v => v.type !== "secret_text");
   assert.equal(verifyStagedCallerRetirement(retired), true);
+});
+
+test("retirement peer upload permits only the closed selected caller delta", async () => {
+  for (const index of [1, 2]) {
+    const role = contract.workers[index].role;
+    const config = disabledCircuitConfiguration(productionConfigs()[index], role);
+    assert(Object.keys(config.vars).length > 0);
+    assert(config.services.length > 0);
+    assert(config.ratelimits.length > 0);
+    const fixture = await retirementFixture({ role });
+    const previous = fixture.before;
+    previous.deploymentId = "00000000-0000-0000-0000-000000000003";
+    previous.settings.compatibility_flags = ["nodejs_compat"];
+    previous.settings.observability = structuredClone(previous.control.environment.script.observability);
+    previous.settings.tail_consumers = [];
+    previous.settings.logpush = false;
+    previous.settings.assets = { enabled: false };
+    previous.resources.script_runtime = { compatibility_date: "2026-10-01", compatibility_flags: ["nodejs_compat"], exports: {} };
+    previous.control.routes = [{ id: "existing-route", pattern: "existing.example.invalid/*", script: config.name }];
+    const current = structuredClone(previous);
+    const versionId = "33333333-3333-4333-8333-333333333333";
+    const sourceSha = "4".repeat(40), bundleDigest = "5".repeat(64);
+    const expectedMessage = `selected staged ${role} upload`;
+    current.activeVersion = current.latestVersion = current.deploymentId = versionId;
+    current.code = { etag: "6".repeat(64), modules: [{ name: "worker.js", type: "application/javascript+module", sha256: bundleDigest, bytes: 256 }] };
+    current.settings.annotations = { "workers/tag": sourceSha, "workers/message": expectedMessage, "workers/triggered_by": "version_upload" };
+    current.versionAnnotations = structuredClone(current.settings.annotations);
+    current.settings.bindings = [
+      ...Object.entries(config.vars).map(([name, text]) => ({ name, type: "plain_text", text })),
+      ...config.services.map(({ binding, ...value }) => ({ name: binding, ...value, type: "service", environment: "production" })),
+      ...config.ratelimits.map(value => ({ ...value, type: "ratelimit" })),
+    ];
+    current.resources.bindings = structuredClone(current.settings.bindings);
+    current.settings.compatibility_date = config.compatibility_date;
+    current.settings.compatibility_flags = structuredClone(config.compatibility_flags);
+    current.settings.observability = structuredClone(config.observability);
+    Object.assign(current.resources.script_runtime, { compatibility_date: config.compatibility_date,
+      compatibility_flags: config.compatibility_flags, exports: config.exports ?? {} });
+    Object.assign(current.resources.script, { etag: current.code.etag, last_deployed_from: "wrangler" });
+    current.control.environment.modified_on = "1970-01-01T00:00:01.500Z";
+    Object.assign(current.control.environment.script, { modified_on: "1970-01-01T00:00:01.500Z",
+      etag: current.code.etag, last_deployed_from: "wrangler", compatibility_date: config.compatibility_date,
+      compatibility_flags: config.compatibility_flags, observability: structuredClone(config.observability) });
+    const input = { previous, current, config, versionId, sourceSha, bundleDigest, expectedMessage, startedAt: 1000, capturedAt: 2000 };
+    assert.equal(verifyRetirementPeerUploadPreservation(input), true);
+    const unchangedTimes = structuredClone(input);
+    unchangedTimes.current.control.environment.modified_on = previous.control.environment.modified_on;
+    unchangedTimes.current.control.environment.script.modified_on = previous.control.environment.script.modified_on;
+    assert.equal(verifyRetirementPeerUploadPreservation(unchangedTimes), true);
+    // Test the two documented nonempty deployment metadata representations too.
+    for (const field of ["activeVersion", "deploymentId"]) {
+      const candidate = { ...input, previous: structuredClone(previous), current: structuredClone(current) };
+      candidate.previous.control.environment.script.deployment_id = previous[field];
+      candidate.current.control.environment.script.deployment_id = field === "activeVersion" ? versionId : current.deploymentId;
+      assert.equal(verifyRetirementPeerUploadPreservation(candidate), true);
+    }
+    for (const change of [
+      x => { x.current.settings.tail_consumers = [{ service: "unexpected" }]; },
+      x => { x.current.settings.logpush = true; },
+      x => { x.current.settings.assets.enabled = true; },
+      x => { x.current.settings.unknown = true; },
+      x => { x.current.resources.unknown = true; },
+      x => { x.current.resources.script.unknown = true; },
+      x => { x.current.resources.script_runtime.unknown = true; },
+      x => { x.current.control.routes[0].id = "replaced-route"; },
+      x => { x.current.control.routes[0].unknown = true; },
+      x => { x.current.control.environment.unknown = true; },
+      x => { x.current.control.environment.script.unknown = true; },
+      x => { x.current.control.environment.script.created_on = "1970-01-01T00:00:01.500Z"; },
+      x => { x.current.control.environment.script.deployment_id = "unbound"; },
+      x => { x.current.settings.bindings[0].text += "changed"; },
+      x => { x.current.resources.bindings.find(row => row.type === "service").environment = "preview"; },
+      x => { x.current.resources.bindings.find(row => row.type === "ratelimit").simple.limit++; },
+      x => { x.current.settings.annotations["workers/message"] += "changed"; },
+      x => { x.current.versionAnnotations["workers/tag"] = "7".repeat(40); },
+      x => { x.current.latestVersion = previous.activeVersion; },
+      x => { x.current.activeVersion = previous.activeVersion; },
+      x => { x.current.deploymentId = previous.deploymentId; },
+      x => { x.current.code.modules[0].sha256 = "7".repeat(64); },
+      x => { x.current.code.modules[0].unknown = true; },
+      x => { x.current.code.unknown = true; },
+      x => { x.current.resources.script.etag = "7".repeat(64); },
+      x => { x.current.control.environment.modified_on = "1970-01-01T00:00:00.999Z"; },
+      x => { x.current.control.environment.script.modified_on = "1970-01-01T00:00:02.001Z"; },
+      x => { x.current.control.environment.modified_on = "invalid"; },
+      x => { x.capturedAt = 999; },
+      x => { x.startedAt = NaN; },
+    ]) {
+      const candidate = structuredClone(input);
+      change(candidate);
+      assert.throws(() => verifyRetirementPeerUploadPreservation(candidate));
+    }
+  }
 });
 
 test("retired caller readback requires receipt-bound exact configuration, modules and control", async () => {
