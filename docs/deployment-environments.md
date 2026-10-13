@@ -87,7 +87,13 @@ new API-provenance version. Admit that caller's subsequent activation to the sam
 handoff only after retirement completes, the resource transition is confirmed,
 and the fresh fence and exact staged readback pass. Both service-environment and
 version-resource provenance in the verified retirement snapshot must be exactly
-`api`. An unchanged `wrangler` pair restores strict activation even when the
+`api`. The fresh staged readback must identify exactly the verified retirement
+snapshot's active version UUID; a replacement with identical configuration or
+annotations cannot inherit that provenance. Retain that immutable per-caller
+proof and check the exact staged version again immediately before its activation,
+after the orchestrator fence, then refresh source authority before upload. A
+replacement while another caller stages or retires must stop activation. An
+unchanged `wrangler` pair restores strict activation even when the
 pre-staging predecessor qualified for handoff; missing or inconsistent provenance
 stops activation. Failed or unknown retirement never grants this exception; core
 and other callers gain no exception from it.
