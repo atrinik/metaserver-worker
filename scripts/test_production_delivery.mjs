@@ -894,7 +894,7 @@ test("retirement activation strictness follows both verified provenance fields",
           verify: async () => { events.push("verify"); return { versionId: retiredCallerVersion }; },
         });
         if (!valid) {
-          await assert.rejects(complete, /retirement provenance is invalid/u);
+          await assert.rejects(complete, /retirement snapshot changed after receipt/u);
           assert.equal(apiHandoffRoles.has(role), selectedBeforeStaging);
         } else {
           await complete();
@@ -903,7 +903,7 @@ test("retirement activation strictness follows both verified provenance fields",
             strict: !apiHandoffRoles.has(role) });
           assert.equal(args.includes("--strict"), service !== "api");
         }
-        assert.deepEqual(events, ["retire", "confirm", "verify"]);
+        assert.deepEqual(events, valid ? ["retire", "confirm", "verify"] : ["retire"]);
       }
     }
   }
@@ -932,13 +932,13 @@ test("post-retirement provenance rejection preserves consumed mutation diagnosti
         events.push("activate");
       } catch (error) { failure = error; }
       assert(failure);
-      assert.deepEqual(events, ["retirement-receipt-verified", "confirm", "fence-and-readback"]);
+      assert.deepEqual(events, ["retirement-receipt-verified"]);
       assert.deepEqual([...apiHandoffRoles], []);
       const evidence = { sourceSha: "a".repeat(40), deployableDigest: "b".repeat(64),
         failedRole: `retirement:${role}`, completedRoles: ["staged:core"], recoveryOutcome: "proven" };
       const record = deliveryFailureRecord(failure, evidence);
       assert.deepEqual(record, { ...evidence, outcome: "production-delivery-stopped",
-        reason: "API handoff retirement provenance is invalid",
+        reason: "API handoff retirement snapshot changed after receipt",
         retirement: { phase: "postverify", category: "verification-failed", mutationState: "response-accepted" } });
       assert.equal(JSON.stringify(record).includes(secret), false);
     }
@@ -1103,6 +1103,21 @@ test("retirement completion and activation reject forged, cross-role and cross-r
       authorize: () => assert.fail("invalid proof must stop before authorization") };
     change(input);
     await assert.rejects(() => verifyCallerActivationHandoff(input), /capability invalid/u);
+  }
+  for (const change of [
+    value => { value.versionId = "22222222-2222-4222-8222-222222222222"; },
+    value => { value.provenance = "wrangler"; },
+  ]) {
+    const altered = { ...handoff };
+    change(altered);
+    let reads = 0, authorizations = 0;
+    const input = { role: "publisher", proof: altered, scope: fixture.scope,
+      selectedIdentity: fixture.selectedIdentity,
+      verify: async () => { reads++; return { versionId: altered.versionId }; },
+      authorize: async () => { authorizations++; } };
+    await assert.rejects(() => verifyCallerActivationHandoff(input), /activation receipt identity changed/u);
+    assert.equal(reads, 0);
+    assert.equal(authorizations, 0);
   }
   for (const proof of [undefined, structuredClone(result.proof)]) {
     await assert.rejects(() => completeCallerRetirement({ role: "publisher", scope: fixture.scope,
