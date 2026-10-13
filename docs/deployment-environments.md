@@ -581,6 +581,16 @@ distinguishes no dispatch, an unknown attempted outcome, a received response and
 an accepted response; even acceptance still requires strict post-read comparison
 and durable receipt proof. None of these fields grants intent-replay authority.
 
+Secret-free caller failures instead retain `callerObservation.phase` as
+`staged-observation` or `activation`, with `mutationState: not-invoked`.
+Their closed `stage` identifies the initial fence, read, freshness, snapshot or
+staged proof, post-fence, observation proof, version readback or proof, provenance
+proof, activation proof, or final authority. Completion wrappers preserve the
+first branded observation failure. Closed `category` and optional
+`readTransportState` and allowlisted `httpStatus` come only from the trusted read
+transport brand; other failures report `verification-failed`. These fields do
+not expose arbitrary errors or establish the cause of a historical failure.
+
 The trusted controller owns the Wrangler executable, its working directory and
 validated toolchain pins. The selected release supplies absolute application
 entrypoints, migrations and application dependency inputs. An older release's

@@ -1,9 +1,9 @@
 // Copyright (C) 2026 Atrinik contributors
 import test from "node:test";
 import { createProductionReadPacer } from "./production-read-pacing.mjs";
-import { retirementFailureDiagnostic, callerObservationFailureDiagnostic } from "./production-retirement-diagnostics.mjs";
+import { retirementFailureDiagnostic, callerObservationFailureDiagnostic, markCallerObservationFailure, preserveRetirementFailure } from "./production-retirement-diagnostics.mjs";
 import { virtualClock } from "./production-test-clock.mjs";
-import { orchestrateDelivery, deliveryFailureRecord, prepareBootstrapCallerHandoff, verifyCallerActivationHandoff } from "./production-delivery.mjs";
+import { orchestrateDelivery, deliveryFailureRecord, prepareBootstrapCallerHandoff, completeSecretFreeCallerObservation, verifyCallerActivationHandoff } from "./production-delivery.mjs";
 import assert from "node:assert/strict";
 import { mkdtemp, chmod, readFile, rm } from "node:fs/promises";
 import os from "node:os";
@@ -616,8 +616,104 @@ for (const role of ["publisher", "rendezvous"]) test(`empty ${role} observation 
     await assert.rejects(observeSecretFreeCaller({ role, read: async () => snapshot, fence: async () => {},
       verifyStaged: async () => true, now: () => 1000 }), error => {
       assert.equal(retirementFailureDiagnostic(error), null);
-      assert.deepEqual(callerObservationFailureDiagnostic(error), { phase: "staged-observation", mutationState: "not-invoked" }); return true;
+      assert.deepEqual(callerObservationFailureDiagnostic(error), { phase: "staged-observation", stage: "snapshot-proof",
+        category: "verification-failed", mutationState: "not-invoked" }); return true;
     });
+  }
+});
+
+test("observation diagnostics retain the failing stage through completion and evidence wrappers", async () => {
+  for (const stage of ["initial-fence", "read", "freshness", "snapshot-proof", "staged-proof", "post-fence"]) {
+    const snapshot = stagedEmpty(), events = [];
+    let fences = 0;
+    if (stage === "freshness") snapshot.capturedAt = -10000;
+    if (stage === "snapshot-proof") snapshot.code.modules = [];
+    const privateError = new Error("private-provider-text");
+    await assert.rejects(completeSecretFreeCallerObservation({ role: "publisher", apiHandoffRoles: new Set(),
+      observe: () => observeSecretFreeCaller({ role: "publisher", now: () => 1000,
+        read: async () => { events.push("read"); if (stage === "read") throw privateError; return snapshot; },
+        fence: async () => { events.push("fence"); fences++;
+          if (stage === "initial-fence" || (stage === "post-fence" && fences === 2)) throw privateError; },
+        verifyStaged: async () => { events.push("staged-proof"); if (stage === "staged-proof") throw privateError; return true; } }),
+      verify: async () => assert.fail("no completion readback after observation failure"),
+    }), error => {
+      const expected = { phase: "staged-observation", stage, category: "verification-failed", mutationState: "not-invoked" };
+      assert.deepEqual(callerObservationFailureDiagnostic(error), expected);
+      const wrapped = preserveRetirementFailure(new Error("private wrapper"), error);
+      assert.deepEqual(callerObservationFailureDiagnostic(wrapped), expected);
+      assert.equal(retirementFailureDiagnostic(wrapped), null);
+      assert.equal(JSON.stringify(deliveryFailureRecord(wrapped, { completedRoles: [] })).includes("private"), false);
+      return true;
+    });
+    assert.equal(events.filter(event => event === "fence").length, stage === "post-fence" ? 2 : 1);
+  }
+});
+
+test("observation diagnostics preserve only branded read transport category and status", async () => {
+  for (const status of [401, 403, 429]) {
+    const fetcher = createProductionReadPacer({ fetcher: async () =>
+      new Response("private-provider-response", { status }) });
+    await assert.rejects(completeSecretFreeCallerObservation({ role: "publisher", apiHandoffRoles: new Set(),
+      observe: () => observeSecretFreeCaller({ role: "publisher", now: () => 1000, fence: async () => {},
+        read: () => fetcher(`https://api.cloudflare.com/client/v4/accounts/${accountId}/workers/scripts`, { method: "GET" }),
+        verifyStaged: async () => assert.fail("must not verify failed read"),
+      }), verify: async () => assert.fail("must not complete failed read"),
+    }), error => {
+      assert.deepEqual(callerObservationFailureDiagnostic(error), { phase: "staged-observation", stage: "read",
+        category: status === 429 ? "rate-limited" : "http-rejected", mutationState: "not-invoked",
+        readTransportState: "response-received", httpStatus: status });
+      return true;
+    });
+  }
+  const fetcher = createProductionReadPacer({ fetcher: async () => assert.fail("expired request dispatched") });
+  const abort = new AbortController(); abort.abort();
+  await assert.rejects(observeSecretFreeCaller({ role: "publisher", now: () => 1000, fence: async () => {},
+    read: () => fetcher(`https://api.cloudflare.com/client/v4/accounts/${accountId}/workers/scripts`,
+      { method: "GET", signal: abort.signal }), verifyStaged: async () => true,
+  }), error => {
+    assert.deepEqual(callerObservationFailureDiagnostic(error), { phase: "staged-observation", stage: "read",
+      category: "deadline-expired", mutationState: "not-invoked", readTransportState: "not-dispatched" });
+    return true;
+  });
+});
+
+test("observation diagnostic fields cannot be supplied by unbranded errors or getters", () => {
+  const error = Object.create(null);
+  for (const key of ["message", "name", "cause", "category", "httpStatus", "readTransportState", "stage"])
+    Object.defineProperty(error, key, { get: () => assert.fail(`${key} getter invoked`) });
+  markCallerObservationFailure(error, "staged-observation", "read");
+  assert.deepEqual(callerObservationFailureDiagnostic(error), { phase: "staged-observation", stage: "read",
+    category: "verification-failed", mutationState: "not-invoked" });
+  assert.throws(() => markCallerObservationFailure(error, "staged-observation", "private-stage"));
+  assert.throws(() => markCallerObservationFailure(error, "private-phase", "read"));
+});
+
+test("observation completion and activation distinguish readback, version, provenance and authority failures", async () => {
+  const snapshot = stagedEmpty(), role = "publisher";
+  const observation = { status: "observed-new-disabled-secret-free-caller", role,
+    mutationState: "not-invoked", retirementArtifacts: 0, versionId: snapshot.activeVersion };
+  for (const stage of ["version-readback", "version-proof", "provenance-proof"]) {
+    const candidate = structuredClone(snapshot);
+    if (stage === "provenance-proof") candidate.resources.script.last_deployed_from = "api";
+    await assert.rejects(completeSecretFreeCallerObservation({ role, apiHandoffRoles: new Set(),
+      observe: async () => ({ snapshot: candidate, observation }),
+      verify: async () => { if (stage === "version-readback") throw new Error("private readback");
+        return { versionId: stage === "version-proof" ? newId : snapshot.activeVersion }; },
+    }), error => { assert.equal(callerObservationFailureDiagnostic(error).stage, stage); return true; });
+  }
+  const proof = { kind: "observed-secret-free", role, versionId: snapshot.activeVersion, provenance: "wrangler" };
+  for (const stage of ["activation-proof", "version-readback", "version-proof", "final-authority"]) {
+    let authorized = false;
+    await assert.rejects(verifyCallerActivationHandoff({ role,
+      proof: { ...proof, ...(stage === "activation-proof" ? { versionId: "invalid" } : {}) },
+      verify: async () => { if (stage === "version-readback") throw new Error("private readback");
+        return { versionId: stage === "version-proof" ? newId : proof.versionId }; },
+      authorize: async () => { authorized = true; throw new Error("private authority"); },
+    }), error => {
+      assert.deepEqual(callerObservationFailureDiagnostic(error), { phase: "activation", stage,
+        category: "verification-failed", mutationState: "not-invoked" }); return true;
+    });
+    assert.equal(authorized, stage === "final-authority");
   }
 });
 
@@ -697,7 +793,8 @@ for (const emptyRoles of [["publisher"], ["rendezvous"], ["publisher", "rendezvo
         assert.equal(events.some(v => v.startsWith("activate:")), false);
         if (failure === "last-version-race" && emptyRoles.includes("publisher")) {
           assert.equal(retirementFailureDiagnostic(caught), null);
-          assert.deepEqual(callerObservationFailureDiagnostic(caught), { phase: "activation", mutationState: "not-invoked" });
+          assert.deepEqual(callerObservationFailureDiagnostic(caught), { phase: "activation", stage: "version-proof",
+            category: "verification-failed", mutationState: "not-invoked" });
         }
       } else for (const role of ["publisher", "rendezvous"]) {
         const index = events.indexOf(`activate:${role}`);

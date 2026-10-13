@@ -1794,23 +1794,27 @@ export async function completeCallerRetirement({
 // This path observes a newly staged version and never completes a retirement.
 // Its diagnostic state must not imply that a secrets PATCH was accepted.
 export async function completeSecretFreeCallerObservation({ role, observe, verify, apiHandoffRoles }) {
+  let stage = "observation-proof";
   try {
   if (!["publisher", "rendezvous"].includes(role)) fail("secret-free observation role is invalid");
   const result = await observe();
   const snapshot = result?.snapshot, observation = result?.observation;
+  stage = "version-readback";
   const fresh = await verify();
+  stage = "version-proof";
   if (observation?.status !== "observed-new-disabled-secret-free-caller" || observation.role !== role ||
       observation.mutationState !== "not-invoked" || observation.retirementArtifacts !== 0 ||
       !uuidPattern.test(snapshot?.activeVersion ?? "") || observation.versionId !== snapshot.activeVersion ||
       fresh?.versionId !== snapshot.activeVersion)
     fail("secret-free observation version changed or is missing");
+  stage = "provenance-proof";
   const provenance = snapshot.control?.environment?.script?.last_deployed_from;
   if (provenance !== "wrangler" || snapshot.resources?.script?.last_deployed_from !== provenance)
     fail("secret-free observation requires fresh Wrangler provenance");
   apiHandoffRoles.delete(role);
   return Object.freeze({ kind: "observed-secret-free", role, versionId: snapshot.activeVersion, provenance,
     observation });
-  } catch (error) { throw markCallerObservationFailure(error, "staged-observation"); }
+  } catch (error) { throw markCallerObservationFailure(error, "staged-observation", stage); }
 }
 
 export async function prepareBootstrapCallerHandoff({ disposition, role, observe, retire, confirm, verify, apiHandoffRoles, scope, selectedIdentity }) {
@@ -1825,6 +1829,7 @@ export async function prepareBootstrapCallerHandoff({ disposition, role, observe
 }
 
 export async function verifyCallerActivationHandoff({ role, proof, verify, authorize, scope, selectedIdentity }) {
+  let stage = "activation-proof";
   try {
     if (!["publisher", "rendezvous"].includes(role) || proof?.role !== role ||
         !["retired", "observed-secret-free"].includes(proof.kind) ||
@@ -1836,16 +1841,19 @@ export async function verifyCallerActivationHandoff({ role, proof, verify, autho
       if (proof.versionId !== identity.versionId || proof.provenance !== identity.provenance)
         fail("API handoff activation receipt identity changed");
     }
+    stage = "version-readback";
     const active = await verify(proof.retirementProof);
+    stage = "version-proof";
     if (active?.versionId !== proof.versionId)
       fail("API handoff activation version changed or is missing");
     // Keep source authority fresh at the mutation without another resource sweep
     // after this exact-version readback.
+    stage = "final-authority";
     await authorize();
     return proof.provenance === "api";
   } catch (error) {
     if (proof?.kind === "retired") throw markRetirementFailure(error, "postverify", "response-accepted");
-    if (proof?.kind === "observed-secret-free") throw markCallerObservationFailure(error, "activation");
+    if (proof?.kind === "observed-secret-free") throw markCallerObservationFailure(error, "activation", stage);
     throw error;
   }
 }

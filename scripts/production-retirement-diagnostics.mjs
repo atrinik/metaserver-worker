@@ -6,6 +6,8 @@ const phases = new Set(["initial-fence", "initial-read", "initial-compare", "ini
   "intent-proof", "post-intent-fence", "current-read", "current-compare", "staged-proof",
   "final-authority", "freshness", "patch", "post-read", "postverify", "post-fence", "receipt-proof"]);
 const states = new Set(["not-invoked", "not-dispatched", "dispatched-outcome-unknown", "response-received", "response-accepted"]);
+const observationStages = new Set(["initial-fence", "read", "freshness", "snapshot-proof", "staged-proof", "post-fence",
+  "observation-proof", "version-readback", "version-proof", "provenance-proof", "activation-proof", "final-authority"]);
 const object = value => value !== null && ["object", "function"].includes(typeof value);
 
 export function markRetirementPatchFailure(error, state) {
@@ -49,10 +51,19 @@ export function preserveRetirementFailure(wrapper, original) {
 }
 
 // Observation failures are separate from retirement transport outcomes.
-export function markCallerObservationFailure(error, phase) {
-  if (!["staged-observation", "activation"].includes(phase)) throw new Error("invalid caller observation phase");
+export function markCallerObservationFailure(error, phase, stage) {
+  if (!["staged-observation", "activation"].includes(phase) || !observationStages.has(stage))
+    throw new Error("invalid caller observation phase or stage");
   const value = object(error) ? error : new Error("caller observation stopped");
-  observations.set(value, Object.freeze({ phase, mutationState: "not-invoked" }));
+  // Outer completion/activation wrappers must not erase the original failing
+  // operation. Trust only our brands; never inspect arbitrary error fields.
+  const original = callerObservationFailureDiagnostic(value);
+  if (original) { observations.set(value, Object.freeze(original)); return value; }
+  const transport = productionReadFailure(value);
+  observations.set(value, Object.freeze({ phase, stage, category: transport?.category ?? "verification-failed",
+    mutationState: "not-invoked",
+    ...(transport ? { readTransportState: transport.transportState,
+      ...(transport.httpStatus === undefined ? {} : { httpStatus: transport.httpStatus }) } : {}) }));
   return value;
 }
 export function callerObservationFailureDiagnostic(error) {
