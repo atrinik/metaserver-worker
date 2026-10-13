@@ -118,7 +118,17 @@
   never claim account-wide uniqueness or interpret a forbidden read as absence.
   Stage the new disabled core first, then each new disabled stateless caller
   while retaining its old secrets. Verify selected code and complete readback
-  before a fresh, one-use settings PATCH removes that caller's two secrets.
+  before a fresh, one-use `secrets-bulk` JSON Merge Patch removes that caller's
+  two exact secret names through explicit null values. Reject extra request
+  fields, `version_tags`, annotations and secret substitutions; v2 intents bind
+  the full account endpoint, exact request digests and timestamped predecessor.
+  Historical v1 settings intents are read-only evidence, never bulk-delete
+  authority. Require unchanged staged source tag/message and provider trigger
+  `secret`; annotation inheritance and that trigger must be proved by live
+  readback before activation. They may remain unknown before the authorized
+  one-use disabled-caller attempt; provider success is not guaranteed. Only service-consistent
+  `resources.script.last_deployed_from` Wrangler-to-API provenance may change;
+  preserve all other resource metadata exactly.
   Require zero-secret readback before activation. Encrypt mutation intents and
   receipts using standard JWE (RSA-OAEP-256/A256GCM) to the approved owner public
   SPKI key; the private key stays outside Actions. Before dispatch, finalize and

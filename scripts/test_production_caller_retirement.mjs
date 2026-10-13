@@ -9,7 +9,7 @@ import { mkdtemp, chmod, readFile, rm } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { verifyRecoveryArtifactProof } from "./production-recovery-artifacts.mjs";
-import { callerRetirementSecrets, callerRetirementSettings, verifyCallerRetirementPost,
+import { callerRetirementSecrets, callerRetirementBody, callerRetirementDigest, verifyCallerRetirementPost,
   retireCallerSecrets, observeCallerRetirement, createCallerRetirementPatch,
   createCallerRetirementRecorder, parseCallerRetirementModules } from "./production-caller-retirement.mjs";
 const accountId = "a".repeat(32), hash = "b".repeat(64), source = "c".repeat(40);
@@ -61,13 +61,11 @@ test("single retirement orders durable intent, read/fence, authority, mutation a
   assert.equal(h.writes, 1); assert.equal(result.receipt.status, "observed-disabled-caller-secrets-retired");
   assert.deepEqual(h.events, ["fence", "read", "verify", "intent", "fence", "read", "verify", "authorize", "patch", "read", "verify", "fence", "receipt"]);
 });
-test("multipart settings removes only pair and retains every mutable annotation", () => {
+test("bulk-secret body contains only the exact null-deletion pair", () => {
   const before = baseline(); before.settings.annotations.custom = "retained";
-  const settings = callerRetirementSettings("publisher", before);
-  assert.equal(settings.annotations.custom, "retained");
-  assert.equal(settings.annotations["workers/message"], before.settings.annotations["workers/message"]);
-  assert.equal(Object.hasOwn(settings.annotations, "workers/triggered_by"), false);
-  assert.equal(settings.bindings.some((b) => b.type === "secret_text"), false);
+  assert.deepEqual(callerRetirementBody("publisher", before), {
+    secrets: { SOURCE_TAG_KEY_CURRENT: null, SOURCE_TAG_KEY_PREVIOUS: null },
+  });
 });
 for (const [name, change] of [
   ["old required key IDs", (s) => s.settings.bindings.push({ name: "SOURCE_TAG_KEY_CURRENT_ID", type: "plain_text", text: "old" })],
@@ -95,7 +93,7 @@ for (const [name, change] of [
   assert.throws(() => verifyCallerRetirementPost("publisher", before, after));
 });
 test("wrong role and noop fail", () => {
-  assert.throws(() => callerRetirementSettings("core", baseline()));
+  assert.throws(() => callerRetirementBody("core", baseline()));
   assert.throws(() => verifyCallerRetirementPost("publisher", baseline(), baseline()));
 });
 test("consumed intent cannot dispatch", async () => {
@@ -150,6 +148,72 @@ test("read-only recovery binds original intent and rejects partial states", asyn
   await assert.rejects(observeCallerRetirement({ ...args, intent: { ...h.intent, role: "rendezvous" } }));
   await assert.rejects(observeCallerRetirement({ ...args, read: async () => h.before }));
 });
+test("v2 intent binds the full endpoint, exact request, and captured predecessor", async () => {
+  const h = harness(); await retireCallerSecrets(h.options);
+  assert.equal(h.intent.schema, "atrinik-production-caller-retirement-v2");
+  assert.equal(h.intent.endpoint, `https://api.cloudflare.com/client/v4/accounts/${accountId}/workers/scripts/atrinik-metaserver-publisher/secrets-bulk`);
+  assert.deepEqual(h.intent.before, h.before);
+  assert.equal(h.intent.beforeDigest, callerRetirementDigest(h.before));
+  assert.equal(h.intent.bodyDigest, callerRetirementDigest(h.intent.body));
+  assert.equal(Object.hasOwn(h.intent, "settingsDigest"), false);
+  const { schema, before, beforeDigest, requestDigest, ...request } = h.intent;
+  assert.equal(requestDigest, callerRetirementDigest(request));
+});
+for (const [name, change] of [
+  ["schema", (i) => { i.schema = "atrinik-production-caller-retirement-v3"; }],
+  ["before digest", (i) => { i.beforeDigest = hash; }],
+  ["before timestamp", (i) => { i.before.capturedAt = 999; }],
+  ["missing before timestamp", (i) => { delete i.before.capturedAt; }],
+  ["endpoint", (i) => { i.endpoint = i.endpoint.replace("secrets-bulk", "settings"); }],
+  ["body digest", (i) => { i.bodyDigest = hash; }],
+  ["request digest", (i) => { i.requestDigest = hash; }],
+  ["version_tags", (i) => { i.body.version_tags = {}; }],
+  ["extra field", (i) => { i.unexpected = true; }],
+]) test(`v2 recovery rejects substituted ${name} before any read`, async () => {
+  const h = harness(); await retireCallerSecrets(h.options);
+  const intent = structuredClone(h.intent); change(intent); let reads = 0;
+  await assert.rejects(observeCallerRetirement({ role: "publisher", before: h.before, intent,
+    read: async () => { reads++; return h.after; }, fence: async () => {}, verifyStaged: async () => true, now: () => 1000 }));
+  assert.equal(reads, 0);
+});
+test("historical v1 settings digest remains read-only and cannot be relabeled as bulk deletion", async () => {
+  const before = baseline(), beforeDocument = structuredClone(before); delete beforeDocument.capturedAt;
+  const annotations = structuredClone(before.settings.annotations); delete annotations["workers/triggered_by"];
+  const settings = { bindings: before.settings.bindings.filter((b) => !callerRetirementSecrets.includes(b.name)), annotations };
+  const intent = { schema: "atrinik-production-caller-retirement-v1", role: "publisher", accountId,
+    name: before.name, method: "PATCH", path: `/workers/scripts/${before.name}/settings`,
+    before: beforeDocument, beforeDigest: callerRetirementDigest(beforeDocument), settingsDigest: callerRetirementDigest(settings) };
+  let reads = 0;
+  const options = { role: "publisher", before, intent, read: async () => { reads++; return retired(before); }, fence: async () => {}, verifyStaged: async () => true, now: () => 1000 };
+  await assert.rejects(observeCallerRetirement(options), /historical intent lacks authenticated observation timestamp/u);
+  const inventedBefore = { ...before, capturedAt: 900 };
+  await assert.rejects(observeCallerRetirement({ ...options, before: inventedBefore }), /historical intent lacks authenticated observation timestamp/u);
+  assert.equal(reads, 0);
+  await assert.rejects(observeCallerRetirement({ ...options, before: beforeDocument }));
+  await assert.rejects(observeCallerRetirement({ ...options, intent: { ...intent, settingsDigest: callerRetirementDigest(callerRetirementBody("publisher", before)) } }));
+  const patch = createCallerRetirementPatch({ accountId, token: "fixture", role: "publisher", fetcher: async () => { throw Error("must not fetch"); } });
+  await assert.rejects(patch(intent));
+});
+test("provider-accepted settings shape retaining both secrets never produces a receipt", async () => {
+  const before = baseline(), after = structuredClone(before);
+  after.activeVersion = after.latestVersion = after.deploymentId = newId;
+  after.settings.annotations["workers/triggered_by"] = "upload";
+  after.resources.script.last_deployed_from = "api";
+  after.control.environment.script.last_deployed_from = "api";
+  let reads = 0, receipts = 0;
+  const h = harness({ read: async () => ++reads < 3 ? before : after, recordReceipt: async () => { receipts++; } });
+  await assert.rejects(retireCallerSecrets(h.options), e => retirementFailureDiagnostic(e).phase === "postverify");
+  assert.equal(h.writes, 1); assert.equal(receipts, 0);
+});
+for (const field of ["settings", "resources"]) test(`zero secrets only in ${field} cannot prove retirement`, () => {
+  const before = baseline(), after = retired(before);
+  after[field === "settings" ? "resources" : "settings"].bindings = structuredClone(before.settings.bindings);
+  assert.throws(() => verifyCallerRetirementPost("publisher", before, after));
+});
+for (const trigger of ["upload", "version_upload", undefined]) test(`operation annotation ${trigger} cannot prove retirement`, () => {
+  const before = baseline(), after = retired(before); after.settings.annotations["workers/triggered_by"] = trigger;
+  assert.throws(() => verifyCallerRetirementPost("publisher", before, after));
+});
 test("private durable recorder allows only one concurrent role claim and binds receipt", async () => {
   const directory = await mkdtemp(path.join(os.tmpdir(), "retirement-test-")); await chmod(directory, 0o700);
   try {
@@ -162,17 +226,60 @@ test("private durable recorder allows only one concurrent role claim and binds r
     await assert.rejects(a.recordIntent({ role: "publisher", pin: hash }));
   } finally { await rm(directory, { recursive: true }); }
 });
-test("bounded multipart transport is pinned and consumed even on network ambiguity", async () => {
+async function requestFixture(role = "publisher") {
+  const h = harness({ role, read: async () => baseline(role), patch: async () => { throw Error("fixture stop"); } });
+  await assert.rejects(retireCallerSecrets(h.options));
+  const { schema, before, beforeDigest, ...request } = h.intent;
+  return request;
+}
+test("bounded merge-patch transport is pinned and consumed even on network ambiguity", async () => {
   let calls = 0;
   const patch = createCallerRetirementPatch({ accountId, token: "test-token", role: "publisher", fetcher: async (url, options) => {
-    calls++; assert.equal(url, `https://api.cloudflare.com/client/v4/accounts/${accountId}/workers/scripts/atrinik-metaserver-publisher/settings`);
+    calls++; assert.equal(url, `https://api.cloudflare.com/client/v4/accounts/${accountId}/workers/scripts/atrinik-metaserver-publisher/secrets-bulk`);
     assert.equal(options.method, "PATCH"); assert.equal(options.redirect, "error");
-    assert.deepEqual(JSON.parse(await options.body.get("settings").text()), callerRetirementSettings("publisher", baseline()));
+    assert.equal(options.headers["Content-Type"], "application/merge-patch+json");
+    assert.equal(options.headers.Authorization, "Bearer test-token");
+    assert.deepEqual(JSON.parse(options.body), callerRetirementBody("publisher", baseline()));
     throw Error("network uncertainty");
   } });
-  const request = { accountId, role: "publisher", name: "atrinik-metaserver-publisher", settings: callerRetirementSettings("publisher", baseline()) };
+  const request = await requestFixture();
   await assert.rejects(patch({ ...request, role: "rendezvous" })); assert.equal(calls, 0);
   await assert.rejects(patch(request)); await assert.rejects(patch(request)); assert.equal(calls, 1);
+});
+for (const [name, change] of [
+  ["wrong account", (r) => { r.accountId = "d".repeat(32); }],
+  ["wrong role", (r) => { r.role = "rendezvous"; }],
+  ["wrong Worker", (r) => { r.name = "atrinik-metaserver-development-publisher"; }],
+  ["settings endpoint", (r) => { r.endpoint = r.endpoint.replace("secrets-bulk", "settings"); }],
+  ["different account endpoint", (r) => { r.endpoint = r.endpoint.replace(accountId, "d".repeat(32)); }],
+  ["wrong method", (r) => { r.method = "PUT"; }],
+  ["wrong content type", (r) => { r.contentType = "application/json"; }],
+  ["annotations injection", (r) => { r.body.annotations = { "workers/tag": source }; }],
+  ["version_tags injection", (r) => { r.body.version_tags = { "workers/tag": source }; }],
+  ["undefined injection", (r) => { r.body.version_tags = undefined; }],
+  ["wrong secret name", (r) => { delete r.body.secrets.SOURCE_TAG_KEY_PREVIOUS; r.body.secrets.UNRELATED = null; }],
+  ["partial pair", (r) => { delete r.body.secrets.SOURCE_TAG_KEY_PREVIOUS; }],
+  ["secret replacement", (r) => { r.body.secrets.SOURCE_TAG_KEY_PREVIOUS = { type: "secret_text", text: "forbidden" }; }],
+  ["extra secret", (r) => { r.body.secrets.UNRELATED = null; }],
+  ["extra request field", (r) => { r.unexpected = true; }],
+  ["body digest substitution", (r) => { r.bodyDigest = hash; }],
+  ["request digest substitution", (r) => { r.requestDigest = hash; }],
+]) test(`${name} cannot dispatch the bulk-secret request`, async () => {
+  let calls = 0;
+  const request = await requestFixture(); change(request);
+  // Even a recomputed request digest cannot widen the fixed operation contract.
+  const { requestDigest, ...content } = request;
+  if (!name.includes("digest")) request.requestDigest = callerRetirementDigest(content);
+  const patch = createCallerRetirementPatch({ accountId, token: "fixture", role: "publisher",
+    fetcher: async () => { calls++; return Response.json({ success: true }); } });
+  await assert.rejects(patch(request)); assert.equal(calls, 0);
+});
+test("accepted bulk-secret response still consumes exactly one request", async () => {
+  let calls = 0;
+  const patch = createCallerRetirementPatch({ accountId, token: "fixture", role: "publisher",
+    fetcher: async () => { calls++; return Response.json({ success: true }); } });
+  const request = await requestFixture(); await patch(request); await assert.rejects(patch(request));
+  assert.equal(calls, 1);
 });
 test("module parser hashes every binary part and rejects duplicates", async () => {
   const form = new FormData(); form.append("main.js", new Blob(["export default{}"], { type: "application/javascript+module" }), "main.js");
@@ -228,6 +335,25 @@ test("realistic service metadata allows only bounded modification times and API 
   after.control.environment.script.modified_on = "1970-01-01T00:00:01.500000Z";
   after.control.environment.script.last_deployed_from = "api";
   assert.equal(verifyCallerRetirementPost("publisher", before, after), after);
+});
+test("active resources accept only the service-consistent Wrangler to API transition", () => {
+  const before = baseline(); before.resources.script.last_deployed_from = "wrangler";
+  const after = retired(before); after.resources.script.last_deployed_from = "api";
+  assert.throws(() => verifyCallerRetirementPost("publisher", before, after));
+  after.control.environment.script.last_deployed_from = "api";
+  verifyCallerRetirementPost("publisher", before, after);
+  after.resources.script.last_deployed_from = "dash";
+  assert.throws(() => verifyCallerRetirementPost("publisher", before, after));
+});
+test("unknown existing resource metadata remains exact", () => {
+  const before = baseline(); before.resources.script.future = { enabled: false };
+  const after = retired(before); verifyCallerRetirementPost("publisher", before, after);
+  after.resources.script.future.enabled = true;
+  assert.throws(() => verifyCallerRetirementPost("publisher", before, after));
+});
+test("post observation cannot precede the timestamped predecessor", () => {
+  const before = baseline(), after = retired(before); after.capturedAt = 999;
+  assert.throws(() => verifyCallerRetirementPost("publisher", before, after));
 });
 for (const coordinate of ["activeVersion", "deploymentId"]) test(`service identifier tracks exact fresh ${coordinate}`, () => {
   const before = baseline();

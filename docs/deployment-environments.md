@@ -395,6 +395,60 @@ private artifact metadata. A failed upload/readback still consumes the intent;
 never retry it. Observe the current topology and existing attempt evidence before
 preparing any newly authorized attempt coordinate.
 
+Caller retirement uses exactly one
+`PATCH /accounts/{account_id}/workers/scripts/{script_name}/secrets-bulk`
+with `Content-Type: application/merge-patch+json` and this complete body:
+
+```json
+{"secrets":{"SOURCE_TAG_KEY_CURRENT":null,"SOURCE_TAG_KEY_PREVIOUS":null}}
+```
+
+[Cloudflare documents null-valued deletion and a single new version for bulk secret changes](https://developers.cloudflare.com/api/resources/workers/subresources/scripts/subresources/secrets/methods/bulk_update/).
+A generic settings update that omits the pair is not deletion proof. The transport
+accepts only this exact pair and body: it rejects `version_tags`, annotations,
+unknown fields, other secret names, replacement values and request substitutions.
+The body digest binds the absence of those extra fields. The v2 intent binds the
+full account-scoped HTTPS endpoint, method, content type, body and request digests,
+and the complete predecessor including its actual `capturedAt` timestamp. The
+private one-use coordinate and verified ciphertext artifact are durable before
+dispatch. A provider acceptance still needs fresh complete readback, source proof,
+a fresh writer fence and a durable encrypted receipt. The existing request and
+response bounds, 20-second deadline, redirect rejection and no-retry rule remain.
+
+Success requires both settings and active-version bindings to contain zero
+secrets, unchanged code and nonsecret bindings, exact staged `workers/tag` and
+`workers/message`, and `workers/triggered_by=secret`. Cloudflare's bulk API
+documentation does not establish inheritance of those staged annotations or the
+exact trigger value. The optional arbitrary `version_tags` map has no documented
+mapping to these annotations, so this writer does not send it. Source tests prove
+the fixed request and fail-closed verification; they do not qualify these live
+provider postconditions. Annotation inheritance and the exact trigger may remain
+unknown before the documented, authorized one-use attempt against the disabled
+caller. They must be qualified by strict readback before activation; no separate
+pre-dispatch qualification gate is required. Provider acceptance does not
+guarantee those postconditions. If live readback differs, stop activation with a
+consumed intent; never weaken the postconditions or retry the mutation.
+
+Target service modification timestamps may advance only within the observed
+predecessor/post-read window. Deployment identifiers must follow the separately
+read fresh version/deployment coordinates. Service provenance may change only
+from `wrangler` to `api`; the active-version
+`resources.script.last_deployed_from` may make that same transition only when
+consistent with the service transition. All other settings, resource metadata,
+control fields, peers and global namespaces remain exactly preserved, including
+unknown fields. A later observation is not proof of an earlier failed exception.
+
+Historical v1 intents retain their original settings endpoint and settings-body
+digest only in the read-only observer. They never authorize the v2 bulk-secret
+writer and cannot be relabeled as its request. V1 omitted the predecessor capture
+time, so the observer validates its historical digest binding and then stops with
+`historical intent lacks authenticated observation timestamp`. A caller-supplied
+time cannot fill that gap. Owner artifact inspection remains read-only; it cannot
+prove the original transition window. Do not invent or backdate that timestamp,
+replay an old intent or create a retrospective original receipt. A successful v2
+read-only terminal is separately labeled observational recovery and creates no
+original receipt. New v2 observation rejects missing or substituted timestamps.
+
 The production controller shares a single GET scheduler across its account API
 resource and native-rate inventories, writer fence, native control-plane reads
 and six-Worker caller snapshots. Starts are at least 334 milliseconds apart,

@@ -35,7 +35,7 @@ function bindings(rows) {
   return rows;
 }
 function assertSnapshot(role, value, retired = false) {
-  if (!value || value.name !== workerName(role) || !/^[a-f0-9]{32}$/u.test(value.accountId ?? "") ||
+  if (!value || !Number.isFinite(value.capturedAt) || value.name !== workerName(role) || !/^[a-f0-9]{32}$/u.test(value.accountId ?? "") ||
       !uuid.test(value.activeVersion ?? "") || value.latestVersion !== value.activeVersion ||
       !uuid.test(value.deploymentId ?? "") || !value.peers || !value.code ||
       !Array.isArray(value.code.modules) || value.code.modules.length < 1 ||
@@ -125,6 +125,16 @@ function expectedServiceMetadata(before, after) {
     expected.script.last_deployed_from = "api";
   return expected;
 }
+// Active-version script metadata may reflect the same exact deployment client
+// transition as the service environment. No other resource metadata is mutable.
+function expectedResourceScript(before, after) {
+  const expected = structuredClone(before.resources.script);
+  if (expected.last_deployed_from === "wrangler" && after.resources.script.last_deployed_from === "api" &&
+      before.control.environment.script.last_deployed_from === "wrangler" &&
+      after.control.environment.script.last_deployed_from === "api")
+    expected.last_deployed_from = "api";
+  return expected;
+}
 function withoutTime(value) {
   const copy = structuredClone(value);
   delete copy.capturedAt;
@@ -134,17 +144,51 @@ function fresh(value, now) {
   if (!Number.isFinite(value?.capturedAt) || now() < value.capturedAt || now() - value.capturedAt > 10000)
     fail("observation expired");
 }
-export function callerRetirementSettings(role, snapshot) {
+// Historical v1 settings requests are observation-only. Keep this digest input
+// unchanged; it never authorizes or describes the new bulk-secret operation.
+function historicalCallerRetirementSettings(role, snapshot) {
   assertSnapshot(role, snapshot);
-  // Settings PATCH changes only bindings; annotations must be supplied explicitly
-  // because the API does not inherit them. Never submit the read-only operation field.
   const annotations = structuredClone(snapshot.settings.annotations);
   delete annotations["workers/triggered_by"];
   return { bindings: snapshot.settings.bindings.filter((b) => !callerRetirementSecrets.includes(b.name)), annotations };
 }
+export function callerRetirementBody(role, snapshot) {
+  assertSnapshot(role, snapshot);
+  return { secrets: { SOURCE_TAG_KEY_CURRENT: null, SOURCE_TAG_KEY_PREVIOUS: null } };
+}
+const mergePatchType = "application/merge-patch+json";
+const exactKeys = (value, keys) => value && typeof value === "object" && !Array.isArray(value) &&
+  Reflect.ownKeys(value).every((key) => typeof key === "string") &&
+  same(Reflect.ownKeys(value).sort(), [...keys].sort()) && Object.keys(value).length === keys.length;
+function retirementRequest(role, accountId) {
+  const name = workerName(role);
+  const body = { secrets: { SOURCE_TAG_KEY_CURRENT: null, SOURCE_TAG_KEY_PREVIOUS: null } };
+  const request = { role, accountId, name, method: "PATCH",
+    endpoint: `https://api.cloudflare.com/client/v4/accounts/${accountId}/workers/scripts/${name}/secrets-bulk`,
+    contentType: mergePatchType, body, bodyDigest: callerRetirementDigest(body) };
+  return { ...request, requestDigest: callerRetirementDigest(request) };
+}
+function assertRetirementRequest(role, accountId, request) {
+  const expected = retirementRequest(role, accountId);
+  // Inspect keys as well as digests: JSON hashing alone would omit undefined
+  // injections. There is no annotation or version_tags mapping in this contract.
+  if (!exactKeys(request, Object.keys(expected)) ||
+      !exactKeys(request.body, ["secrets"]) || !exactKeys(request.body.secrets, [...callerRetirementSecrets]) ||
+      callerRetirementSecrets.some((name) => request.body.secrets[name] !== null) || !same(request, expected))
+    fail("mutation request authority drift");
+}
+function assertV2Intent(role, before, intent) {
+  const request = retirementRequest(role, before.accountId);
+  const expected = { schema: "atrinik-production-caller-retirement-v2", ...request,
+    before: structuredClone(before), beforeDigest: callerRetirementDigest(before) };
+  if (!Number.isFinite(before.capturedAt) || !exactKeys(intent, Object.keys(expected)) || !same(intent, expected))
+    fail("recovery intent does not bind timestamped predecessor and exact request");
+  assertRetirementRequest(role, before.accountId, Object.fromEntries(Object.keys(request).map((key) => [key, intent[key]])));
+}
 export function verifyCallerRetirementPost(role, before, after) {
   assertSnapshot(role, before);
   assertSnapshot(role, after, true);
+  if (after.capturedAt < before.capturedAt) fail("postwrite observation predates predecessor");
   if (after.activeVersion === before.activeVersion || after.deploymentId === before.deploymentId)
     fail("no new active version observed");
   const expected = withoutTime(before);
@@ -153,6 +197,7 @@ export function verifyCallerRetirementPost(role, before, after) {
     expected[field].bindings = expected[field].bindings.filter((b) => !callerRetirementSecrets.includes(b.name));
   expected.settings.annotations["workers/triggered_by"] = "secret";
   expected.control.environment = expectedServiceMetadata(before, after);
+  expected.resources.script = expectedResourceScript(before, after);
   if (!same(expected, withoutTime(after))) fail("postwrite preservation mismatch");
   return after;
 }
@@ -181,12 +226,12 @@ export async function retireCallerSecrets({ role, read, fence, verifyStaged, pat
     assertSnapshot(role, before);
     phase = "initial-staged-proof";
     if (await verifyStaged(before, { retired: false }) !== true) fail("selected staged proof rejected");
-    const settings = callerRetirementSettings(role, before);
-    const intent = { schema: "atrinik-production-caller-retirement-v1", role, accountId: before.accountId,
-      name: workerName(role), method: "PATCH", path: `/workers/scripts/${workerName(role)}/settings`,
-      before: withoutTime(before), beforeDigest: callerRetirementDigest(withoutTime(before)), settingsDigest: callerRetirementDigest(settings) };
+    callerRetirementBody(role, before);
+    const request = retirementRequest(role, before.accountId);
+    const intent = { schema: "atrinik-production-caller-retirement-v2", ...request,
+      before: structuredClone(before), beforeDigest: callerRetirementDigest(before) };
     phase = "intent-proof";
-    await recordIntent(intent);
+    await recordIntent(structuredClone(intent));
     // Intent is consumed first. Re-read module, latest, bindings and peers, then do
     // the final authority/global fence. Neither check is permission to retry.
     phase = "post-intent-fence";
@@ -204,8 +249,9 @@ export async function retireCallerSecrets({ role, read, fence, verifyStaged, pat
     phase = "freshness";
     fresh(current, now);
     phase = "patch";
+    assertV2Intent(role, before, intent);
     mutationState = "dispatched-outcome-unknown";
-    await patch({ role, accountId: before.accountId, name: workerName(role), settings });
+    await patch(structuredClone(request));
     mutationState = "response-accepted";
     phase = "post-read";
     const after = await read();
@@ -227,12 +273,18 @@ export async function retireCallerSecrets({ role, read, fence, verifyStaged, pat
 // recovery terminal is a new document and is not a fabricated original receipt.
 export async function observeCallerRetirement({ role, before, intent, read, fence, verifyStaged, now = Date.now }) {
   assertSnapshot(role, before);
-  if (intent?.schema !== "atrinik-production-caller-retirement-v1" || intent.role !== role ||
-      intent.accountId !== before.accountId || intent.name !== workerName(role) ||
-      intent.method !== "PATCH" || intent.path !== `/workers/scripts/${workerName(role)}/settings` ||
-      !same(intent.before, withoutTime(before)) || intent.beforeDigest !== callerRetirementDigest(withoutTime(before)) ||
-      intent.settingsDigest !== callerRetirementDigest(callerRetirementSettings(role, before)))
-    fail("recovery intent does not bind predecessor");
+  if (intent?.schema === "atrinik-production-caller-retirement-v2") assertV2Intent(role, before, intent);
+  else {
+    if (intent?.schema !== "atrinik-production-caller-retirement-v1" || intent.role !== role ||
+        intent.accountId !== before.accountId || intent.name !== workerName(role) ||
+        intent.method !== "PATCH" || intent.path !== `/workers/scripts/${workerName(role)}/settings` ||
+        !same(intent.before, withoutTime(before)) || intent.beforeDigest !== callerRetirementDigest(withoutTime(before)) ||
+        intent.settingsDigest !== callerRetirementDigest(historicalCallerRetirementSettings(role, before)))
+      fail("recovery intent does not bind predecessor");
+    // Digest validation preserves the historical observation contract; it cannot
+    // authenticate any capture time supplied outside the consumed v1 document.
+    fail("historical intent lacks authenticated observation timestamp");
+  }
   await fence();
   const after = await read();
   fresh(after, now);
@@ -244,7 +296,7 @@ export async function observeCallerRetirement({ role, before, intent, read, fenc
 }
 
 export function createCallerRetirementPatch({ accountId, token, role, fetcher = fetch }) {
-  const name = workerName(role);
+  workerName(role);
   if (!/^[a-f0-9]{32}$/u.test(accountId ?? "") || typeof token !== "string" || !token || /\s/u.test(token))
     fail("mutation transport authority invalid");
   let consumed = false;
@@ -252,19 +304,15 @@ export function createCallerRetirementPatch({ accountId, token, role, fetcher = 
     let transportState = "not-dispatched";
     try {
       if (consumed) fail("mutation transport already consumed");
-      if (request?.role !== role || request.accountId !== accountId || request.name !== name ||
-          !request.settings || !same(Object.keys(request.settings).sort(), ["annotations", "bindings"]) ||
-          request.settings.bindings.some((b) => b.type === "secret_text" || callerRetirementSecrets.includes(b.name)) ||
-          Object.hasOwn(request.settings.annotations, "workers/triggered_by")) fail("mutation request authority drift");
-      const data = JSON.stringify(request.settings);
-      if (Buffer.byteLength(data) > 65536) fail("settings request exceeds bound");
-      const form = new FormData();
-      form.set("settings", new Blob([data], { type: "application/json" }));
+      assertRetirementRequest(role, accountId, request);
+      // Serialize the fixed validated contract, never caller object hooks.
+      const data = JSON.stringify(retirementRequest(role, accountId).body);
+      if (Buffer.byteLength(data) > 65536) fail("bulk-secret request exceeds bound");
       consumed = true;
       // Exactly one request, bounded response, no redirect or automatic retry.
       transportState = "dispatched-outcome-unknown";
-      const response = await fetcher(`https://api.cloudflare.com/client/v4/accounts/${accountId}/workers/scripts/${name}/settings`, {
-        method: "PATCH", headers: { Authorization: `Bearer ${token}` }, body: form,
+      const response = await fetcher(retirementRequest(role, accountId).endpoint, {
+        method: "PATCH", headers: { Authorization: `Bearer ${token}`, "Content-Type": mergePatchType }, body: data,
         redirect: "error", signal: AbortSignal.timeout(20000),
       });
       transportState = "response-received";
