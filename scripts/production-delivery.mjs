@@ -1,5 +1,5 @@
 import { createProductionReadPacer, productionReadFailure } from "./production-read-pacing.mjs";
-import { retirementFailureDiagnostic, preserveRetirementFailure } from "./production-retirement-diagnostics.mjs";
+import { markRetirementFailure, retirementFailureDiagnostic, preserveRetirementFailure } from "./production-retirement-diagnostics.mjs";
 import { execFile } from "node:child_process";
 import { createHash } from "node:crypto";
 import { chmod, mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
@@ -1764,7 +1764,8 @@ export async function completeCallerRetirement({
   const serviceSource = result?.snapshot?.control?.environment?.script?.last_deployed_from;
   const resourceSource = result?.snapshot?.resources?.script?.last_deployed_from;
   if (serviceSource !== resourceSource || !["api", "wrangler"].includes(serviceSource))
-    fail("API handoff retirement provenance is invalid");
+    throw markRetirementFailure(new DeliveryError("API handoff retirement provenance is invalid"),
+      "postverify", "response-accepted");
   // Retirement may preserve Wrangler provenance. Use the verified new version,
   // replacing any exception retained from the predecessor before staging.
   if (serviceSource === "api") apiHandoffRoles.add(role);

@@ -900,6 +900,41 @@ test("retirement activation strictness follows both verified provenance fields",
   }
 });
 
+test("post-retirement provenance rejection preserves consumed mutation diagnostics", async () => {
+  const secret = "private provider account/token/path";
+  for (const role of ["publisher", "rendezvous"]) {
+    for (const resourceSource of [undefined, "wrangler", secret]) {
+      const apiHandoffRoles = new Set();
+      const events = [];
+      let failure;
+      try {
+        await completeCallerRetirement({ role, apiHandoffRoles,
+          retire: async () => {
+            events.push("retirement-receipt-verified");
+            return { snapshot: {
+              control: { environment: { script: { last_deployed_from: "api" } } },
+              resources: { script: { last_deployed_from: resourceSource } },
+            } };
+          },
+          confirm: () => { events.push("confirm"); },
+          verify: async () => { events.push("fence-and-readback"); },
+        });
+        events.push("activate");
+      } catch (error) { failure = error; }
+      assert(failure);
+      assert.deepEqual(events, ["retirement-receipt-verified", "confirm", "fence-and-readback"]);
+      assert.deepEqual([...apiHandoffRoles], []);
+      const evidence = { sourceSha: "a".repeat(40), deployableDigest: "b".repeat(64),
+        failedRole: `retirement:${role}`, completedRoles: ["staged:core"], recoveryOutcome: "proven" };
+      const record = deliveryFailureRecord(failure, evidence);
+      assert.deepEqual(record, { ...evidence, outcome: "production-delivery-stopped",
+        reason: "API handoff retirement provenance is invalid",
+        retirement: { phase: "postverify", category: "verification-failed", mutationState: "response-accepted" } });
+      assert.equal(JSON.stringify(record).includes(secret), false);
+    }
+  }
+});
+
 test("keeps strict Wrangler arguments outside the explicit API handoff", () => {
   const input = {
     configPath: "/tmp/production.jsonc",
