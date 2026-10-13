@@ -1,3 +1,4 @@
+import { createRetirementCohortGuard } from "./production-retirement-cohort.mjs";
 import { createProductionReadPacer, productionReadFailure } from "./production-read-pacing.mjs";
 import { markRetirementFailure, retirementFailureDiagnostic, preserveRetirementFailure, markCallerObservationFailure, callerObservationFailureDiagnostic } from "./production-retirement-diagnostics.mjs";
 import { execFile } from "node:child_process";
@@ -1767,7 +1768,9 @@ export async function completeCallerRetirement({
     fail("API handoff retirement role is invalid");
   const result = await retire();
   try {
-    requireRetiredCallerProof({ proof: result?.proof, role, scope, selectedIdentity });
+    const identity = requireRetiredCallerProof({ proof: result?.proof, role, scope, selectedIdentity });
+    if (identity.snapshotDigest !== callerRetirementDigest(result.snapshot))
+      fail("API handoff retirement snapshot changed after receipt");
     confirm();
     const fresh = await verify(result.proof);
     const retiredVersion = result?.snapshot?.activeVersion;
@@ -1828,7 +1831,11 @@ export async function verifyCallerActivationHandoff({ role, proof, verify, autho
         typeof proof.versionId !== "string" || !uuidPattern.test(proof.versionId) ||
         !["api", "wrangler"].includes(proof.provenance))
       fail("API handoff activation proof is invalid");
-    if (proof.kind === "retired") requireRetiredCallerProof({ proof: proof.retirementProof, role, scope, selectedIdentity });
+    if (proof.kind === "retired") {
+      const identity = requireRetiredCallerProof({ proof: proof.retirementProof, role, scope, selectedIdentity });
+      if (proof.versionId !== identity.versionId || proof.provenance !== identity.provenance)
+        fail("API handoff activation receipt identity changed");
+    }
     const active = await verify(proof.retirementProof);
     if (active?.versionId !== proof.versionId)
       fail("API handoff activation version changed or is missing");
@@ -2647,6 +2654,7 @@ export async function runDelivery({ target = "production", sourceRoot, mode = "d
   const retiredCallerReaders = new Map();
   const retirementIdentities = new Map();
   const retirementScope = Object.freeze({});
+  const retirementCohort = createRetirementCohortGuard({ accountId: configs[0].account_id, scope: retirementScope });
   let bootstrapEvidenceDirectory;
   if (bootstrap) {
     if (typeof authority.authorize !== "function") fail("bootstrap source handoff authority unavailable");
@@ -2668,10 +2676,32 @@ export async function runDelivery({ target = "production", sourceRoot, mode = "d
   const fence = () => fenceDeliveryMutation(authority, resourceFence);
   const readRetiredCaller = async (worker, index, proof) => {
     await fence();
+    try {
     const snapshot = await retiredCallerReaders.get(worker.role)();
+    retirementCohort.check(snapshot);
     return verifyRetiredCallerReadback({ worker, config: stagedConfigs[index], snapshot, proof,
       scope: retirementScope, selectedIdentity: retirementIdentities.get(worker.role),
       expectedMessage: expectedStagedMessages.get(worker.role), expectedZoneId: configs[0].vars.DIRECTORY_CACHE_ZONE_ID });
+    } catch (error) { throw markRetirementFailure(error, "postverify", "response-accepted"); }
+  };
+  const recordRetirementPeerUpload = (worker, index, active, phase) => {
+    const config = phase === "staged" ? stagedReadbackConfig(index) : configs[index];
+    const expectedMessage = (phase === "staged" ? expectedStagedMessages : expectedActiveMessages).get(worker.role);
+    const bundleDigest = (phase === "staged" ? plan.stagedBundles : plan.bundles)[index];
+    retirementCohort.recordUpload({ name: config.name, versionId: active.versionId, validate: snapshot => {
+      if (snapshot.settings.annotations?.["workers/tag"] !== sourceSha ||
+          !sameJson(snapshot.settings.annotations, snapshot.versionAnnotations) ||
+          !sameJson(snapshot.settings.bindings, snapshot.resources.bindings) ||
+          snapshot.settings.annotations?.["workers/triggered_by"] !== "version_upload" ||
+          snapshot.code.modules.length !== 1 || snapshot.code.modules[0].sha256 !== bundleDigest)
+        fail("retirement peer uploaded module or annotation drift");
+      validateReadback(worker, config, { versionId: snapshot.activeVersion,
+        version: { resources: snapshot.resources, annotations: snapshot.settings.annotations } }, expectedMessage);
+      validateLiveControlPlane(worker, config, { routes: snapshot.control.routes, customDomains: snapshot.control.domains,
+        subdomainStatus: snapshot.control.subdomain, serviceEnvironment: snapshot.control.environment,
+        cronTriggers: snapshot.control.schedules }, { expectedZoneId: configs[0].vars.DIRECTORY_CACHE_ZONE_ID });
+      return true;
+    } });
   };
   const outcome = await orchestrateDelivery({
     workers: contract.workers,
@@ -2725,6 +2755,7 @@ export async function runDelivery({ target = "production", sourceRoot, mode = "d
         await readLiveControlPlane(worker, process.env.CLOUDFLARE_ACCOUNT_ID),
         { expectedZoneId: configs[0].vars.DIRECTORY_CACHE_ZONE_ID },
       );
+      recordRetirementPeerUpload(worker, index, uploaded, "staged");
       if (bootstrap && index > 0) {
         const disposition = callerDispositions[worker.role];
         failureEvidence.failedRole = `${disposition.operation === "retire-pair" ? "retirement" : "observation"}:${worker.role}`;
@@ -2738,6 +2769,7 @@ export async function runDelivery({ target = "production", sourceRoot, mode = "d
           runId: process.env.GITHUB_RUN_ID, runAttempt: process.env.GITHUB_RUN_ATTEMPT };
         retirementIdentities.set(worker.role, selectedIdentity);
         const verifyStaged = (snapshot, { retired, predecessor }) => {
+          if (!retired || disposition.operation === "observe-secret-free") retirementCohort.check(snapshot);
           if ((!retired || disposition.operation === "observe-secret-free") && snapshot.activeVersion !== uploaded.versionId)
             fail("new staged caller version changed before observation");
           return verifyStagedCallerRetirement({ worker, config: stagedConfigs[index], sourceSha,
@@ -2752,7 +2784,7 @@ export async function runDelivery({ target = "production", sourceRoot, mode = "d
           retire: async () => {
             resourceTransition.beginCallerRetirement(worker.role);
             try {
-              return await retireCallerSecrets({
+              const result = await retireCallerSecrets({
                 role: worker.role, scope: retirementScope, selectedIdentity, fence, authorize: authority.authorize, qualification: retirementQualification,
                 read,
                 patch: createCallerRetirementPatch({ accountId,
@@ -2760,6 +2792,10 @@ export async function runDelivery({ target = "production", sourceRoot, mode = "d
                 ...retirementRecorders.get(worker.role),
                 verifyStaged,
               });
+              try { retirementCohort.acceptRetirement({ snapshot: result.snapshot, proof: result.proof,
+                role: worker.role, selectedIdentity });
+              } catch (error) { throw markRetirementFailure(error, "postverify", "response-accepted"); }
+              return result;
             } catch (error) {
               const stopped = new DeliveryError("production caller retirement stopped; preserve private intent and do not retry");
               stopped.cause = error;
@@ -2829,10 +2865,11 @@ export async function runDelivery({ target = "production", sourceRoot, mode = "d
       );
     },
     readbackActive: async (worker, index) => {
+      const uploaded = await readActive(configPaths[index]);
       validateReadback(
         worker,
         configs[index],
-        await readActive(configPaths[index]),
+        uploaded,
         expectedActiveMessages.get(worker.role),
       );
       validateLiveControlPlane(
@@ -2841,6 +2878,7 @@ export async function runDelivery({ target = "production", sourceRoot, mode = "d
         await readLiveControlPlane(worker, process.env.CLOUDFLARE_ACCOUNT_ID),
         { expectedZoneId: configs[0].vars.DIRECTORY_CACHE_ZONE_ID },
       );
+      recordRetirementPeerUpload(worker, index, uploaded, "active");
     },
     verifyFinal: async (finalDecision) => {
       const finalAnnotations = [];

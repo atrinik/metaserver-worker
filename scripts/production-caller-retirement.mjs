@@ -248,9 +248,12 @@ function retirementRequestV4(role, accountId) {
 }
 function assertRetirementRequestV4(role, accountId, request) {
   const expected = retirementRequestV4(role, accountId);
-  if (!exactKeys(request, Object.keys(expected)) || !same(request, expected)) fail("mutation request authority drift");
+  if (!exactKeys(request, Object.keys(expected))) fail("mutation request authority drift");
   const { contract: _contract, requestDigest: _digest, ...legacy } = request;
+  if (!exactKeys(request.body, ["secrets"]) || !exactKeys(request.body.secrets, [...callerRetirementSecrets]))
+    fail("mutation request authority drift");
   assertRetirementRequest(role, accountId, { ...legacy, requestDigest: callerRetirementDigest(legacy) });
+  if (!same(request, expected)) fail("mutation request authority drift");
   return expected;
 }
 function assertSelectedIdentity(role, before, selected) {
@@ -302,7 +305,8 @@ export function requireRetiredCallerProof({ proof, role, scope, selectedIdentity
     assertSnapshot(role, snapshot, true, false, true);
     if (!same(ownSnapshot(snapshot), value.ownSnapshot)) fail("retired caller snapshot changed");
   }
-  return Object.freeze({ versionId: value.versionId, message: value.message, sourceSha: value.selectedIdentity.sourceSha });
+  return Object.freeze({ versionId: value.versionId, message: value.message, sourceSha: value.selectedIdentity.sourceSha,
+    snapshotDigest: value.snapshotDigest, provenance: value.provenance });
 }
 
 // A distinct read-only operation for an explicitly approved empty baseline after
@@ -419,7 +423,9 @@ export async function retireCallerSecrets({ role, read, fence, verifyStaged, pat
     await recordReceipt(structuredClone(receipt));
     const proof = Object.freeze({ role, versionId: after.activeVersion });
     retiredProofs.set(proof, { role, scope, selectedIdentity: structuredClone(selectedIdentity),
-      versionId: after.activeVersion, ownSnapshot: ownSnapshot(after),
+      versionId: after.activeVersion, ownSnapshot: ownSnapshot(after), snapshotDigest: callerRetirementDigest(after),
+      provenance: after.resources.script.last_deployed_from === after.control.environment.script.last_deployed_from
+        ? after.resources.script.last_deployed_from : undefined,
       message: before.settings.annotations["workers/message"], receiptDigest: callerRetirementDigest(receipt) });
     return { snapshot: after, receipt, proof };
   } catch (error) { throw markRetirementFailure(error, phase, mutationState); }
@@ -622,7 +628,7 @@ export function createCallerRetirementReader({ accountId, token, role, fetcher =
         fail("cohort latest is not sole active version");
       const detail = (await get(`${script}/versions/${latest.id}`)).result;
       if (detail?.id !== latest.id) fail("active detail mismatch");
-      if (!same(settings.result?.annotations, detail.annotations)) fail("settings/version annotations mismatch");
+      if (!settings.result?.annotations || !detail.annotations || !same(settings.result.annotations, detail.annotations)) fail("settings/version annotations mismatch");
       const code = await parseCallerRetirementModules(raw.bytes, raw.type, raw.etag);
       if (code.etag !== detail.resources?.script?.etag) fail("active module changed during read");
       return { name: worker, tag: identity.tag, activeVersion: latest.id, latestVersion: latest.id, deploymentId: active.id,
