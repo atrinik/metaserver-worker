@@ -436,72 +436,82 @@ private artifact metadata. A failed upload/readback still consumes the intent;
 never retry it. Observe the current topology and existing attempt evidence before
 preparing any newly authorized attempt coordinate.
 
-New caller retirement writes use the v3 contract and exactly one
+New caller retirement writes use the v4 contract and exactly one
 `PATCH /accounts/{account_id}/workers/scripts/{script_name}/secrets-bulk`
-with `Content-Type: application/merge-patch+json`. Its complete body contains the
-exact null deletion pair and the two exact approved staged annotation strings:
+with `Content-Type: application/merge-patch+json`. Its complete body is:
 
 ```json
-{"secrets":{"SOURCE_TAG_KEY_CURRENT":null,"SOURCE_TAG_KEY_PREVIOUS":null},"version_tags":{"workers/tag":"<selected source SHA>","workers/message":"<exact staged delivery message>"}}
+{"secrets":{"SOURCE_TAG_KEY_CURRENT":null,"SOURCE_TAG_KEY_PREVIOUS":null}}
 ```
 
-[Cloudflare documents null-valued deletion, a single new version and the optional `version_tags` object](https://developers.cloudflare.com/api/resources/workers/subresources/scripts/subresources/secrets/methods/bulk_update/).
-That reference does not specify the object's inner-key mapping. The candidate
-`workers/tag` and `workers/message` mapping requires separate authorized provider
-qualification before production use; source fixtures alone do not establish it.
-The controller enforces this using its fixed checked-in
-`deployment/caller-retirement-provider-qualification.json`, whose
-`atrinik-caller-retirement-provider-qualification-v1` document currently contains
-`qualification: null`. A pair-bearing bootstrap cannot generate an approved plan,
-create recovery artifacts or stage any Worker while this slot is unqualified.
-Ordinary delivery and a bootstrap with both callers already empty do not require
-this retirement-specific capability.
+[Cloudflare documents null-valued deletion and creation of one new version](https://developers.cloudflare.com/api/resources/workers/subresources/scripts/subresources/secrets/methods/bulk_update/).
+The new contract supplies no `version_tags`. The independently reviewed isolated
+canary observed the exact post-operation annotation object
+`{"workers/triggered_by":"secret"}` in both settings and the active version.
+The earlier namespaced-key and short-key annotation-preservation experiments
+remain negative evidence. Their consumed intents cannot be retried, relabeled or
+completed retrospectively under v4.
 
-Filling the slot requires actual scoped probe success, clean removal of the
-probe Worker and independent review of the real retained evidence, followed by a
-reviewed source change. The source attestation binds SHA-256 of the exact account
-ID, the PATCH endpoint template, merge-patch content type, two null-deletion secret
-names, exact `version_tags` keys, measurement/review times, all ten measured
-mapping checks, and hashes of the probe controller, request, predecessor,
-post-observation, result and independent review. The review also names the exact
-result digest. The probe's isolated scope, `productionAuthorized: false` and
-`productionContractSatisfied: false` remain explicit; qualification establishes
-this mapping and grants no production action or broader peer-control guarantee.
-A collection of locally supplied booleans or hashes cannot authenticate a probe.
-The reviewed controller source is the attestation trust anchor.
+The fixed controller-owned
+`deployment/caller-retirement-provider-qualification.json` uses the new
+`atrinik-caller-retirement-provider-qualification-v2` schema. Its reviewed evidence
+binds the account hash, bare PATCH contract, actual request/controller/snapshot/result
+hashes, independent review and all nine operation measurements. The probe removed
+two dummy secrets from an isolated Worker and verified its eventual absence. It
+had an empty nonsecret binding inventory; it does not prove preservation of a real
+production configuration. Production names are fixed separately in the source
+contract. `productionAuthorized: false` and `productionContractSatisfied: false`
+remain explicit. Every production operation still requires full module,
+configuration, control, peer and source checks. No live authority comes from this
+historical capability qualification.
 
 The loader opens only that controller-owned regular file with no symlink
 following, bounds it to 16 KiB, rejects duplicate/ambiguous JSON encoding, and
 validates the exact contract and account. There is no environment or input-path
-override. Only the loader mints the frozen in-process capability; successful
-standalone parsing cannot grant one. Retirement checks it before its initial
-fence and binds its account before constructing an intent. The transport checks
-it independently before construction and dispatch. The exact document byte digest
-is included in the deployable-plan digest and the new v3
-`providerQualificationDigest`; qualifying or changing the evidence requires fresh
-plan approval. It is historical provider capability evidence, not a substitute
-for current source, policy, clocks, one-use intent or mutation fences.
+override. Only this loader creates the frozen in-process capability; standalone
+parsing cannot. A missing, null, old-schema, wrong-account or invalid qualification
+blocks plan generation, inventory, artifact setup and staging for any pair-bearing
+bootstrap. Ordinary delivery and both-empty bootstraps do not require it. The
+retirement operation and transport recheck the capability at the point of use.
+The exact file-byte digest participates in the deployable plan and every v4 intent;
+a qualification change requires a new approved plan.
 
-An annotation-losing v2 outcome is not authority to retry a consumed request.
+V4 rejects any extra body fields, annotations, `version_tags`, accessors, undefined
+injections or changed secret names/values. Its request digest includes the explicit
+v4 operation identity; a historical v2 request cannot dispatch through the new
+transport despite its identical JSON body. The timestamped predecessor and
+`selectedIdentity` bind the uploaded UUID, source, deployable/configuration/bundle
+digests, controller SHA, run ID and run attempt. The full predecessor must still
+carry the approved staged tag/message. The durable encrypted intent is finalized
+and independently read back before the single PATCH. No retry or rollback is
+provided. Deadline, response bounds and redirect rejection remain unchanged.
 
-The v3 writer reconstructs the two strings from the verified predecessor. It
-rejects missing, changed or extra tags, `workers/triggered_by`, annotations,
-undefined fields, accessor properties, secret substitutions and request drift.
-The new schema binds the full account-scoped HTTPS endpoint, method, content type,
-body and request digests, and the complete predecessor including its actual
-`capturedAt` timestamp and the checked provider qualification digest. The private one-use coordinate and verified ciphertext
-artifact are durable before dispatch. Provider acceptance still needs fresh
-complete readback, selected-source proof, a fresh writer fence and a durable
-encrypted receipt. Request/response bounds, 20-second deadline, redirect rejection
-and the no-retry rule remain.
+Post-write success requires a new sole active/latest version and deployment,
+zero secrets in both binding inventories, and the exact closed annotation object
+above in both settings and retained `versionAnnotations`. All other settings,
+nonsecret bindings, module bytes, runtime configuration, controls, peers and
+namespaces must be preserved, subject only to the narrow service metadata
+transitions described below. The receipt contains the complete timestamped
+`after` snapshot, its time-excluded digest and the full intent. Its encrypted
+artifact must also finalize and pass independent readback before the operation
+creates a private in-process retirement proof.
 
-Success still requires both settings and active-version bindings to contain zero
-secrets, unchanged code and nonsecret bindings, exact staged `workers/tag` and
-`workers/message`, and `workers/triggered_by=secret`. No fallback accepts missing
-annotations or dynamically reclassifies a failed pair retirement as a baseline
-observation. Provider acceptance does not guarantee those postconditions. If live
-readback differs, stop activation with a consumed intent; never weaken the
-postconditions or retry the mutation.
+Only this proof permits the temporary annotationless retired caller state. It is
+bound to this delivery invocation and selected identity. A serialized receipt,
+recovery observation, forged object, other role or another run cannot recreate it.
+Every later staged-topology and activation read checks the exact retired UUID,
+complete own snapshot, selected configuration/module/control and a fresh full
+cohort. A separate cohort guard admits only a single recorded, verified upload by
+this run, validates its selected source/configuration/module/new UUID, and compares
+every unrelated peer and namespace exactly. It admits that full graph immediately
+after the authorized readback, before another role can transition. This permits
+publisher activation before rendezvous without accepting unrelated peer drift.
+The topology identity is explicitly the authenticated predecessor identity;
+remote annotations are never invented or inserted into provider data. Core,
+ordinary staging, secret-free observation and final active topology keep normal
+annotation validation. The final active upload restores the full selected-source
+annotations. Changed receipt snapshots or outer handoff UUID/provenance fail
+before activation, retaining consumed-operation diagnostics.
 
 Target service modification timestamps may advance only within the observed
 predecessor/post-read window. Deployment identifiers must follow the separately
@@ -513,7 +523,7 @@ control fields, peers and global namespaces remain exactly preserved, including
 unknown fields. A later observation is not proof of an earlier failed exception.
 
 Historical v1 intents retain their original settings endpoint and settings-body
-digest only in the read-only observer. They never authorize the v3 bulk-secret
+digest only in the read-only observer. They never authorize the v4 bulk-secret
 writer and cannot be relabeled as its request. V1 omitted the predecessor capture
 time, so the observer validates its historical digest binding and then stops with
 `historical intent lacks authenticated observation timestamp`. A caller-supplied
@@ -521,11 +531,11 @@ time cannot fill that gap. Owner artifact inspection remains read-only; it canno
 prove the original transition window. Do not invent or backdate that timestamp,
 replay an old intent or create a retrospective original receipt. The v2 decoder retains its original exact pair-only body, full endpoint and
 timestamped predecessor digest interpretation. It remains read-only; a v2 request
-cannot dispatch through the v3 writer. A successful v2 or v3
+cannot dispatch through the v4 writer. A successful v2 or v3
 read-only terminal is separately labeled observational recovery and creates no
 original receipt. Both timestamped schemas reject missing or substituted timestamps. V3 observation
 requires its original qualification digest but never mints a mutation capability
-from that digest. The JWE outer
+from that digest. V4 read-only observation validates its original bare request, selected identity and closed annotation-loss post-state, but likewise never creates a runtime proof or original receipt. The pure `verifyCallerRetirementReceiptV4` inspector authenticates retained document relationships against an independently supplied qualification digest; it has no mutation or capability path. The JWE outer
 envelope remains v1; the inner document identifies the operation schema without
 relabeling or rewriting historical artifacts.
 

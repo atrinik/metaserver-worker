@@ -52,10 +52,10 @@ export function parseCallerRetirementQualification(bytes, { accountId, now = Dat
   if (measurementNames.some(name => q.result.measurement[name] !== true)) fail();
   keys(q.evidence, evidenceNames);
   if (evidenceNames.some(name => !sha.test(q.evidence[name] ?? ""))) fail();
-  keys(q.review, ["reviewedAt", "recordSha256", "resultSha256"]);
+  keys(q.review, ["reviewedAt", "recordSha256", "timestampAttestationSha256", "resultSha256"]);
   const measured = timestamp(q.measuredAt), reviewed = timestamp(q.review.reviewedAt), current = now();
   if (!Number.isFinite(current) || measured > reviewed || reviewed > current ||
-      !sha.test(q.review.recordSha256 ?? "") || q.review.resultSha256 !== q.evidence.resultSha256) fail();
+      !sha.test(q.review.recordSha256 ?? "") || !sha.test(q.review.timestampAttestationSha256 ?? "") || q.review.resultSha256 !== q.evidence.resultSha256) fail();
   return Object.freeze({ digest: hash(bytes), accountIdSha256: q.accountIdSha256 });
 }
 

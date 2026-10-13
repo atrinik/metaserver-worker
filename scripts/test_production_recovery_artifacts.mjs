@@ -335,3 +335,41 @@ test("retention diagnostics recognize only branded failures through bounded own 
   const cycle = {}; cycle.cause = cycle;
   assert.equal(recoveryArtifactFailureReason(cycle), null);
 });
+
+test("v4 capability waits for real encrypted receipt finalization and never survives failed readback", async (t) => {
+  const { retirementFixture } = await import("./fixtures/caller-retirement.mjs");
+  const { requireRetiredCallerProof } = await import("./production-caller-retirement.mjs");
+  for (const failReceipt of [false, true]) {
+    const archive = await fixture(t), recorder = await createDurableCallerRetirementRecorder(archive.options);
+    const state = await retirementFixture();
+    state.before.settings.annotations["workers/tag"] = context.sourceSha;
+    state.before.settings.annotations["workers/message"] = state.before.settings.annotations["workers/message"]
+      .replace(/source=[a-f0-9]{40}/u, `source=${context.sourceSha}`).replace(/deploy=[a-f0-9]{64}/u, `deploy=${context.deployableDigest}`);
+    state.before.versionAnnotations = structuredClone(state.before.settings.annotations);
+    Object.assign(state.selectedIdentity, { sourceSha: context.sourceSha, deployableDigest: context.deployableDigest,
+      controllerSha: context.controllerSha, runId: context.runId, runAttempt: context.runAttempt });
+    let patched = false;
+    Object.assign(state.options, { recordIntent: recorder.recordIntent,
+      patch: async () => {
+        assert.equal(archive.archives.size, 1);
+        assert.deepEqual(archive.calls, ["upload", "metadata", "download"]);
+        patched = true;
+      },
+      recordReceipt: async receipt => {
+        if (failReceipt) archive.mutateDownload(value => ({ ...value, digestMismatch: true }));
+        return recorder.recordReceipt(receipt);
+      } });
+    if (failReceipt) {
+      await assert.rejects(state.retire(), /archive verification/u);
+      assert.throws(() => requireRetiredCallerProof({ proof: state.artifacts.at(-1), role,
+        scope: state.scope, selectedIdentity: state.selectedIdentity }), /capability/u);
+    } else {
+      const result = await state.retire();
+      assert.equal(requireRetiredCallerProof({ proof: result.proof, role,
+        scope: state.scope, selectedIdentity: state.selectedIdentity }).versionId, state.after.activeVersion);
+      assert.equal(archive.archives.size, 2);
+      assert.deepEqual(archive.calls, ["upload", "metadata", "download", "upload", "metadata", "download"]);
+    }
+    assert.equal(patched, true);
+  }
+});

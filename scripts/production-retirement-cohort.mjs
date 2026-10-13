@@ -32,7 +32,7 @@ export function createRetirementCohortGuard({ accountId, scope }) {
       const transition = transitions.get(name);
       if (transition) {
         if (value.activeVersion !== transition.versionId || value.latestVersion !== transition.versionId ||
-            transition.validate(structuredClone(value)) !== true) fail();
+            transition.validate(structuredClone(value), structuredClone(expected.get(name)), snapshot.capturedAt) !== true) fail();
         accepted.push(name);
       } else if (!same(value, expected.get(name))) fail();
     }
@@ -46,7 +46,7 @@ export function createRetirementCohortGuard({ accountId, scope }) {
       if (!expected) return;
       if (!names.slice(0, 3).includes(name) || typeof validate !== "function" ||
           !/^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/u.test(versionId ?? "") ||
-          transitions.has(name) || versionId === expected.get(name).activeVersion) fail();
+          transitions.size !== 0 || versionId === expected.get(name).activeVersion) fail();
       transitions.set(name, { versionId, validate });
     },
     check(snapshot) { compare(snapshot); return true; },

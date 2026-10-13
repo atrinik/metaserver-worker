@@ -722,9 +722,12 @@ test("unqualified, unbranded or wrong-account v3 cannot create an intent or disp
   assert.equal(requireCallerRetirementQualification(qualification, accountId), qualification.digest);
 });
 
-test("fixed checked null qualification blocks live loading without input or environment overrides", async () => {
+test("fixed reviewed qualification rejects other accounts and input or environment overrides", async () => {
   const actual = JSON.parse(await readFile(new URL("../deployment/caller-retirement-provider-qualification.json", import.meta.url)));
-  assert.equal(actual.qualification, null);
+  assert.equal(actual.schema, "atrinik-caller-retirement-provider-qualification-v2");
+  assert.equal(actual.qualification.result.contractObserved, true);
+  assert.equal(actual.qualification.result.productionAuthorized, false);
+  assert.equal(actual.qualification.result.productionContractSatisfied, false);
   await assert.rejects(loadCallerRetirementQualification({ accountId,
     document: qualificationDocument(), path: "/tmp/never-trusted-qualification.json" }), /qualification/u);
 });
@@ -748,6 +751,7 @@ for (const [name, change] of [
   ["missing raw evidence", d => { delete d.qualification.evidence.requestSha256; }],
   ["invalid raw digest", d => { d.qualification.evidence.afterSha256 = "not-a-sha"; }],
   ["review missing", d => { delete d.qualification.review; }],
+  ["review timestamp attestation missing", d => { delete d.qualification.review.timestampAttestationSha256; }],
   ["review mismatch", d => { d.qualification.review.resultSha256 = "9".repeat(64); }],
   ["review before measurement", d => { d.qualification.measuredAt = "1970-01-01T00:00:02.000Z"; }],
   ["future review", d => { d.qualification.review.reviewedAt = "1970-01-01T00:00:02.000Z"; }],
@@ -781,4 +785,84 @@ test("qualification loader bounds regular source data and rejects ambiguous enco
   assert.notEqual(proof.digest, digestBefore);
   document.qualification.accountIdSha256 = "9".repeat(64);
   assert.equal(requireCallerRetirementQualification(qualification, accountId), digestBefore);
+});
+
+test("only a fulfilled receipt mints an immutable same-run retirement capability", async () => {
+  let release;
+  const blocked = new Promise(resolve => { release = resolve; });
+  const h = harness({ recordReceipt: () => blocked });
+  const pending = retireCallerSecrets(h.options);
+  await new Promise(resolve => setImmediate(resolve));
+  for (const proof of [undefined, {}, h.intent, { role: "publisher", versionId: newId }])
+    assert.throws(() => requireRetiredCallerProof({ proof, role: "publisher", scope: h.options.scope,
+      selectedIdentity: h.options.selectedIdentity }), /capability/u);
+  release();
+  const result = await pending;
+  assert(Object.isFrozen(result.proof));
+  assert.equal(requireRetiredCallerProof({ proof: result.proof, role: "publisher", scope: h.options.scope,
+    selectedIdentity: h.options.selectedIdentity, snapshot: h.after, now: () => 1000 }).versionId, newId);
+  for (const invalid of [{ proof: structuredClone(result.proof) }, { scope: {} }, { role: "rendezvous" },
+    { selectedIdentity: { ...h.options.selectedIdentity, runAttempt: "2" } }])
+    assert.throws(() => requireRetiredCallerProof({ proof: result.proof, role: "publisher", scope: h.options.scope,
+      selectedIdentity: h.options.selectedIdentity, ...invalid }), /capability/u);
+  assert.equal(verifyCallerRetirementReceiptV4(result.receipt, qualification.digest), true);
+  for (const field of ["settings", "versionAnnotations"]) for (const annotations of [{},
+    { "workers/tag": source }, { "workers/message": "staged" },
+    { "workers/triggered_by": "secret", "workers/tag": source }]) {
+    const receipt = structuredClone(result.receipt);
+    if (field === "settings") receipt.after.settings.annotations = annotations;
+    else receipt.after.versionAnnotations = annotations;
+    assert.throws(() => verifyCallerRetirementReceiptV4(receipt, qualification.digest));
+  }
+});
+
+test("v3 historical preservation remains read-only and cannot be reclassified as v4", async () => {
+  const before = baseline(); delete before.versionAnnotations;
+  const after = retired(before); delete after.versionAnnotations;
+  after.settings.annotations = { ...before.settings.annotations, "workers/triggered_by": "secret" };
+  const body = callerRetirementBodyV3("publisher", before);
+  const request = { role: "publisher", accountId, name: before.name, method: "PATCH",
+    endpoint: `https://api.cloudflare.com/client/v4/accounts/${accountId}/workers/scripts/${before.name}/secrets-bulk`,
+    contentType: "application/merge-patch+json", body, bodyDigest: callerRetirementDigest(body) };
+  request.requestDigest = callerRetirementDigest(request);
+  const intent = { schema: "atrinik-production-caller-retirement-v3", ...request, providerQualificationDigest: hash,
+    before, beforeDigest: callerRetirementDigest(before) };
+  const args = { role: "publisher", before, intent, read: async () => after,
+    fence: async () => {}, verifyStaged: async () => true, now: () => 1000 };
+  assert.equal((await observeCallerRetirement(args)).originalReceiptCreated, false);
+  assert.equal(verifyHistoricalPost("publisher", before, after), after);
+  await assert.rejects(observeCallerRetirement({ ...args, read: async () => retired(before) }));
+  await assert.rejects(observeCallerRetirement({ ...args, intent: { ...intent, schema: "atrinik-production-caller-retirement-v4" } }));
+});
+
+test("complete cohort guard permits only a recorded verified upload and preserves other peers", async () => {
+  const { retirementFixture } = await import("./fixtures/caller-retirement.mjs");
+  const { createRetirementCohortGuard } = await import("./production-retirement-cohort.mjs");
+  const f = await retirementFixture({ role: "rendezvous" });
+  const names = ["atrinik-metaserver", "atrinik-metaserver-publisher", "atrinik-metaserver-development",
+    "atrinik-metaserver-development-publisher", "atrinik-metaserver-development-rendezvous"];
+  f.before.peers = { workers: names.map(name => ({ name, activeVersion: oldId, latestVersion: oldId,
+    code: { sha256: hash }, controls: { disabled: true } })), namespaces: [{ id: "fixed" }] };
+  f.after.peers = structuredClone(f.before.peers);
+  const result = await f.retire();
+  const guard = createRetirementCohortGuard({ accountId, scope: f.scope });
+  guard.acceptRetirement({ snapshot: result.snapshot, proof: result.proof, role: "rendezvous",
+    selectedIdentity: f.selectedIdentity, now: () => 1000 });
+  for (const change of [
+    s => { s.peers.workers[0].activeVersion = newId; }, s => { s.peers.workers[0].code.sha256 = source; },
+    s => { s.peers.workers[0].controls.disabled = false; }, s => { s.peers.workers[0].extra = true; },
+    s => { s.peers.namespaces.push({ id: "foreign" }); }, s => { s.peers.workers.pop(); },
+    s => { s.peers.workers.push(structuredClone(s.peers.workers[0])); },
+  ]) { const invalid = structuredClone(result.snapshot); change(invalid); assert.throws(() => guard.check(invalid)); }
+  const changed = structuredClone(result.snapshot), publisher = changed.peers.workers[1];
+  publisher.activeVersion = publisher.latestVersion = newId; publisher.controls.disabled = false;
+  const expected = callerRetirementDigest(publisher);
+  guard.recordUpload({ name: publisher.name, versionId: newId, validate: row => callerRetirementDigest(row) === expected });
+  assert.throws(() => guard.recordUpload({ name: names[0], versionId: newId, validate: () => true }));
+  const invalid = structuredClone(changed); invalid.peers.workers[0].extra = true;
+  assert.throws(() => guard.check(invalid)); // failed graph does not consume the valid upload slot
+  assert.equal(guard.check(changed), true);
+  assert.equal(guard.check(changed), true);
+  assert.throws(() => guard.check(result.snapshot)); // no rollback/re-adoption
+  assert.throws(() => guard.recordUpload({ name: publisher.name, versionId: newId, validate: () => true }));
 });

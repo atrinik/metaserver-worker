@@ -162,6 +162,16 @@
   no remote compare-and-swap: preserve the fixed promotion concurrency and fresh
   exclusive-writer/source fences at each intent. Retire this one-use policy to a
   newly observed ordinary inventory and approved plan before later promotions.
+- Bootstrap caller retirement uses the reviewed v4 bare two-null secrets PATCH
+  and controller-owned v2 qualification. Preserve the exact annotation-loss
+  postcondition in both settings/version data, full timestamped before/after
+  receipts, encrypted finalization before capability creation, selected identity
+  and same-run proof. Later topology/activation reads require the exact retired
+  UUID plus full own snapshot and phase-aware complete peer graph. Never invent
+  missing annotations or turn historical v2/v3 evidence into a v4 receipt. Normal
+  staging, secret-free observations and final active versions retain annotation
+  gates. Qualification of an isolated empty-binding canary does not waive full
+  production configuration/control/module preservation or authorize deployment.
 - Treat `server_presence` plus the profile-discriminated `directory_entries`
   as authoritative, profile-scoped publication state. Active profiles are Classic
   publisher v3/directory v6 and Game publisher v2/directory v2. Private presence

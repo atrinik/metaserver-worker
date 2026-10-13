@@ -20,7 +20,7 @@ export function qualificationDocument(accountId = "a".repeat(32)) {
     }, contractObserved: true, productionAuthorized: false, productionContractSatisfied: false },
     evidence: Object.fromEntries(["probeControllerSha256", "requestSha256", "beforeSha256", "afterSha256", "resultSha256"]
       .map((name, index) => [name, String(index + 1).repeat(64)])),
-    review: { reviewedAt: "1970-01-01T00:00:01.000Z", recordSha256: "6".repeat(64), resultSha256: "5".repeat(64) },
+    review: { reviewedAt: "1970-01-01T00:00:01.000Z", recordSha256: "6".repeat(64), timestampAttestationSha256: "7".repeat(64), resultSha256: "5".repeat(64) },
   } };
 }
 export const qualificationBytes = document => Buffer.from(`${JSON.stringify(document, null, 2)}\n`);

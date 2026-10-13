@@ -2329,6 +2329,92 @@ export function verifyRetiredCallerReadback({ worker, config, snapshot, proof, s
   return { versionId: identity.versionId, predecessorIdentity: parseLiveVersionMessage(identity.message, worker.role) };
 }
 
+// Closed upload delta for a caller which is a peer of a still-retired caller.
+// Configuration/annotation/module checks are necessary but cannot authorize
+// unrelated settings, provider metadata, route or service-control changes.
+export function verifyRetirementPeerUploadPreservation({ previous, current, config, versionId,
+  bundleDigest, expectedMessage, sourceSha, startedAt, capturedAt }) {
+  const uuid = value => uuidPattern.test(value ?? "");
+  if (!Number.isFinite(startedAt) || !Number.isFinite(capturedAt) || capturedAt < startedAt ||
+      !uuid(versionId) || versionId === previous.activeVersion || current.activeVersion !== versionId ||
+      current.latestVersion !== versionId || !uuid(current.deploymentId) || current.deploymentId === previous.deploymentId ||
+      current.code?.modules?.length !== 1 || current.code.modules[0].sha256 !== bundleDigest ||
+      !/^[a-f0-9]{64}$/u.test(current.code.etag ?? "") || current.resources?.script?.etag !== current.code.etag)
+    fail("retirement peer upload identity drift");
+  const module = current.code.modules[0];
+  if (!sameValues(Object.keys(module), ["name", "type", "sha256", "bytes"]) ||
+      typeof module.name !== "string" || !module.name || module.type !== "application/javascript+module" ||
+      !Number.isSafeInteger(module.bytes) || module.bytes < 1 || module.bytes > 8 * 1024 * 1024)
+    fail("retirement peer module representation drift");
+  const expected = structuredClone(previous);
+  for (const key of ["activeVersion", "latestVersion", "deploymentId"]) expected[key] = current[key];
+  expected.code = structuredClone(current.code);
+  if (!sameValues(Object.keys(expected.code), ["etag", "modules"])) fail("retirement peer code metadata drift");
+  const annotations = { "workers/tag": sourceSha, "workers/message": expectedMessage, "workers/triggered_by": "version_upload" };
+  expected.settings.annotations = annotations;
+  expected.versionAnnotations = annotations;
+  const bindingFields = expectedRemoteBindings(config);
+  const rows = current.resources.bindings;
+  if (!Array.isArray(rows) || rows.length !== bindingFields.size || new Set(rows.map(row => row.name)).size !== rows.length)
+    fail("retirement peer binding inventory drift");
+  const expectedBindings = rows.map(row => {
+    const fields = bindingFields.get(row.name);
+    if (!fields || !["plain_text", "secret_text", "service", "ratelimit"].includes(fields.type))
+      fail("retirement peer gained state authority");
+    const binding = { name: row.name, ...fields };
+    if (fields.type === "service" && Object.hasOwn(row, "environment")) binding.environment = "production";
+    return binding;
+  });
+  expected.settings.bindings = expected.resources.bindings = expectedBindings;
+  // Preserve optional settings projection presence, but update the two runtime
+  // inputs only to selected configuration values when the provider exposes them.
+  for (const key of ["compatibility_date", "compatibility_flags"]) {
+    if (Object.hasOwn(previous.settings, key)) expected.settings[key] = structuredClone(config[key]);
+  }
+  const runtime = expected.resources.script_runtime;
+  if (!runtime) fail("retirement peer runtime missing");
+  runtime.compatibility_date = config.compatibility_date;
+  runtime.compatibility_flags = structuredClone(config.compatibility_flags ?? []);
+  if (Object.hasOwn(runtime, "exports")) runtime.exports = structuredClone(config.exports ?? {});
+  if (Object.hasOwn(previous.settings, "observability")) {
+    if (!sameJson(normalizeLiveObservability(current.settings.observability), config.observability))
+      fail("retirement peer settings observability drift");
+    expected.settings.observability = structuredClone(current.settings.observability);
+  }
+  expected.resources.script.etag = current.code.etag;
+  expected.resources.script.last_deployed_from = "wrangler";
+  const oldEnvironment = previous.control.environment, environment = current.control.environment;
+  const target = expected.control.environment;
+  if (!oldEnvironment?.script || !environment?.script) fail("retirement peer service metadata missing");
+  const time = value => {
+    if (typeof value !== "string" || !/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,9})?Z$/u.test(value) ||
+        !Number.isFinite(Date.parse(value))) fail("retirement peer service timestamp invalid");
+    return Date.parse(value);
+  };
+  for (const [old, actual, next] of [[oldEnvironment, environment, target],
+    [oldEnvironment.script, environment.script, target.script]]) {
+    if (old.modified_on !== actual.modified_on) {
+      const modified = time(actual.modified_on);
+      if (modified < time(old.modified_on) || modified < startedAt || modified > capturedAt)
+        fail("retirement peer modification outside owned upload window");
+      next.modified_on = actual.modified_on;
+    }
+  }
+  target.script.etag = current.code.etag;
+  target.script.last_deployed_from = "wrangler";
+  if (!sameJson(normalizeLiveObservability(environment.script.observability), config.observability))
+    fail("retirement peer observability drift");
+  target.script.observability = structuredClone(environment.script.observability);
+  target.script.compatibility_date = config.compatibility_date;
+  target.script.compatibility_flags = structuredClone(config.compatibility_flags ?? []);
+  if (oldEnvironment.script.deployment_id === "") target.script.deployment_id = "";
+  else if (oldEnvironment.script.deployment_id === previous.activeVersion) target.script.deployment_id = versionId;
+  else if (oldEnvironment.script.deployment_id === previous.deploymentId) target.script.deployment_id = current.deploymentId;
+  else fail("retirement peer previous deployment metadata unbound");
+  if (!sameJson(expected, current)) fail("retirement peer upload preservation mismatch");
+  return true;
+}
+
 export function resolveProductionCanaryCommand(canary, configs) {
   const roleIndex = {
     "publisher-service-binding": 1,
@@ -2654,6 +2740,8 @@ export async function runDelivery({ target = "production", sourceRoot, mode = "d
   const retiredCallerReaders = new Map();
   const retirementIdentities = new Map();
   const retirementScope = Object.freeze({});
+  const pendingRetiredRoles = new Set();
+  const callerUploadStartedAt = new Map();
   const retirementCohort = createRetirementCohortGuard({ accountId: configs[0].account_id, scope: retirementScope });
   let bootstrapEvidenceDirectory;
   if (bootstrap) {
@@ -2684,11 +2772,12 @@ export async function runDelivery({ target = "production", sourceRoot, mode = "d
       expectedMessage: expectedStagedMessages.get(worker.role), expectedZoneId: configs[0].vars.DIRECTORY_CACHE_ZONE_ID });
     } catch (error) { throw markRetirementFailure(error, "postverify", "response-accepted"); }
   };
-  const recordRetirementPeerUpload = (worker, index, active, phase) => {
+  const recordRetirementPeerUpload = async (worker, index, active, phase) => {
+    if (!pendingRetiredRoles.size) return;
     const config = phase === "staged" ? stagedReadbackConfig(index) : configs[index];
     const expectedMessage = (phase === "staged" ? expectedStagedMessages : expectedActiveMessages).get(worker.role);
     const bundleDigest = (phase === "staged" ? plan.stagedBundles : plan.bundles)[index];
-    retirementCohort.recordUpload({ name: config.name, versionId: active.versionId, validate: snapshot => {
+    retirementCohort.recordUpload({ name: config.name, versionId: active.versionId, validate: (snapshot, previous, capturedAt) => {
       if (snapshot.settings.annotations?.["workers/tag"] !== sourceSha ||
           !sameJson(snapshot.settings.annotations, snapshot.versionAnnotations) ||
           !sameJson(snapshot.settings.bindings, snapshot.resources.bindings) ||
@@ -2700,8 +2789,16 @@ export async function runDelivery({ target = "production", sourceRoot, mode = "d
       validateLiveControlPlane(worker, config, { routes: snapshot.control.routes, customDomains: snapshot.control.domains,
         subdomainStatus: snapshot.control.subdomain, serviceEnvironment: snapshot.control.environment,
         cronTriggers: snapshot.control.schedules }, { expectedZoneId: configs[0].vars.DIRECTORY_CACHE_ZONE_ID });
+      verifyRetirementPeerUploadPreservation({ previous, current: snapshot, config,
+        versionId: active.versionId, bundleDigest, expectedMessage, sourceSha,
+        startedAt: callerUploadStartedAt.get(worker.role), capturedAt });
       return true;
     } });
+    // Admit the complete changed graph immediately after this owned readback,
+    // before any following role can open a second transition slot.
+    const pendingRole = [...pendingRetiredRoles][0];
+    const pendingIndex = contract.workers.findIndex(value => value.role === pendingRole);
+    await readRetiredCaller(contract.workers[pendingIndex], pendingIndex, retiredCallerHandoffs.get(pendingRole).retirementProof);
   };
   const outcome = await orchestrateDelivery({
     workers: contract.workers,
@@ -2727,6 +2824,7 @@ export async function runDelivery({ target = "production", sourceRoot, mode = "d
       }
       if (index === 0) resourceTransition.beginCoreUpload();
       failureEvidence.failedRole = `staged:${worker.role}`;
+      callerUploadStartedAt.set(worker.role, Date.now());
       expectedStagedMessages.set(
         worker.role,
         await deployStagedWithRecoveryIntent(
@@ -2755,7 +2853,7 @@ export async function runDelivery({ target = "production", sourceRoot, mode = "d
         await readLiveControlPlane(worker, process.env.CLOUDFLARE_ACCOUNT_ID),
         { expectedZoneId: configs[0].vars.DIRECTORY_CACHE_ZONE_ID },
       );
-      recordRetirementPeerUpload(worker, index, uploaded, "staged");
+      await recordRetirementPeerUpload(worker, index, uploaded, "staged");
       if (bootstrap && index > 0) {
         const disposition = callerDispositions[worker.role];
         failureEvidence.failedRole = `${disposition.operation === "retire-pair" ? "retirement" : "observation"}:${worker.role}`;
@@ -2816,6 +2914,7 @@ export async function runDelivery({ target = "production", sourceRoot, mode = "d
           await writeFile(resolve(bootstrapEvidenceDirectory, `caller-observation-${worker.role}.json`),
             JSON.stringify(handoff), { mode: 0o600, flag: "wx" });
         retiredCallerHandoffs.set(worker.role, handoff);
+        if (handoff.kind === "retired") pendingRetiredRoles.add(worker.role);
       }
     },
     verifyStaged: async () => {
@@ -2857,6 +2956,7 @@ export async function runDelivery({ target = "production", sourceRoot, mode = "d
           authorize: () => authority.authorize(),
         })
         : apiHandoffRoles.has(worker.role);
+      callerUploadStartedAt.set(worker.role, Date.now());
       expectedActiveMessages.set(
         worker.role,
         await deployWorker(worker, configPaths[index], sourceSha, plan, {
@@ -2878,7 +2978,8 @@ export async function runDelivery({ target = "production", sourceRoot, mode = "d
         await readLiveControlPlane(worker, process.env.CLOUDFLARE_ACCOUNT_ID),
         { expectedZoneId: configs[0].vars.DIRECTORY_CACHE_ZONE_ID },
       );
-      recordRetirementPeerUpload(worker, index, uploaded, "active");
+      pendingRetiredRoles.delete(worker.role);
+      await recordRetirementPeerUpload(worker, index, uploaded, "active");
     },
     verifyFinal: async (finalDecision) => {
       const finalAnnotations = [];
