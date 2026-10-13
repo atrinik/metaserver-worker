@@ -72,6 +72,22 @@ key generation and assignment remain separate provisioning-receipt proof;
 never expose values to compare them. This fence grants no migrations, resource
 creation, secret rotation, deletion or extra promotion approval mechanism.
 
+After live control-plane, annotation, migration and expected-predecessor checks,
+only Workers whose observed `last_deployed_from` is exactly `api` use the API
+handoff without Wrangler `--strict`. API-created versions may retain valid
+delivery annotations. The annotated predecessor exception is limited to callers
+in the explicitly approved one-use bootstrap, after the exact predecessor and
+configuration checks; annotations must match the caller role. Annotated core
+and non-bootstrap predecessors retain strict deployment arguments. Existing
+unannotated API handoffs remain unchanged. Other provenance, including Wrangler
+and dashboard deployments, retains `--strict`. The handoff grants no retry or
+bypass of the existing source, resource, writer and predecessor fences.
+During the one-use bootstrap, successful caller secret retirement creates a new
+API-provenance version. Admit that caller's subsequent activation to the same
+handoff only after retirement completes, the resource transition is confirmed,
+and the fresh fence and exact staged readback pass. Failed or unknown retirement
+never grants this exception; core and other callers gain no exception from it.
+
 ## Retire the previous production writer first
 
 Before publication of the replacement policy, an authorized provider operator

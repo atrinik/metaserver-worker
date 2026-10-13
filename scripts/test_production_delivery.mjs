@@ -38,6 +38,7 @@ import {
   resolveProductionCanaryCommand,
   selectBuildLeaseOwner,
   selectApiHandoffRoles,
+  completeCallerRetirement,
   selectLiveTrigger,
   sanitizedChildEnvironment,
   validateBuildTrigger,
@@ -774,32 +775,89 @@ test("selects exactly one current live Workers Builds trigger", () => {
     );
 });
 
-test("only an unannotated API-managed Worker enables the automatic handoff", () => {
+test("verified API predecessors enable handoff with or without retained annotations", () => {
   const workers = [{ role: "core" }, { role: "publisher" }, { role: "rendezvous" }];
-  const live = workers.map((_, index) => ({
-    serviceEnvironment: {
-      script: { last_deployed_from: index < 2 ? "api" : "workersci" },
-    },
+  const live = workers.map(() => ({
+    serviceEnvironment: { script: { last_deployed_from: "api" } },
   }));
-  const source = "a".repeat(40);
-  assert.deepEqual(
-    [...selectApiHandoffRoles(workers, live, [null, null, null])],
-    ["core", "publisher"],
-  );
-  assert.deepEqual(
-    [...selectApiHandoffRoles(workers, live, [{ source }, null, null])],
-    ["publisher"],
-  );
-  const dashboard = structuredClone(live);
-  dashboard[0].serviceEnvironment.script.last_deployed_from = "dash";
-  assert.deepEqual(
-    [...selectApiHandoffRoles(workers, dashboard, [null, null, null])],
-    ["publisher"],
-  );
+  const sourceSha = "a".repeat(40);
+  const message = role => `atrinik-delivery-v1 source=${sourceSha} deploy=${"b".repeat(64)} migration=${"c".repeat(64)} horizon=16 control=${"d".repeat(64)} role=${role} phase=staged`;
+  const annotations = workers.map(({ role }) => parseLiveVersionMessage(message(role), role));
+  for (const retained of [annotations, [null, null, null], [null, annotations[1], null],
+    annotations.map(value => ({ ...value, phase: "active" }))]) {
+    assert.deepEqual([...selectApiHandoffRoles(workers, live, retained, { bootstrap: true })],
+      retained[0] === null ? ["core", "publisher", "rendezvous"] : ["publisher", "rendezvous"]);
+  }
+  // The retained API-created caller is eligible; ordinary Wrangler and dashboard
+  // predecessors must retain strict deployment arguments even with annotations.
+  for (const provenance of ["wrangler", "dash", "workersci", "unknown", undefined]) {
+    const changed = structuredClone(live);
+    changed[0].serviceEnvironment.script.last_deployed_from = provenance;
+    changed[2].serviceEnvironment.script.last_deployed_from = provenance;
+    for (const retained of [annotations, [null, null, null]]) {
+      const roles = selectApiHandoffRoles(workers, changed, retained, { bootstrap: true });
+      assert.deepEqual([...roles], ["publisher"]);
+      for (const worker of workers) {
+        const args = wranglerDeployArguments({ configPath: `/tmp/${worker.role}.jsonc`,
+          sourceSha, message: message(worker.role), strict: !roles.has(worker.role) });
+        assert.equal(args.includes("--strict"), worker.role !== "publisher");
+      }
+    }
+  }
+  assert.deepEqual([...selectApiHandoffRoles(workers, live, annotations)], []);
+  assert.deepEqual([...selectApiHandoffRoles(workers, live, [null, null, null])],
+    ["core", "publisher", "rendezvous"]);
   assert.throws(
     () => selectApiHandoffRoles(workers.slice(0, 1), live, [null]),
     /inventory is invalid/u,
   );
+  for (const invalid of [{}, undefined, { ...annotations[1], role: "core" }]) {
+    assert.throws(
+      () => selectApiHandoffRoles(workers, live, [annotations[0], invalid, annotations[2]], { bootstrap: true }),
+      /annotation role mismatch/u,
+    );
+  }
+  assert.throws(
+    () => selectApiHandoffRoles(workers, live, workers.map(({ role }) =>
+      parseLiveVersionMessage(role === "publisher" ? "atrinik-delivery-v1 malformed" : message(role), role))),
+    /annotation is malformed/u,
+  );
+});
+
+test("only fully verified caller retirement admits a new API handoff", async () => {
+  for (const role of ["publisher", "rendezvous"]) {
+    for (const failure of [null, "retire", "confirm", "verify"]) {
+      const apiHandoffRoles = new Set();
+      const events = [];
+      const step = name => {
+        assert.equal(apiHandoffRoles.has(role), false);
+        events.push(name);
+        if (failure === name) throw new Error(`failed ${name}`);
+      };
+      const complete = () => completeCallerRetirement({ role, apiHandoffRoles,
+        retire: async () => { step("retire"); },
+        confirm: () => { step("confirm"); },
+        verify: async () => { step("verify"); },
+      });
+      if (failure) await assert.rejects(complete, new RegExp(`failed ${failure}`));
+      else await complete();
+      assert.deepEqual(events, ["retire", "confirm", "verify"].slice(0,
+        failure ? ["retire", "confirm", "verify"].indexOf(failure) + 1 : 3));
+      assert.equal(apiHandoffRoles.has(role), failure === null);
+      for (const candidate of ["core", "publisher", "rendezvous"]) {
+        const args = wranglerDeployArguments({ configPath: "/tmp/worker.jsonc",
+          sourceSha: "a".repeat(40), message: "staged delivery",
+          strict: !apiHandoffRoles.has(candidate) });
+        assert.equal(args.includes("--strict"), failure !== null || candidate !== role);
+      }
+    }
+  }
+  let called = false;
+  const unexpected = () => { called = true; };
+  await assert.rejects(() => completeCallerRetirement({ role: "core",
+    retire: unexpected, confirm: unexpected, verify: unexpected, apiHandoffRoles: new Set() }),
+  /retirement role is invalid/u);
+  assert.equal(called, false);
 });
 
 test("keeps strict Wrangler arguments outside the explicit API handoff", () => {

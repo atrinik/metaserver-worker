@@ -1726,6 +1726,7 @@ export function selectApiHandoffRoles(
   workers,
   liveControlPlanes,
   annotations,
+  { bootstrap = false } = {},
 ) {
   if (
     !Array.isArray(workers) ||
@@ -1739,11 +1740,30 @@ export function selectApiHandoffRoles(
     workers.flatMap((worker, index) => {
       const source = liveControlPlanes[index]?.serviceEnvironment?.script
         ?.last_deployed_from;
-      return source === "api" && annotations[index] === null
-        ? [worker.role]
-        : [];
+      if (source !== "api") return [];
+      // Call only after live control-plane, annotation, migration and predecessor
+      // validation. API-created versions can retain valid delivery annotations;
+      // Wrangler's API provenance confirmation is independent of those messages.
+      if (annotations[index] === null) return [worker.role];
+      if (bootstrap !== true || !["publisher", "rendezvous"].includes(worker.role)) return [];
+      if (annotations[index]?.role !== worker.role)
+        fail("API handoff version annotation role mismatch");
+      return [worker.role];
     }),
   );
+}
+
+export async function completeCallerRetirement({
+  role, retire, confirm, verify, apiHandoffRoles,
+}) {
+  if (!["publisher", "rendezvous"].includes(role))
+    fail("API handoff retirement role is invalid");
+  await retire();
+  confirm();
+  await verify();
+  // Secret retirement creates an API-provenance version even when the staged
+  // upload used Wrangler. Admit activation only after all retirement proofs.
+  apiHandoffRoles.add(role);
 }
 
 async function assertBuildLease(
@@ -2485,6 +2505,7 @@ export async function runDelivery({ target = "production", sourceRoot, mode = "d
     contract.workers,
     liveControlPlanes,
     annotations,
+    { bootstrap: Boolean(bootstrap) },
   );
   const expectedStagedMessages = new Map();
   const expectedActiveMessages = new Map();
@@ -2563,29 +2584,37 @@ export async function runDelivery({ target = "production", sourceRoot, mode = "d
         failureEvidence.failedRole = `retirement:${worker.role}`;
         resourceTransition.beginCallerRetirement(worker.role);
         const accountId = configs[0].account_id;
-        try {
-          await retireCallerSecrets({
-            role: worker.role, fence, authorize: authority.authorize,
-            read: createCallerRetirementReader({ accountId,
-              token: process.env.ATRINIK_DELIVERY_RESOURCE_READ_TOKEN, role: worker.role, fetcher: deliveryFetch }),
-            patch: createCallerRetirementPatch({ accountId,
-              token: process.env.CLOUDFLARE_API_TOKEN, role: worker.role }),
-            ...retirementRecorders.get(worker.role),
-            verifyStaged: (snapshot, { retired }) => verifyStagedCallerRetirement({
-              worker, config: stagedConfigs[index], sourceSha, bundleDigest: plan.stagedBundles[index],
-              expectedMessage: expectedStagedMessages.get(worker.role), snapshot, retired,
-              expectedZoneId: configs[0].vars.DIRECTORY_CACHE_ZONE_ID,
-            }),
-          });
-        } catch (error) {
-          const stopped = new DeliveryError("production caller retirement stopped; preserve private intent and do not retry");
-          stopped.cause = error;
-          throw stopped;
-        }
-        resourceTransition.confirmCallerRetired(worker.role);
-        await fence();
-        validateReadback(worker, stagedConfigs[index], await readActive(stagedPaths[index]),
-          expectedStagedMessages.get(worker.role));
+        await completeCallerRetirement({
+          role: worker.role,
+          apiHandoffRoles,
+          retire: async () => {
+            try {
+              await retireCallerSecrets({
+                role: worker.role, fence, authorize: authority.authorize,
+                read: createCallerRetirementReader({ accountId,
+                  token: process.env.ATRINIK_DELIVERY_RESOURCE_READ_TOKEN, role: worker.role, fetcher: deliveryFetch }),
+                patch: createCallerRetirementPatch({ accountId,
+                  token: process.env.CLOUDFLARE_API_TOKEN, role: worker.role }),
+                ...retirementRecorders.get(worker.role),
+                verifyStaged: (snapshot, { retired }) => verifyStagedCallerRetirement({
+                  worker, config: stagedConfigs[index], sourceSha, bundleDigest: plan.stagedBundles[index],
+                  expectedMessage: expectedStagedMessages.get(worker.role), snapshot, retired,
+                  expectedZoneId: configs[0].vars.DIRECTORY_CACHE_ZONE_ID,
+                }),
+              });
+            } catch (error) {
+              const stopped = new DeliveryError("production caller retirement stopped; preserve private intent and do not retry");
+              stopped.cause = error;
+              throw stopped;
+            }
+          },
+          confirm: () => resourceTransition.confirmCallerRetired(worker.role),
+          verify: async () => {
+            await fence();
+            validateReadback(worker, stagedConfigs[index], await readActive(stagedPaths[index]),
+              expectedStagedMessages.get(worker.role));
+          },
+        });
       }
     },
     verifyStaged: async () => {
