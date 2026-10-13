@@ -8,7 +8,7 @@ import { fileURLToPath } from "node:url";
 import test from "node:test";
 import { runPinnedPromotion } from "./production-promotion-action.mjs";
 import {
-  createProductionAuthority, promotionDigest, readPromotionEvidence,
+  createProductionAuthority, promotionDigest, readPromotionEvidence, sourceAuthenticationFailureRecord,
   validatePromotionContext, validatePromotionEvidence, validatePromotionInputs,
   validatePromotionPlan, validatePromotionPredecessor, validatePromotionSource, runPromotionDelivery,
 } from "./production-promotion.mjs";
@@ -524,4 +524,150 @@ test("PROD propagates drain completion and supports a strict final authority pas
   assert.deepEqual(await authority.fence(), { waited: true });
   assert.deepEqual(await authority.fence({ allowDrain: false }), { waited: false });
   assert.deepEqual(seen, [true, true, false]);
+});
+
+const diagnosticEndpoints = [
+  ["repository", ""], ["main", "/branches/main"], ["run", "/actions/runs/1234"],
+  ["release", "/releases/tags/v4.31.0"], ["tag", "/git/ref/tags/v4.31.0"],
+  ["source-ancestry", `/compare/${source}...main`], ["controller-ancestry", `/compare/${controller}...main`],
+  ["source-checks", "/actions/workflows/check.yml/runs"], ["environment", "/environments/production"],
+  ["jobs", "/actions/runs/1234/attempts/1/jobs"], ["approvals", "/actions/runs/1234/approvals"],
+  ["operator-permission", "/collaborators/operator/permission"], ["tag-object", `/git/tags/${controller}`],
+];
+const genericPromotionFailure = { outcome: "production-promotion-stopped", reason: "authority-or-delivery-verification-failed" };
+const diagnosticPath = (url) => new URL(url).pathname.replace(`/repos/${repository}`, "");
+async function rejectedSourceRecord(f, fetcher) {
+  let caught;
+  await assert.rejects(validatePromotionSource({ environment: f.environment,
+    readEvent: async () => JSON.stringify(f.event), fetcher, now: () => now }), (error) => {
+    caught = error; return true;
+  });
+  return sourceAuthenticationFailureRecord(caught);
+}
+
+for (const [endpoint, path] of diagnosticEndpoints) for (const status of [401, 403, 404, 429, 500, 503])
+  test(`source diagnostics attribute HTTP ${status} to ${endpoint}`, async () => {
+    const f = fixture();
+    const base = fakeFetch(f, (actual, value) => endpoint === "tag-object" && actual.startsWith("/git/ref/") ?
+      { ...value, object: { type: "tag", sha: controller } } : value);
+    const record = await rejectedSourceRecord(f, async (url, options) => diagnosticPath(url) === path ?
+      new Response("SECRET body and private identity", { status }) : base(url, options));
+    assert.deepEqual(record, { ...genericPromotionFailure,
+      sourceAuthentication: { stage: "evidence-read", category: "http-rejected", endpoint, httpStatus: status } });
+  });
+
+for (const status of ["403 SECRET", NaN, Infinity, 99, 600, 403.5, undefined])
+  test(`source diagnostic omits invalid HTTP status ${String(status)}`, async () => {
+    const record = await rejectedSourceRecord(fixture(), async () => ({ ok: false, status }));
+    assert.deepEqual(record.sourceAuthentication, { stage: "evidence-read", category: "http-rejected", endpoint: "repository" });
+  });
+
+test("source failure formatter ignores unknown values without reading properties", () => {
+  let reads = 0;
+  const hostile = new Proxy({}, { get() { reads++; throw new Error("SECRET getter"); },
+    ownKeys() { reads++; throw new Error("SECRET keys"); }, getPrototypeOf() { reads++; throw new Error("SECRET prototype"); } });
+  const revoked = Proxy.revocable({}, {}); revoked.revoke();
+  const getters = Object.defineProperties({}, Object.fromEntries(["name", "message", "stack", "sourceAuthentication"].map(key =>
+    [key, { get() { reads++; throw new Error("SECRET getter"); } }])));
+  for (const value of [undefined, null, "SECRET", 403, Symbol("SECRET"), new Error("SECRET"), hostile, revoked.proxy, getters,
+    { sourceAuthentication: { stage: "evidence-read", category: "http-rejected", endpoint: "repository", httpStatus: 403 } }])
+    assert.deepEqual(sourceAuthenticationFailureRecord(value), genericPromotionFailure);
+  assert.equal(reads, 0);
+});
+
+test("source read diagnostics distinguish bounded transport and body failures without reflecting exceptions", async () => {
+  const secret = new Proxy({}, { get() { throw new Error("SECRET property read"); } });
+  let cancelled = 0;
+  const cases = [
+    ["transport", async () => { throw secret; }],
+    ["body-unavailable", async () => new Response(null)],
+    ["body-unavailable", async () => ({ ok: true, body: { getReader() { throw secret; } } })],
+    ["body-read", async () => ({ ok: true, body: { getReader: () => ({ read: async () => { throw secret; } }) } })],
+    ["body-too-large", async () => ({ ok: true, body: { getReader: () => ({
+      read: async () => ({ done: false, value: new Uint8Array(2_000_001) }),
+      cancel: async () => { cancelled++; throw secret; },
+    }) } })],
+    ["json-invalid", async () => new Response("SECRET malformed JSON")],
+  ];
+  for (const [category, fetcher] of cases) {
+    const f = fixture(), base = fakeFetch(f);
+    const record = await rejectedSourceRecord(f, (url, options) => diagnosticPath(url) === "/branches/main" ?
+      fetcher() : base(url, options));
+    assert.deepEqual(record.sourceAuthentication, { stage: "evidence-read", category, endpoint: "main" });
+  }
+  assert.equal(cancelled, 1);
+  const f = fixture(); delete f.environment.GITHUB_TOKEN;
+  let calls = 0;
+  const record = await rejectedSourceRecord(f, async () => { calls++; throw secret; });
+  assert.equal(calls, 0);
+  assert.deepEqual(record.sourceAuthentication, { stage: "evidence-read", category: "missing-credential", endpoint: "repository" });
+});
+
+test("concurrent source reads retain their own failure attribution", async () => {
+  const f = fixture(), base = fakeFetch(f);
+  let rejectRepository, rejectMain;
+  const waiting = new Promise(resolve => { rejectRepository = resolve; });
+  const firstFailure = new Promise(resolve => { rejectMain = resolve; });
+  const pending = rejectedSourceRecord(f, async (url, options) => {
+    const path = diagnosticPath(url);
+    if (path === "") { await waiting; return new Response("SECRET", { status: 401 }); }
+    if (path === "/branches/main") { await firstFailure; return new Response("SECRET", { status: 403 }); }
+    return base(url, options);
+  });
+  rejectMain();
+  const record = await pending;
+  rejectRepository();
+  await waiting;
+  assert.deepEqual(record.sourceAuthentication, { stage: "evidence-read", category: "http-rejected", endpoint: "main", httpStatus: 403 });
+});
+
+for (const [predicate, stage, mutate] of [
+  ["input-fields", "dispatch", f => { f.event.inputs.extra = "SECRET"; }],
+  ["input-coordinates", "dispatch", f => { f.event.inputs.tag = "SECRET"; }],
+  ["dispatch-context", "dispatch", f => { f.environment.GITHUB_RUN_ATTEMPT = "2"; }],
+  ["dispatch-inputs", "dispatch", f => { f.environment.ATRINIK_PROMOTION_TAG = "SECRET"; }],
+  ["dispatch-identity", "source-provenance", f => { f.evidence.actorPermission.permission = "read"; }],
+  ["release-provenance", "source-provenance", f => { f.evidence.release.immutable = false; }],
+  ["source-check", "source-provenance", f => { f.evidence.checks = []; }],
+  ["operator-identity", "evidence-read", f => { f.evidence.run.actor.login = "SECRET invalid"; }],
+]) test(`source predicate diagnostic: ${predicate}`, async () => {
+  const f = fixture(); mutate(f);
+  const record = await rejectedSourceRecord(f, fakeFetch(f));
+  assert.equal(record.sourceAuthentication.stage, stage);
+  assert.equal(record.sourceAuthentication.category, "predicate");
+  assert.equal(record.sourceAuthentication.predicate, predicate);
+  assert.doesNotMatch(JSON.stringify(record), /SECRET/u);
+});
+
+test("event diagnostics distinguish read and JSON failures", async () => {
+  for (const [category, readEvent] of [["body-read", async () => { throw new Error("SECRET path"); }],
+    ["json-invalid", async () => "SECRET invalid JSON"]]) {
+    await assert.rejects(validatePromotionSource({ environment: fixture().environment, readEvent }), error => {
+      assert.deepEqual(sourceAuthenticationFailureRecord(error).sourceAuthentication, { stage: "event", category });
+      return true;
+    });
+  }
+});
+
+test("rejected source CLI writes no selected output and never loads the Cloudflare delivery engine", async (t) => {
+  const root = await mkdtemp(join(tmpdir(), "promotion-source-diagnostics-"));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const f = fixture(), eventPath = join(root, "event.json"), outputPath = join(root, "output");
+  await writeFile(eventPath, JSON.stringify(f.event));
+  await writeFile(outputPath, "existing-output\n");
+  // This isolated copy cannot import any delivery/provider module. An invalid
+  // dispatch must stop before even a GitHub read, and must preserve step output.
+  const entry = join(root, "production-promotion.mjs");
+  await copyFile(new URL("./production-promotion.mjs", import.meta.url), entry);
+  const result = spawnSync(process.execPath, [entry, "--validate-source"], { encoding: "utf8",
+    env: { ...f.environment, GITHUB_EVENT_PATH: eventPath, GITHUB_OUTPUT: outputPath, GITHUB_RUN_ATTEMPT: "2" } });
+  assert.equal(result.status, 1);
+  assert.equal(result.stdout, "");
+  assert.deepEqual(JSON.parse(result.stderr), { ...genericPromotionFailure,
+    sourceAuthentication: { stage: "dispatch", category: "predicate", predicate: "dispatch-context" } });
+  assert.equal(await readFile(outputPath, "utf8"), "existing-output\n");
+  const missingOutput = spawnSync(process.execPath, [entry, "--validate-source"], { encoding: "utf8", env: {} });
+  assert.equal(missingOutput.status, 1);
+  assert.deepEqual(JSON.parse(missingOutput.stderr).sourceAuthentication,
+    { stage: "output", category: "predicate", predicate: "output-path" });
 });

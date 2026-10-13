@@ -18,17 +18,37 @@ const fields = {
   migration_digest: "ATRINIK_PROMOTION_MIGRATION_DIGEST",
   expected_predecessor: "ATRINIK_PROMOTION_PREDECESSOR",
 };
-const fail = (message) => { throw new Error(`production promotion: ${message}`); };
+// Only this module can brand a diagnostic. Formatting never examines thrown values.
+const sourceFailures = new WeakMap();
+const sourceStages = new Set(["event", "dispatch", "evidence-read", "tag-resolution", "inventory", "source-provenance", "output"]);
+const sourceCategories = new Set(["missing-credential", "transport", "http-rejected", "body-unavailable", "body-read",
+  "body-too-large", "json-invalid", "predicate", "unknown"]);
+const sourceEndpoints = new Set(["repository", "main", "run", "release", "tag", "source-ancestry", "controller-ancestry",
+  "source-checks", "environment", "jobs", "approvals", "operator-permission", "tag-object"]);
+const sourcePredicates = new Set(["input-fields", "input-coordinates", "dispatch-context", "dispatch-inputs",
+  "dispatch-identity", "release-provenance", "source-check", "operator-identity", "annotated-tag", "tag-commit",
+  "source-inventory", "jobs-inventory", "output-path"]);
+const fail = (message, stage, category = "predicate", endpoint, predicate, status) => {
+  const error = new Error(`production promotion: ${message}`);
+  if (sourceStages.has(stage) && sourceCategories.has(category)) {
+    const diagnostic = { stage, category };
+    if (sourceEndpoints.has(endpoint)) diagnostic.endpoint = endpoint;
+    if (sourcePredicates.has(predicate)) diagnostic.predicate = predicate;
+    if (Number.isInteger(status) && status >= 100 && status <= 599) diagnostic.httpStatus = status;
+    sourceFailures.set(error, Object.freeze(diagnostic));
+  }
+  throw error;
+};
 export const promotionDigest = (value) => createHash("sha256").update(JSON.stringify(value)).digest("hex");
 
 export function validatePromotionInputs(inputs) {
   if (!inputs || Object.keys(inputs).sort().join() !== Object.keys(fields).sort().join())
-    fail("dispatch must name exactly the approved tag, SHA and four digests");
+    fail("dispatch must name exactly the approved tag, SHA and four digests", "dispatch", "predicate", undefined, "input-fields");
   if (!/^v\d+\.\d+\.\d+(?:-[0-9A-Za-z]+(?:[.-][0-9A-Za-z]+)*)?$/u.test(inputs.tag ?? "") ||
       !shaPattern.test(inputs.source_sha ?? "") ||
       Object.keys(fields).filter((key) => !["tag", "source_sha"].includes(key))
         .some((key) => !digestPattern.test(inputs[key] ?? "")))
-    fail("invalid immutable release coordinates");
+    fail("invalid immutable release coordinates", "dispatch", "predicate", undefined, "input-coordinates");
   return inputs;
 }
 
@@ -42,9 +62,9 @@ export function validatePromotionDispatch(environment, event) {
       environment.GITHUB_WORKFLOW_REF !== `${repository}/${workflow}@refs/heads/main` ||
       event.repository?.full_name !== repository || event.ref !== "refs/heads/main" ||
       !Number.isSafeInteger(event.sender?.id) || event.sender.id < 1)
-    fail("requires a first-attempt protected main dispatch");
+    fail("requires a first-attempt protected main dispatch", "dispatch", "predicate", undefined, "dispatch-context");
   for (const [key, name] of Object.entries(fields))
-    if (environment[name] !== inputs[key]) fail("dispatch input differs from execution input");
+    if (environment[name] !== inputs[key]) fail("dispatch input differs from execution input", "dispatch", "predicate", undefined, "dispatch-inputs");
   return inputs;
 }
 
@@ -73,21 +93,21 @@ export function validatePromotionSourceEvidence({ environment, event, inputs, ev
       actorPermission?.user?.id !== event.sender.id ||
       !["admin", "write", "maintain"].includes(actorPermission.permission) ||
       !Number.isFinite(created) || created > now || now - created > 60 * 60 * 1000)
-    fail("dispatch identity, first attempt or one-hour freshness fence failed");
+    fail("dispatch identity, first attempt or one-hour freshness fence failed", "source-provenance", "predicate", undefined, "dispatch-identity");
   if (tagSha !== inputs.source_sha || release?.tag_name !== inputs.tag ||
       release.immutable !== true || release.draft !== false || release.prerelease !== false ||
       !Number.isSafeInteger(release.id) || !Number.isFinite(Date.parse(release.published_at)) ||
       Date.parse(release.published_at) > created ||
       !ancestor(sourceComparison, inputs.source_sha) ||
       !ancestor(controllerComparison, environment.GITHUB_SHA))
-    fail("selected tag lost immutable release or protected source provenance");
+    fail("selected tag lost immutable release or protected source provenance", "source-provenance", "predicate", undefined, "release-provenance");
   if (!Array.isArray(checks) || !checks.some((check) =>
     check.path === ".github/workflows/check.yml" && check.event === "push" &&
     check.head_branch === "main" && check.head_sha === inputs.source_sha &&
     check.repository?.full_name === repository && check.head_repository?.full_name === repository &&
     check.status === "completed" && check.conclusion === "success" &&
     Number.isFinite(Date.parse(check.updated_at)) && Date.parse(check.updated_at) <= created))
-    fail("selected source lacks successful protected-main Check before dispatch");
+    fail("selected source lacks successful protected-main Check before dispatch", "source-provenance", "predicate", undefined, "source-check");
 }
 
 export function validatePromotionEvidence(context) {
@@ -139,8 +159,9 @@ export function validatePromotionPredecessor(inputs, versions) {
 
 // API results are deliberately bounded, never logged, and never used as authority
 // after a cached fence. Each call refreshes dispatch, tag, validation and writer state.
-async function requestJson(url, token, fetcher) {
-  if (typeof token !== "string" || !token) fail("required read credential is missing");
+async function requestJson(url, token, fetcher, endpoint) {
+  const stop = (category, status) => fail("authority read failed", "evidence-read", category, endpoint, undefined, status);
+  if (typeof token !== "string" || !token) stop("missing-credential");
   let response;
   try {
     response = await fetcher(url, {
@@ -148,53 +169,61 @@ async function requestJson(url, token, fetcher) {
       headers: { Authorization: `Bearer ${token}`, Accept: "application/vnd.github+json",
         "X-GitHub-Api-Version": "2026-03-10" },
     });
-  } catch { fail("authority read failed"); }
-  if (!response.ok) fail(`authority read rejected (${response.status})`);
-  const reader = response.body.getReader();
+  } catch { stop("transport"); }
+  if (!response.ok) stop("http-rejected", response.status);
+  let reader;
+  try { reader = response.body?.getReader(); }
+  catch { stop("body-unavailable"); }
+  if (!reader) stop("body-unavailable");
   let size = 0;
   const chunks = [];
-  try {
-    while (true) {
-      const { value, done } = await reader.read();
-      if (done) break;
-      size += value.byteLength;
-      if (size > 2_000_000) { await reader.cancel(); fail("authority response exceeds bound"); }
-      chunks.push(Buffer.from(value));
+  while (true) {
+    let chunk;
+    try { chunk = await reader.read(); }
+    catch { stop("body-read"); }
+    if (chunk.done) break;
+    size += chunk.value.byteLength;
+    if (size > 2_000_000) {
+      try { await reader.cancel(); } catch { /* The size bound already denied this response. */ }
+      stop("body-too-large");
     }
-    return JSON.parse(Buffer.concat(chunks).toString("utf8"));
-  } catch { fail("authority response is invalid or oversized"); }
+    chunks.push(Buffer.from(chunk.value));
+  }
+  try { return JSON.parse(Buffer.concat(chunks).toString("utf8")); }
+  catch { stop("json-invalid"); }
 }
 
 export async function readPromotionEvidence(environment, inputs, fetcher = fetch) {
-  const github = (path) => requestJson(`https://api.github.com/repos/${repository}${path}`,
-    environment.GITHUB_TOKEN, fetcher);
+  const github = (endpoint, path) => requestJson(`https://api.github.com/repos/${repository}${path}`,
+    environment.GITHUB_TOKEN, fetcher, endpoint);
   const [repo, branch, run, release, tag, sourceComparison, controllerComparison, checkPage, protection, jobPage, approvals] =
     await Promise.all([
-      github(""), github("/branches/main"), github(`/actions/runs/${environment.GITHUB_RUN_ID}`),
-      github(`/releases/tags/${encodeURIComponent(inputs.tag)}`),
-      github(`/git/ref/tags/${encodeURIComponent(inputs.tag)}`),
-      github(`/compare/${inputs.source_sha}...main`),
-      github(`/compare/${environment.GITHUB_SHA}...main`),
-      github(`/actions/workflows/check.yml/runs?head_sha=${inputs.source_sha}&event=push&branch=main&status=success&per_page=100`),
-      github("/environments/production"),
-      github(`/actions/runs/${environment.GITHUB_RUN_ID}/attempts/1/jobs?per_page=100`),
-      github(`/actions/runs/${environment.GITHUB_RUN_ID}/approvals`),
+      github("repository", ""), github("main", "/branches/main"), github("run", `/actions/runs/${environment.GITHUB_RUN_ID}`),
+      github("release", `/releases/tags/${encodeURIComponent(inputs.tag)}`),
+      github("tag", `/git/ref/tags/${encodeURIComponent(inputs.tag)}`),
+      github("source-ancestry", `/compare/${inputs.source_sha}...main`),
+      github("controller-ancestry", `/compare/${environment.GITHUB_SHA}...main`),
+      github("source-checks", `/actions/workflows/check.yml/runs?head_sha=${inputs.source_sha}&event=push&branch=main&status=success&per_page=100`),
+      github("environment", "/environments/production"),
+      github("jobs", `/actions/runs/${environment.GITHUB_RUN_ID}/attempts/1/jobs?per_page=100`),
+      github("approvals", `/actions/runs/${environment.GITHUB_RUN_ID}/approvals`),
     ]);
   if (typeof run.actor?.login !== "string" || !/^[a-zA-Z0-9][a-zA-Z0-9-]{0,38}$/u.test(run.actor.login))
-    fail("manual operator identity is invalid");
-  const actorPermission = await github(`/collaborators/${encodeURIComponent(run.actor.login)}/permission`);
+    fail("manual operator identity is invalid", "evidence-read", "predicate", "run", "operator-identity");
+  const actorPermission = await github("operator-permission", `/collaborators/${encodeURIComponent(run.actor.login)}/permission`);
   let object = tag.object;
   for (let depth = 0; object?.type === "tag" && depth < 4; depth += 1) {
-    if (!shaPattern.test(object.sha ?? "")) fail("invalid annotated tag");
-    object = (await github(`/git/tags/${object.sha}`)).object;
+    if (!shaPattern.test(object.sha ?? "")) fail("invalid annotated tag", "tag-resolution", "predicate", "tag-object", "annotated-tag");
+    object = (await github("tag-object", `/git/tags/${object.sha}`)).object;
   }
-  if (tag.ref !== `refs/tags/${inputs.tag}` || object?.type !== "commit") fail("tag cannot resolve to commit");
+  if (tag.ref !== `refs/tags/${inputs.tag}` || object?.type !== "commit") fail("tag cannot resolve to commit", "tag-resolution", "predicate", "tag", "tag-commit");
   for (const [page, key, label] of [[checkPage, "workflow_runs", "source validation"],
     [jobPage, "jobs", "dispatch validation"]]) {
     if (!Array.isArray(page?.[key]) || !Number.isSafeInteger(page.total_count) ||
         page.total_count < 0 || Object.is(page.total_count, -0) || page.total_count > 100 ||
         page.total_count !== page[key].length)
-      fail(`${label} inventory is incomplete`);
+      fail(`${label} inventory is incomplete`, "inventory", "predicate",
+        key === "workflow_runs" ? "source-checks" : "jobs", key === "workflow_runs" ? "source-inventory" : "jobs-inventory");
   }
   return { repo, branch, run, release, tagSha: object.sha, sourceComparison, controllerComparison,
     checks: checkPage.workflow_runs, protection,
@@ -206,9 +235,12 @@ export async function readPromotionEvidence(environment, inputs, fetcher = fetch
 // revision. This is source validation only; it cannot grant deployment authority.
 export async function validatePromotionSource({ environment = process.env, fetcher = fetch,
   readEvent = (path) => readFile(path, "utf8"), now = () => Date.now() } = {}) {
+  let eventText;
+  try { eventText = await readEvent(environment.GITHUB_EVENT_PATH); }
+  catch { fail("GitHub dispatch event is unavailable", "event", "body-read"); }
   let event;
-  try { event = JSON.parse(await readEvent(environment.GITHUB_EVENT_PATH)); }
-  catch { fail("GitHub dispatch event is missing or invalid"); }
+  try { event = JSON.parse(eventText); }
+  catch { fail("GitHub dispatch event is missing or invalid", "event", "json-invalid"); }
   const inputs = validatePromotionDispatch(environment, event);
   const evidence = await readPromotionEvidence(environment, inputs, fetcher);
   validatePromotionSourceEvidence({ environment, event, inputs, evidence, now: now() });
@@ -220,7 +252,7 @@ export async function createProductionAuthority({ environment = process.env, che
   writerFence = assertProductionWriterFence } = {}) {
   let event;
   try { event = JSON.parse(await readEvent(environment.GITHUB_EVENT_PATH)); }
-  catch { fail("GitHub dispatch event is missing or invalid"); }
+  catch { fail("GitHub dispatch event is missing or invalid", "event", "json-invalid"); }
   const inputs = validatePromotionContext(environment, event, checkoutHead, dirty);
   const authorize = async () => {
     const evidence = await readPromotionEvidence(environment, inputs, fetcher);
@@ -251,6 +283,13 @@ export async function assertProductionWriterFence(environment, fetcher = fetch, 
 
 const promotionFailure = () => ({ outcome: "production-promotion-stopped", reason: "authority-or-delivery-verification-failed" });
 
+export function sourceAuthenticationFailureRecord(error) {
+  const record = promotionFailure();
+  const diagnostic = sourceFailures.get(error);
+  if (diagnostic) record.sourceAuthentication = { ...diagnostic };
+  return record;
+}
+
 export async function runPromotionDelivery({ environment = process.env, mode = "deploy",
   loadDelivery = () => import("./production-delivery.mjs"), reportFailure = (record) => console.error(record) } = {}) {
   let failureRecord = promotionFailure;
@@ -272,9 +311,10 @@ async function main() {
   if (process.argv.length !== 3 || !["--dry-run", "--plan", "--execute", "--validate-source"].includes(process.argv[2]))
     fail("usage: production-promotion.mjs --dry-run|--plan|--execute|--validate-source");
   if (process.argv[2] === "--validate-source") {
-    if (!process.env.GITHUB_OUTPUT) fail("GitHub step output path is missing");
+    if (!process.env.GITHUB_OUTPUT) fail("GitHub step output path is missing", "output", "predicate", undefined, "output-path");
     const sourceSha = await validatePromotionSource();
-    await appendFile(process.env.GITHUB_OUTPUT, `source_sha=${sourceSha}\n`);
+    try { await appendFile(process.env.GITHUB_OUTPUT, `source_sha=${sourceSha}\n`); }
+    catch { fail("GitHub step output write failed", "output", "unknown"); }
     return;
   }
   if (process.argv[2] === "--dry-run") {
@@ -287,4 +327,8 @@ async function main() {
 }
 
 if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url))
-  main().catch(() => { console.error(JSON.stringify(promotionFailure())); process.exitCode = 1; });
+  main().catch((error) => {
+    console.error(JSON.stringify(process.argv[2] === "--validate-source" ?
+      sourceAuthenticationFailureRecord(error) : promotionFailure()));
+    process.exitCode = 1;
+  });
