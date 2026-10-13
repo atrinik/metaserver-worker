@@ -1,3 +1,5 @@
+import { fixtureQualification } from "./fixtures/retirement-qualification.mjs";
+const retirementQualification = await fixtureQualification();
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import { spawnSync } from "node:child_process";
@@ -1795,7 +1797,7 @@ test("retirement failure evidence emits only branded closed diagnostics alongsid
   const paced = createProductionReadPacer({ fetcher: async () => new Response("private provider text", { status: 429 }) });
   let cause;
   const noop = async () => {};
-  try { await retireCallerSecrets({ role: "publisher", fence: () => paced(`https://api.cloudflare.com/client/v4/accounts/${"a".repeat(32)}/workers/scripts`),
+  try { await retireCallerSecrets({ qualification: retirementQualification, role: "publisher", fence: () => paced(`https://api.cloudflare.com/client/v4/accounts/${"a".repeat(32)}/workers/scripts`),
     read: noop, verifyStaged: noop, patch: noop, recordIntent: noop, recordReceipt: noop, authorize: noop }); }
   catch (error) { cause = error; }
   const evidence = { sourceSha: null, deployableDigest: null, failedRole: "retirement:publisher", completedRoles: [], recoveryOutcome: "failed" };

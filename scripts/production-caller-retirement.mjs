@@ -2,6 +2,7 @@
 // Source-only machinery: no provider access occurs on import. The caller supplies
 // selected-source/config/module verification and the complete authority/global fence.
 import { markRetirementFailure, markRetirementPatchFailure, markCallerObservationFailure } from "./production-retirement-diagnostics.mjs";
+import { requireCallerRetirementQualification } from "./production-retirement-qualification.mjs";
 import { createHash } from "node:crypto";
 import { lstat, open, readFile } from "node:fs/promises";
 import path from "node:path";
@@ -221,10 +222,12 @@ function assertRetirementRequestV3(role, accountId, request) {
   if (!same(request, expected)) fail("mutation request authority drift");
   return expected;
 }
-function assertV3Intent(role, before, intent) {
+function assertV3Intent(role, before, intent, expectedQualificationDigest =
+  Object.getOwnPropertyDescriptor(intent ?? {}, "providerQualificationDigest")?.value) {
+  if (!sha.test(expectedQualificationDigest ?? "")) fail("recovery provider qualification digest invalid");
   const request = retirementRequestV3(role, before.accountId, callerRetirementBodyV3(role, before).version_tags);
   const expected = { schema: "atrinik-production-caller-retirement-v3", ...request,
-    before: structuredClone(before), beforeDigest: callerRetirementDigest(before) };
+    providerQualificationDigest: expectedQualificationDigest, before: structuredClone(before), beforeDigest: callerRetirementDigest(before) };
   if (!Number.isFinite(before.capturedAt) || !exactKeys(intent, Object.keys(expected)) || !same(intent, expected))
     fail("recovery intent does not bind timestamped predecessor and exact request");
   assertRetirementRequestV3(role, before.accountId, Object.fromEntries(Object.keys(request).map(key => [key, intent[key]])));
@@ -275,23 +278,25 @@ export function verifyCallerRetirementPost(role, before, after) {
  * Failure after intent is permanent: no retry or rollback is provided here.
  */
 export async function retireCallerSecrets({ role, read, fence, verifyStaged, patch,
-  recordIntent, recordReceipt, authorize, now = Date.now }) {
+  recordIntent, recordReceipt, authorize, qualification, now = Date.now }) {
   workerName(role);
   if ([read, fence, verifyStaged, patch, recordIntent, recordReceipt, authorize].some((f) => typeof f !== "function"))
     fail("required authority or durable recorder missing");
   let phase = "initial-fence", mutationState = "not-invoked";
   try {
+    const providerQualificationDigest = requireCallerRetirementQualification(qualification);
     await fence();
     phase = "initial-read";
     const before = await read();
     phase = "initial-compare";
     fresh(before, now);
     assertSnapshot(role, before);
+    requireCallerRetirementQualification(qualification, before.accountId);
     phase = "initial-staged-proof";
     if (await verifyStaged(before, { retired: false }) !== true) fail("selected staged proof rejected");
     const request = retirementRequestV3(role, before.accountId, callerRetirementBodyV3(role, before).version_tags);
     const intent = { schema: "atrinik-production-caller-retirement-v3", ...request,
-      before: structuredClone(before), beforeDigest: callerRetirementDigest(before) };
+      providerQualificationDigest, before: structuredClone(before), beforeDigest: callerRetirementDigest(before) };
     phase = "intent-proof";
     await recordIntent(structuredClone(intent));
     // Intent is consumed first. Re-read module, latest, bindings and peers, then do
@@ -311,7 +316,7 @@ export async function retireCallerSecrets({ role, read, fence, verifyStaged, pat
     phase = "freshness";
     fresh(current, now);
     phase = "patch";
-    assertV3Intent(role, before, intent);
+    assertV3Intent(role, before, intent, requireCallerRetirementQualification(qualification, before.accountId));
     mutationState = "dispatched-outcome-unknown";
     await patch(structuredClone(request));
     mutationState = "response-accepted";
@@ -358,8 +363,9 @@ export async function observeCallerRetirement({ role, before, intent, read, fenc
     intentDigest: callerRetirementDigest(intent), snapshot: after };
 }
 
-export function createCallerRetirementPatch({ accountId, token, role, fetcher = fetch }) {
+export function createCallerRetirementPatch({ accountId, token, role, qualification, fetcher = fetch }) {
   workerName(role);
+  requireCallerRetirementQualification(qualification, accountId);
   if (!/^[a-f0-9]{32}$/u.test(accountId ?? "") || typeof token !== "string" || !token || /\s/u.test(token))
     fail("mutation transport authority invalid");
   let consumed = false;
@@ -367,6 +373,7 @@ export function createCallerRetirementPatch({ accountId, token, role, fetcher = 
     let transportState = "not-dispatched";
     try {
       if (consumed) fail("mutation transport already consumed");
+      requireCallerRetirementQualification(qualification, accountId);
       const validated = assertRetirementRequestV3(role, accountId, request);
       // Serialize reconstructed primitives, never caller object hooks.
       const data = JSON.stringify(validated.body);

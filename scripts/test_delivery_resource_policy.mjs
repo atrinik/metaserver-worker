@@ -1,3 +1,5 @@
+import { qualifyBootstrapRetirement, retirementQualificationPlanInput } from "./production-delivery.mjs";
+import { fixtureQualification, qualificationDocument } from "./fixtures/retirement-qualification.mjs";
 // Copyright (C) 2026 Atrinik contributors
 import assert from "node:assert/strict";
 import test from "node:test";
@@ -713,4 +715,25 @@ for (const role of ["publisher", "rendezvous"]) test(`empty ${role} policy requi
   const gate = x.gate(); await gate.fence();
   live.settings.bindings.find(v => v.name === circuits[0]).text = "enabled";
   await assert.rejects(gate.fence());
+});
+
+test("pair bootstrap preflight blocks on null qualification and plan binds exact reviewed document", async () => {
+  const x = provisionedBootstrapFixture();
+  await assert.rejects(qualifyBootstrapRetirement(x.policy, "production", accountId), /qualification/u);
+  assert.throws(() => retirementQualificationPlanInput(x.policy, accountId, null), /qualification/u);
+  const first = await fixtureQualification({ accountId });
+  const document = qualificationDocument(accountId); document.qualification.review.recordSha256 = "7".repeat(64);
+  const second = await fixtureQualification({ accountId, document });
+  assert.deepEqual(retirementQualificationPlanInput(x.policy, accountId, first), { providerQualificationDigest: first.digest });
+  assert.notDeepEqual(retirementQualificationPlanInput(x.policy, accountId, first), retirementQualificationPlanInput(x.policy, accountId, second));
+  assert.throws(() => retirementQualificationPlanInput(x.policy, "f".repeat(32), first), /qualification/u);
+  for (const role of ["publisher", "rendezvous"]) {
+    const { worker, live } = stagedBaselineCaller(x, role);
+    worker.secrets = []; live.settings.bindings = live.settings.bindings.filter(v => v.type !== "secret_text");
+  }
+  assert.equal(await qualifyBootstrapRetirement(x.policy, "production", accountId), null);
+  assert.deepEqual(retirementQualificationPlanInput(x.policy, accountId, null), {});
+  delete x.policy.productionBootstrap;
+  assert.equal(await qualifyBootstrapRetirement(x.policy, "production", accountId), null);
+  assert.deepEqual(retirementQualificationPlanInput(x.policy, accountId, null), {});
 });

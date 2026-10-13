@@ -12,6 +12,9 @@ import { verifyRecoveryArtifactProof } from "./production-recovery-artifacts.mjs
 import { callerRetirementSecrets, callerRetirementBody, callerRetirementBodyV3, observeSecretFreeCaller, callerRetirementDigest, verifyCallerRetirementPost,
   retireCallerSecrets, observeCallerRetirement, createCallerRetirementPatch,
   createCallerRetirementRecorder, parseCallerRetirementModules } from "./production-caller-retirement.mjs";
+import { parseCallerRetirementQualification, loadCallerRetirementQualification, requireCallerRetirementQualification } from "./production-retirement-qualification.mjs";
+import { fixtureQualification, qualificationDocument, qualificationBytes } from "./fixtures/retirement-qualification.mjs";
+const qualification = await fixtureQualification();
 const accountId = "a".repeat(32), hash = "b".repeat(64), source = "c".repeat(40);
 const oldId = "00000000-0000-0000-0000-000000000001", newId = "00000000-0000-0000-0000-000000000002";
 function serviceEnvironment(name = "atrinik-metaserver-publisher") {
@@ -50,7 +53,7 @@ function harness(overrides = {}) {
   const before = baseline(), after = retired(before), events = [];
   let reads = 0, writes = 0, intent;
   return { events, before, after, get intent() { return intent; }, get writes() { return writes; },
-    options: { role: "publisher", now: () => 1000, fence: async () => events.push("fence"), authorize: async () => events.push("authorize"),
+    options: { qualification, role: "publisher", now: () => 1000, fence: async () => events.push("fence"), authorize: async () => events.push("authorize"),
       read: async () => { events.push("read"); return ++reads < 3 ? before : after; },
       verifyStaged: async () => { events.push("verify"); return true; },
       recordIntent: async (v) => { events.push("intent"); intent = v; },
@@ -156,7 +159,8 @@ test("v3 intent binds the full endpoint, exact request, and captured predecessor
   assert.equal(h.intent.beforeDigest, callerRetirementDigest(h.before));
   assert.equal(h.intent.bodyDigest, callerRetirementDigest(h.intent.body));
   assert.equal(Object.hasOwn(h.intent, "settingsDigest"), false);
-  const { schema, before, beforeDigest, requestDigest, ...request } = h.intent;
+  const { schema, before, beforeDigest, providerQualificationDigest, requestDigest, ...request } = h.intent;
+  assert.equal(providerQualificationDigest, qualification.digest);
   assert.equal(requestDigest, callerRetirementDigest(request));
 });
 for (const [name, change] of [
@@ -167,6 +171,7 @@ for (const [name, change] of [
   ["endpoint", (i) => { i.endpoint = i.endpoint.replace("secrets-bulk", "settings"); }],
   ["body digest", (i) => { i.bodyDigest = hash; }],
   ["request digest", (i) => { i.requestDigest = hash; }],
+  ["qualification digest", (i) => { delete i.providerQualificationDigest; }],
   ["version_tags", (i) => { i.body.version_tags = {}; }],
   ["extra field", (i) => { i.unexpected = true; }],
 ]) test(`v3 recovery rejects substituted ${name} before any read`, async () => {
@@ -191,7 +196,7 @@ test("historical v1 settings digest remains read-only and cannot be relabeled as
   assert.equal(reads, 0);
   await assert.rejects(observeCallerRetirement({ ...options, before: beforeDocument }));
   await assert.rejects(observeCallerRetirement({ ...options, intent: { ...intent, settingsDigest: callerRetirementDigest(callerRetirementBody("publisher", before)) } }));
-  const patch = createCallerRetirementPatch({ accountId, token: "fixture", role: "publisher", fetcher: async () => { throw Error("must not fetch"); } });
+  const patch = createCallerRetirementPatch({ qualification, accountId, token: "fixture", role: "publisher", fetcher: async () => { throw Error("must not fetch"); } });
   await assert.rejects(patch(intent));
 });
 test("provider-accepted settings shape retaining both secrets never produces a receipt", async () => {
@@ -229,12 +234,12 @@ test("private durable recorder allows only one concurrent role claim and binds r
 async function requestFixture(role = "publisher") {
   const h = harness({ role, read: async () => baseline(role), patch: async () => { throw Error("fixture stop"); } });
   await assert.rejects(retireCallerSecrets(h.options));
-  const { schema, before, beforeDigest, ...request } = h.intent;
+  const { schema, before, beforeDigest, providerQualificationDigest, ...request } = h.intent;
   return request;
 }
 test("bounded merge-patch transport is pinned and consumed even on network ambiguity", async () => {
   let calls = 0;
-  const patch = createCallerRetirementPatch({ accountId, token: "test-token", role: "publisher", fetcher: async (url, options) => {
+  const patch = createCallerRetirementPatch({ qualification, accountId, token: "test-token", role: "publisher", fetcher: async (url, options) => {
     calls++; assert.equal(url, `https://api.cloudflare.com/client/v4/accounts/${accountId}/workers/scripts/atrinik-metaserver-publisher/secrets-bulk`);
     assert.equal(options.method, "PATCH"); assert.equal(options.redirect, "error");
     assert.equal(options.headers["Content-Type"], "application/merge-patch+json");
@@ -270,13 +275,13 @@ for (const [name, change] of [
   // Even a recomputed request digest cannot widen the fixed operation contract.
   const { requestDigest, ...content } = request;
   if (!name.includes("digest")) request.requestDigest = callerRetirementDigest(content);
-  const patch = createCallerRetirementPatch({ accountId, token: "fixture", role: "publisher",
+  const patch = createCallerRetirementPatch({ qualification, accountId, token: "fixture", role: "publisher",
     fetcher: async () => { calls++; return Response.json({ success: true }); } });
   await assert.rejects(patch(request)); assert.equal(calls, 0);
 });
 test("accepted bulk-secret response still consumes exactly one request", async () => {
   let calls = 0;
-  const patch = createCallerRetirementPatch({ accountId, token: "fixture", role: "publisher",
+  const patch = createCallerRetirementPatch({ qualification, accountId, token: "fixture", role: "publisher",
     fetcher: async () => { calls++; return Response.json({ success: true }); } });
   const request = await requestFixture(); await patch(request); await assert.rejects(patch(request));
   assert.equal(calls, 1);
@@ -492,7 +497,7 @@ test("PATCH diagnostics distinguish pre-dispatch validation, attempted transport
     ["dispatched-outcome-unknown", async () => { throw Error("private token"); }, false],
     ["response-received", async () => Response.json({ success: false, errors: ["private provider text"] }, { status: 429 }), false],
   ]) {
-    const patch = createCallerRetirementPatch({ accountId, token: "fixture", role: "publisher", fetcher });
+    const patch = createCallerRetirementPatch({ qualification, accountId, token: "fixture", role: "publisher", fetcher });
     const h = harness({ patch: request => patch({ ...request, ...(wrongAccount ? { accountId: "wrong" } : {}) }) });
     await assert.rejects(retireCallerSecrets(h.options), e => {
       assert.equal(retirementFailureDiagnostic(e).phase, "patch");
@@ -512,7 +517,7 @@ for (const stage of ["post-intent-fence", "patch", "post-read"]) test(`failed di
   const h = harness({
     fence: async () => { if (++fences === 2 && stage === "post-intent-fence") await paced(url); },
     read: async () => { if (++reads === 3 && stage === "post-read") await paced(url); return baseline(); },
-    patch: createCallerRetirementPatch({ accountId, token: "fixture", role: "publisher", fetcher: async () => {
+    patch: createCallerRetirementPatch({ qualification, accountId, token: "fixture", role: "publisher", fetcher: async () => {
       patches++;
       if (stage === "patch") throw Error("private network ambiguity");
       return Response.json({ success: true });
@@ -561,7 +566,7 @@ test("historical v2 byte contract remains readable and cannot dispatch through t
     await assert.rejects(observeCallerRetirement({ ...args, intent: invalid, read: () => assert.fail("must reject before read") }));
   }
   let calls = 0;
-  const patch = createCallerRetirementPatch({ accountId, role: "publisher", token: "fixture", fetcher: () => { calls++; } });
+  const patch = createCallerRetirementPatch({ qualification, accountId, role: "publisher", token: "fixture", fetcher: () => { calls++; } });
   await assert.rejects(patch(request)); assert.equal(calls, 0);
 });
 
@@ -571,7 +576,7 @@ test("v3 emits only exact selected stage tags with deterministic bytes and bound
     "workers/tag": source, "workers/message": baseline().settings.annotations["workers/message"],
   })}}`;
   let calls = 0;
-  const patch = createCallerRetirementPatch({ accountId, role: "publisher", token: "fixture", fetcher: async (_url, options) => {
+  const patch = createCallerRetirementPatch({ qualification, accountId, role: "publisher", token: "fixture", fetcher: async (_url, options) => {
     calls++; assert.equal(options.body, expected); return Response.json({ success: true, errors: [], result: {} });
   } });
   for (const change of [
@@ -647,7 +652,7 @@ for (const emptyRoles of [["publisher"], ["rendezvous"], ["publisher", "rendezvo
             const proof = await prepareBootstrapCallerHandoff({ role, disposition, apiHandoffRoles,
               observe: async () => { observations.push(role); return observeSecretFreeCaller({ role, read,
                 fence: noop, verifyStaged: async () => true, now: () => 1000 }); },
-              retire: () => retireCallerSecrets({ role, read, fence: noop, authorize: noop, now: () => 1000,
+              retire: () => retireCallerSecrets({ qualification, role, read, fence: noop, authorize: noop, now: () => 1000,
                 verifyStaged: async () => true,
                 recordIntent: async i => { artifacts.push(`${role}:intent`); assert.equal(i.schema, "atrinik-production-caller-retirement-v3"); },
                 recordReceipt: async () => { artifacts.push(`${role}:receipt`); },
@@ -697,3 +702,81 @@ for (const emptyRoles of [["publisher"], ["rendezvous"], ["publisher", "rendezvo
         assert.deepEqual(events.slice(index - 2, index), [`last-version:${role}`, `authorize:${role}`]);
       }
     });
+
+test("unqualified, unbranded or wrong-account v3 cannot create an intent or dispatch", async () => {
+  const parsed = parseCallerRetirementQualification(qualificationBytes(qualificationDocument()), { accountId, now: () => 1000 });
+  const wrongAccount = await fixtureQualification({ accountId: "d".repeat(32) });
+  for (const proof of [undefined, null, true, { digest: qualification.digest }, parsed, structuredClone(qualification), wrongAccount]) {
+    const h = harness({ qualification: proof });
+    await assert.rejects(retireCallerSecrets(h.options), /qualification/u);
+    assert.equal(h.intent, undefined); assert.equal(h.writes, 0);
+    assert.equal(h.events.includes("intent"), false); assert.equal(h.events.includes("patch"), false);
+    let calls = 0;
+    assert.throws(() => createCallerRetirementPatch({ accountId, token: "fixture", role: "publisher",
+      qualification: proof, fetcher: async () => { calls++; } }), /qualification/u);
+    assert.equal(calls, 0);
+  }
+  assert(Object.isFrozen(qualification));
+  assert.equal(requireCallerRetirementQualification(qualification, accountId), qualification.digest);
+});
+
+test("fixed checked null qualification blocks live loading without input or environment overrides", async () => {
+  const actual = JSON.parse(await readFile(new URL("../deployment/caller-retirement-provider-qualification.json", import.meta.url)));
+  assert.equal(actual.qualification, null);
+  await assert.rejects(loadCallerRetirementQualification({ accountId,
+    document: qualificationDocument(), path: "/tmp/never-trusted-qualification.json" }), /qualification/u);
+});
+
+for (const [name, change] of [
+  ["null", d => { d.qualification = null; }],
+  ["schema", d => { d.schema = "invented-v2"; }],
+  ["unbound account", d => { d.qualification.accountIdSha256 = "9".repeat(64); }],
+  ["endpoint", d => { d.qualification.contract.endpoint += "?alternate=1"; }],
+  ["method", d => { d.qualification.contract.method = "PUT"; }],
+  ["content type", d => { d.qualification.contract.contentType = "application/json"; }],
+  ["extra request key", d => { d.qualification.contract.bodyKeys.push("other"); }],
+  ["partial null pair", d => { d.qualification.contract.secretNames.pop(); }],
+  ["replacement operation", d => { d.qualification.contract.secretOperation = "replace"; }],
+  ["missing message map", d => { d.qualification.contract.versionTagKeys.pop(); }],
+  ["provider trigger map", d => { d.qualification.contract.versionTagKeys.push("workers/triggered_by"); }],
+  ["cleanup absent", d => { d.qualification.result.status = "canary-measured"; }],
+  ["mapping false", d => { d.qualification.result.mappingObserved = false; }],
+  ["production authority", d => { d.qualification.result.productionAuthorized = true; }],
+  ["broader scope", d => { d.qualification.result.scope = "production"; }],
+  ["missing raw evidence", d => { delete d.qualification.evidence.requestSha256; }],
+  ["invalid raw digest", d => { d.qualification.evidence.afterSha256 = "not-a-sha"; }],
+  ["review missing", d => { delete d.qualification.review; }],
+  ["review mismatch", d => { d.qualification.review.resultSha256 = "9".repeat(64); }],
+  ["review before measurement", d => { d.qualification.measuredAt = "1970-01-01T00:00:02.000Z"; }],
+  ["future review", d => { d.qualification.review.reviewedAt = "1970-01-01T00:00:02.000Z"; }],
+  ["unknown fields", d => { d.qualification.review.independentlyApproved = true; }],
+]) test(`qualification rejects ${name} before writer can receive a capability`, async () => {
+  const document = qualificationDocument(); change(document);
+  let writers = 0;
+  await assert.rejects(async () => {
+    const proof = await fixtureQualification({ document });
+    writers++;
+    return retireCallerSecrets(harness({ qualification: proof }).options);
+  }, /qualification/u);
+  assert.equal(writers, 0);
+});
+
+for (const name of Object.keys(qualificationDocument().qualification.result.measurement))
+  test(`qualification requires actual successful ${name}`, async () => {
+    const document = qualificationDocument(); document.qualification.result.measurement[name] = false;
+    await assert.rejects(fixtureQualification({ document }), /qualification/u);
+  });
+
+test("qualification loader bounds regular source data and rejects ambiguous encodings", async () => {
+  for (const args of [
+    { bytes: Buffer.from("{") }, { bytes: Buffer.alloc(16385, 32) }, { regular: false }, { size: 1 },
+    { bytes: Buffer.from('{"schema":"wrong","schema":"atrinik-caller-retirement-provider-qualification-v1","qualification":null}') },
+  ]) await assert.rejects(fixtureQualification(args), /qualification/u);
+  const digestBefore = qualification.digest;
+  const document = qualificationDocument(), changed = structuredClone(document);
+  changed.qualification.review.recordSha256 = "7".repeat(64);
+  const proof = await fixtureQualification({ document: changed });
+  assert.notEqual(proof.digest, digestBefore);
+  document.qualification.accountIdSha256 = "9".repeat(64);
+  assert.equal(requireCallerRetirementQualification(qualification, accountId), digestBefore);
+});

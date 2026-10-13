@@ -12,6 +12,7 @@ import { parseDirectoryFailure } from "./directory-reconciliation-diagnostics.mj
 import { readDirectoryInterface, incompatibleDirectoryInterface } from "./directory-reconciliation-interface.mjs";
 import { retireCallerSecrets, observeSecretFreeCaller, createCallerRetirementReader, createCallerRetirementPatch } from "./production-caller-retirement.mjs";
 import { createDurableCallerRetirementRecorder, recoveryArtifactFailureReason } from "./production-recovery-artifacts.mjs";
+import { loadCallerRetirementQualification, requireCallerRetirementQualification } from "./production-retirement-qualification.mjs";
 import { validateRateBootstrap, legacyCallerSecrets, bootstrapCallerDispositions } from "./production-rate-bootstrap.mjs";
 import { parseResourcePolicy, resourcePolicyDigest as digestResourcePolicy, validateResourceConfigurations,
   resourcePolicyReader, createResourcePolicyFence } from "./delivery-resource-policy.mjs";
@@ -1395,7 +1396,9 @@ async function buildPlan(
   stagedConfigs = configs,
   resourcePolicy = null,
   directoryInterface,
+  retirementQualification = null,
 ) {
+  const qualificationInput = retirementQualificationPlanInput(resourcePolicy, configs[0].account_id, retirementQualification);
   if (!directoryInterface?.digest) fail(incompatibleDirectoryInterface);
   const migrations = await migrationLedger();
   const bundles = await bundleWorkers(configPaths);
@@ -1411,6 +1414,7 @@ async function buildPlan(
   const deploy = sha256Json({
     schemaVersion: contract.schemaVersion,
     resourcePolicyDigest: resourcePolicy ? digestResourcePolicy(resourcePolicy) : null,
+    ...qualificationInput,
     directoryInterfaceDigest: directoryInterface.digest,
     provider: contract.provider,
     repository: contract.repository,
@@ -1437,6 +1441,7 @@ async function buildPlan(
   return {
     deploy,
     directoryInterfaceDigest: directoryInterface.digest,
+    ...qualificationInput,
     controls,
     stagedControls,
     configurations,
@@ -2404,6 +2409,18 @@ async function validateCheckedIn(contract) {
   return { paths, configs };
 }
 
+export function retirementQualificationPlanInput(policy, accountId, qualification) {
+  if (!policy?.productionBootstrap || !Object.values(bootstrapCallerDispositions(policy, "production"))
+    .some(value => value.operation === "retire-pair")) return {};
+  return { providerQualificationDigest: requireCallerRetirementQualification(qualification, accountId) };
+}
+
+export async function qualifyBootstrapRetirement(policy, target, accountId) {
+  const dispositions = bootstrapCallerDispositions(policy, target);
+  if (!Object.values(dispositions).some(value => value.operation === "retire-pair")) return null;
+  return loadCallerRetirementQualification({ accountId });
+}
+
 export async function runDelivery({ target = "production", sourceRoot, mode = "deploy" } = {}) {
   if (deliveryRunning) fail("delivery engine is already running");
   if (!["development", "production"].includes(target) ||
@@ -2481,11 +2498,12 @@ export async function runDelivery({ target = "production", sourceRoot, mode = "d
       validateRateBootstrap(policy, target, { sourceSha,
         expectedPredecessor: process.env.ATRINIK_PROMOTION_PREDECESSOR });
       validateResourceConfigurations(policy, target, configs);
+      const retirementQualification = await qualifyBootstrapRetirement(policy, target, configs[0].account_id);
       const { stagedConfigs, stagedPaths } = await materializeStagedConfigurations(
         protectedInputs.directory, configs, contract.workers);
       const plan = await buildPlan(contract, protectedInputs.configPaths, configs,
         contract.workers.map(({ requiredSecrets }) => sorted(requiredSecrets)), stagedPaths, stagedConfigs, policy,
-        directoryInterface);
+        directoryInterface, retirementQualification);
       const result = { outcome: "planned", mutation: false, environment: target, sourceSha,
         deployableDigest: plan.deploy, configDigest: plan.configDigest,
         migrationDigest: plan.migrationDigest, bundles: plan.bundles };
@@ -2526,6 +2544,8 @@ export async function runDelivery({ target = "production", sourceRoot, mode = "d
     expectedPredecessor: process.env.ATRINIK_PROMOTION_PREDECESSOR });
   const callerDispositions = bootstrapCallerDispositions(policy, target, { sourceSha,
     expectedPredecessor: process.env.ATRINIK_PROMOTION_PREDECESSOR });
+  // Fail before plan generation, provider inventory, artifact setup or staging.
+  const retirementQualification = await qualifyBootstrapRetirement(policy, target, configs[0].account_id);
   const secretFreeBaseline = index => bootstrap && index > 0 &&
     callerDispositions[contract.workers[index].role].operation === "observe-secret-free";
   const predecessorConfig = index => bootstrap && index > 0
@@ -2550,6 +2570,7 @@ export async function runDelivery({ target = "production", sourceRoot, mode = "d
     stagedConfigs,
     policy,
     directoryInterface,
+    retirementQualification,
   );
   failureEvidence.deployableDigest = plan.deploy;
   await authority.validatePlan(plan);
@@ -2686,10 +2707,10 @@ export async function runDelivery({ target = "production", sourceRoot, mode = "d
             resourceTransition.beginCallerRetirement(worker.role);
             try {
               return await retireCallerSecrets({
-                role: worker.role, fence, authorize: authority.authorize,
+                role: worker.role, fence, authorize: authority.authorize, qualification: retirementQualification,
                 read,
                 patch: createCallerRetirementPatch({ accountId,
-                  token: process.env.CLOUDFLARE_API_TOKEN, role: worker.role }),
+                  token: process.env.CLOUDFLARE_API_TOKEN, role: worker.role, qualification: retirementQualification }),
                 ...retirementRecorders.get(worker.role),
                 verifyStaged,
               });

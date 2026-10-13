@@ -449,6 +449,39 @@ exact null deletion pair and the two exact approved staged annotation strings:
 That reference does not specify the object's inner-key mapping. The candidate
 `workers/tag` and `workers/message` mapping requires separate authorized provider
 qualification before production use; source fixtures alone do not establish it.
+The controller enforces this using its fixed checked-in
+`deployment/caller-retirement-provider-qualification.json`, whose
+`atrinik-caller-retirement-provider-qualification-v1` document currently contains
+`qualification: null`. A pair-bearing bootstrap cannot generate an approved plan,
+create recovery artifacts or stage any Worker while this slot is unqualified.
+Ordinary delivery and a bootstrap with both callers already empty do not require
+this retirement-specific capability.
+
+Filling the slot requires actual scoped probe success, clean removal of the
+probe Worker and independent review of the real retained evidence, followed by a
+reviewed source change. The source attestation binds SHA-256 of the exact account
+ID, the PATCH endpoint template, merge-patch content type, two null-deletion secret
+names, exact `version_tags` keys, measurement/review times, all ten measured
+mapping checks, and hashes of the probe controller, request, predecessor,
+post-observation, result and independent review. The review also names the exact
+result digest. The probe's isolated scope, `productionAuthorized: false` and
+`productionContractSatisfied: false` remain explicit; qualification establishes
+this mapping and grants no production action or broader peer-control guarantee.
+A collection of locally supplied booleans or hashes cannot authenticate a probe.
+The reviewed controller source is the attestation trust anchor.
+
+The loader opens only that controller-owned regular file with no symlink
+following, bounds it to 16 KiB, rejects duplicate/ambiguous JSON encoding, and
+validates the exact contract and account. There is no environment or input-path
+override. Only the loader mints the frozen in-process capability; successful
+standalone parsing cannot grant one. Retirement checks it before its initial
+fence and binds its account before constructing an intent. The transport checks
+it independently before construction and dispatch. The exact document byte digest
+is included in the deployable-plan digest and the new v3
+`providerQualificationDigest`; qualifying or changing the evidence requires fresh
+plan approval. It is historical provider capability evidence, not a substitute
+for current source, policy, clocks, one-use intent or mutation fences.
+
 An annotation-losing v2 outcome is not authority to retry a consumed request.
 
 The v3 writer reconstructs the two strings from the verified predecessor. It
@@ -456,7 +489,7 @@ rejects missing, changed or extra tags, `workers/triggered_by`, annotations,
 undefined fields, accessor properties, secret substitutions and request drift.
 The new schema binds the full account-scoped HTTPS endpoint, method, content type,
 body and request digests, and the complete predecessor including its actual
-`capturedAt` timestamp. The private one-use coordinate and verified ciphertext
+`capturedAt` timestamp and the checked provider qualification digest. The private one-use coordinate and verified ciphertext
 artifact are durable before dispatch. Provider acceptance still needs fresh
 complete readback, selected-source proof, a fresh writer fence and a durable
 encrypted receipt. Request/response bounds, 20-second deadline, redirect rejection
@@ -490,7 +523,9 @@ replay an old intent or create a retrospective original receipt. The v2 decoder 
 timestamped predecessor digest interpretation. It remains read-only; a v2 request
 cannot dispatch through the v3 writer. A successful v2 or v3
 read-only terminal is separately labeled observational recovery and creates no
-original receipt. Both timestamped schemas reject missing or substituted timestamps. The JWE outer
+original receipt. Both timestamped schemas reject missing or substituted timestamps. V3 observation
+requires its original qualification digest but never mints a mutation capability
+from that digest. The JWE outer
 envelope remains v1; the inner document identifies the operation schema without
 relabeling or rewriting historical artifacts.
 

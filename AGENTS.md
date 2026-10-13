@@ -124,8 +124,18 @@
   those deletions and `version_tags` containing the exact staged `workers/tag` and
   `workers/message`; reject every other field, provider trigger, accessor and secret
   substitution. The inner-key mapping requires separate authorized provider
-  qualification before production use. V3 binds the full endpoint, request/body
-  digests and timestamped predecessor. Keep historical v2 pair-only request decoding
+  qualification before production use. The fixed controller-owned
+  `deployment/caller-retirement-provider-qualification.json` must contain a
+  reviewed source attestation of the actual isolated mapping probe, its clean
+  terminal, exact account/contract and evidence/review hashes. Keep qualification
+  null until that evidence is independently reviewed; a local hash or boolean is
+  not proof. No environment/path override exists. Pair-role planning and live
+  preflight stop before artifacts/uploads when unqualified; ordinary and all-empty
+  paths need no retirement qualification. Only the bounded regular-file loader
+  mints the capability independently required by retirement and transport.
+  The document digest changes the approved plan and is bound as
+  `providerQualificationDigest` in new v3 intents. V3 binds the full endpoint,
+  request/body digests and timestamped predecessor. Keep historical v2 pair-only request decoding
   immutable and read-only. An approved empty role instead requires a dedicated
   fresh staged observation, with no PATCH, intent, receipt or uncertain-retirement
   state. Freeze its Wrangler UUID/provenance proof and require the same final
