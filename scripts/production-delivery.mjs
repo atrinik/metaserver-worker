@@ -2763,13 +2763,13 @@ export async function runDelivery({ target = "production", sourceRoot, mode = "d
   }
   const fence = () => fenceDeliveryMutation(authority, resourceFence);
   const readRetiredCaller = async (worker, index, proof) => {
-    await fence();
     try {
-    const snapshot = await retiredCallerReaders.get(worker.role)();
-    retirementCohort.check(snapshot);
-    return verifyRetiredCallerReadback({ worker, config: stagedConfigs[index], snapshot, proof,
-      scope: retirementScope, selectedIdentity: retirementIdentities.get(worker.role),
-      expectedMessage: expectedStagedMessages.get(worker.role), expectedZoneId: configs[0].vars.DIRECTORY_CACHE_ZONE_ID });
+      await fence();
+      const snapshot = await retiredCallerReaders.get(worker.role)();
+      retirementCohort.check(snapshot);
+      return verifyRetiredCallerReadback({ worker, config: stagedConfigs[index], snapshot, proof,
+        scope: retirementScope, selectedIdentity: retirementIdentities.get(worker.role),
+        expectedMessage: expectedStagedMessages.get(worker.role), expectedZoneId: configs[0].vars.DIRECTORY_CACHE_ZONE_ID });
     } catch (error) { throw markRetirementFailure(error, "postverify", "response-accepted"); }
   };
   const recordRetirementPeerUpload = async (worker, index, active, phase) => {
