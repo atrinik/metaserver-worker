@@ -39,6 +39,7 @@ import {
   selectBuildLeaseOwner,
   selectApiHandoffRoles,
   completeCallerRetirement,
+  verifyCallerActivationHandoff,
   selectLiveTrigger,
   sanitizedChildEnvironment,
   validateBuildTrigger,
@@ -824,6 +825,8 @@ test("verified API predecessors enable handoff with or without retained annotati
   );
 });
 
+const retiredCallerVersion = "11111111-1111-4111-8111-111111111111";
+
 test("only fully verified caller retirement admits a new API handoff", async () => {
   for (const role of ["publisher", "rendezvous"]) {
     for (const failure of [null, "retire", "confirm", "verify"]) {
@@ -835,9 +838,12 @@ test("only fully verified caller retirement admits a new API handoff", async () 
         if (failure === name) throw new Error(`failed ${name}`);
       };
       const complete = () => completeCallerRetirement({ role, apiHandoffRoles,
-        retire: async () => { step("retire"); },
+        retire: async () => { step("retire"); return {
+          snapshot: { activeVersion: retiredCallerVersion, control: { environment: { script: { last_deployed_from: "api" } } },
+            resources: { script: { last_deployed_from: "api" } } },
+        }; },
         confirm: () => { step("confirm"); },
-        verify: async () => { step("verify"); },
+        verify: async () => { step("verify"); return { versionId: retiredCallerVersion }; },
       });
       if (failure) await assert.rejects(complete, new RegExp(`failed ${failure}`));
       else await complete();
@@ -858,6 +864,216 @@ test("only fully verified caller retirement admits a new API handoff", async () 
     retire: unexpected, confirm: unexpected, verify: unexpected, apiHandoffRoles: new Set() }),
   /retirement role is invalid/u);
   assert.equal(called, false);
+});
+
+test("retirement activation strictness follows both verified provenance fields", async () => {
+  for (const role of ["publisher", "rendezvous"]) {
+    for (const selectedBeforeStaging of [false, true]) {
+      for (const [service, resource, valid] of [
+        ["api", "api", true], ["wrangler", "wrangler", true],
+        ["api", "wrangler", false], ["wrangler", "api", false],
+        [undefined, undefined, false], ["dash", "dash", false],
+      ]) {
+        const apiHandoffRoles = new Set(selectedBeforeStaging ? [role] : []);
+        const events = [];
+        const complete = () => completeCallerRetirement({ role, apiHandoffRoles,
+          retire: async () => {
+            events.push("retire");
+            return { snapshot: { activeVersion: retiredCallerVersion,
+              control: { environment: { script: { last_deployed_from: service } } },
+              resources: { script: { last_deployed_from: resource } },
+            } };
+          },
+          confirm: () => { events.push("confirm"); },
+          verify: async () => { events.push("verify"); return { versionId: retiredCallerVersion }; },
+        });
+        if (!valid) {
+          await assert.rejects(complete, /retirement provenance is invalid/u);
+          assert.equal(apiHandoffRoles.has(role), selectedBeforeStaging);
+        } else {
+          await complete();
+          const args = wranglerDeployArguments({ configPath: "/tmp/worker.jsonc",
+            sourceSha: "a".repeat(40), message: "active delivery",
+            strict: !apiHandoffRoles.has(role) });
+          assert.equal(args.includes("--strict"), service !== "api");
+        }
+        assert.deepEqual(events, ["retire", "confirm", "verify"]);
+      }
+    }
+  }
+});
+
+test("post-retirement provenance rejection preserves consumed mutation diagnostics", async () => {
+  const secret = "private provider account/token/path";
+  for (const role of ["publisher", "rendezvous"]) {
+    for (const resourceSource of [undefined, "wrangler", secret]) {
+      const apiHandoffRoles = new Set();
+      const events = [];
+      let failure;
+      try {
+        await completeCallerRetirement({ role, apiHandoffRoles,
+          retire: async () => {
+            events.push("retirement-receipt-verified");
+            return { snapshot: { activeVersion: retiredCallerVersion,
+              control: { environment: { script: { last_deployed_from: "api" } } },
+              resources: { script: { last_deployed_from: resourceSource } },
+            } };
+          },
+          confirm: () => { events.push("confirm"); },
+          verify: async () => { events.push("fence-and-readback"); return { versionId: retiredCallerVersion }; },
+        });
+        events.push("activate");
+      } catch (error) { failure = error; }
+      assert(failure);
+      assert.deepEqual(events, ["retirement-receipt-verified", "confirm", "fence-and-readback"]);
+      assert.deepEqual([...apiHandoffRoles], []);
+      const evidence = { sourceSha: "a".repeat(40), deployableDigest: "b".repeat(64),
+        failedRole: `retirement:${role}`, completedRoles: ["staged:core"], recoveryOutcome: "proven" };
+      const record = deliveryFailureRecord(failure, evidence);
+      assert.deepEqual(record, { ...evidence, outcome: "production-delivery-stopped",
+        reason: "API handoff retirement provenance is invalid",
+        retirement: { phase: "postverify", category: "verification-failed", mutationState: "response-accepted" } });
+      assert.equal(JSON.stringify(record).includes(secret), false);
+    }
+  }
+});
+
+test("retirement handoff rejects replacement versions despite identical staged configuration", async () => {
+  const replacementVersion = "22222222-2222-4222-8222-222222222222";
+  for (const role of ["publisher", "rendezvous"]) {
+    for (const source of ["api", "wrangler"]) {
+      for (const [retiredVersion, freshVersion] of [
+        [retiredCallerVersion, retiredCallerVersion], [retiredCallerVersion, replacementVersion],
+        [retiredCallerVersion, undefined], [undefined, undefined], ["malformed", "malformed"],
+      ]) {
+        const apiHandoffRoles = new Set();
+        let activated = false;
+        const annotations = { "workers/tag": "a".repeat(40), "workers/message": "same staged message" };
+        const resources = { script: { last_deployed_from: source }, bindings: [] };
+        const evidence = { sourceSha: "a".repeat(40), deployableDigest: null,
+          failedRole: `retirement:${role}`, completedRoles: ["staged:core"], recoveryOutcome: "proven" };
+        let failure;
+        try {
+          await completeCallerRetirement({ role, apiHandoffRoles,
+            retire: async () => ({ snapshot: { activeVersion: retiredVersion,
+              settings: { annotations }, resources,
+              control: { environment: { script: { last_deployed_from: source } } },
+            } }),
+            confirm: () => {},
+            verify: async () => freshVersion === undefined ? undefined :
+              { versionId: freshVersion, version: { annotations, resources } },
+          });
+          activated = true;
+        } catch (error) { failure = error; }
+        const valid = retiredVersion === retiredCallerVersion && freshVersion === retiredCallerVersion;
+        assert.equal(activated, valid);
+        assert.equal(apiHandoffRoles.has(role), valid && source === "api");
+        if (!valid) {
+          assert(failure);
+          assert.deepEqual(deliveryFailureRecord(failure, evidence), {
+            ...evidence, outcome: "production-delivery-stopped",
+            reason: "API handoff retirement version changed or is missing",
+            retirement: { phase: "postverify", category: "verification-failed", mutationState: "response-accepted" },
+          });
+        }
+      }
+    }
+  }
+});
+
+test("orchestrator rechecks the retired caller version immediately before activation", async () => {
+  const workers = ["core", "publisher", "rendezvous"].map(role => ({ role }));
+  const noop = async () => {};
+  for (const provenance of ["api", "wrangler"]) {
+    for (const replaced of [false, true]) {
+      const proofs = new Map(), apiHandoffRoles = new Set(), uploads = [], events = [];
+      let retirements = 0;
+      const active = { versionId: retiredCallerVersion, message: "same staged message", bindings: [] };
+      const run = () => orchestrateDelivery({ workers, decision: "deploy", fence: noop,
+        deployStaged: async worker => {
+          if (replaced && worker.role === "rendezvous")
+            active.versionId = "22222222-2222-4222-8222-222222222222";
+        },
+        readbackStaged: async worker => {
+          if (worker.role !== "publisher") return;
+          const proof = await completeCallerRetirement({ role: worker.role, apiHandoffRoles,
+            retire: async () => { retirements++; return { snapshot: { activeVersion: retiredCallerVersion,
+              control: { environment: { script: { last_deployed_from: provenance } } },
+              resources: { script: { last_deployed_from: provenance } },
+            } }; }, confirm: () => {}, verify: async () => ({ ...active }),
+          });
+          assert(Object.isFrozen(proof));
+          proofs.set(worker.role, proof);
+        },
+        verifyStaged: async () => { assert.equal(active.message, "same staged message"); },
+        deployActive: async worker => {
+          if (worker.role !== "publisher") return;
+          const apiHandoff = await verifyCallerActivationHandoff({ role: worker.role,
+            proof: proofs.get(worker.role),
+            verify: async () => { events.push("fresh-version"); return { ...active }; },
+            authorize: async () => { events.push("authorize"); },
+          });
+          uploads.push(wranglerDeployArguments({ configPath: "/tmp/publisher.jsonc",
+            sourceSha: "a".repeat(40), message: "active", strict: !apiHandoff }));
+          events.push("upload");
+        },
+        readbackActive: noop, verifyFinal: noop, reconcileDirectories: noop, canaries: noop, recover: noop,
+      });
+      if (replaced) {
+        await assert.rejects(run, /activation version changed or is missing/u);
+        assert.deepEqual(uploads, []);
+        assert.deepEqual(events, ["fresh-version"]);
+      } else {
+        await run();
+        assert.equal(uploads[0].includes("--strict"), provenance !== "api");
+        assert.deepEqual(events, ["fresh-version", "authorize", "upload"]);
+      }
+      assert.equal(retirements, 1);
+    }
+  }
+});
+
+test("orchestrator preserves consumed retirement diagnostics after completion barriers fail", async () => {
+  const workers = ["core", "publisher", "rendezvous"].map(role => ({ role }));
+  const noop = async () => {};
+  for (const boundary of ["confirm", "fence", "readback"]) {
+    const apiHandoffRoles = new Set();
+    let uploads = 0, failure;
+    const secret = "private provider payload";
+    const stop = name => { if (boundary === name) throw new Error(secret); };
+    try {
+      await orchestrateDelivery({ workers, decision: "deploy", fence: noop, deployStaged: noop,
+        readbackStaged: async worker => {
+          if (worker.role !== "publisher") return;
+          await completeCallerRetirement({ role: worker.role, apiHandoffRoles,
+            retire: async () => ({ snapshot: { activeVersion: retiredCallerVersion } }),
+            confirm: () => stop("confirm"),
+            verify: async () => { stop("fence"); stop("readback"); },
+          });
+        },
+        verifyStaged: noop, deployActive: async () => { uploads++; }, readbackActive: noop,
+        verifyFinal: noop, reconcileDirectories: noop, canaries: noop, recover: noop,
+      });
+    } catch (error) { failure = error; }
+    assert(failure);
+    assert.equal(uploads, 0);
+    assert.deepEqual([...apiHandoffRoles], []);
+    const record = deliveryFailureRecord(failure, { completedRoles: [] });
+    assert.deepEqual(record.retirement, { phase: "postverify", category: "verification-failed", mutationState: "response-accepted" });
+    assert.equal(record.reason, "unexpected-internal-error");
+    assert.equal(JSON.stringify(record).includes(secret), false);
+  }
+});
+
+test("completion does not rebrand a failed retirement or run later barriers", async () => {
+  const { markRetirementFailure } = await import("./production-retirement-diagnostics.mjs");
+  const error = markRetirementFailure(new Error("private transport error"), "patch", "dispatched-outcome-unknown");
+  const unexpected = () => assert.fail("retirement rejection must stop completion");
+  await assert.rejects(() => completeCallerRetirement({ role: "publisher", apiHandoffRoles: new Set(),
+    retire: async () => { throw error; }, confirm: unexpected, verify: unexpected,
+  }), failure => failure === error);
+  assert.deepEqual(deliveryFailureRecord(error, { completedRoles: [] }).retirement,
+    { phase: "patch", category: "verification-failed", mutationState: "dispatched-outcome-unknown" });
 });
 
 test("keeps strict Wrangler arguments outside the explicit API handoff", () => {

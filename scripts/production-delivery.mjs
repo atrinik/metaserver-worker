@@ -1,5 +1,5 @@
 import { createProductionReadPacer, productionReadFailure } from "./production-read-pacing.mjs";
-import { retirementFailureDiagnostic, preserveRetirementFailure } from "./production-retirement-diagnostics.mjs";
+import { markRetirementFailure, retirementFailureDiagnostic, preserveRetirementFailure } from "./production-retirement-diagnostics.mjs";
 import { execFile } from "node:child_process";
 import { createHash } from "node:crypto";
 import { chmod, mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
@@ -1758,12 +1758,44 @@ export async function completeCallerRetirement({
 }) {
   if (!["publisher", "rendezvous"].includes(role))
     fail("API handoff retirement role is invalid");
-  await retire();
-  confirm();
-  await verify();
-  // Secret retirement creates an API-provenance version even when the staged
-  // upload used Wrangler. Admit activation only after all retirement proofs.
-  apiHandoffRoles.add(role);
+  const result = await retire();
+  try {
+    confirm();
+    const fresh = await verify();
+    const retiredVersion = result?.snapshot?.activeVersion;
+    if (typeof retiredVersion !== "string" || !uuidPattern.test(retiredVersion) ||
+        fresh?.versionId !== retiredVersion)
+      fail("API handoff retirement version changed or is missing");
+    const serviceSource = result?.snapshot?.control?.environment?.script?.last_deployed_from;
+    const resourceSource = result?.snapshot?.resources?.script?.last_deployed_from;
+    if (serviceSource !== resourceSource || !["api", "wrangler"].includes(serviceSource))
+      fail("API handoff retirement provenance is invalid");
+    // Retirement may preserve Wrangler provenance. Use the verified new version,
+    // replacing any exception retained from the predecessor before staging.
+    if (serviceSource === "api") apiHandoffRoles.add(role);
+    else apiHandoffRoles.delete(role);
+    return Object.freeze({ role, versionId: retiredVersion, provenance: serviceSource });
+  } catch (error) {
+    throw markRetirementFailure(error, "postverify", "response-accepted");
+  }
+}
+
+export async function verifyCallerActivationHandoff({ role, proof, verify, authorize }) {
+  try {
+    if (!["publisher", "rendezvous"].includes(role) || proof?.role !== role ||
+        typeof proof.versionId !== "string" || !uuidPattern.test(proof.versionId) ||
+        !["api", "wrangler"].includes(proof.provenance))
+      fail("API handoff activation proof is invalid");
+    const active = await verify();
+    if (active?.versionId !== proof.versionId)
+      fail("API handoff activation version changed or is missing");
+    // Keep source authority fresh at the mutation without another resource sweep
+    // after this exact-version readback.
+    await authorize();
+    return proof.provenance === "api";
+  } catch (error) {
+    throw markRetirementFailure(error, "postverify", "response-accepted");
+  }
 }
 
 async function assertBuildLease(
@@ -2512,6 +2544,7 @@ export async function runDelivery({ target = "production", sourceRoot, mode = "d
   let finalReadback = [];
   let coreStaged = false;
   const retirementRecorders = new Map();
+  const retiredCallerHandoffs = new Map();
   let bootstrapEvidenceDirectory;
   if (bootstrap) {
     if (typeof authority.authorize !== "function") fail("bootstrap source handoff authority unavailable");
@@ -2584,12 +2617,12 @@ export async function runDelivery({ target = "production", sourceRoot, mode = "d
         failureEvidence.failedRole = `retirement:${worker.role}`;
         resourceTransition.beginCallerRetirement(worker.role);
         const accountId = configs[0].account_id;
-        await completeCallerRetirement({
+        const handoff = await completeCallerRetirement({
           role: worker.role,
           apiHandoffRoles,
           retire: async () => {
             try {
-              await retireCallerSecrets({
+              return await retireCallerSecrets({
                 role: worker.role, fence, authorize: authority.authorize,
                 read: createCallerRetirementReader({ accountId,
                   token: process.env.ATRINIK_DELIVERY_RESOURCE_READ_TOKEN, role: worker.role, fetcher: deliveryFetch }),
@@ -2611,10 +2644,13 @@ export async function runDelivery({ target = "production", sourceRoot, mode = "d
           confirm: () => resourceTransition.confirmCallerRetired(worker.role),
           verify: async () => {
             await fence();
-            validateReadback(worker, stagedConfigs[index], await readActive(stagedPaths[index]),
+            const active = await readActive(stagedPaths[index]);
+            validateReadback(worker, stagedConfigs[index], active,
               expectedStagedMessages.get(worker.role));
+            return active;
           },
         });
+        retiredCallerHandoffs.set(worker.role, handoff);
       }
     },
     verifyStaged: async () => {
@@ -2639,10 +2675,23 @@ export async function runDelivery({ target = "production", sourceRoot, mode = "d
     },
     deployActive: async (worker, index) => {
       failureEvidence.failedRole = `active:${worker.role}`;
+      const apiHandoff = bootstrap && index > 0
+        ? await verifyCallerActivationHandoff({
+          role: worker.role,
+          proof: retiredCallerHandoffs.get(worker.role),
+          verify: async () => {
+            const active = await readActive(stagedPaths[index]);
+            validateReadback(worker, stagedConfigs[index], active,
+              expectedStagedMessages.get(worker.role));
+            return active;
+          },
+          authorize: () => authority.authorize(),
+        })
+        : apiHandoffRoles.has(worker.role);
       expectedActiveMessages.set(
         worker.role,
         await deployWorker(worker, configPaths[index], sourceSha, plan, {
-          apiHandoff: apiHandoffRoles.has(worker.role),
+          apiHandoff,
         }),
       );
     },
