@@ -1,7 +1,7 @@
 // Copyright (C) 2026 Atrinik contributors
 import { productionReadFailure } from "./production-read-pacing.mjs";
 
-const failures = new WeakMap(), patches = new WeakMap();
+const failures = new WeakMap(), patches = new WeakMap(), observations = new WeakMap();
 const phases = new Set(["initial-fence", "initial-read", "initial-compare", "initial-staged-proof",
   "intent-proof", "post-intent-fence", "current-read", "current-compare", "staged-proof",
   "final-authority", "freshness", "patch", "post-read", "postverify", "post-fence", "receipt-proof"]);
@@ -43,5 +43,26 @@ export function retirementFailureDiagnostic(error) {
 export function preserveRetirementFailure(wrapper, original) {
   const diagnostic = retirementFailureDiagnostic(original);
   if (diagnostic) failures.set(wrapper, Object.freeze(diagnostic));
+  const observation = callerObservationFailureDiagnostic(original);
+  if (observation) observations.set(wrapper, Object.freeze(observation));
   return wrapper;
+}
+
+// Observation failures are separate from retirement transport outcomes.
+export function markCallerObservationFailure(error, phase) {
+  if (!["staged-observation", "activation"].includes(phase)) throw new Error("invalid caller observation phase");
+  const value = object(error) ? error : new Error("caller observation stopped");
+  observations.set(value, Object.freeze({ phase, mutationState: "not-invoked" }));
+  return value;
+}
+export function callerObservationFailureDiagnostic(error) {
+  for (let depth = 0; depth < 4 && object(error); depth++) {
+    const result = observations.get(error);
+    if (result) return { ...result };
+    let descriptor;
+    try { descriptor = Object.getOwnPropertyDescriptor(error, "cause"); } catch { return null; }
+    if (!descriptor || !Object.hasOwn(descriptor, "value")) return null;
+    error = descriptor.value;
+  }
+  return null;
 }

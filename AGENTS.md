@@ -103,11 +103,12 @@
   caller key-ID variables; never describe future resources as already existing.
   Only explicit `productionBootstrap.nativeRateAlreadyProvisioned: true` permits
   a newly observed baseline whose core already owns the sole exact `1008` binding
-  at 16/60. Both callers must still retain the exact legacy secret pair. A caller
+  at 16/60. Each caller must retain the exact legacy secret pair or, only under this opt-in,
+  have zero secrets. An empty caller must have no legacy key IDs. A caller
   may have no key-ID bindings only under this opt-in and with every role-specific
   circuit explicitly disabled; otherwise retain the valid distinct key-ID pair.
   The opt-in binds a new policy/plan and actual predecessor approval, never replays
-  an old intent or skips new staging, core confirmation, or caller retirement.
+  an old intent or skips new staging, core confirmation, or required pair retirement.
   Before upload prove the entire baseline, disabled core, sole active/latest
   versions for governed Workers and ordinary-Worker native-namespace isolation.
   An unrelated Worker may have a newer undeployed version only when independently
@@ -117,16 +118,34 @@
   explicitly records this limited census and dispatch namespaces as unassessed;
   never claim account-wide uniqueness or interpret a forbidden read as absence.
   Stage the new disabled core first, then each new disabled stateless caller
-  while retaining its old secrets. Verify selected code and complete readback
+  with its exact approved baseline secret inventory. Verify selected code and complete readback
   before a fresh, one-use `secrets-bulk` JSON Merge Patch removes that caller's
-  two exact secret names through explicit null values. Reject extra request
-  fields, `version_tags`, annotations and secret substitutions; v2 intents bind
-  the full account endpoint, exact request digests and timestamped predecessor.
+  two exact secret names through explicit null values. New v3 requests include only
+  those deletions and `version_tags` containing the exact staged `workers/tag` and
+  `workers/message`; reject every other field, provider trigger, accessor and secret
+  substitution. The inner-key mapping requires separate authorized provider
+  qualification before production use. The fixed controller-owned
+  `deployment/caller-retirement-provider-qualification.json` must contain a
+  reviewed source attestation of the actual isolated mapping probe, its clean
+  terminal, exact account/contract and evidence/review hashes. Keep qualification
+  null until that evidence is independently reviewed; a local hash or boolean is
+  not proof. No environment/path override exists. Pair-role planning and live
+  preflight stop before artifacts/uploads when unqualified; ordinary and all-empty
+  paths need no retirement qualification. Only the bounded regular-file loader
+  mints the capability independently required by retirement and transport.
+  The document digest changes the approved plan and is bound as
+  `providerQualificationDigest` in new v3 intents. V3 binds the full endpoint,
+  request/body digests and timestamped predecessor. Keep historical v2 pair-only request decoding
+  immutable and read-only. An approved empty role instead requires a dedicated
+  fresh staged observation, with no PATCH, intent, receipt or uncertain-retirement
+  state. Freeze its Wrangler UUID/provenance proof and require the same final
+  exact-version activation guard. Evidence counts are per-role: two encrypted
+  artifacts for a pair retirement, zero for an empty observation. Never infer an
+  empty disposition from a failed PATCH or brand observation failures response-accepted.
   Historical v1 settings intents are read-only evidence, never bulk-delete
   authority. Require unchanged staged source tag/message and provider trigger
-  `secret`; annotation inheritance and that trigger must be proved by live
-  readback before activation. They may remain unknown before the authorized
-  one-use disabled-caller attempt; provider success is not guaranteed. Only service-consistent
+  `secret`; exact retained annotations and that trigger must be proved by live
+  readback before activation. Provider success is not guaranteed. Only service-consistent
   `resources.script.last_deployed_from` Wrangler-to-API provenance may change;
   preserve all other resource metadata exactly.
   Require zero-secret readback before activation. Encrypt mutation intents and

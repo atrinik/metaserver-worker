@@ -1,7 +1,8 @@
 // Copyright (C) 2026 Atrinik contributors
 // Source-only machinery: no provider access occurs on import. The caller supplies
 // selected-source/config/module verification and the complete authority/global fence.
-import { markRetirementFailure, markRetirementPatchFailure } from "./production-retirement-diagnostics.mjs";
+import { markRetirementFailure, markRetirementPatchFailure, markCallerObservationFailure } from "./production-retirement-diagnostics.mjs";
+import { requireCallerRetirementQualification } from "./production-retirement-qualification.mjs";
 import { createHash } from "node:crypto";
 import { lstat, open, readFile } from "node:fs/promises";
 import path from "node:path";
@@ -34,7 +35,7 @@ function bindings(rows) {
   }
   return rows;
 }
-function assertSnapshot(role, value, retired = false) {
+function assertSnapshot(role, value, retired = false, stagedEmpty = false) {
   if (!value || !Number.isFinite(value.capturedAt) || value.name !== workerName(role) || !/^[a-f0-9]{32}$/u.test(value.accountId ?? "") ||
       !uuid.test(value.activeVersion ?? "") || value.latestVersion !== value.activeVersion ||
       !uuid.test(value.deploymentId ?? "") || !value.peers || !value.code ||
@@ -48,7 +49,7 @@ function assertSnapshot(role, value, retired = false) {
   bindings(value.resources?.bindings);
   if (!same(rows, value.resources.bindings)) fail("settings/version binding mismatch");
   const secrets = rows.filter((b) => b.type === "secret_text").map((b) => b.name).sort();
-  if (!same(secrets, retired ? [] : [...callerRetirementSecrets].sort())) fail("exact secret pair required");
+  if (!same(secrets, retired || stagedEmpty ? [] : [...callerRetirementSecrets].sort())) fail("exact secret pair required");
   if (rows.some((b) => callerRetirementSecrets.some((name) => b.name === `${name}_ID`)))
     fail("legacy caller has key IDs; selected stateless caller must be staged first");
   const circuits = role === "publisher" ? ["PUBLISH_ENABLED", "GAME_PUBLISH_ENABLED"] : ["RENDEZVOUS_ENABLED"];
@@ -158,7 +159,9 @@ export function callerRetirementBody(role, snapshot) {
 }
 const mergePatchType = "application/merge-patch+json";
 const exactKeys = (value, keys) => value && typeof value === "object" && !Array.isArray(value) &&
-  Reflect.ownKeys(value).every((key) => typeof key === "string") &&
+  [Object.prototype, null].includes(Object.getPrototypeOf(value)) &&
+  Reflect.ownKeys(value).every((key) => typeof key === "string" &&
+    Object.hasOwn(Object.getOwnPropertyDescriptor(value, key), "value")) &&
   same(Reflect.ownKeys(value).sort(), [...keys].sort()) && Object.keys(value).length === keys.length;
 function retirementRequest(role, accountId) {
   const name = workerName(role);
@@ -185,6 +188,69 @@ function assertV2Intent(role, before, intent) {
     fail("recovery intent does not bind timestamped predecessor and exact request");
   assertRetirementRequest(role, before.accountId, Object.fromEntries(Object.keys(request).map((key) => [key, intent[key]])));
 }
+// v2 request reconstruction above is immutable historical evidence. New writes
+// use v3, binding the selected stage annotations explicitly in version_tags.
+function approvedVersionTags(role, tags) {
+  if (!exactKeys(tags, ["workers/tag", "workers/message"]) ||
+      typeof tags["workers/tag"] !== "string" || !/^[a-f0-9]{40}$/u.test(tags["workers/tag"]) ||
+      typeof tags["workers/message"] !== "string" || tags["workers/message"].length > 1024 ||
+      !new RegExp(`^atrinik-delivery-v1 source=${tags["workers/tag"]} deploy=[a-f0-9]{64} migration=[a-f0-9]{64} horizon=[1-9][0-9]* control=[a-f0-9]{64} role=${role} phase=staged$`, "u")
+        .test(tags["workers/message"])) fail("approved version tags invalid");
+  return { "workers/tag": tags["workers/tag"], "workers/message": tags["workers/message"] };
+}
+export function callerRetirementBodyV3(role, snapshot) {
+  assertSnapshot(role, snapshot);
+  const tags = snapshot.settings.annotations;
+  return { ...callerRetirementBody(role, snapshot), version_tags: approvedVersionTags(role, {
+    "workers/tag": tags["workers/tag"], "workers/message": tags["workers/message"],
+  }) };
+}
+function retirementRequestV3(role, accountId, tags) {
+  const { requestDigest: _requestDigest, ...request } = retirementRequest(role, accountId);
+  request.body = { secrets: { SOURCE_TAG_KEY_CURRENT: null, SOURCE_TAG_KEY_PREVIOUS: null },
+    version_tags: approvedVersionTags(role, tags) };
+  request.bodyDigest = callerRetirementDigest(request.body);
+  return { ...request, requestDigest: callerRetirementDigest(request) };
+}
+function assertRetirementRequestV3(role, accountId, request) {
+  if (!exactKeys(request, Object.keys(retirementRequest(role, accountId))) ||
+      !exactKeys(request.body, ["secrets", "version_tags"]) ||
+      !exactKeys(request.body.secrets, [...callerRetirementSecrets]) ||
+      callerRetirementSecrets.some(name => request.body.secrets[name] !== null))
+    fail("mutation request authority drift");
+  const expected = retirementRequestV3(role, accountId, request.body.version_tags);
+  if (!same(request, expected)) fail("mutation request authority drift");
+  return expected;
+}
+function assertV3Intent(role, before, intent, expectedQualificationDigest =
+  Object.getOwnPropertyDescriptor(intent ?? {}, "providerQualificationDigest")?.value) {
+  if (!sha.test(expectedQualificationDigest ?? "")) fail("recovery provider qualification digest invalid");
+  const request = retirementRequestV3(role, before.accountId, callerRetirementBodyV3(role, before).version_tags);
+  const expected = { schema: "atrinik-production-caller-retirement-v3", ...request,
+    providerQualificationDigest: expectedQualificationDigest, before: structuredClone(before), beforeDigest: callerRetirementDigest(before) };
+  if (!Number.isFinite(before.capturedAt) || !exactKeys(intent, Object.keys(expected)) || !same(intent, expected))
+    fail("recovery intent does not bind timestamped predecessor and exact request");
+  assertRetirementRequestV3(role, before.accountId, Object.fromEntries(Object.keys(request).map(key => [key, intent[key]])));
+}
+
+// A distinct read-only operation for an explicitly approved empty baseline after
+// fresh Wrangler staging. No intent, receipt or retirement transport is accepted.
+export async function observeSecretFreeCaller({ role, read, fence, verifyStaged, now = Date.now }) {
+  try {
+  workerName(role);
+  if ([read, fence, verifyStaged].some(f => typeof f !== "function")) fail("required observation proof missing");
+  await fence();
+  const snapshot = await read();
+  fresh(snapshot, now);
+  assertSnapshot(role, snapshot, false, true);
+  if (await verifyStaged(snapshot, { retired: true }) !== true) fail("secret-free staged proof rejected");
+  await fence();
+  return { snapshot, observation: Object.freeze({ status: "observed-new-disabled-secret-free-caller",
+    role, versionId: snapshot.activeVersion, snapshotDigest: callerRetirementDigest(snapshot),
+    capturedAt: snapshot.capturedAt, retirementArtifacts: 0, mutationState: "not-invoked" }) };
+  } catch (error) { throw markCallerObservationFailure(error, "staged-observation"); }
+}
+
 export function verifyCallerRetirementPost(role, before, after) {
   assertSnapshot(role, before);
   assertSnapshot(role, after, true);
@@ -212,24 +278,25 @@ export function verifyCallerRetirementPost(role, before, after) {
  * Failure after intent is permanent: no retry or rollback is provided here.
  */
 export async function retireCallerSecrets({ role, read, fence, verifyStaged, patch,
-  recordIntent, recordReceipt, authorize, now = Date.now }) {
+  recordIntent, recordReceipt, authorize, qualification, now = Date.now }) {
   workerName(role);
   if ([read, fence, verifyStaged, patch, recordIntent, recordReceipt, authorize].some((f) => typeof f !== "function"))
     fail("required authority or durable recorder missing");
   let phase = "initial-fence", mutationState = "not-invoked";
   try {
+    const providerQualificationDigest = requireCallerRetirementQualification(qualification);
     await fence();
     phase = "initial-read";
     const before = await read();
     phase = "initial-compare";
     fresh(before, now);
     assertSnapshot(role, before);
+    requireCallerRetirementQualification(qualification, before.accountId);
     phase = "initial-staged-proof";
     if (await verifyStaged(before, { retired: false }) !== true) fail("selected staged proof rejected");
-    callerRetirementBody(role, before);
-    const request = retirementRequest(role, before.accountId);
-    const intent = { schema: "atrinik-production-caller-retirement-v2", ...request,
-      before: structuredClone(before), beforeDigest: callerRetirementDigest(before) };
+    const request = retirementRequestV3(role, before.accountId, callerRetirementBodyV3(role, before).version_tags);
+    const intent = { schema: "atrinik-production-caller-retirement-v3", ...request,
+      providerQualificationDigest, before: structuredClone(before), beforeDigest: callerRetirementDigest(before) };
     phase = "intent-proof";
     await recordIntent(structuredClone(intent));
     // Intent is consumed first. Re-read module, latest, bindings and peers, then do
@@ -249,7 +316,7 @@ export async function retireCallerSecrets({ role, read, fence, verifyStaged, pat
     phase = "freshness";
     fresh(current, now);
     phase = "patch";
-    assertV2Intent(role, before, intent);
+    assertV3Intent(role, before, intent, requireCallerRetirementQualification(qualification, before.accountId));
     mutationState = "dispatched-outcome-unknown";
     await patch(structuredClone(request));
     mutationState = "response-accepted";
@@ -273,7 +340,8 @@ export async function retireCallerSecrets({ role, read, fence, verifyStaged, pat
 // recovery terminal is a new document and is not a fabricated original receipt.
 export async function observeCallerRetirement({ role, before, intent, read, fence, verifyStaged, now = Date.now }) {
   assertSnapshot(role, before);
-  if (intent?.schema === "atrinik-production-caller-retirement-v2") assertV2Intent(role, before, intent);
+  if (intent?.schema === "atrinik-production-caller-retirement-v3") assertV3Intent(role, before, intent);
+  else if (intent?.schema === "atrinik-production-caller-retirement-v2") assertV2Intent(role, before, intent);
   else {
     if (intent?.schema !== "atrinik-production-caller-retirement-v1" || intent.role !== role ||
         intent.accountId !== before.accountId || intent.name !== workerName(role) ||
@@ -295,8 +363,9 @@ export async function observeCallerRetirement({ role, before, intent, read, fenc
     intentDigest: callerRetirementDigest(intent), snapshot: after };
 }
 
-export function createCallerRetirementPatch({ accountId, token, role, fetcher = fetch }) {
+export function createCallerRetirementPatch({ accountId, token, role, qualification, fetcher = fetch }) {
   workerName(role);
+  requireCallerRetirementQualification(qualification, accountId);
   if (!/^[a-f0-9]{32}$/u.test(accountId ?? "") || typeof token !== "string" || !token || /\s/u.test(token))
     fail("mutation transport authority invalid");
   let consumed = false;
@@ -304,14 +373,15 @@ export function createCallerRetirementPatch({ accountId, token, role, fetcher = 
     let transportState = "not-dispatched";
     try {
       if (consumed) fail("mutation transport already consumed");
-      assertRetirementRequest(role, accountId, request);
-      // Serialize the fixed validated contract, never caller object hooks.
-      const data = JSON.stringify(retirementRequest(role, accountId).body);
+      requireCallerRetirementQualification(qualification, accountId);
+      const validated = assertRetirementRequestV3(role, accountId, request);
+      // Serialize reconstructed primitives, never caller object hooks.
+      const data = JSON.stringify(validated.body);
       if (Buffer.byteLength(data) > 65536) fail("bulk-secret request exceeds bound");
       consumed = true;
       // Exactly one request, bounded response, no redirect or automatic retry.
       transportState = "dispatched-outcome-unknown";
-      const response = await fetcher(retirementRequest(role, accountId).endpoint, {
+      const response = await fetcher(validated.endpoint, {
         method: "PATCH", headers: { Authorization: `Bearer ${token}`, "Content-Type": mergePatchType }, body: data,
         redirect: "error", signal: AbortSignal.timeout(20000),
       });

@@ -70,14 +70,16 @@ export function validateRateBootstrap(policy, target, { sourceSha, expectedPrede
   if (alreadyProvisioned && provisionedRates !== 1) fail();
   const production = policy.cohorts.find(c => c.environment === "production");
   for (const caller of production.workers.slice(1)) {
-    if (!same([...caller.secrets].sort(), [...legacyCallerSecrets])) fail();
+    const empty = caller.secrets.length === 0;
+    if (!(alreadyProvisioned && empty) && !same([...caller.secrets].sort(), [...legacyCallerSecrets])) fail();
     const keyNames = ["SOURCE_TAG_KEY_CURRENT_ID", "SOURCE_TAG_KEY_PREVIOUS_ID"];
     const keyBindings = caller.variables.filter(v => keyNames.includes(v.binding));
     const keyIds = keyNames
       .map(binding => caller.variables.find(v => v.binding === binding)?.value);
+    if (empty && keyBindings.length !== 0) fail();
     if (alreadyProvisioned && keyBindings.length === 0) {
-      // A previously staged caller has no key-ID variables, but still retains
-      // both secrets until a new, independently proven one-use retirement.
+      // Absence is approved baseline authority, never a runtime fallback after
+      // a failed retirement. Every caller still requires fresh disabled staging.
       const circuits = caller.role === "publisher" ? ["PUBLISH_ENABLED", "GAME_PUBLISH_ENABLED"] : ["RENDEZVOUS_ENABLED"];
       if (circuits.some(binding => caller.variables.find(v => v.binding === binding)?.value !== "disabled")) fail();
     } else if (keyBindings.length !== 2 || keyIds.some(v => !/^[A-Za-z0-9_-]{1,32}$/u.test(v ?? "")) ||
@@ -93,6 +95,17 @@ export function validateRateBootstrap(policy, target, { sourceSha, expectedPrede
   return bootstrap;
 }
 export const legacyCallerSecrets = Object.freeze(["SOURCE_TAG_KEY_CURRENT", "SOURCE_TAG_KEY_PREVIOUS"]);
+// Derive once from the approved policy, not from a post-PATCH observation.
+// Counts describe genuine intent/receipt artifacts; an observation creates none.
+export function bootstrapCallerDispositions(policy, target, authority = {}) {
+  if (!validateRateBootstrap(policy, target, authority)) return Object.freeze({});
+  return Object.freeze(Object.fromEntries(policy.cohorts.find(c => c.environment === target).workers
+    .filter(w => w.role !== "core").map(w => [w.role, Object.freeze({
+      role: w.role, operation: w.secrets.length === 0 ? "observe-secret-free" : "retire-pair",
+      baselineSecrets: Object.freeze([...w.secrets].sort()),
+      retirementArtifacts: w.secrets.length === 0 ? 0 : 2,
+    })])));
+}
 export function bootstrapDesiredWorker(worker, bootstrap) {
   if (!bootstrap) return worker;
   if (worker.name === "atrinik-metaserver") return { ...worker,

@@ -1,3 +1,5 @@
+import { qualifyBootstrapRetirement, retirementQualificationPlanInput } from "./production-delivery.mjs";
+import { fixtureQualification, qualificationDocument } from "./fixtures/retirement-qualification.mjs";
 // Copyright (C) 2026 Atrinik contributors
 import assert from "node:assert/strict";
 import test from "node:test";
@@ -220,7 +222,7 @@ test("target staged circuits may change while origin and non-target plaintext st
 import { createHash } from "node:crypto";
 import { createResourcePolicyFence } from "./delivery-resource-policy.mjs";
 import { productionAccessRate, productionAccessResource, legacyCallerSecrets, validateRateBootstrap,
-  compareBootstrapInventory, projectNativeRates } from "./production-rate-bootstrap.mjs";
+  compareBootstrapInventory, projectNativeRates, bootstrapCallerDispositions } from "./production-rate-bootstrap.mjs";
 function bootstrapFixture() {
   const value = fixture();
   const { policy, observed } = value;
@@ -666,4 +668,72 @@ for (const [name, change] of [
 ]) test(`unrelated version census rejects ${name}`, async () => {
   const fixture = undeployedInventoryFetch({ change });
   await assert.rejects(resourcePolicyReader({ ATRINIK_DELIVERY_RESOURCE_READ_TOKEN: "fixture-only" }, fixture.fetcher).rateInventory(accountId));
+});
+
+for (const emptyRoles of [["publisher"], ["rendezvous"], ["publisher", "rendezvous"]])
+  test(`approved mixed baseline derives exact per-role evidence and never precompletes: ${emptyRoles.join("+")}`, async () => {
+    const x = provisionedBootstrapFixture();
+    for (const role of emptyRoles) {
+      const { worker, live } = stagedBaselineCaller(x, role);
+      worker.secrets = [];
+      live.settings.bindings = live.settings.bindings.filter(v => v.type !== "secret_text");
+    }
+    const disposition = bootstrapCallerDispositions(x.policy, "production", x.options);
+    assert(Object.isFrozen(disposition));
+    for (const role of ["publisher", "rendezvous"]) {
+      assert(Object.isFrozen(disposition[role])); assert(Object.isFrozen(disposition[role].baselineSecrets));
+      assert.equal(disposition[role].operation, emptyRoles.includes(role) ? "observe-secret-free" : "retire-pair");
+      assert.equal(disposition[role].retirementArtifacts, emptyRoles.includes(role) ? 0 : 2);
+    }
+    const gate = x.gate();
+    assert.throws(() => gate.beginCoreUpload()); assert.throws(() => gate.confirmCoreAdded());
+    await gate.fence(); gate.beginCoreUpload(); await gate.fence(); gate.confirmCoreAdded();
+    for (const role of emptyRoles) {
+      assert.throws(() => gate.beginCallerRetirement(role)); assert.throws(() => gate.confirmCallerRetired(role));
+    }
+    for (const role of ["publisher", "rendezvous"].filter(v => !emptyRoles.includes(v))) {
+      gate.beginCallerRetirement(role); x.retire(role); gate.confirmCallerRetired(role); await gate.fence();
+    }
+    const empty = x.observed.get(`atrinik-metaserver-${emptyRoles[0]}`);
+    empty.settings.bindings.push({ name: legacyCallerSecrets[0], type: "secret_text" });
+    await assert.rejects(gate.fence());
+  });
+
+for (const role of ["publisher", "rendezvous"]) test(`empty ${role} policy requires explicit opt-in, zero key IDs and disabled circuits`, async () => {
+  for (const change of [
+    (x, w) => { w.secrets = [legacyCallerSecrets[0]]; },
+    (x, w) => { w.secrets = ["OTHER"]; },
+    (x, w) => { w.variables.push({ binding: "SOURCE_TAG_KEY_CURRENT_ID", value: "old" }); },
+    (x, w) => { w.variables.find(v => v.binding === (role === "publisher" ? "GAME_PUBLISH_ENABLED" : "RENDEZVOUS_ENABLED")).value = "enabled"; },
+    x => { delete x.bootstrap.nativeRateAlreadyProvisioned; },
+  ]) {
+    const x = provisionedBootstrapFixture(), { worker } = stagedBaselineCaller(x, role); worker.secrets = [];
+    change(x, worker); assert.throws(() => bootstrapCallerDispositions(x.policy, "production", x.options));
+  }
+  const x = provisionedBootstrapFixture(), { worker, live, circuits } = stagedBaselineCaller(x, role);
+  worker.secrets = []; live.settings.bindings = live.settings.bindings.filter(v => v.type !== "secret_text");
+  const gate = x.gate(); await gate.fence();
+  live.settings.bindings.find(v => v.name === circuits[0]).text = "enabled";
+  await assert.rejects(gate.fence());
+});
+
+test("pair bootstrap preflight blocks on null qualification and plan binds exact reviewed document", async () => {
+  const x = provisionedBootstrapFixture();
+  await assert.rejects(qualifyBootstrapRetirement(x.policy, "production", accountId), /qualification/u);
+  assert.throws(() => retirementQualificationPlanInput(x.policy, accountId, null), /qualification/u);
+  const first = await fixtureQualification({ accountId });
+  const document = qualificationDocument(accountId); document.qualification.review.recordSha256 = "7".repeat(64);
+  const second = await fixtureQualification({ accountId, document });
+  assert.deepEqual(retirementQualificationPlanInput(x.policy, accountId, first), { providerQualificationDigest: first.digest });
+  assert.notDeepEqual(retirementQualificationPlanInput(x.policy, accountId, first), retirementQualificationPlanInput(x.policy, accountId, second));
+  assert.throws(() => retirementQualificationPlanInput(x.policy, "f".repeat(32), first), /qualification/u);
+  for (const role of ["publisher", "rendezvous"]) {
+    const { worker, live } = stagedBaselineCaller(x, role);
+    worker.secrets = []; live.settings.bindings = live.settings.bindings.filter(v => v.type !== "secret_text");
+  }
+  assert.equal(await qualifyBootstrapRetirement(x.policy, "production", accountId), null);
+  assert.deepEqual(retirementQualificationPlanInput(x.policy, accountId, null), {});
+  delete x.policy.productionBootstrap;
+  assert.equal(await qualifyBootstrapRetirement(x.policy, "production", accountId), null);
+  assert.deepEqual(retirementQualificationPlanInput(x.policy, accountId, null), {});
 });
