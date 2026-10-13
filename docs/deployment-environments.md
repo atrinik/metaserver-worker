@@ -529,7 +529,7 @@ time, so the observer validates its historical digest binding and then stops wit
 `historical intent lacks authenticated observation timestamp`. A caller-supplied
 time cannot fill that gap. Owner artifact inspection remains read-only; it cannot
 prove the original transition window. Do not invent or backdate that timestamp,
-replay an old intent or create a retrospective original receipt. The v2 decoder retains its original exact pair-only body, full endpoint and
+replay an old intent or create a retrospective original receipt. The historical observer authenticates any newly retained `versionAnnotations` against settings before removing only that reader-added projection from its own/peer comparison. It preserves original intent bytes/digests and returns the actual unmodified observation; all other field drift still fails. The v2 decoder retains its original exact pair-only body, full endpoint and
 timestamped predecessor digest interpretation. It remains read-only; a v2 request
 cannot dispatch through the v4 writer. A successful v2 or v3
 read-only terminal is separately labeled observational recovery and creates no

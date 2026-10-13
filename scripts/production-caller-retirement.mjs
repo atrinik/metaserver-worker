@@ -431,6 +431,28 @@ export async function retireCallerSecrets({ role, read, fence, verifyStaged, pat
   } catch (error) { throw markRetirementFailure(error, phase, mutationState); }
 }
 
+// The v4 reader retains a projection which historical v2/v3 snapshots never
+// contained. Authenticate that added projection against the same raw settings
+// before removing only this known derived field for the historical comparator.
+// Original intent bytes/digests and every other peer/own field remain untouched.
+function historicalObservationSnapshot(before, after) {
+  const projected = structuredClone(after);
+  const project = (old, current) => {
+    if (old && !Object.hasOwn(old, "versionAnnotations") && Object.hasOwn(current, "versionAnnotations")) {
+      if (!current.settings?.annotations || !current.versionAnnotations ||
+          !same(current.settings.annotations, current.versionAnnotations))
+        fail("historical observation version annotations mismatch");
+      delete current.versionAnnotations;
+    }
+  };
+  project(before, projected);
+  for (const peer of projected.peers?.workers ?? []) {
+    const old = before.peers?.workers?.find(value => value.name === peer.name);
+    project(old, peer);
+  }
+  return projected;
+}
+
 // An ambiguous prior dispatch may only be OBSERVED, never replayed. A successful
 // recovery terminal is a new document and is not a fabricated original receipt.
 export async function observeCallerRetirement({ role, before, intent, read, fence, verifyStaged, now = Date.now }) {
@@ -453,7 +475,7 @@ export async function observeCallerRetirement({ role, before, intent, read, fenc
   const after = await read();
   fresh(after, now);
   if (intent.schema === "atrinik-production-caller-retirement-v4") verifyCallerRetirementPostV4(role, before, after);
-  else verifyCallerRetirementPost(role, before, after);
+  else verifyCallerRetirementPost(role, before, historicalObservationSnapshot(before, after));
   if (await verifyStaged(after, { retired: true }) !== true) fail("recovery staged proof rejected");
   await fence();
   return { status: "observed-retirement-recovery-only", originalReceiptCreated: false,

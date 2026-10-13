@@ -866,3 +866,41 @@ test("complete cohort guard permits only a recorded verified upload and preserve
   assert.throws(() => guard.check(result.snapshot)); // no rollback/re-adoption
   assert.throws(() => guard.recordUpload({ name: publisher.name, versionId: newId, validate: () => true }));
 });
+
+
+test("historical v2/v3 observations accept authenticated current-reader projections without changing old digests", async () => {
+  for (const schema of ["v2", "v3"]) {
+    const { createCallerRetirementReader } = await import("./production-caller-retirement.mjs");
+    const transport = readerFixture();
+    const currentReaderSnapshot = await createCallerRetirementReader({ accountId, token: "fixture", role: "publisher",
+      fetcher: transport.fetcher, now: () => 1000 })();
+    const before = structuredClone(currentReaderSnapshot); delete before.versionAnnotations;
+    for (const peer of before.peers.workers) delete peer.versionAnnotations;
+    const after = retired(currentReaderSnapshot);
+    after.settings.annotations = { ...before.settings.annotations, "workers/triggered_by": "secret" };
+    after.versionAnnotations = structuredClone(after.settings.annotations);
+    assert.equal(after.peers.workers.length, 5);
+    assert(after.peers.workers.every(peer => peer.versionAnnotations));
+    const body = schema === "v2" ? callerRetirementBody("publisher", before) : callerRetirementBodyV3("publisher", before);
+    const request = { role: "publisher", accountId, name: before.name, method: "PATCH",
+      endpoint: `https://api.cloudflare.com/client/v4/accounts/${accountId}/workers/scripts/${before.name}/secrets-bulk`,
+      contentType: "application/merge-patch+json", body, bodyDigest: callerRetirementDigest(body) };
+    request.requestDigest = callerRetirementDigest(request);
+    const intent = { schema: `atrinik-production-caller-retirement-${schema}`, ...request,
+      ...(schema === "v3" ? { providerQualificationDigest: hash } : {}), before, beforeDigest: callerRetirementDigest(before) };
+    const original = callerRetirementDigest(intent);
+    const args = { role: "publisher", before, intent, read: async () => after,
+      fence: async () => {}, verifyStaged: async () => true, now: () => 1000 };
+    const result = await observeCallerRetirement(args);
+    assert.equal(result.originalReceiptCreated, false);
+    assert.equal(result.snapshot, after);
+    assert.deepEqual(result.snapshot.versionAnnotations, after.settings.annotations);
+    assert.equal(callerRetirementDigest(intent), original);
+    for (const change of [
+      s => { s.versionAnnotations["workers/tag"] = "d".repeat(40); },
+      s => { s.peers.workers[0].versionAnnotations["workers/message"] = "changed"; },
+      s => { s.peers.workers[0].metadata = "changed"; },
+      s => { s.unexpected = true; },
+    ]) { const invalid = structuredClone(after); change(invalid); await assert.rejects(observeCallerRetirement({ ...args, read: async () => invalid })); }
+  }
+});
