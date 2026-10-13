@@ -6,7 +6,7 @@ import { createHash } from "node:crypto";
 import { constants } from "node:fs";
 import fs from "node:fs/promises";
 
-const schema = "atrinik-caller-retirement-provider-qualification-v1";
+const schema = "atrinik-caller-retirement-provider-qualification-v2";
 const documentUrl = new URL("../deployment/caller-retirement-provider-qualification.json", import.meta.url);
 const proofs = new WeakMap();
 const sha = /^[a-f0-9]{64}$/u;
@@ -21,10 +21,10 @@ const keys = (value, expected) => {
 };
 const contract = Object.freeze({ method: "PATCH", contentType: "application/merge-patch+json",
   endpoint: "https://api.cloudflare.com/client/v4/accounts/{account_id}/workers/scripts/{script_name}/secrets-bulk",
-  bodyKeys: ["secrets", "version_tags"], secretNames: ["SOURCE_TAG_KEY_CURRENT", "SOURCE_TAG_KEY_PREVIOUS"],
-  secretOperation: "null-delete", versionTagKeys: ["workers/tag", "workers/message"] });
-const measurementNames = ["secretPairRemoved", "versionSecretPairRemoved", "tagPreserved", "messagePreserved",
-  "versionTagPreserved", "versionMessagePreserved", "settingsTriggerSecret", "versionTriggerSecret", "newVersion", "codeUnchanged"];
+  bodyKeys: ["secrets"], secretNames: ["SOURCE_TAG_KEY_CURRENT", "SOURCE_TAG_KEY_PREVIOUS"],
+  secretOperation: "null-delete", postAnnotations: { "workers/triggered_by": "secret" } });
+const measurementNames = ["secretPairRemoved", "versionSecretPairRemoved", "settingsAnnotationsExact", "versionAnnotationsExact",
+  "newVersion", "soleDeployment", "codeUnchanged", "nonsecretBindingsUnchanged", "controlUnchanged"];
 const evidenceNames = ["probeControllerSha256", "requestSha256", "beforeSha256", "afterSha256", "resultSha256"];
 function timestamp(value) {
   if (typeof value !== "string" || !/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/u.test(value) ||
@@ -44,9 +44,9 @@ export function parseCallerRetirementQualification(bytes, { accountId, now = Dat
   const q = document.qualification;
   keys(q, ["accountIdSha256", "contract", "measuredAt", "result", "evidence", "review"]);
   if (q.accountIdSha256 !== hash(accountId) || !same(q.contract, contract)) fail();
-  keys(q.result, ["status", "scope", "measurement", "mappingObserved", "productionAuthorized", "productionContractSatisfied"]);
+  keys(q.result, ["status", "scope", "measurement", "contractObserved", "productionAuthorized", "productionContractSatisfied"]);
   if (q.result.status !== "canary-measured-and-absent" || q.result.scope !== "isolated" ||
-      q.result.mappingObserved !== true || q.result.productionAuthorized !== false ||
+      q.result.contractObserved !== true || q.result.productionAuthorized !== false ||
       q.result.productionContractSatisfied !== false) fail();
   keys(q.result.measurement, measurementNames);
   if (measurementNames.some(name => q.result.measurement[name] !== true)) fail();
