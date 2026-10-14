@@ -2,10 +2,12 @@ import { readFile } from "node:fs/promises";
 import { resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { developmentWorkerNames, promotionEnvironmentNames } from "./delivery-targets.mjs";
-import { assertDirectoryBuildContext } from "./production-delivery.mjs";
+import { assertDirectoryBuildContext, DIRECTORY_RECONCILIATION_BUDGET_SECONDS } from "./production-delivery.mjs";
 import { markDirectoryFailure, directoryFailureLine } from "./directory-reconciliation-diagnostics.mjs";
 
-const STAGE_TIMEOUT_MS = 90_000;
+// The deadline covers all three paced authority checks plus proxy startup and
+// the request. Leave the parent's budget enough room for startup and cleanup.
+const STAGE_TIMEOUT_MS = (DIRECTORY_RECONCILIATION_BUDGET_SECONDS - 30) * 1_000;
 
 // This helper is only entered by the production parent after its live fences.
 // Its provider-backed observer receives the existing lease token separately from
