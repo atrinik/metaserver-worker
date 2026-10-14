@@ -37,6 +37,7 @@ import {
   deliveryDecision,
   directoryReconciliationProxyConfiguration,
   validateDirectoryReconciliationProof,
+  DIRECTORY_RECONCILIATION_BUDGET_SECONDS,
   deployStagedWithRecoveryIntent,
   executeOrderedStages,
   executeTrustedWrangler,
@@ -2046,7 +2047,10 @@ test("directory proof binds fresh complete aliases to the selected environment",
     const value = structuredClone(proof); change(value);
     assert.throws(() => validateDirectoryReconciliationProof(value, core, now, now), /directory reconciliation/u);
   }
-  assert.throws(() => validateDirectoryReconciliationProof(proof, core, now - 121, now), /freshness/u);
+  assert.equal(validateDirectoryReconciliationProof(directoryProof(core, now), core,
+    now - DIRECTORY_RECONCILIATION_BUDGET_SECONDS, now).schema, "directory-reconciliation-v1");
+  assert.throws(() => validateDirectoryReconciliationProof(proof, core,
+    now - DIRECTORY_RECONCILIATION_BUDGET_SECONDS - 1, now), /freshness/u);
 });
 
 test("first rollout builds generation-zero profiles before static canaries without cron", async () => {

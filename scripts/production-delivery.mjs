@@ -21,6 +21,10 @@ import { developmentWorkerNames, promotionEnvironmentNames, targetContract, deve
 
 const execFileAsync = promisify(execFile);
 const controllerRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
+// Production reads are paced, so each fresh authority check in the private
+// reconciliation child can take tens of seconds. One budget bounds the child
+// process, its proxy deadline and the freshness of the proof it returns.
+export const DIRECTORY_RECONCILIATION_BUDGET_SECONDS = 450;
 let root = controllerRoot;
 let contractPath = resolve(controllerRoot, "deployment/workers-builds-production.json");
 let deliveryRunning = false;
@@ -2492,7 +2496,7 @@ export function validateDirectoryReconciliationProof(proof, core, startedAt, now
     "directory reconciliation proof");
   if (proof.schema !== "directory-reconciliation-v1" ||
       !Number.isSafeInteger(startedAt) || !Number.isSafeInteger(now) ||
-      now < startedAt || now - startedAt > 120 ||
+      now < startedAt || now - startedAt > DIRECTORY_RECONCILIATION_BUDGET_SECONDS ||
       !Number.isSafeInteger(proof.completedAt) ||
       proof.completedAt < startedAt || proof.completedAt > now)
     fail("directory reconciliation proof freshness drift");
@@ -2530,7 +2534,8 @@ async function reconcileProductionDirectories(core, directory) {
   const startedAt = Math.floor(Date.now() / 1_000);
   const { stdout } = await command(process.execPath, [
     resolve(controllerRoot, "scripts/production-directory-reconciliation.mjs"), configPath,
-  ], { environmentPolicy: "directory-reconciliation", timeout: 120_000, maxBuffer: 8_192 });
+  ], { environmentPolicy: "directory-reconciliation",
+    timeout: DIRECTORY_RECONCILIATION_BUDGET_SECONDS * 1_000, maxBuffer: 8_192 });
   let proof;
   try { proof = JSON.parse(stdout); } catch {
     fail("directory reconciliation returned an invalid proof");
@@ -2621,7 +2626,7 @@ export async function runDelivery({ target = "production", sourceRoot, mode = "d
         mutation: false,
         deploymentOrder: contract.invariants.deploymentOrder,
         directoryReconciliation: {
-          entrypoint: "DirectoryReconciliation", timeoutSeconds: 120,
+          entrypoint: "DirectoryReconciliation", timeoutSeconds: DIRECTORY_RECONCILIATION_BUDGET_SECONDS,
           profiles: ["classic-v3", "game-v2"],
         },
         productionCanaries: contract.productionCanaries.map(({ name }) => name),
