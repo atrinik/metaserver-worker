@@ -2544,9 +2544,19 @@ async function reconcileProductionDirectories(core, directory) {
     proof, core, startedAt, Math.floor(Date.now() / 1_000));
 }
 
+// Edge policy admits only root aliases on public directory hostnames, so a
+// profile still staged under a canary prefix cannot be read publicly. Its
+// complete alias cohort is proven by private directory reconciliation instead.
+export function selectProductionCanaries(contract, configs) {
+  return contract.productionCanaries.flatMap((canary) => {
+    const resolved = resolveProductionCanaryCommand(canary, configs);
+    const prefix = resolved.indexOf("--alias-prefix");
+    return prefix !== -1 && resolved[prefix + 1] !== "" ? [] : [{ name: canary.name, command: resolved }];
+  });
+}
+
 async function runProductionCanaries(contract, configs) {
-  for (const canary of contract.productionCanaries) {
-    const [program, ...args] = resolveProductionCanaryCommand(canary, configs);
+  for (const { command: [program, ...args] } of selectProductionCanaries(contract, configs)) {
     await command(program, [resolve(controllerRoot, args[0]), ...args.slice(1)], { timeout: 120_000 });
   }
 }
@@ -3106,7 +3116,7 @@ export async function runDelivery({ target = "production", sourceRoot, mode = "d
     ...(decision === "deploy"
       ? { order: contract.invariants.deploymentOrder }
       : {}),
-    canaries: contract.productionCanaries.map(({ name }) => name),
+    canaries: selectProductionCanaries(contract, configs).map(({ name }) => name),
   };
   console.log(JSON.stringify(result));
   return { ...result, privateEvidencePath };
