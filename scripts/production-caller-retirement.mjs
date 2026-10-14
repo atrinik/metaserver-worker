@@ -312,19 +312,26 @@ export function requireRetiredCallerProof({ proof, role, scope, selectedIdentity
 // A distinct read-only operation for an explicitly approved empty baseline after
 // fresh Wrangler staging. No intent, receipt or retirement transport is accepted.
 export async function observeSecretFreeCaller({ role, read, fence, verifyStaged, now = Date.now }) {
+  let stage = "observation-proof";
   try {
   workerName(role);
   if ([read, fence, verifyStaged].some(f => typeof f !== "function")) fail("required observation proof missing");
+  stage = "initial-fence";
   await fence();
+  stage = "read";
   const snapshot = await read();
+  stage = "freshness";
   fresh(snapshot, now);
+  stage = "snapshot-proof";
   assertSnapshot(role, snapshot, false, true);
+  stage = "staged-proof";
   if (await verifyStaged(snapshot, { retired: true }) !== true) fail("secret-free staged proof rejected");
+  stage = "post-fence";
   await fence();
   return { snapshot, observation: Object.freeze({ status: "observed-new-disabled-secret-free-caller",
     role, versionId: snapshot.activeVersion, snapshotDigest: callerRetirementDigest(snapshot),
     capturedAt: snapshot.capturedAt, retirementArtifacts: 0, mutationState: "not-invoked" }) };
-  } catch (error) { throw markCallerObservationFailure(error, "staged-observation"); }
+  } catch (error) { throw markCallerObservationFailure(error, "staged-observation", stage); }
 }
 
 export function verifyCallerRetirementPost(role, before, after) {

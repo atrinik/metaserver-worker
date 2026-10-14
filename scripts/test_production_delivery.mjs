@@ -1,5 +1,10 @@
 import { retirementFixture, retirementAfter } from "./fixtures/caller-retirement.mjs";
-import { callerRetirementDigest } from "./production-caller-retirement.mjs";
+import { callerRetirementDigest, createCallerRetirementReader, observeSecretFreeCaller } from "./production-caller-retirement.mjs";
+import { retirementBaseline } from "./fixtures/caller-retirement.mjs";
+import { createRetirementCohortGuard } from "./production-retirement-cohort.mjs";
+import { createProductionReadPacer } from "./production-read-pacing.mjs";
+import { virtualClock } from "./production-test-clock.mjs";
+import { callerObservationFailureDiagnostic, retirementFailureDiagnostic } from "./production-retirement-diagnostics.mjs";
 import { fixtureQualification } from "./fixtures/retirement-qualification.mjs";
 const retirementQualification = await fixtureQualification();
 import assert from "node:assert/strict";
@@ -2676,6 +2681,152 @@ test("caller retirement requires exact selected disabled bundle, annotation and 
   retired.snapshot.resources.bindings = retired.snapshot.resources.bindings.filter(v => v.type !== "secret_text");
   assert.equal(verifyStagedCallerRetirement(retired), true);
 });
+
+// Exercise the actual transport projection and staged callback together. Earlier
+// reader tests supplied publisher settings for every peer and mocked this proof.
+function secretFreeObservationFixture(role) {
+  const production = productionConfigs().map((config, index) =>
+    disabledCircuitConfiguration(config, contract.workers[index].role));
+  const configurations = [...production, ...production.map(developmentFixture)];
+  const sourceSha = "c".repeat(40), module = "export default{}";
+  const bundleDigest = createHash("sha256").update(module).digest("hex");
+  const rows = configurations.map((config, index) => {
+    const worker = contract.workers[index % 3], value = retirementBaseline(worker.role === "core" ? "publisher" : worker.role);
+    const uuid = `00000000-0000-0000-0000-${String(index + 1).padStart(12, "0")}`;
+    value.name = config.name;
+    value.tag = String(index + 1).repeat(32);
+    value.activeVersion = value.latestVersion = value.deploymentId = uuid;
+    value.settings.annotations["workers/message"] = `atrinik-delivery-v1 source=${sourceSha} deploy=${"b".repeat(64)} migration=${"b".repeat(64)} horizon=16 control=${"b".repeat(64)} role=${worker.role} phase=staged`;
+    value.versionAnnotations = structuredClone(value.settings.annotations);
+    const bindings = [
+      ...Object.entries(config.vars).map(([name, text]) => ({ name, type: "plain_text", text })),
+      ...(config.secrets?.required ?? []).map(name => ({ name, type: "secret_text" })),
+      ...(config.services ?? []).map(({ binding: name, ...rest }) => ({ name, type: "service", ...rest })),
+      ...(config.ratelimits ?? []).map(rest => ({ type: "ratelimit", ...rest })),
+      ...(config.d1_databases ?? []).map(({ binding: name, database_id: id }) => ({ name, type: "d1", id })),
+      ...(config.r2_buckets ?? []).map(({ binding: name, bucket_name }) => ({ name, type: "r2_bucket", bucket_name })),
+      ...(config.analytics_engine_datasets ?? []).map(({ binding: name, dataset }) => ({ name, type: "analytics_engine", dataset })),
+      ...(config.durable_objects?.bindings ?? []).map(({ name, class_name }) => ({ name, type: "durable_object_namespace", class_name })),
+    ];
+    value.settings.bindings = bindings;
+    value.settings.compatibility_date = config.compatibility_date;
+    value.resources.bindings = structuredClone(bindings);
+    value.resources.script_runtime = { compatibility_date: config.compatibility_date,
+      compatibility_flags: config.compatibility_flags, exports: config.exports ?? {} };
+    const environment = value.control.environment;
+    environment.script_tag = environment.script.tag = value.tag;
+    environment.script.id = config.name;
+    environment.script.compatibility_date = config.compatibility_date;
+    environment.script.compatibility_flags = config.compatibility_flags;
+    environment.script.observability = config.observability;
+    value.control.subdomain = { enabled: false, previews_enabled: false };
+    value.control.schedules = { schedules: (config.triggers?.crons ?? []).map(cron => ({ cron })) };
+    value.control.domains = (config.routes ?? []).filter(row => row.custom_domain).map(({ pattern: hostname }, i) =>
+      ({ id: `${index}-${i}`, hostname, enabled: true, previews_enabled: false, zone_id: "b".repeat(32), zone_name: "atrinik.org" }));
+    delete value.peers; delete value.capturedAt; delete value.accountId;
+    return value;
+  });
+  const target = rows.find(row => row.name === `atrinik-metaserver-${role}`);
+  const index = role === "publisher" ? 1 : 2;
+  const fetcher = async (url, options) => {
+    assert.equal(options.method, "GET");
+    assert.equal(options.headers.Authorization, "Bearer fixture-resource-read");
+    const parsed = new URL(url), suffix = parsed.pathname.split(`/accounts/${production[0].account_id}`)[1];
+    let result;
+    if (suffix === "/workers/scripts") result = rows.map(({ name: id, tag }) => ({ id, tag }));
+    else if (suffix.endsWith("/namespaces")) return Response.json({ success: true, result: [],
+      result_info: { page: 1, per_page: 1000, total_count: 0, count: 0 } });
+    else {
+      const name = suffix === "/workers/domains" ? parsed.searchParams.get("service") : suffix.split("/")[3];
+      const row = rows.find(row => row.name === name);
+      assert.ok(row, suffix);
+      if (suffix.endsWith("/content/v2")) {
+        const form = new FormData();
+        form.append("index.js", new Blob([module], { type: "application/javascript+module" }), "index.js");
+        return new Response(form, { headers: { etag: `"${row.code.etag}"` } });
+      }
+      if (suffix.endsWith("/settings")) result = row.settings;
+      else if (suffix.endsWith("/deployments")) result = { deployments: [{ id: row.deploymentId,
+        versions: [{ version_id: row.activeVersion, percentage: 100 }] }] };
+      else if (suffix.endsWith("/versions")) result = { items: [{ id: row.activeVersion }] };
+      else if (suffix.endsWith(`/versions/${row.activeVersion}`)) result = { id: row.activeVersion,
+        annotations: row.versionAnnotations, resources: row.resources };
+      else if (suffix.endsWith("/routes")) result = row.control.routes;
+      else if (suffix.endsWith("/domains")) result = row.control.domains;
+      else if (suffix.endsWith("/schedules")) result = row.control.schedules;
+      else if (suffix.endsWith("/subdomain")) result = row.control.subdomain;
+      else if (suffix.endsWith("/environments/production")) result = row.control.environment;
+      else assert.fail(suffix);
+    }
+    return Response.json({ success: true, result });
+  };
+  return { rows, target, fetcher, accountId: production[0].account_id,
+    worker: contract.workers[index], config: production[index], sourceSha, bundleDigest,
+    expectedMessage: target.settings.annotations["workers/message"] };
+}
+
+for (const role of ["publisher", "rendezvous"]) test(`actual paced ${role} observation composes full reader and staged proof`, async t => {
+  const fixture = secretFreeObservationFixture(role), clock = virtualClock();
+  t.mock.method(AbortSignal, "timeout", ms => clock.timeout(ms));
+  const now = () => 1000 + clock.now(), events = [];
+  const fetcher = createProductionReadPacer({ ...clock, fetcher: fixture.fetcher });
+  const read = createCallerRetirementReader({ accountId: fixture.accountId, token: "fixture-resource-read", role, fetcher, now });
+  const cohort = createRetirementCohortGuard({ accountId: fixture.accountId, scope: Object.freeze({}) });
+  const result = await clock.run(() => observeSecretFreeCaller({ role, read, now,
+    fence: async () => { events.push("fence"); await clock.wait(15000); },
+    verifyStaged: (snapshot, { retired, predecessor }) => {
+      events.push("staged-proof");
+      cohort.check(snapshot);
+      assert.equal(snapshot.activeVersion, fixture.target.activeVersion);
+      return verifyStagedCallerRetirement({ ...fixture, snapshot, retired, predecessor, expectedZoneId: "b".repeat(32) });
+    } }));
+  assert.equal(result.observation.status, "observed-new-disabled-secret-free-caller");
+  assert.equal(result.snapshot.peers.workers.length, 5);
+  assert.equal(result.observation.retirementArtifacts, 0);
+  assert.deepEqual(events, ["fence", "staged-proof", "fence"]);
+});
+
+for (const role of ["publisher", "rendezvous"])
+  test(`actual ${role} observation rejects reader, snapshot and selected-proof drift`, async t => {
+    const cases = [
+      ["source", fixture => { fixture.target.settings.annotations["workers/tag"] = "d".repeat(40);
+        fixture.target.versionAnnotations = structuredClone(fixture.target.settings.annotations); }],
+      ["setting/version mismatch", fixture => { fixture.target.versionAnnotations["workers/message"] += " changed"; }],
+      ["service timestamp", fixture => { fixture.target.control.environment.script.modified_on = "2999-01-01T00:00:00.000Z"; }],
+      ["configuration", fixture => { for (const field of ["settings", "resources"])
+        fixture.target[field].bindings.find(row => row.name === "ROUTE_DISABLED_RETRY_SECONDS").text = "999"; }],
+      ["control", fixture => { fixture.target.control.subdomain.enabled = true; }],
+      ["bundle", fixture => { fixture.bundleDigest = "f".repeat(64); }],
+      ["uploaded version", fixture => { fixture.target.activeVersion = fixture.target.latestVersion = "99999999-9999-9999-9999-999999999999"; }],
+      ["partial graph", fixture => { fixture.rows.pop(); }],
+    ];
+    for (const [name, change] of cases) {
+      const fixture = secretFreeObservationFixture(role), uploadedVersion = fixture.target.activeVersion;
+      change(fixture);
+      const clock = virtualClock();
+      t.mock.method(AbortSignal, "timeout", ms => clock.timeout(ms));
+      const now = () => 1000 + clock.now(), events = [];
+      const fetcher = createProductionReadPacer({ ...clock, fetcher: fixture.fetcher });
+      const read = createCallerRetirementReader({ accountId: fixture.accountId, token: "fixture-resource-read", role, fetcher, now });
+      const cohort = createRetirementCohortGuard({ accountId: fixture.accountId, scope: Object.freeze({}) });
+      await assert.rejects(clock.run(() => observeSecretFreeCaller({ role, read, now,
+        fence: async () => events.push("fence"),
+        verifyStaged: (snapshot, { retired, predecessor }) => {
+          cohort.check(snapshot);
+          assert.equal(snapshot.activeVersion, uploadedVersion);
+          return verifyStagedCallerRetirement({ ...fixture, snapshot, retired, predecessor, expectedZoneId: "b".repeat(32) });
+        } })), error => {
+        const stage = ["setting/version mismatch", "partial graph"].includes(name) ? "read" :
+          ["source", "service timestamp"].includes(name) ? "snapshot-proof" : "staged-proof";
+        assert.deepEqual(callerObservationFailureDiagnostic(error), { phase: "staged-observation", stage,
+          category: "verification-failed", mutationState: "not-invoked" }, name);
+        assert.equal(retirementFailureDiagnostic(error), null, name);
+        return true;
+      });
+      assert.deepEqual(events, ["fence"], name);
+      t.mock.restoreAll();
+    }
+  });
 
 test("retirement peer upload permits only the closed selected caller delta", async () => {
   for (const index of [1, 2]) {

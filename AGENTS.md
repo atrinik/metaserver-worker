@@ -91,8 +91,9 @@
   mutation. Wrangler and other processes/clients are outside this local budget;
   headroom is not proof of global quota safety. Private reconciliation uses its
   own shared scheduler and retains its existing command timeout.
-  Retirement failures expose only branded closed phase/category/transport
-  fields alongside the existing reason. Never reflect provider text, error
+  Retirement and caller-observation failures expose only branded closed
+  phase/category/transport fields alongside the existing reason; observations
+  also retain the first failing stage through completion wrappers. Never reflect provider text, error
   getters, private identities, URLs, headers or credentials. A received PATCH
   response is not proof of the final state; consumed intents remain non-replayable.
 - The optional private `productionBootstrap` record authorizes only the reviewed
