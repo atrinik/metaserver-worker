@@ -606,23 +606,39 @@ export function createCallerRetirementReader({ accountId, token, role, fetcher =
   const name = workerName(role);
   if (!/^[a-f0-9]{32}$/u.test(accountId ?? "") || typeof token !== "string" || !token || /\s/u.test(token))
     fail("read transport authority invalid");
-  const get = async (suffix, raw = false) => {
-    const response = await fetcher(`https://api.cloudflare.com/client/v4/accounts/${accountId}${suffix}`, {
-      method: "GET", headers: { Authorization: `Bearer ${token}` }, redirect: "error", signal: AbortSignal.timeout(20000),
+  const get = (scope, suffix, raw = false) => {
+    if (scope.failed) throw scope.error;
+    const request = (async () => {
+      await scope.admit();
+      try {
+        if (scope.failed) throw scope.error;
+        const response = await fetcher(`https://api.cloudflare.com/client/v4/accounts/${accountId}${suffix}`, {
+          method: "GET", headers: { Authorization: `Bearer ${token}` }, redirect: "error", signal: AbortSignal.any([AbortSignal.timeout(20000), scope.controller.signal]),
+        });
+        const bytes = await responseBytes(response);
+        if (!response.ok) fail("provider read rejected");
+        if (raw) return { bytes, type: response.headers.get("content-type"), etag: response.headers.get("etag") };
+        let envelope;
+        try { envelope = JSON.parse(bytes); } catch { fail("read envelope invalid"); }
+        if (envelope.success !== true || envelope.errors?.length) fail("provider read unsuccessful");
+        return envelope;
+      } catch (error) {
+        scope.stop(error);
+        throw error;
+      } finally { scope.release(); }
+    })();
+    scope.pending.add(request);
+    void request.then(() => scope.pending.delete(request), error => {
+      scope.stop(error);
+      scope.pending.delete(request);
     });
-    const bytes = await responseBytes(response);
-    if (!response.ok) fail("provider read rejected");
-    if (raw) return { bytes, type: response.headers.get("content-type"), etag: response.headers.get("etag") };
-    let envelope;
-    try { envelope = JSON.parse(bytes); } catch { fail("read envelope invalid"); }
-    if (envelope.success !== true || envelope.errors?.length) fail("provider read unsuccessful");
-    return envelope;
+    return request;
   };
-  const namespaces = async () => {
+  const namespaces = async (scope) => {
     let total, pages;
     const all = [];
     for (let page = 1; page <= 100; page++) {
-      const e = await get(`/workers/durable_objects/namespaces?page=${page}&per_page=1000`);
+      const e = await get(scope, `/workers/durable_objects/namespaces?page=${page}&per_page=1000`);
       const rows = uniqueRows(e.result, "id"), i = e.result_info;
       const countPages = i?.total_pages ?? (i?.per_page === 1000 && Number.isSafeInteger(i.total_count) ? Math.max(1, Math.ceil(i.total_count / 1000)) : NaN);
       if (!i || i.page !== page || i.count !== rows.length || rows.length > 1000 ||
@@ -638,43 +654,88 @@ export function createCallerRetirementReader({ accountId, token, role, fetcher =
     }
     fail("namespace page bound");
   };
-  const capture = async () => {
-    const scripts = completeRows(await get("/workers/scripts"));
-    const globalNamespaces = await namespaces();
-    const workers = await Promise.all(cohortNames.map(async (worker) => {
-      const identity = scripts.find((s) => s.id === worker);
-      if (!identity || !/^[a-f0-9]{32}$/u.test(identity.tag ?? "") || identity.deleted_on != null)
-        fail("cohort Worker identity absent");
-      const script = `/workers/scripts/${worker}`, service = `/workers/services/${worker}/environments/production`;
-      const [settings, deployments, versions, routes, domains, subdomain, environment, schedules, raw] = await Promise.all([
-        get(`${script}/settings`), get(`${script}/deployments`), get(`${script}/versions?page=1&per_page=1`),
-        get(`${service}/routes?show_zonename=true`), get(`/workers/domains?service=${worker}&environment=production`),
-        get(`${service}/subdomain`), get(service), get(`${script}/schedules`), get(`${script}/content/v2`, true),
-      ]);
-      const active = deployments.result?.deployments?.[0], latest = versions.result?.items?.[0];
-      if (!uuid.test(active?.id ?? "") || active.versions?.length !== 1 || active.versions[0].percentage !== 100 ||
-          !uuid.test(active.versions[0].version_id ?? "") || latest?.id !== active.versions[0].version_id)
-        fail("cohort latest is not sole active version");
-      const detail = (await get(`${script}/versions/${latest.id}`)).result;
-      if (detail?.id !== latest.id) fail("active detail mismatch");
-      if (!settings.result?.annotations || !detail.annotations || !same(settings.result.annotations, detail.annotations)) fail("settings/version annotations mismatch");
-      const code = await parseCallerRetirementModules(raw.bytes, raw.type, raw.etag);
-      if (code.etag !== detail.resources?.script?.etag) fail("active module changed during read");
-      return { name: worker, tag: identity.tag, activeVersion: latest.id, latestVersion: latest.id, deploymentId: active.id,
-        versionAnnotations: structuredClone(detail.annotations),
-        settings: { ...settings.result, bindings: safeBindings(settings.result?.bindings) },
-        resources: { ...detail.resources, bindings: safeBindings(detail.resources?.bindings) }, code,
-        control: { routes: completeRows(routes), domains: completeRows(domains), subdomain: subdomain.result,
-          environment: environment.result, schedules: schedules.result } };
-    }));
+  const capture = async (scope) => {
+    const [scriptEnvelope, globalNamespaces] = await Promise.all([
+      get(scope, "/workers/scripts"), namespaces(scope),
+    ]);
+    const scripts = completeRows(scriptEnvelope);
+    const readWorker = async (worker) => {
+      try {
+        const identity = scripts.find((s) => s.id === worker);
+        if (!identity || !/^[a-f0-9]{32}$/u.test(identity.tag ?? "") || identity.deleted_on != null)
+          fail("cohort Worker identity absent");
+        const script = `/workers/scripts/${worker}`, service = `/workers/services/${worker}/environments/production`;
+        // Version detail depends on these two identities, not the other fields.
+        const coordinate = Promise.all([
+          get(scope, `${script}/deployments`), get(scope, `${script}/versions?page=1&per_page=1`),
+        ]).then(async ([deployments, versions]) => {
+          const active = deployments.result?.deployments?.[0], latest = versions.result?.items?.[0];
+          if (!uuid.test(active?.id ?? "") || active.versions?.length !== 1 || active.versions[0].percentage !== 100 ||
+              !uuid.test(active.versions[0].version_id ?? "") || latest?.id !== active.versions[0].version_id)
+            fail("cohort latest is not sole active version");
+          const detail = (await get(scope, `${script}/versions/${latest.id}`)).result;
+          return { active, latest, detail };
+        });
+        const [settings, routes, domains, subdomain, environment, schedules, raw, { active, latest, detail }] = await Promise.all([
+          get(scope, `${script}/settings`), get(scope, `${service}/routes?show_zonename=true`),
+          get(scope, `/workers/domains?service=${worker}&environment=production`),
+          get(scope, `${service}/subdomain`), get(scope, service), get(scope, `${script}/schedules`),
+          get(scope, `${script}/content/v2`, true), coordinate,
+        ]);
+        if (detail?.id !== latest.id) fail("active detail mismatch");
+        if (!settings.result?.annotations || !detail.annotations || !same(settings.result.annotations, detail.annotations)) fail("settings/version annotations mismatch");
+        const code = await parseCallerRetirementModules(raw.bytes, raw.type, raw.etag);
+        if (code.etag !== detail.resources?.script?.etag) fail("active module changed during read");
+        return { name: worker, tag: identity.tag, activeVersion: latest.id, latestVersion: latest.id, deploymentId: active.id,
+          versionAnnotations: structuredClone(detail.annotations),
+          settings: { ...settings.result, bindings: safeBindings(settings.result?.bindings) },
+          resources: { ...detail.resources, bindings: safeBindings(detail.resources?.bindings) }, code,
+          control: { routes: completeRows(routes), domains: completeRows(domains), subdomain: subdomain.result,
+            environment: environment.result, schedules: schedules.result } };
+      } catch (error) { scope.stop(error); throw error; }
+    };
+    // The fixed six-Worker graph feeds a bounded request window. Fully settle
+    // producer validation as well as GET/body reads before leaving a capture.
+    const results = await Promise.allSettled(cohortNames.map(readWorker));
+    if (scope.failed) throw scope.error;
+    const workers = results.map(result => result.value);
     const target = workers.find((w) => w.name === name);
     // Keep full service metadata. The post comparator types the narrow timestamp,
     // identifier and API-client transition and preserves every other field.
     return { accountId, ...target, peers: { workers: uniqueRows(workers.filter((w) => w.name !== name), "name"), namespaces: globalNamespaces } };
   };
   return async () => {
-    const started = now(), first = await capture(), second = await capture();
-    if (now() - started > 120000 || !same(first, second)) fail("cohort unstable or read expired");
-    return { ...second, capturedAt: now() };
+    const scope = { controller: new AbortController(), pending: new Set(), failed: false,
+      active: 0, waiting: [],
+      admit() {
+        if (this.failed) return Promise.reject(this.error);
+        // Producer waiting is inside the unchanged whole-read window. Create
+        // each 20-second deadline only on admission; it still includes pacing.
+        if (this.active < 12) { this.active++; return Promise.resolve(); }
+        return new Promise((resolve, reject) => this.waiting.push({ resolve, reject }));
+      },
+      release() {
+        const next = this.waiting.shift();
+        if (next) next.resolve(); // Transfer the existing slot before waking it.
+        else this.active--;
+      },
+      stop(error) {
+        if (this.failed) return;
+        this.failed = true;
+        this.error = error;
+        this.controller.abort();
+        for (const waiter of this.waiting.splice(0)) waiter.reject(error);
+      } };
+    try {
+      const started = now(), first = await capture(scope), second = await capture(scope);
+      if (now() - started > 120000 || !same(first, second)) fail("cohort unstable or read expired");
+      return { ...second, capturedAt: now() };
+    } catch (error) {
+      scope.stop(error);
+      // Promise.all may reject before sibling GET/body reads settle. Reap only
+      // this invocation's requests and preserve its first failure and brand.
+      await Promise.allSettled([...scope.pending]);
+      throw scope.error;
+    }
   };
 }
