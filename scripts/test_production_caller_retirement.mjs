@@ -1,6 +1,6 @@
 // Copyright (C) 2026 Atrinik contributors
 import test from "node:test";
-import { createProductionReadPacer } from "./production-read-pacing.mjs";
+import { createProductionReadPacer, productionReadFailure } from "./production-read-pacing.mjs";
 import { retirementFailureDiagnostic, callerObservationFailureDiagnostic, markCallerObservationFailure, preserveRetirementFailure } from "./production-retirement-diagnostics.mjs";
 import { virtualClock } from "./production-test-clock.mjs";
 import { orchestrateDelivery, deliveryFailureRecord, prepareBootstrapCallerHandoff, completeSecretFreeCallerObservation, verifyCallerActivationHandoff } from "./production-delivery.mjs";
@@ -401,10 +401,10 @@ test("unrecognized existing provider fields must remain byte-semantically exact"
   assert.throws(() => verifyCallerRetirementPost("publisher", before, after));
 });
 
-for (const latency of [0, 1000, 2000]) test(`actual six-Worker double snapshot completes at ${latency}ms response latency under original deadlines`, async (t) => {
+for (const latency of [0, 1000, 2000, 3000]) test(`actual six-Worker double snapshot completes at ${latency}ms response latency under original deadlines`, async (t) => {
   const { createCallerRetirementReader } = await import("./production-caller-retirement.mjs");
-  const clock = virtualClock(), fixture = readerFixture(), starts = [];
-  t.mock.method(AbortSignal, "timeout", ms => clock.timeout(ms));
+  const clock = virtualClock(), fixture = readerFixture(), starts = [], budgets = [];
+  t.mock.method(AbortSignal, "timeout", ms => { budgets.push(ms); return clock.timeout(ms); });
   const fetcher = createProductionReadPacer({ ...clock, fetcher: async (url, options) => {
     starts.push(clock.now()); await clock.wait(latency, options.signal); return fixture.fetcher(url, options);
   } });
@@ -412,16 +412,18 @@ for (const latency of [0, 1000, 2000]) test(`actual six-Worker double snapshot c
   const result = await clock.run(read);
   assert.equal(result.peers.workers.length, 5);
   assert.equal(fixture.requests, 124); assert.equal(starts.length, 124);
+  assert.deepEqual(budgets, Array(124).fill(20000));
   assert.ok(clock.now() >= 123 * 334); assert.ok(clock.now() < 120000);
+  if (latency === 3000) assert.ok(clock.now() <= 53000, "request dependencies must keep the shared pacer fed");
   for (let i = 1; i < starts.length; i++) assert.ok(starts[i] - starts[i - 1] >= 334);
 });
 
-test("actual reader tail network timeout reports current-read and never PATCHes", async (t) => {
+test("actual reader individual network timeout reports current-read and never PATCHes", async (t) => {
   const { createCallerRetirementReader } = await import("./production-caller-retirement.mjs");
   const clock = virtualClock(), fixture = readerFixture();
   t.mock.method(AbortSignal, "timeout", ms => clock.timeout(ms));
   const fetcher = createProductionReadPacer({ ...clock, fetcher: async (url, options) => {
-    await clock.wait(3000, options.signal); return fixture.fetcher(url, options);
+    await clock.wait(21000, options.signal); return fixture.fetcher(url, options);
   } });
   const read = createCallerRetirementReader({ accountId, token: "fixture", role: "publisher", fetcher, now: clock.now });
   let reads = 0;
@@ -432,6 +434,131 @@ test("actual reader tail network timeout reports current-read and never PATCHes"
     assert.equal(diagnostic.mutationState, "not-invoked"); return true;
   });
   assert.equal(h.writes, 0); assert.ok(h.intent);
+});
+
+test("reader admits at most twelve full bodies before creating more request deadlines", async (t) => {
+  const { createCallerRetirementReader } = await import("./production-caller-retirement.mjs");
+  const clock = virtualClock(), fixture = readerFixture(), bodies = [], budgets = [];
+  let ready, cancelled = 0;
+  const filled = new Promise(resolve => { ready = resolve; });
+  t.mock.method(AbortSignal, "timeout", ms => { budgets.push(ms); return clock.timeout(ms); });
+  const fetcher = async (url, options) => {
+    if (url.endsWith("/scripts") || url.includes("/namespaces?")) return fixture.fetcher(url, options);
+    return new Response(new ReadableStream({ start(controller) {
+      bodies.push(controller);
+      options.signal.addEventListener("abort", () => { cancelled++; controller.error(Error("synthetic body cancelled")); }, { once: true });
+      if (bodies.length === 12) ready();
+    } }));
+  };
+  const read = createCallerRetirementReader({ accountId, token: "fixture", role: "publisher", fetcher, now: clock.now });
+  const first = Error("synthetic first body failure");
+  const rejected = assert.rejects(read(), error => error === first);
+  await filled;
+  assert.equal(bodies.length, 12);
+  assert.deepEqual(budgets, Array(14).fill(20000)); // Two census reads plus twelve admitted bodies.
+  bodies[0].error(first);
+  await rejected;
+  assert.equal(cancelled, 12);
+  assert.equal(bodies.length, 12); assert.equal(budgets.length, 14);
+});
+
+test("reader finishes each full snapshot before beginning its next census and rejects drift", async () => {
+  const { createCallerRetirementReader } = await import("./production-caller-retirement.mjs");
+  const fixture = readerFixture(); let capture = 0, previousRequests = 0;
+  const fetcher = async (url, options) => {
+    if (url.endsWith("/scripts")) {
+      if (++capture === 2) assert.equal(fixture.requests - previousRequests, 62);
+      previousRequests = fixture.requests;
+    }
+    const response = await fixture.fetcher(url, options);
+    if (capture === 2 && url.endsWith("/schedules")) return Response.json({ success: true, result: [{ cron: "synthetic-drift" }] });
+    return response;
+  };
+  const read = createCallerRetirementReader({ accountId, token: "fixture", role: "publisher", fetcher, now: () => 1000 });
+  await assert.rejects(read(), /cohort unstable or read expired/u);
+  assert.equal(capture, 2); assert.equal(fixture.requests, 124);
+});
+
+for (const failure of [403, 429, "envelope", "schema"]) test(`bounded reader settles owned requests and preserves first ${failure} failure`, async (t) => {
+  const { createCallerRetirementReader } = await import("./production-caller-retirement.mjs");
+  const clock = virtualClock(), fixture = readerFixture(), admitted = [], dispatched = [], failures = [];
+  let injecting = true, pending = 0, maxPending = 0, bodies = 0, bodySettled = 0, failureAt;
+  t.mock.method(AbortSignal, "timeout", ms => { assert.equal(ms, 20000); return clock.timeout(ms); });
+  const paced = createProductionReadPacer({ ...clock, fetcher: async (url, options) => {
+    dispatched.push({ url, at: clock.now() });
+    if (!injecting || url.endsWith("/scripts") || url.includes("/namespaces?")) return fixture.fetcher(url, options);
+    if (url.endsWith("/settings")) {
+      await clock.wait(1000, options.signal);
+      failureAt = clock.now();
+      if (typeof failure === "number") return new Response("private", { status: failure });
+      if (failure === "envelope") return new Response("private invalid JSON");
+      return Response.json({ success: true, result: { annotations: null } });
+    }
+    if (url.endsWith("/deployments") && failure !== "schema") {
+      bodies++;
+      return new Response(new ReadableStream({ start(controller) {
+        options.signal.addEventListener("abort", () => {
+          // Rejection must wait for asynchronous response-body teardown too.
+          void clock.wait(500).then(() => { bodies--; bodySettled++; controller.error(Error("private cancelled body")); });
+        }, { once: true });
+      } }));
+    }
+    await clock.wait(failure === "schema" ? 1000 : 10000, options.signal);
+    return fixture.fetcher(url, options);
+  } });
+  const fetcher = async (url, options) => {
+    admitted.push(url); pending++; maxPending = Math.max(maxPending, pending + bodies);
+    try { return await paced(url, options); }
+    catch (error) { failures.push(error); throw error; }
+    finally { pending--; }
+  };
+  const read = createCallerRetirementReader({ accountId, token: "fixture", role: "publisher", fetcher, now: clock.now });
+  await assert.rejects(clock.run(read), error => {
+    if (typeof failure === "number") {
+      assert.equal(error, failures[0]);
+      assert.deepEqual(productionReadFailure(error), { category: failure === 429 ? "rate-limited" : "http-rejected",
+        transportState: "response-received", httpStatus: failure });
+    } else assert.match(error.message, failure === "envelope" ? /read envelope invalid/u : /settings\/version annotations mismatch/u);
+    return true;
+  });
+  assert.equal(pending, 0); assert.equal(bodies, 0);
+  if (failure !== "schema") {
+    assert.equal(bodySettled, 1);
+    assert.ok(dispatched.every(row => row.at <= failureAt));
+  }
+  assert.equal(admitted.filter(url => url.endsWith("/scripts")).length, 1);
+  assert.ok(maxPending <= 12);
+  assert.ok(admitted.length <= 62); // No second snapshot or retry after failure.
+  if (failure !== "schema") assert.ok(admitted.length < 20);
+  // A non-rate failure does not poison the shared pacer or the next invocation.
+  if (failure !== 429) {
+    injecting = false;
+    const snapshot = await clock.run(read);
+    assert.equal(snapshot.peers.workers.length, 5);
+  }
+});
+
+test("reader cancellation leaves an unrelated request on its shared pacer alive", async (t) => {
+  const { createCallerRetirementReader } = await import("./production-caller-retirement.mjs");
+  const clock = virtualClock(), fixture = readerFixture();
+  let unrelated, launches = 0;
+  t.mock.method(AbortSignal, "timeout", ms => clock.timeout(ms));
+  const paced = createProductionReadPacer({ ...clock, fetcher: async (url, options) => {
+    if (url.endsWith("/unrelated")) { launches++; return new Response("ok"); }
+    if (url.endsWith("/settings")) {
+      unrelated ??= paced(`https://api.cloudflare.com/client/v4/accounts/${accountId}/unrelated`, { method: "GET" });
+      await clock.wait(1000, options.signal);
+      return new Response("private", { status: 403 });
+    }
+    if (!url.endsWith("/scripts") && !url.includes("/namespaces?")) await clock.wait(10000, options.signal);
+    return fixture.fetcher(url, options);
+  } });
+  const read = createCallerRetirementReader({ accountId, token: "fixture", role: "publisher", fetcher: paced, now: clock.now });
+  await clock.run(async () => {
+    await assert.rejects(read(), error => productionReadFailure(error)?.httpStatus === 403);
+    assert.equal((await unrelated).status, 200);
+  });
+  assert.equal(launches, 1);
 });
 
 test("full double-snapshot 120-second expiry still prevents PATCH despite successful individual reads", async (t) => {
