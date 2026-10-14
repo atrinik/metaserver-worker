@@ -166,7 +166,12 @@
   and controller-owned v2 qualification. Preserve the exact annotation-loss
   postcondition in both settings/version data, full timestamped before/after
   receipts, encrypted finalization before capability creation, selected identity
-  and same-run proof. Later topology/activation reads require the exact retired
+  and same-run proof. Cohort acceptance after durable receipt publication takes
+  a distinct fresh full provider read, bound to the same live proof, exact own
+  state and receipt-bound peers/namespaces before current-cohort comparison.
+  Preserve the original snapshot/artifact timestamps and 10-second freshness;
+  neither the new read nor its success renews authority or permits a retry.
+  Later topology/activation reads require the exact retired
   UUID plus full own snapshot and phase-aware complete peer graph. Never invent
   missing annotations or turn historical v2/v3 evidence into a v4 receipt. Normal
   staging, secret-free observations and final active versions retain annotation

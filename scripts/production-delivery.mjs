@@ -1761,6 +1761,26 @@ export function selectApiHandoffRoles(
   );
 }
 
+// Durable receipt publication and the post-write resource fence may outlive the
+// original snapshot's handoff age. Read again without changing that receipt or
+// its process-local proof; before cohort admission, preserve its complete graph
+// even when this is the first retirement and the cohort has no baseline yet.
+export async function acceptCallerRetirement({
+  result, read, cohort, role, scope, selectedIdentity, now = Date.now,
+}) {
+  try {
+    const identity = requireRetiredCallerProof({ proof: result?.proof, role, scope, selectedIdentity });
+    if (identity.snapshotDigest !== callerRetirementDigest(result.snapshot))
+      fail("API handoff retirement snapshot changed after receipt");
+    const peersDigest = callerRetirementDigest(result.snapshot.peers);
+    const snapshot = await read();
+    if (callerRetirementDigest(snapshot.peers) !== peersDigest)
+      fail("retirement peer graph changed after receipt");
+    cohort.acceptRetirement({ snapshot, proof: result.proof, role, selectedIdentity, now });
+    return result;
+  } catch (error) { throw markRetirementFailure(error, "postverify", "response-accepted"); }
+}
+
 export async function completeCallerRetirement({
   role, retire, confirm, verify, apiHandoffRoles, scope, selectedIdentity,
 }) {
@@ -2898,10 +2918,8 @@ export async function runDelivery({ target = "production", sourceRoot, mode = "d
                 ...retirementRecorders.get(worker.role),
                 verifyStaged,
               });
-              try { retirementCohort.acceptRetirement({ snapshot: result.snapshot, proof: result.proof,
-                role: worker.role, selectedIdentity });
-              } catch (error) { throw markRetirementFailure(error, "postverify", "response-accepted"); }
-              return result;
+              return await acceptCallerRetirement({ result, read, cohort: retirementCohort,
+                role: worker.role, scope: retirementScope, selectedIdentity });
             } catch (error) {
               const stopped = new DeliveryError("production caller retirement stopped; preserve private intent and do not retry");
               stopped.cause = error;

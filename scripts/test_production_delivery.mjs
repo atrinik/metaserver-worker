@@ -1,5 +1,5 @@
-import { retirementFixture, retirementAfter } from "./fixtures/caller-retirement.mjs";
-import { callerRetirementDigest, createCallerRetirementReader, observeSecretFreeCaller } from "./production-caller-retirement.mjs";
+import { retirementFixture, retirementAfter, retirementSelectedIdentity } from "./fixtures/caller-retirement.mjs";
+import { callerRetirementDigest, createCallerRetirementReader, createCallerRetirementPatch, retireCallerSecrets, observeSecretFreeCaller } from "./production-caller-retirement.mjs";
 import { retirementBaseline } from "./fixtures/caller-retirement.mjs";
 import { createRetirementCohortGuard } from "./production-retirement-cohort.mjs";
 import { createProductionReadPacer } from "./production-read-pacing.mjs";
@@ -50,6 +50,7 @@ import {
   selectBuildLeaseOwner,
   selectApiHandoffRoles,
   completeCallerRetirement,
+  acceptCallerRetirement,
   verifyCallerActivationHandoff,
   selectLiveTrigger,
   sanitizedChildEnvironment,
@@ -2726,6 +2727,7 @@ function secretFreeObservationFixture(role) {
     delete value.peers; delete value.capturedAt; delete value.accountId;
     return value;
   });
+  const namespaces = [], modules = new Map(rows.map(row => [row.name, module]));
   const target = rows.find(row => row.name === `atrinik-metaserver-${role}`);
   const index = role === "publisher" ? 1 : 2;
   const fetcher = async (url, options) => {
@@ -2734,15 +2736,15 @@ function secretFreeObservationFixture(role) {
     const parsed = new URL(url), suffix = parsed.pathname.split(`/accounts/${production[0].account_id}`)[1];
     let result;
     if (suffix === "/workers/scripts") result = rows.map(({ name: id, tag }) => ({ id, tag }));
-    else if (suffix.endsWith("/namespaces")) return Response.json({ success: true, result: [],
-      result_info: { page: 1, per_page: 1000, total_count: 0, count: 0 } });
+    else if (suffix.endsWith("/namespaces")) return Response.json({ success: true, result: namespaces,
+      result_info: { page: 1, per_page: 1000, total_count: namespaces.length, count: namespaces.length } });
     else {
       const name = suffix === "/workers/domains" ? parsed.searchParams.get("service") : suffix.split("/")[3];
       const row = rows.find(row => row.name === name);
       assert.ok(row, suffix);
       if (suffix.endsWith("/content/v2")) {
         const form = new FormData();
-        form.append("index.js", new Blob([module], { type: "application/javascript+module" }), "index.js");
+        form.append("index.js", new Blob([modules.get(row.name)], { type: "application/javascript+module" }), "index.js");
         return new Response(form, { headers: { etag: `"${row.code.etag}"` } });
       }
       if (suffix.endsWith("/settings")) result = row.settings;
@@ -2760,10 +2762,152 @@ function secretFreeObservationFixture(role) {
     }
     return Response.json({ success: true, result });
   };
-  return { rows, target, fetcher, accountId: production[0].account_id,
+  return { rows, target, namespaces, modules, fetcher, accountId: production[0].account_id,
     worker: contract.workers[index], config: production[index], sourceSha, bundleDigest,
     expectedMessage: target.settings.annotations["workers/message"] };
 }
+
+// Keep the real paced double-snapshot reader, staged proof and one-use PATCH
+// transport in this composition. Only provider responses and durable storage
+// are synthetic; the post-write fence alone exceeds the old handoff lifetime.
+async function retirementAcceptanceFixture(t, role) {
+  const fixture = secretFreeObservationFixture(role), clock = virtualClock();
+  t.mock.method(AbortSignal, "timeout", ms => clock.timeout(ms));
+  const now = () => 1000 + clock.now(), events = [], artifacts = [], starts = [];
+  const scope = Object.freeze({});
+  const cohort = createRetirementCohortGuard({ accountId: fixture.accountId, scope });
+  const selectedIdentity = { ...retirementSelectedIdentity(fixture.target),
+    bundleDigest: fixture.bundleDigest, configurationDigest: callerRetirementDigest(fixture.config) };
+  for (const field of ["settings", "resources"]) fixture.target[field].bindings.push(
+    ...["SOURCE_TAG_KEY_CURRENT", "SOURCE_TAG_KEY_PREVIOUS"].map(name => ({ name, type: "secret_text" })));
+  let reads = 0, writes = 0, fences = 0, durable = false, request;
+  const fetcher = createProductionReadPacer({ ...clock, fetcher: async (...args) => {
+    starts.push(clock.now()); return fixture.fetcher(...args);
+  } });
+  const providerRead = createCallerRetirementReader({ accountId: fixture.accountId,
+    token: "fixture-resource-read", role, fetcher, now });
+  const read = async () => { events.push(`read:${++reads}`); return providerRead(); };
+  const qualification = await fixtureQualification({ accountId: fixture.accountId });
+  const patch = createCallerRetirementPatch({ accountId: fixture.accountId, token: "fixture-write", role,
+    qualification, fetcher: async (_url, options) => {
+      assert.equal(options.method, "PATCH");
+      assert.deepEqual(JSON.parse(options.body), { secrets: { SOURCE_TAG_KEY_CURRENT: null, SOURCE_TAG_KEY_PREVIOUS: null } });
+      events.push("patch"); writes++;
+      Object.assign(fixture.target, retirementAfter(fixture.target));
+      fixture.target.activeVersion = fixture.target.latestVersion = fixture.target.deploymentId =
+        "00000000-0000-0000-0000-000000000099";
+      return Response.json({ success: true, result: {} });
+    } });
+  const options = { role, scope, selectedIdentity, now, qualification, read,
+    patch: async value => { request = structuredClone(value); return patch(value); },
+    fence: async () => { events.push(`fence:${++fences}`); await clock.wait(18370); },
+    authorize: async () => { events.push("authorize"); },
+    verifyStaged: (snapshot, { retired, predecessor }) => {
+      if (!retired) cohort.check(snapshot);
+      return verifyStagedCallerRetirement({ ...fixture, snapshot, retired, predecessor, expectedZoneId: "b".repeat(32) });
+    },
+    recordIntent: async value => { assert.equal(artifacts.length, 0); artifacts.push(structuredClone(value)); events.push("intent"); },
+    recordReceipt: async value => {
+      assert.equal(artifacts.length, 1); artifacts.push(structuredClone(value));
+      events.push("receipt-start"); await clock.wait(5000); durable = true; events.push("receipt-durable");
+    },
+  };
+  const result = await clock.run(() => retireCallerSecrets(options));
+  return { ...fixture, clock, now, scope, selectedIdentity, cohort, result, events, artifacts, starts,
+    get reads() { return reads; }, get writes() { return writes; }, get fences() { return fences; },
+    accept: (overrides = {}) => clock.run(() => acceptCallerRetirement({ result, cohort, role, scope, selectedIdentity, now,
+      read: async () => { assert.equal(durable, true); return read(); }, ...overrides })),
+    replay: () => patch(request),
+  };
+}
+
+for (const role of ["publisher", "rendezvous"]) test(`actual paced ${role} retirement accepts a distinct post-receipt read without renewing evidence`, async t => {
+  const f = await retirementAcceptanceFixture(t, role);
+  const original = JSON.stringify({ snapshot: f.result.snapshot, receipt: f.result.receipt, artifacts: f.artifacts });
+  const proof = f.result.proof, capturedAt = f.result.snapshot.capturedAt;
+  assert.ok(f.now() - capturedAt >= 23370);
+  assert.throws(() => f.cohort.acceptRetirement({ snapshot: f.result.snapshot, proof, role,
+    selectedIdentity: f.selectedIdentity, now: f.now }), /observation expired/u);
+  const accepted = await f.accept();
+  assert.equal(accepted, f.result);
+  assert.equal(accepted.proof, proof);
+  assert.equal(JSON.stringify({ snapshot: accepted.snapshot, receipt: accepted.receipt, artifacts: f.artifacts }), original);
+  assert.equal(f.reads, 4); assert.equal(f.fences, 3); assert.equal(f.writes, 1);
+  assert.deepEqual(f.events, ["fence:1", "read:1", "intent", "fence:2", "read:2", "authorize",
+    "patch", "read:3", "fence:3", "receipt-start", "receipt-durable", "read:4"]);
+  assert.ok(f.starts.length > 400);
+  assert.ok(f.starts.slice(1).every((at, index) => at - f.starts[index] >= 334));
+  await assert.rejects(f.replay, /consumed/u);
+  assert.equal(f.writes, 1); assert.equal(f.artifacts.length, 2);
+});
+
+test("post-receipt provider drift rejects before teaching an initially empty cohort", async t => {
+  for (const [name, change] of [
+    ["own metadata", f => { f.target.resources.script.unexpected = true; }],
+    ["own module bytes", f => { f.modules.set(f.target.name, "export default{changed:true}"); }],
+    ["own UUID", f => { f.target.activeVersion = f.target.latestVersion = f.target.deploymentId = "00000000-0000-0000-0000-000000000098"; }],
+    ["own controls", f => { f.target.control.environment.script.observability.enabled = false; }],
+    ["peer metadata", f => { f.rows[0].resources.script.unexpected = true; }],
+    ["peer code", f => { f.rows[0].code.etag = f.rows[0].resources.script.etag = "d".repeat(64); }],
+    ["peer graph", f => { f.rows.pop(); }],
+    ["namespaces", f => { f.namespaces.push({ id: "d".repeat(32), name: "unexpected", class: "Unexpected", script: "atrinik-metaserver" }); }],
+  ]) await t.test(name, async st => {
+    const f = await retirementAcceptanceFixture(st, "rendezvous");
+    const original = JSON.stringify({ snapshot: f.result.snapshot, receipt: f.result.receipt, artifacts: f.artifacts });
+    change(f);
+    await assert.rejects(f.accept, error => {
+      assert.deepEqual(retirementFailureDiagnostic(error), {
+        phase: "postverify", category: "verification-failed", mutationState: "response-accepted",
+      });
+      return true;
+    });
+    assert.equal(JSON.stringify({ snapshot: f.result.snapshot, receipt: f.result.receipt, artifacts: f.artifacts }), original);
+    assert.equal(f.writes, 1); assert.equal(f.artifacts.length, 2);
+    // Rejection cannot establish a baseline: a deliberately changed graph is
+    // still unchecked until a separate successful retirement is admitted.
+    const probe = structuredClone(f.result.snapshot); probe.peers.namespaces.push({ id: "probe" });
+    assert.equal(f.cohort.check(probe), true);
+  });
+});
+
+test("post-receipt acceptance still compares the current cohort after binding the receipt graph", async t => {
+  const f = await retirementAcceptanceFixture(t, "publisher");
+  const read = createCallerRetirementReader({ accountId: f.accountId, token: "fixture-resource-read",
+    role: "publisher", fetcher: f.fetcher, now: f.now });
+  const current = await f.clock.run(read);
+  f.cohort.acceptRetirement({ snapshot: current, proof: f.result.proof, role: "publisher",
+    selectedIdentity: f.selectedIdentity, now: f.now });
+  const next = structuredClone(current), peer = next.peers.workers[0];
+  peer.activeVersion = peer.latestVersion = "00000000-0000-0000-0000-000000000098";
+  f.cohort.recordUpload({ name: peer.name, versionId: peer.activeVersion,
+    validate: value => callerRetirementDigest(value) === callerRetirementDigest(peer) });
+  f.cohort.check(next);
+  // The unchanged receipt graph has become an old cohort; a fresh capture alone
+  // must not re-adopt it or consume any new mutation.
+  await assert.rejects(f.accept, /retirement cohort identity changed/u);
+  assert.equal(f.writes, 1); assert.equal(f.artifacts.length, 2);
+});
+
+test("post-receipt handoff preserves freshness and capability rejection without another PATCH", async t => {
+  const f = await retirementAcceptanceFixture(t, "publisher");
+  const providerRead = createCallerRetirementReader({ accountId: f.accountId, token: "fixture-resource-read",
+    role: "publisher", fetcher: f.fetcher, now: f.now });
+  const original = JSON.stringify({ snapshot: f.result.snapshot, receipt: f.result.receipt, artifacts: f.artifacts });
+  let reads = 0;
+  for (const overrides of [
+    { scope: Object.freeze({}) },
+    { role: "rendezvous" },
+    { selectedIdentity: { ...f.selectedIdentity, sourceSha: "d".repeat(40) } },
+    { result: { ...f.result, proof: structuredClone(f.result.proof) } },
+    { result: { ...f.result, snapshot: { ...f.result.snapshot, capturedAt: f.now() } } },
+  ]) await assert.rejects(() => f.accept({ read: async () => { reads++; return providerRead(); }, ...overrides }));
+  assert.equal(reads, 0);
+  await assert.rejects(() => f.accept({ read: async () => {
+    const current = await providerRead(); await f.clock.wait(10001); return current;
+  } }), /observation expired/u);
+  assert.equal(JSON.stringify({ snapshot: f.result.snapshot, receipt: f.result.receipt, artifacts: f.artifacts }), original);
+  assert.equal(f.writes, 1); assert.equal(f.artifacts.length, 2);
+});
 
 for (const role of ["publisher", "rendezvous"]) test(`actual paced ${role} observation composes full reader and staged proof`, async t => {
   const fixture = secretFreeObservationFixture(role), clock = virtualClock();

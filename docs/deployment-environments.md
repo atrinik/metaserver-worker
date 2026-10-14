@@ -494,7 +494,13 @@ namespaces must be preserved, subject only to the narrow service metadata
 transitions described below. The receipt contains the complete timestamped
 `after` snapshot, its time-excluded digest and the full intent. Its encrypted
 artifact must also finalize and pass independent readback before the operation
-creates a private in-process retirement proof.
+creates a private in-process retirement proof. After these durable checks, cohort
+acceptance takes a distinct full provider snapshot with its own unchanged
+10-second handoff limit. It binds the same live proof, exact retired UUID and own
+state, complete receipt-bound peer graph and namespaces, and current cohort.
+The original snapshot, intent, receipt timestamps and capability stay unchanged;
+this read grants no second PATCH, retry, or renewed execution authority. The
+subsequent confirmation and fenced readback remain required before activation.
 
 Only this proof permits the temporary annotationless retired caller state. It is
 bound to this delivery invocation and selected identity. A serialized receipt,
