@@ -1144,6 +1144,11 @@ python3 scripts/static_origin_canary.py \
 
 The environment delivery contract derives each canary prefix from the exact core
 configuration; the same checked configuration drives builder and purge targets.
+Edge policy admits only root aliases on the public directory hostnames, so
+delivery runs a public static canary only for a profile published at the root.
+A profile still staged under `canary-v6/` or `canary-v2/` is verified by the
+private reconciliation proof's complete alias integrity check instead; its
+isolated-hostname canary above remains a separate, explicitly authorized step.
 Migration 0013 leaves `classic-v3` and `game-v2` publication checkpoints at
 generation zero with no new aliases. The explicit pre-canary reconciliation
 stage builds valid empty cohorts even before the first cron or signed publication;

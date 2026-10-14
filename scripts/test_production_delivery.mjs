@@ -48,6 +48,7 @@ import {
   parseCurrentMainRef,
   recoverDisabledCore,
   resolveProductionCanaryCommand,
+  selectProductionCanaries,
   selectBuildLeaseOwner,
   selectApiHandoffRoles,
   completeCallerRetirement,
@@ -1958,6 +1959,27 @@ test("static canaries follow each profile's explicit alias cutover", () => {
   }
   scenarioConfigs[0].vars.GAME_DIRECTORY_CUTOVER_MODE = "unknown";
   assert.throws(() => resolveProductionCanaryCommand(contract.productionCanaries[0], scenarioConfigs), /cutover policy drift/u);
+});
+
+
+test("public canaries skip profiles still staged under a canary alias prefix", () => {
+  const scenarioConfigs = configs.map((value) => structuredClone(value));
+  for (const [classic, game, expected] of [
+    ["v4-production", "v1-production", ["publisher-service-binding", "rendezvous-service-binding"]],
+    ["v6-production", "v1-production", ["classic-static-directory", "publisher-service-binding", "rendezvous-service-binding"]],
+    ["v6-production", "v2-production", contract.productionCanaries.map(({ name }) => name)],
+  ]) {
+    scenarioConfigs[0].vars.CLASSIC_DIRECTORY_CUTOVER_MODE = classic;
+    scenarioConfigs[0].vars.GAME_DIRECTORY_CUTOVER_MODE = game;
+    const selected = selectProductionCanaries(contract, scenarioConfigs);
+    assert.deepEqual(selected.map(({ name }) => name), expected);
+    for (const { command } of selected) {
+      const prefix = command.indexOf("--alias-prefix");
+      assert.ok(prefix === -1 || command[prefix + 1] === "");
+    }
+  }
+  scenarioConfigs[0].vars.GAME_DIRECTORY_CUTOVER_MODE = "unknown";
+  assert.throws(() => selectProductionCanaries(contract, scenarioConfigs), /cutover policy drift/u);
 });
 
 
