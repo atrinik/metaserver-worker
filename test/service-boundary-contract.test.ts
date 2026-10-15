@@ -261,6 +261,61 @@ describe("in-process service-boundary contract", () => {
     ).first<number>("count")).toBe(0);
   });
 
+  it("accepts a passwordless server's access offer without selecting it", async () => {
+    const core = coreEnvironment();
+    const edge = rendezvousEnvironment(core);
+    const now = publisherFixture.created;
+    for (const [index, authorizationRequired] of [false, true].entries()) {
+      const serverId = String(index + 6).repeat(64);
+      const token = String(index + 3).repeat(64);
+      await persistRendezvousPublication(env.DB, {
+        serverId,
+        directoryProfile: "classic-v3",
+        certificate: "AA==",
+        publisherSequence: String(index + 1),
+        publisherNonce: String(index + 3).repeat(32),
+        publisherNonceExpiresAt: now + 86_400,
+        commitToken: String(index + 1).repeat(64),
+        expectedGeneration: null,
+        generation: String(index + 4).repeat(64),
+        tokenHash: await sha256Hex(token),
+        now,
+        visibilityCutoff: now - 14_400,
+        name: `Subprotocol offer ${index}`,
+        playersCount: 0,
+        version: "5.93.0",
+        textComment: "Passwordless control offer",
+        isPublic: true,
+        quicHost: "",
+        quicPort: 1,
+        quicCertSha256: serverId,
+        authorizationRequired,
+        directoryFingerprint: (index === 0 ? "c" : "d").repeat(64),
+      });
+      const request = (offer: boolean) => new Request(
+        `https://rendezvous.meta.atrinik.org/v1/classic/servers/${serverId}?role=server`,
+        {
+          headers: {
+            Authorization: `Bearer ${token}`,
+            "CF-Connecting-IP": "192.0.2.210",
+            Upgrade: "websocket",
+            ...(offer ? { "Sec-WebSocket-Protocol": ACCESS_RENDEZVOUS_SUBPROTOCOL } : {}),
+          },
+        },
+      );
+      if (authorizationRequired) {
+        const omitted = await rendezvousWorker.fetch(request(false), edge);
+        expect(omitted.status).toBe(400);
+      }
+      const offered = await rendezvousWorker.fetch(request(true), edge);
+      expect(offered.status).toBe(101);
+      expect(offered.headers.get("Sec-WebSocket-Protocol"))
+        .toBe(authorizationRequired ? ACCESS_RENDEZVOUS_SUBPROTOCOL : null);
+      offered.webSocket?.accept();
+      offered.webSocket?.close(1000, "Test complete");
+    }
+  });
+
   it("keeps isolated canary authorities aligned across edge and core", async () => {
     const core = override(coreEnvironment(), {
       PUBLISH_HOSTNAME: "publish-canary.example.test",

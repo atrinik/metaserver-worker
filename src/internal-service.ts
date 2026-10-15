@@ -252,13 +252,18 @@ export async function validatePublisherServiceResponse(
 export async function validateRendezvousServiceResponse(
   response: Response,
   requestedSubprotocol: string | null,
+  { serverMayDecline = false }: { serverMayDecline?: boolean } = {},
 ): Promise<Response> {
   if (response.status === 101) {
     const headers = new Headers({
       "Cache-Control": "no-store",
       "X-Content-Type-Options": "nosniff",
     });
-    if (requestedSubprotocol !== null) {
+    // Only a passwordless server control socket may leave an offered access
+    // subprotocol unselected; every other upgrade must echo it exactly.
+    const declined = serverMayDecline && requestedSubprotocol !== null &&
+      !response.headers.has("Sec-WebSocket-Protocol");
+    if (requestedSubprotocol !== null && !declined) {
       headers.set("Sec-WebSocket-Protocol", requestedSubprotocol);
     }
     if (
