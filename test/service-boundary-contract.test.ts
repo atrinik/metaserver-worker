@@ -261,7 +261,7 @@ describe("in-process service-boundary contract", () => {
     ).first<number>("count")).toBe(0);
   });
 
-  it("accepts a passwordless server's access offer without selecting it", async () => {
+  it("selects an offered access subprotocol for every server control socket", async () => {
     const core = coreEnvironment();
     const edge = rendezvousEnvironment(core);
     const now = publisherFixture.created;
@@ -309,8 +309,7 @@ describe("in-process service-boundary contract", () => {
       }
       const offered = await rendezvousWorker.fetch(request(true), edge);
       expect(offered.status).toBe(101);
-      expect(offered.headers.get("Sec-WebSocket-Protocol"))
-        .toBe(authorizationRequired ? ACCESS_RENDEZVOUS_SUBPROTOCOL : null);
+      expect(offered.headers.get("Sec-WebSocket-Protocol")).toBe(ACCESS_RENDEZVOUS_SUBPROTOCOL);
       offered.webSocket?.accept();
       offered.webSocket?.close(1000, "Test complete");
     }

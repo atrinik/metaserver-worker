@@ -70,7 +70,6 @@ export default {
           route.role,
         )),
         route.subprotocol,
-        { serverMayDecline: route.role === "server" },
       );
     } catch (error) {
       return handleRequestError(error, diagnosticRoute, "rendezvous-edge");
