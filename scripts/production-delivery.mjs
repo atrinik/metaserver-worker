@@ -13,6 +13,7 @@ import { parseDirectoryFailure } from "./directory-reconciliation-diagnostics.mj
 import { readDirectoryInterface, incompatibleDirectoryInterface } from "./directory-reconciliation-interface.mjs";
 import { retireCallerSecrets, observeSecretFreeCaller, createCallerRetirementReader, createCallerRetirementPatch, callerRetirementDigest, verifyCallerRetirementPostV4, requireRetiredCallerProof } from "./production-caller-retirement.mjs";
 import { createDurableCallerRetirementRecorder, recoveryArtifactFailureReason } from "./production-recovery-artifacts.mjs";
+import { deliveryFailureReason } from "./delivery-failure-reasons.mjs";
 import { loadCallerRetirementQualification, requireCallerRetirementQualification } from "./production-retirement-qualification.mjs";
 import { validateRateBootstrap, legacyCallerSecrets, bootstrapCallerDispositions } from "./production-rate-bootstrap.mjs";
 import { parseResourcePolicy, resourcePolicyDigest as digestResourcePolicy, validateResourceConfigurations,
@@ -74,6 +75,7 @@ export function deliveryFailureRecord(error, evidence) {
     outcome: "production-delivery-stopped",
     reason:
       recoveryArtifactFailureReason(error) ??
+      deliveryFailureReason(error) ??
       (error instanceof DeliveryError ? error.message : "unexpected-internal-error"),
     sourceSha: evidence.sourceSha,
     deployableDigest: evidence.deployableDigest,

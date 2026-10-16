@@ -1,8 +1,12 @@
 // Copyright (C) 2026 Atrinik contributors
+import { brandDeliveryFailure } from "./delivery-failure-reasons.mjs";
 import { productionReadFailure } from "./production-read-pacing.mjs";
 import { normalizeTransitionTrigger, transitionDigest, validateProductionWriterFence } from "./deployment-environment-transition.mjs";
 
-const stop = () => { throw new Error("production writer fence could not be verified"); };
+const stop = () => {
+  throw brandDeliveryFailure(new Error("production writer fence could not be verified"),
+    "production-writer-fence-unverified");
+};
 const uuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/u;
 function validProviderTimestamp(value) {
   if (typeof value !== "string") return false;
@@ -66,9 +70,13 @@ function inertDrainBuilds(snapshot, policy) {
 }
 
 export async function assertProductionPromotionWriterFence({ environment, fetcher = fetch,
-  allowDrain = false, now = () => performance.now(),
+  allowDrain = false, drainMilliseconds = 60_000, pollMilliseconds = 5_000, now = () => performance.now(),
   wait = milliseconds => new Promise(resolve => setTimeout(resolve, milliseconds)) }) {
   try {
+    if (!Number.isSafeInteger(drainMilliseconds) || drainMilliseconds < 60_000 || drainMilliseconds > 600_000 ||
+        !Number.isSafeInteger(pollMilliseconds) || pollMilliseconds < 5_000 || pollMilliseconds > 30_000) stop();
+    // A fixed attempt bound also fails closed if an injected clock stops advancing.
+    const maximumAttempts = Math.ceil(drainMilliseconds / pollMilliseconds);
     let deadline;
     let waited = false;
     let drainedIdentities;
@@ -177,13 +185,12 @@ export async function assertProductionPromotionWriterFence({ environment, fetche
     if (allowDrain && first.builds.some(build => build.status !== "stopped")) {
       let identities = inertDrainBuilds(first, policy);
       const controls = transitionDigest({ triggers: first.triggers, environments: first.environments, peers: first.peers });
-      deadline = now() + 60_000;
+      deadline = now() + drainMilliseconds;
       if (!Number.isFinite(deadline)) stop();
-      // A fixed attempt bound also fails closed if an injected clock stops advancing.
       for (let attempt = 0; ; attempt += 1) {
         remaining();
-        if (attempt === 12) stop();
-        await wait(Math.min(5_000, remaining()));
+        if (attempt === maximumAttempts) stop();
+        await wait(Math.min(pollMilliseconds, remaining()));
         waited = true;
         remaining();
         const current = await capture();

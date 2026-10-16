@@ -1878,6 +1878,18 @@ test("retirement failure evidence emits only branded closed diagnostics alongsid
   assert.equal(deliveryFailureRecord({ retirement: record.retirement }, evidence).retirement, undefined);
 });
 
+test("branded preflight failures expose only their fixed reason, never a reflected message", async () => {
+  const { brandDeliveryFailure } = await import("./delivery-failure-reasons.mjs");
+  const secret = "private account/token/path";
+  const evidence = { sourceSha: null, deployableDigest: null, failedRole: "preflight", completedRoles: [], recoveryOutcome: "not-needed" };
+  const branded = brandDeliveryFailure(new Error(secret), "production-writer-fence-unverified");
+  assert.equal(deliveryFailureRecord(branded, evidence).reason, "production-writer-fence-unverified");
+  assert.equal(deliveryFailureRecord(new Error(secret, { cause: branded }), evidence).reason, "production-writer-fence-unverified");
+  assert.equal(deliveryFailureRecord(new Error(branded.message), evidence).reason, "unexpected-internal-error");
+  assert.equal(JSON.stringify(deliveryFailureRecord(branded, evidence)).includes(secret), false);
+  assert.throws(() => brandDeliveryFailure(new Error(secret), secret), TypeError);
+});
+
 test("nested artifact retention failure exposes only its branded fixed reason", async () => {
   const { verifyRecoveryArtifactProof } = await import("./production-recovery-artifacts.mjs");
   const secret = "private account/token/path";

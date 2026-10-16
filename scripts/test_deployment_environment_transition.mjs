@@ -7,6 +7,7 @@ import { authorizeTransitionOperation, applyTransitionStep, createTransitionPlan
   normalizeTransitionTrigger, productionFencePatchBody, runTransitionCli, transitionDigest, validateProductionWriterFence,
   verifyTransitionJournal } from "./deployment-environment-transition.mjs";
 import { assertProductionPromotionWriterFence, normalizeBuildEnvironment } from "./production-writer-fence.mjs";
+import { deliveryFailureReason } from "./delivery-failure-reasons.mjs";
 const id = (n) => `00000000-0000-4000-8000-${String(n).padStart(12, "0")}`;
 const now = Date.parse("2026-10-11T12:00:00Z");
 const clone = structuredClone;
@@ -579,6 +580,29 @@ test("inert drain has one finite deadline and does not retry expired reads", asy
   assert.equal(slow.counts().waits, 1);
   assert.equal(slow.counts().reads, 16);
 });
+test("development drain window outlasts a queued inert build at a bounded poll rate", async () => {
+  const f = drainFixture(0), wait = f.options.wait;
+  f.input.builds[0].status = "queued";
+  f.options.wait = async milliseconds => {
+    await wait(milliseconds);
+    if (f.counts().clock >= 240_000) f.input.builds[0].status = "stopped";
+  };
+  const result = await assertProductionPromotionWriterFence({ ...f.options, drainMilliseconds: 480_000, pollMilliseconds: 15_000 });
+  assert.equal(result.waited, true);
+  assert.deepEqual([f.counts().clock, f.counts().waits], [240_000, 16]);
+  const expired = drainFixture(0);
+  await assert.rejects(assertProductionPromotionWriterFence({ ...expired.options, drainMilliseconds: 480_000, pollMilliseconds: 15_000 }),
+    error => deliveryFailureReason(error) === "production-writer-fence-unverified");
+  assert.deepEqual([expired.counts().clock, expired.counts().waits], [480_000, 32]);
+});
+for (const window of [{ drainMilliseconds: 59_999 }, { drainMilliseconds: 600_001 }, { pollMilliseconds: 4_999 },
+  { pollMilliseconds: 30_001 }, { drainMilliseconds: 1.5e5 + 0.5 }])
+  test(`drain window outside its bounds fails before provider reads: ${JSON.stringify(window)}`, async () => {
+    const f = drainFixture();
+    await assert.rejects(assertProductionPromotionWriterFence({ ...f.options, ...window }),
+      error => deliveryFailureReason(error) === "production-writer-fence-unverified");
+    assert.equal(f.counts().reads, 0);
+  });
 for (const [name, change] of [
   ["recorded build command", f => { f.input.builds[0].build_trigger_metadata.build_command = "npm ci"; }],
   ["recorded deploy command", f => { f.input.builds[0].build_trigger_metadata.deploy_command = "exit 1; deploy"; }],

@@ -1,11 +1,15 @@
 // Copyright (C) 2026 Atrinik contributors
 import { createHash } from "node:crypto";
+import { brandDeliveryFailure } from "./delivery-failure-reasons.mjs";
 // A single reviewed native binding transition, never a generic resource provisioner.
 export const productionAccessRate = Object.freeze({ name: "ACCESS_ROUTE_RATE_LIMITER",
   namespace_id: "1008", simple: Object.freeze({ limit: 16, period: 60 }) });
 export const productionAccessResource = Object.freeze({ binding: productionAccessRate.name,
   type: "rate-limit", id: productionAccessRate.namespace_id });
-const fail = () => { throw new Error("delivery resource isolation: production rate bootstrap rejected"); };
+const fail = () => {
+  throw brandDeliveryFailure(new Error("delivery resource isolation: production rate bootstrap rejected"),
+    "production-rate-bootstrap-rejected");
+};
 const canonical = value => Array.isArray(value) ? value.map(canonical) : value && typeof value === "object"
   ? Object.fromEntries(Object.keys(value).sort().map(key => [key, canonical(value[key])])) : value;
 const same = (a, b) => JSON.stringify(canonical(a)) === JSON.stringify(canonical(b));
