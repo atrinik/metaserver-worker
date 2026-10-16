@@ -9,7 +9,6 @@ const allowed = new Set([
   "development-authority-concurrent-writer",
   "development-authority-environment-rejected",
   "development-authority-github-read-rejected",
-  "production-writer-fence-unverified",
   "delivery-resource-policy-rejected",
   "production-rate-bootstrap-rejected",
 ]);

@@ -18,7 +18,7 @@ import { loadCallerRetirementQualification, requireCallerRetirementQualification
 import { validateRateBootstrap, legacyCallerSecrets, bootstrapCallerDispositions } from "./production-rate-bootstrap.mjs";
 import { parseResourcePolicy, resourcePolicyDigest as digestResourcePolicy, validateResourceConfigurations,
   resourcePolicyReader, createResourcePolicyFence } from "./delivery-resource-policy.mjs";
-import { developmentWorkerNames, promotionEnvironmentNames, targetContract, developmentFixture, deliveryTarget } from "./delivery-targets.mjs";
+import { developmentWorkerNames, promotionEnvironmentNames, developmentFixture, deliveryTarget } from "./delivery-targets.mjs";
 
 const execFileAsync = promisify(execFile);
 const controllerRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
@@ -232,239 +232,9 @@ function boundedIntegerVariable(variables, name, minimum, maximum) {
   return parsed;
 }
 
-export function validateContract(contract) {
-  assertExactKeys(
-    contract,
-    [
-      "schemaVersion",
-      "provider",
-      "repository",
-      "rootDirectory",
-      "productionBranch",
-      "automaticPush",
-      "pathIncludes",
-      "pathExcludes",
-      "installCommand",
-      "validationCommand",
-      "deployCommand",
-      "reviewCommand",
-      "buildEnvironment",
-      "productionCanaries",
-      "toolchain",
-      "source",
-      "protectedInputs",
-      "initialBootstrapPredecessor",
-      "workers",
-      "invariants",
-    ],
-    "production contract",
-  );
-  if (
-    contract.schemaVersion !== 1 ||
-    contract.provider !== "cloudflare-workers-builds" ||
-    contract.repository !== "atrinik/metaserver-worker" ||
-    contract.rootDirectory !== "" ||
-    contract.productionBranch !== "main" ||
-    contract.automaticPush !== true ||
-    JSON.stringify(contract.pathIncludes) !== JSON.stringify(["*"]) ||
-    contract.pathExcludes.length !== 0
-  )
-    fail("Workers Builds production trigger drift");
-  if (
-    contract.installCommand !==
-      "env -i HOME=\"$HOME\" PATH=\"$PATH\" npm_config_cache=/tmp/atrinik-npm-cache npm install --global --ignore-scripts npm@11.16.0 && env -i HOME=\"$HOME\" PATH=\"$PATH\" npm_config_cache=/tmp/atrinik-npm-cache npm ci --ignore-scripts" ||
-    contract.validationCommand !== "npm run check" ||
-    contract.deployCommand !== "npm run deploy:production" ||
-    contract.reviewCommand !== "npm run deploy:production:dry-run"
-  )
-    fail("production command contract drift");
-  if (
-    !sameJson(contract.buildEnvironment, { SKIP_DEPENDENCY_INSTALL: "1" })
-  )
-    fail("Workers Builds bootstrap environment drift");
-  const expectedCanaries = [
-    {
-      name: "classic-static-directory",
-      command: [
-        "python3",
-        "scripts/static_origin_canary.py",
-        "--profile",
-        "classic-v3",
-        "--base-url",
-        "https://classic.meta.atrinik.org",
-        "--alias-prefix",
-        "$CLASSIC_DIRECTORY_ALIAS_PREFIX",
-        "--allow-production",
-        "--json",
-      ],
-    },
-    {
-      name: "game-static-directory",
-      command: [
-        "python3",
-        "scripts/static_origin_canary.py",
-        "--profile",
-        "game-v2",
-        "--base-url",
-        "https://meta.atrinik.org",
-        "--alias-prefix",
-        "$GAME_DIRECTORY_ALIAS_PREFIX",
-        "--allow-production",
-        "--json",
-      ],
-    },
-    {
-      name: "publisher-service-binding",
-      command: [
-        "python3",
-        "scripts/dynamic_edge_canary.py",
-        "--role",
-        "publisher",
-        "--base-url",
-        "https://publish.meta.atrinik.org",
-        "--expected-circuit",
-        "$PUBLISH_ENABLED",
-        "--disabled-retry-seconds",
-        "$ROUTE_DISABLED_RETRY_SECONDS",
-        "--json",
-      ],
-    },
-    {
-      name: "rendezvous-service-binding",
-      command: [
-        "python3",
-        "scripts/dynamic_edge_canary.py",
-        "--role",
-        "rendezvous",
-        "--base-url",
-        "https://rendezvous.meta.atrinik.org",
-        "--expected-circuit",
-        "$RENDEZVOUS_ENABLED",
-        "--disabled-retry-seconds",
-        "$ROUTE_DISABLED_RETRY_SECONDS",
-        "--json",
-      ],
-    },
-  ];
-  if (
-    JSON.stringify(contract.productionCanaries) !==
-    JSON.stringify(expectedCanaries)
-  )
-    fail("bounded production canary contract drift");
-  if (
-    JSON.stringify(contract.toolchain) !==
-    JSON.stringify({
-      node: "24.18.1",
-      npm: "11.16.0",
-      lockfile: "package-lock.json",
-    })
-  )
-    fail("production toolchain drift");
-  if (
-    contract.source.branchVariable !== "WORKERS_CI_BRANCH" ||
-    contract.source.commitVariable !== "WORKERS_CI_COMMIT_SHA" ||
-    contract.source.buildVariable !== "WORKERS_CI_BUILD_UUID" ||
-    contract.source.currentMainUrl !==
-      "https://api.github.com/repos/atrinik/metaserver-worker/commits/main"
-  )
-    fail("production source identity drift");
-  if (
-    JSON.stringify(contract.protectedInputs) !==
-    JSON.stringify({
-      accountVariable: "CLOUDFLARE_ACCOUNT_ID",
-      coreConfigVariable: "ATRINIK_PRODUCTION_CORE_CONFIG",
-      publisherConfigVariable: "ATRINIK_PRODUCTION_PUBLISHER_CONFIG",
-      rendezvousConfigVariable: "ATRINIK_PRODUCTION_RENDEZVOUS_CONFIG",
-      buildsApiTokenVariable: "ATRINIK_WORKERS_BUILDS_API_TOKEN",
-    })
-  )
-    fail("protected production input contract drift");
-  if (
-    JSON.stringify(contract.initialBootstrapPredecessor) !==
-    JSON.stringify({
-      requiredPhase: "all-builds-triggers-absent",
-      allowedBindingDelta: [{
-        role: "core",
-        name: "CLASSIC_DIRECTORY_CUTOVER_MODE",
-        type: "plain_text",
-        live: "absent",
-        desired: "v4-production",
-      }, {
-        role: "core", name: "GAME_PUBLISH_ENABLED", type: "plain_text",
-        live: "disabled", desired: "disabled",
-      }, {
-        role: "core", name: "PUBLISH_ENABLED", type: "plain_text",
-        live: "disabled", desired: "enabled",
-      }, {
-        role: "core", name: "RENDEZVOUS_ENABLED", type: "plain_text",
-        live: "disabled", desired: "enabled",
-      }, {
-        role: "publisher", name: "GAME_PUBLISH_ENABLED", type: "plain_text",
-        live: "disabled", desired: "disabled",
-      }, {
-        role: "publisher", name: "PUBLISH_ENABLED", type: "plain_text",
-        live: "disabled", desired: "enabled",
-      }, {
-        role: "rendezvous", name: "RENDEZVOUS_ENABLED", type: "plain_text",
-        live: "disabled", desired: "enabled",
-      }],
-    })
-  )
-    fail("initial production bootstrap predecessor drift");
-  if (
-    !Array.isArray(contract.workers) ||
-    contract.workers.length !== 3 ||
-    sha256Json(canonicalJson(contract.workers)) !==
-      "79c113610030ae444f3e987e63068345bced7fd33819c6b66ea54792e30b19c9" ||
-    JSON.stringify(contract.workers.map(({ name }) => name)) !==
-      JSON.stringify(expectedWorkerNames) ||
-    JSON.stringify(contract.workers.map(({ order }) => order)) !==
-      JSON.stringify([1, 2, 3]) ||
-    contract.workers.some(({ directDeploy }) => directDeploy !== true)
-  )
-    fail("serialized Worker topology drift");
-  const invariants = contract.invariants;
-  assertExactKeys(
-    invariants,
-    [
-      "productionWorkersDev",
-      "productionPreviewUrls",
-      "migrationPolicy",
-      "controlPlanePolicy",
-      "deploymentOrder",
-      "deploymentMode",
-      "initialApiHandoff",
-      "buildSerialization",
-      "noOp",
-      "recovery",
-    ],
-    "production invariants",
-  );
-  if (
-    invariants.productionWorkersDev !== false ||
-    invariants.productionPreviewUrls !== false ||
-    invariants.migrationPolicy !== "exact-ledger-no-automatic-apply" ||
-    invariants.controlPlanePolicy !== "automatic-after-live-preflight" ||
-    JSON.stringify(invariants.deploymentOrder) !==
-      JSON.stringify(["core", "publisher", "rendezvous"]) ||
-    invariants.deploymentMode !== "direct-100-percent-strict" ||
-    invariants.initialApiHandoff !==
-      "automatic-unannotated-api-managed-source-only" ||
-    invariants.buildSerialization !==
-      "newest-current-main-build-owns-one-topology-entrypoint" ||
-    invariants.noOp !==
-      "matching-bundles-config-migrations-and-command-contract" ||
-    invariants.recovery !==
-      "disabled-circuit-fix-forward-and-exact-current-main-retry"
-  )
-    fail("production safety invariant drift");
-}
-
 export async function validateDeliveryContract(contract) {
-  const historical = await readJson(resolve(controllerRoot,
-    "deployment/historical/workers-builds-production-v1.json"));
-  validateContract(historical);
-  if (!sameJson(contract, targetContract(historical, contract.target)))
+  if (contract?.schemaVersion !== 2 || contract.provider !== "github-actions" ||
+      !["development", "production"].includes(contract.target))
     fail("live delivery contract drift");
 }
 
@@ -820,28 +590,6 @@ export function activeVersionId(deployment) {
   return versionId;
 }
 
-export function validateSourceCoordinates(coordinates, { workerName = expectedWorkerNames[0] } = {}) {
-  if (coordinates.workersCi !== "1" || coordinates.branch !== "main")
-    fail("production delivery is restricted to Workers Builds on main");
-  if (!shaPattern.test(coordinates.sourceSha))
-    fail("WORKERS_CI_COMMIT_SHA is invalid");
-  if (coordinates.head !== coordinates.sourceSha)
-    fail("checkout HEAD does not match WORKERS_CI_COMMIT_SHA");
-  if (coordinates.dirty) fail("production checkout is dirty");
-  if (!uuidPattern.test(coordinates.buildUuid))
-    fail("WORKERS_CI_BUILD_UUID is missing or invalid");
-  if (
-    coordinates.overrideName !== workerName ||
-    typeof coordinates.matchTag !== "string" ||
-    coordinates.matchTag.length === 0
-  )
-    fail("Workers Builds project identity is missing or unexpected");
-  if (!/^[0-9a-f]{32}$/u.test(coordinates.accountId))
-    fail("CLOUDFLARE_ACCOUNT_ID is missing or invalid");
-  if (coordinates.currentMain !== coordinates.sourceSha)
-    fail("build SHA is superseded by current main");
-}
-
 export function validateRemoteMigrations(actual, expected) {
   if (JSON.stringify(actual) !== JSON.stringify(expected))
     fail("production D1 migration ledger is pending, missing, or divergent");
@@ -1042,11 +790,7 @@ export function childEnvironment(input, policy = "public") {
     if (input.CLOUDFLARE_API_TOKEN)
       environment.CLOUDFLARE_API_TOKEN = input.CLOUDFLARE_API_TOKEN;
     if (policy === "directory-reconciliation") {
-      for (const name of ["WORKERS_CI", "WORKERS_CI_BRANCH",
-        "WORKERS_CI_COMMIT_SHA", "WORKERS_CI_BUILD_UUID", "WRANGLER_CI_MATCH_TAG",
-        "WRANGLER_CI_OVERRIDE_NAME", "ATRINIK_WORKERS_BUILDS_API_TOKEN",
-        "ATRINIK_DEVELOPMENT_WORKERS_BUILDS_API_TOKEN", "ATRINIK_DELIVERY_ENVIRONMENT",
-        ...promotionEnvironmentNames])
+      for (const name of ["ATRINIK_DELIVERY_ENVIRONMENT", ...promotionEnvironmentNames])
         if (typeof input[name] === "string") environment[name] = input[name];
     }
   } else if (policy !== "public") {
@@ -1270,7 +1014,7 @@ export function validateProtectedDocument(value, variable) {
   if (typeof value !== "string" || value.length === 0)
     fail(`${variable} is missing`);
   if (Buffer.byteLength(value, "utf8") > 5 * 1024)
-    fail(`${variable} exceeds the Workers Builds variable limit`);
+    fail(`${variable} exceeds the protected input limit`);
   if (value.includes("\0")) fail(`${variable} contains an invalid byte`);
   return value;
 }
@@ -1483,7 +1227,7 @@ async function currentMainSha(contract) {
     response = await fetch(contract.source.currentMainUrl, {
       headers: {
         Accept: "application/vnd.github+json",
-        "User-Agent": "atrinik-metaserver-workers-builds",
+        "User-Agent": "atrinik-metaserver-delivery",
         "X-GitHub-Api-Version": "2022-11-28",
       },
       signal: AbortSignal.timeout(15_000),
@@ -1531,7 +1275,7 @@ async function cloudflareResult(
   path,
   { method = "GET", token = process.env.CLOUDFLARE_API_TOKEN } = {},
 ) {
-  if (!token) fail("Workers Builds Cloudflare API token is missing");
+  if (!token) fail("Cloudflare API token is missing");
   let response;
   try {
     response = await deliveryFetch(
@@ -1552,188 +1296,6 @@ async function cloudflareResult(
   if (body?.success !== true || !("result" in body))
     fail("Cloudflare control-plane readback returned an invalid result");
   return body.result;
-}
-
-function activeBuild(build) {
-  return ["queued", "initializing", "running"].includes(build.status);
-}
-
-export function selectBuildLeaseOwner(builds, sourceSha, triggerUuid) {
-  const eligible = builds
-    .filter(
-      (build) =>
-        activeBuild(build) &&
-        build.trigger?.trigger_uuid === triggerUuid &&
-        build.build_trigger_metadata?.branch === "main" &&
-        build.build_trigger_metadata?.commit_hash === sourceSha,
-    )
-    .sort((left, right) => {
-      const created = String(left.created_on).localeCompare(String(right.created_on));
-      return created || String(left.build_uuid).localeCompare(String(right.build_uuid));
-    });
-  if (eligible.length === 0) fail("no active eligible production build exists");
-  const owner = eligible.at(-1);
-  return owner.build_uuid;
-}
-
-export function buildLeaseDecision(builds, sourceSha, triggerUuid, buildUuid) {
-  if (selectBuildLeaseOwner(builds, sourceSha, triggerUuid) !== buildUuid)
-    fail("another main build owns the production topology lease");
-  return builds.filter(
-    (build) =>
-      build.build_uuid !== buildUuid &&
-      activeBuild(build) &&
-      build.trigger?.trigger_uuid === triggerUuid &&
-      build.build_trigger_metadata?.branch === "main",
-  );
-}
-
-export async function arbitrateBuildLease({
-  sourceSha,
-  buildUuid,
-  triggerUuid,
-  currentMain,
-  listBuilds,
-  cancelBuild,
-  readBuild,
-  pause = () => wait(1_000),
-  rounds = 3,
-  polls = 30,
-}) {
-  const proveCurrent = async () => {
-    if (await currentMain() !== sourceSha)
-      fail("build SHA is superseded by current main");
-  };
-  let cancellationAuthorized = false;
-  for (let round = 0; round < rounds; round += 1) {
-    const builds = await listBuilds();
-    if (!Array.isArray(builds)) fail("Workers Builds lease inventory is invalid");
-    const competitors = buildLeaseDecision(
-      builds,
-      sourceSha,
-      triggerUuid,
-      buildUuid,
-    );
-    if (competitors.length === 0) {
-      await proveCurrent();
-      return;
-    }
-    if (
-      round > 0 &&
-      competitors.some(
-        (build) => build.build_trigger_metadata?.commit_hash !== sourceSha,
-      )
-    ) fail("production build lease changed during arbitration");
-    if (!cancellationAuthorized) {
-      // Prove direction only after observing competitors, then retain one final
-      // proof after convergence. The no-competitor path needs only the latter.
-      await proveCurrent();
-      cancellationAuthorized = true;
-    }
-    for (const build of competitors) {
-      await cancelBuild(build.build_uuid);
-    }
-    for (const build of competitors) {
-      let stopped = false;
-      for (let attempt = 0; attempt < polls; attempt += 1) {
-        if (!activeBuild(await readBuild(build.build_uuid))) {
-          stopped = true;
-          break;
-        }
-        await pause();
-      }
-      if (!stopped) fail("competing production build did not release the lease");
-    }
-  }
-  const finalBuilds = await listBuilds();
-  if (!Array.isArray(finalBuilds)) fail("Workers Builds lease inventory is invalid");
-  if (buildLeaseDecision(
-    finalBuilds,
-    sourceSha,
-    triggerUuid,
-    buildUuid,
-  ).length !== 0) fail("production build lease did not converge");
-  await proveCurrent();
-}
-
-export function validateBuildTrigger(contract, build, matchTag) {
-  const metadata = build.build_trigger_metadata ?? {};
-  const trigger = build.trigger ?? {};
-  const connection = trigger.repo_connection ?? {};
-  const metadataSkipDependencyInstall =
-    metadata.environment_variables?.SKIP_DEPENDENCY_INSTALL;
-  const skipDependencyInstall =
-    typeof metadataSkipDependencyInstall === "string"
-      ? metadataSkipDependencyInstall
-      : metadataSkipDependencyInstall?.value;
-  const normalizedRoot = trigger.root_directory === "/" ? "" : trigger.root_directory;
-  if (
-    metadata.build_command !== contract.installCommand ||
-    metadata.deploy_command !== contract.deployCommand ||
-    !["push_event", "push", "retry", "manual", "api"].includes(metadata.build_trigger_source) ||
-    metadata.provider_type !== "github" ||
-    metadata.provider_account_name !== "atrinik" ||
-    metadata.repo_name !== "metaserver-worker" ||
-    (metadata.root_directory === "/" ? "" : metadata.root_directory) !==
-      contract.rootDirectory ||
-    skipDependencyInstall !== "1" ||
-    trigger.build_command !== contract.installCommand ||
-    trigger.deploy_command !== contract.deployCommand ||
-    normalizedRoot !== contract.rootDirectory ||
-    !sameValues(trigger.branch_includes ?? [], [contract.productionBranch]) ||
-    !sameValues(trigger.branch_excludes ?? [], []) ||
-    !sameValues(trigger.path_includes ?? [], contract.pathIncludes) ||
-    !sameValues(trigger.path_excludes ?? [], contract.pathExcludes) ||
-    trigger.external_script_id !== matchTag ||
-    connection.provider_type !== "github" ||
-    connection.provider_account_name !== "atrinik" ||
-    connection.repo_name !== "metaserver-worker"
-  ) fail("live Workers Builds trigger drift");
-}
-
-export function validateBuildEnvironment(contract, environment) {
-  const legacyControlPlaneGate = "ATRINIK_PRODUCTION_CONTROL_PLANE_READY";
-  const protectedNames = [
-    contract.protectedInputs.accountVariable,
-    contract.protectedInputs.coreConfigVariable,
-    contract.protectedInputs.publisherConfigVariable,
-    contract.protectedInputs.rendezvousConfigVariable,
-    contract.protectedInputs.buildsApiTokenVariable,
-  ];
-  const expectedNames = [
-    ...Object.keys(contract.buildEnvironment),
-    ...protectedNames,
-  ];
-  const actualNames = Object.keys(environment);
-  const acceptedNames = environment[legacyControlPlaneGate] === undefined
-    ? expectedNames
-    : [...expectedNames, legacyControlPlaneGate];
-  if (!sameValues(actualNames, acceptedNames))
-    fail("live Workers Builds environment inventory drift");
-  if (
-    environment.SKIP_DEPENDENCY_INSTALL?.is_secret !== false ||
-    environment.SKIP_DEPENDENCY_INSTALL?.value !== "1"
-  ) fail("live Workers Builds bootstrap environment drift");
-  for (const name of protectedNames) {
-    if (environment[name]?.is_secret !== true || environment[name]?.value != null)
-      fail("protected Workers Builds environment classification drift");
-  }
-  if (
-    environment[legacyControlPlaneGate] !== undefined &&
-    (environment[legacyControlPlaneGate]?.is_secret !== true ||
-      environment[legacyControlPlaneGate]?.value != null)
-  ) fail("legacy Workers Builds environment classification drift");
-}
-
-export function selectLiveTrigger(triggers, triggerUuid) {
-  if (!Array.isArray(triggers))
-    fail("live Workers Builds trigger inventory is invalid");
-  const matching = triggers.filter(
-    ({ trigger_uuid: value }) => value === triggerUuid,
-  );
-  if (matching.length !== 1)
-    fail("live Workers Builds trigger is missing or ambiguous");
-  return matching[0];
 }
 
 export function selectApiHandoffRoles(
@@ -1884,84 +1446,6 @@ export async function verifyCallerActivationHandoff({ role, proof, verify, autho
   }
 }
 
-async function assertBuildLease(
-  contract,
-  sourceSha,
-  buildUuid,
-  { arbitrate = true, exclusiveReadOnly = false, environment = process.env } = {},
-) {
-  const accountId = environment.CLOUDFLARE_ACCOUNT_ID;
-  const token = validateProtectedDocument(
-    environment[contract.protectedInputs.buildsApiTokenVariable],
-    contract.protectedInputs.buildsApiTokenVariable,
-  );
-  const self = await cloudflareResult(
-    accountId,
-    `/builds/builds/${encodeURIComponent(buildUuid)}`,
-    { token },
-  );
-  const triggerUuid = self.trigger?.trigger_uuid;
-  if (
-    self.build_uuid !== buildUuid ||
-    !activeBuild(self) ||
-    self.build_trigger_metadata?.branch !== "main" ||
-    self.build_trigger_metadata?.commit_hash !== sourceSha ||
-    typeof triggerUuid !== "string" ||
-    !triggerUuid
-  )
-    fail("Workers Builds execution identity or command drift");
-  const liveTriggers = await cloudflareResult(
-    accountId,
-    `/builds/workers/${encodeURIComponent(environment.WRANGLER_CI_MATCH_TAG)}/triggers`,
-    { token },
-  );
-  const liveTrigger = selectLiveTrigger(liveTriggers, triggerUuid);
-  validateBuildTrigger(
-    contract,
-    {
-      build_trigger_metadata: self.build_trigger_metadata,
-      trigger: liveTrigger,
-    },
-    environment.WRANGLER_CI_MATCH_TAG,
-  );
-  validateBuildEnvironment(
-    contract,
-    await cloudflareResult(
-      accountId,
-      `/builds/triggers/${encodeURIComponent(triggerUuid)}/environment_variables`,
-      { token },
-    ),
-  );
-  if (!arbitrate && !exclusiveReadOnly) return;
-  const buildsPath =
-    `/builds/workers/${encodeURIComponent(environment.WRANGLER_CI_MATCH_TAG)}/builds`;
-  if (exclusiveReadOnly) {
-    const builds = await cloudflareResult(accountId, buildsPath, { token });
-    if (!Array.isArray(builds) || buildLeaseDecision(
-      builds, sourceSha, triggerUuid, buildUuid).length !== 0)
-      fail("directory reconciliation production lease is not exclusive");
-    await assertCurrentMain(contract, sourceSha);
-    return;
-  }
-  await arbitrateBuildLease({
-    sourceSha,
-    buildUuid,
-    triggerUuid,
-    currentMain: () => currentMainSha(contract),
-    listBuilds: () => cloudflareResult(accountId, buildsPath, { token }),
-    cancelBuild: (uuid) => cloudflareResult(
-      accountId,
-      `/builds/builds/${encodeURIComponent(uuid)}/cancel`,
-      { method: "PUT", token },
-    ),
-    readBuild: (uuid) => cloudflareResult(
-      accountId,
-      `/builds/builds/${encodeURIComponent(uuid)}`,
-      { token },
-    ),
-  });
-}
-
 // A child cannot turn syntax-valid CI variables into live authority. Independently
 // authenticate the same exact running build and current-main exclusive lease.
 // This path only observes provider state; it never cancels competing builds.
@@ -1981,7 +1465,7 @@ export async function createDeliveryAuthority(contract, environment = process.en
     await authority.fence();
     return authority;
   }
-  if (contract.target !== "development") fail("historical contract cannot authorize delivery");
+  if (contract.target !== "development") fail("unknown delivery target");
   const { createDevelopmentAuthority } = await import("./development-actions-authority.mjs");
   return createDevelopmentAuthority({ environment, checkoutHead, dirty });
 }
@@ -2007,18 +1491,11 @@ export async function assertDirectoryBuildContext(config, environment = process.
   await fenceDeliveryMutation(authority, () => resourceTransition.fence());
 }
 
-// A drain is read-only, but its wait invalidates every earlier resource proof.
-// The second pass cannot wait: new work or drift stops the mutation handoff.
 export async function fenceDeliveryMutation(authority, resourceFence,
   readSource = async () => ({ head: await git("rev-parse", "HEAD"),
     dirty: await git("status", "--porcelain") !== "" })) {
   await resourceFence();
-  const result = await authority.fence();
-  if (result?.waited === true) {
-    await resourceFence();
-    const final = await authority.fence({ allowDrain: false });
-    if (final?.waited === true) fail("delivery authority unexpectedly waited at final handoff");
-  }
+  await authority.fence();
   const source = await readSource();
   if (source.head !== authority.sourceSha || source.dirty !== false) fail("delivery source checkout drift");
 }

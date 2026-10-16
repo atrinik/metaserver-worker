@@ -90,19 +90,10 @@ function completePage(value, key) {
 }
 
 export async function createDevelopmentAuthority({ environment = process.env, checkoutHead, dirty,
-  fetcher = fetch, readEvent = (path) => readFile(path, "utf8"), now = () => Date.now(),
-  writerFence = async (input, options) => {
-    const { assertProductionPromotionWriterFence } = await import("./production-writer-fence.mjs");
-    // Every main push also queues the retained inert production build, which
-    // Cloudflare can hold for several minutes before it runs and stops.
-    return assertProductionPromotionWriterFence({ environment: input, fetcher,
-      drainMilliseconds: 480_000, pollMilliseconds: 15_000, ...options });
-  } } = {}) {
+  fetcher = fetch, readEvent = (path) => readFile(path, "utf8"), now = () => Date.now() } = {}) {
   const event = JSON.parse(await readEvent(environment.GITHUB_EVENT_PATH));
   const sourceSha = validateDevelopmentContext(environment, event, checkoutHead, dirty);
-  const fence = async ({ allowDrain = true } = {}) => {
-    // The final GitHub read follows all potentially slow provider sweeps.
-    const writer = await writerFence(environment, { allowDrain });
+  const fence = async () => {
     const github = (path) => requestJson(path, environment, fetcher);
     const [repo, branch, run, check, jobs, deployJobs, activeRuns, protection] = await Promise.all([
       github(""), github("/branches/main"), github(`/actions/runs/${environment.GITHUB_RUN_ID}`),
@@ -116,7 +107,6 @@ export async function createDevelopmentAuthority({ environment = process.env, ch
       jobs: completePage(jobs, "jobs"), deployJobs: completePage(deployJobs, "jobs"),
       activeRuns: completePage(activeRuns, "workflow_runs"), protection };
     validateDevelopmentEvidence(environment, event, evidence, now());
-    return { waited: writer?.waited === true };
   };
   await fence();
   return { sourceSha, executionId: environment.GITHUB_RUN_ID, fence,

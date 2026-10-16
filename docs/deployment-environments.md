@@ -35,13 +35,8 @@ replay/admission secrets. Each public caller owns only its one named Service
 Binding and public circuit configuration; no state binding or signing material.
 All three Workers disable `workers.dev` and preview URLs.
 
-GitHub Actions is the sole active PR/source-validation path. Retain the
-Cloudflare review connection and incident history inactive. Fresh provider
-review readback includes an encrypted Builds secret and a shared user Builds
-wrapper whose effective policy is unreadable. It cannot be described as
-credential-free or zero-resource. Restoring credential-free review requires
-separate authorization and fresh policy proof; DEV activation grants neither.
-Historical live-review fixture authority remains separate.
+GitHub Actions is the only PR/source-validation path. Cloudflare Workers
+Builds is retired and takes no part in validation or delivery.
 
 ## Protect and verify all resource cohorts
 
@@ -51,7 +46,7 @@ Both DEV and PROD execution environments supply protected
 inventory bounded to 48 KiB. It pins PROD, DEV and any provisioned live-review
 cohort with exact binding purposes/resource IDs, stable origins/routes,
 configuration and secret **names**. A review cohort is included only when live
-resources exist; the retained inactive branch-review trigger creates no cohort.
+resources exist.
 Keep the policy outside public artifacts and logs. The inventory-policy digest
 is included in the deployable digest approved for promotion; a changed policy
 requires recalculation and owner review of the exact coordinates.
@@ -81,7 +76,7 @@ configuration checks; annotations must match the caller role. Annotated core
 and non-bootstrap predecessors retain strict deployment arguments. Existing
 unannotated API handoffs remain unchanged. Other provenance, including Wrangler
 and dashboard deployments, retains `--strict`. The handoff grants no retry or
-bypass of the existing source, resource, writer and predecessor fences.
+bypass of the existing source, resource and predecessor fences.
 During the one-use bootstrap, successful caller secret retirement may create a
 new API-provenance version. Admit that caller's subsequent activation to the same
 handoff only after retirement completes, the resource transition is confirmed,
@@ -97,107 +92,6 @@ unchanged `wrangler` pair restores strict activation even when the
 pre-staging predecessor qualified for handoff; missing or inconsistent provenance
 stops activation. Failed or unknown retirement never grants this exception; core
 and other callers gain no exception from it.
-
-## Retire the previous production writer first
-
-Before publication of the replacement policy, an authorized provider operator
-must fence both retained Cloudflare production and review commands and drain
-all queued/running Builds, including review. For `retained-inert-builds`, both
-exact trigger build and deploy commands must be literal `exit 1`; no repository
-code or dependency installation may run. Disable implicit installation through
-`SKIP_DEPENDENCY_INSTALL=1` and pin the existing caching/environment settings.
-Preserve the valid existing selectors: production includes `main` with no
-exclusions; review includes `*` and excludes `main`. Seal exact private trigger,
-selector, configuration and environment digests, including a bounded startup
-allowlist. Do not broaden a rejected branch-filter patch or alter provider
-identity to make it pass.
-
-Apply only the documented two-field commands PATCH:
-`{build_command: "exit 1", deploy_command: "exit 1"}` to each exact trigger,
-with fresh per-operation readback and the helper's private receipts. Commands
-are the fence for manual builds and retries as well as push-triggered builds.
-Builds may still enqueue or automatically start and fail immediately; this
-policy does not disable branch pushes or guarantee an empty queue. Require all
-Builds stopped at every promotion fence, and no additional trigger or active
-Build across the six PROD/DEV Workers. Set the protected
-`ATRINIK_PRODUCTION_WRITER_FENCE_POLICY` disposition explicitly to
-`retained-inert-builds`; never infer the exception from shared wrapper IDs.
-
-The deployment authority may drain known running inert Builds using read-only
-checks for at most 60 seconds. Eligibility requires each recorded launch to
-match the sealed inert commands, identity and environment; a new or unknown
-build, control drift or provider/authentication error stops immediately. This
-wait never retries an upload, secret removal or other provider mutation. All
-Builds must still be stopped before proceeding. After any wait, repeat the
-resource, current source/run, writer and clean-checkout proofs; the final
-handoff disables draining, so another build cannot introduce a second wait
-between those fresh proofs and a mutation or recovery operation.
-
-Retries use the configuration current when retried, so fresh command/config
-readback is part of the fence, not a historical build-start snapshot. See
-[Cloudflare build settings](https://developers.cloudflare.com/workers/ci-cd/builds/configuration/#build-settings).
-Require exhaustive proof that all Builds and uploads are stopped. A disabled
-branch selector, requested cancellation, cached inventory or source contract
-alone is insufficient. Preserve exact predecessor versions and private proof.
-
-Seal the bounded protected-input allowlist by name and classification. Retained
-PROD secret names are `CLOUDFLARE_ACCOUNT_ID`,
-`ATRINIK_PRODUCTION_CORE_CONFIG`, `ATRINIK_PRODUCTION_PUBLISHER_CONFIG`,
-`ATRINIK_PRODUCTION_RENDEZVOUS_CONFIG`, `ATRINIK_WORKERS_BUILDS_API_TOKEN`
-and optionally
-`ATRINIK_PRODUCTION_CONTROL_PLANE_READY`; review may retain only optional
-`ATRINIK_WORKERS_BUILDS_API_TOKEN`. Each retained protected entry must read back
-as secret-classified with no visible value. `SKIP_DEPENDENCY_INSTALL` is the
-nonsecret literal `1` on both triggers. Unknown environment names, including
-startup variables, fail closed. Use exact private trigger/environment hashes,
-not the names alone, to bind the approved fence.
-
-Unknown retained credentials remain unread and uncalled. This alternative does
-not remove authentication, copy credentials, create a new production deploy
-path or grant secret deletion. Keep unrelated connections intact. A rejected
-PATCH is no transition proof: preserve its private receipt, read back exact
-provider state, and stop unsupported retries. Publication requires successful
-fresh acceptance of the full command, configuration and stopped-Build fence.
-
-The distinct `credential-free-review` disposition is available only with proven
-credential-free review policy and separately authorized restoration. Its former
-production trigger still requires literal `exit 1` build/deploy commands and
-skipped installation while preserving the valid main selector. Retaining the
-main selector never restores automatic PROD deployment. Neither disposition
-proves unreadable token scope or authorizes restoring Builds from history.
-
-The old v1 production contract, accepted setup/rotation authorities, applied
-migration history and incident journals remain historical evidence under their
-original coordinates. The historical contract is retained at
-`deployment/historical/workers-builds-production-v1.json`; neither those records
-nor a former accepted-main authority may activate the new PROD path. Retirement
-is a separately authorized provider change. This source patch does not perform
-it or prove it has occurred.
-
-Do not add or move a DEV Workers Builds trigger/repository connection. The
-retained provider 12002 constraint prevents one connection targeting two
-Workers, and the repository-connection API inventory cannot establish a
-per-Worker identity. Keep the historical review connection and trigger in place, with the retained
-inactive fence above.
-
-The operator transition interface emits a plan or the next exact API operation;
-use the final commands-only operation without changing the pinned selectors:
-
-```sh
-node scripts/deployment-environment-transition.mjs --plan /absolute/private-input.json /absolute/new-plan.json
-node scripts/deployment-environment-transition.mjs --next /absolute/private-input.json /absolute/new-operation.json
-```
-
-Neither command sends a network write. The `--next` input supplies `plan`,
-`snapshot`, `journalPath`, and `records`. Keep checksum-framed receipts at
-`${journalPath}.N.json` immutable and load them during recovery. Each snapshot
-must be no older than 30 seconds, complete and stable across the exhaustive
-inventory. Apply only the exact emitted request through the separately approved
-Cloudflare transport, then capture fresh readback before continuing. This
-transition retires the automatic writer; it grants no legacy runtime/data
-cleanup. The production promotion's read-only writer fence consumes
-`CLOUDFLARE_ACCOUNT_ID`, `ATRINIK_PRODUCTION_BUILDS_READ_TOKEN`, and
-`ATRINIK_PRODUCTION_WRITER_FENCE_POLICY` from protected environment input.
 
 ## Prepare persistent DEV
 
@@ -229,8 +123,7 @@ cleanup. The production promotion's read-only writer fence consumes
 5. Prepare the concrete source PR first. DEV automatic activation requires the
    owner-approved merge of the new source PR. The checked-in
    `deployment/workers-builds-development.json` retains its historical filename
-   but now declares the GitHub Actions provider; it does not authorize a new
-   Cloudflare trigger. `deploy-development.yml` runs on protected main pushes,
+   but declares the GitHub Actions provider. `deploy-development.yml` runs on protected main pushes,
    validates selected source without credentials, and deploys through a distinct
    DEV execution job with fixed DEV concurrency and `cancel-in-progress: false`.
    Retain pinned Node/npm, lockfile-resolved Wrangler, isolated dependency
@@ -546,7 +439,7 @@ envelope remains v1; the inner document identifies the operation schema without
 relabeling or rewriting historical artifacts.
 
 The production controller shares a single GET scheduler across its account API
-resource and native-rate inventories, writer fence, native control-plane reads
+resource and native-rate inventories, native control-plane reads
 and six-Worker caller snapshots. Starts are at least 334 milliseconds apart,
 without burst credits, regardless of credential. At most 128 outstanding governed
 calls are admitted. Queue waits count against the original request signal; no

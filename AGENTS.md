@@ -62,9 +62,7 @@
   mutation. Require an owner-approved immutable exact tag/SHA, verified release
   provenance and artifact/configuration/migration digests, expected predecessor,
   fixed production concurrency, and a one-use attempt. Reject workflow reruns.
-  Fence and drain the old automatic production writer before publication.
-  Retain its v1 contract under `deployment/historical/` solely for historical
-  incident verification; never reactivate it as routine policy. Stop before
+  Stop before
   promotion until the owner reviews and approves the exact tag. Both environment
   dry runs must retain zero remote mutation paths.
   The selected Git tree must contain the supported canonical
@@ -83,7 +81,7 @@
   authority. Provider readback exposes names, never secret values: disjoint key
   generation requires separate provisioning-receipt proof.
 - Production controller account-API GETs share one explicit fetch scheduler
-  across resource/native-rate inventories, writer fences, native control-plane
+  across resource/native-rate inventories, native control-plane
   reads and caller snapshots, regardless of token. Space actual starts by at
   least 334 ms; retain original request deadlines including queue time, the
   120-second double-snapshot limit and 10-second retirement handoff. A 429 stops
@@ -263,133 +261,10 @@
   Rate Limiting namespace IDs for canaries; reused namespace IDs share
   counters across Workers. Admission work is a computational cost gate, not
   anonymous-attacker fairness; bounded native solvers may time out on slower devices.
-- Historical provisioning/rotation procedures below preserve immutable incident
-  evidence; references to the old production automatic trigger describe that
-  historical state and grant no current activation authority.
-- GitHub Actions is the sole active PR/source-validation path.
+- GitHub Actions is the only PR/source-validation path.
   Check runs for pull requests targeting any base branch, including dependent
-  stacks; push validation remains limited to `main`. Retain Cloudflare
-  review inactive: fresh readback includes an encrypted Builds secret and a
-  shared wrapper with unreadable policy, so never call it credential-free.
-  Both retained Cloudflare triggers require literal `exit 1` build/deploy,
-  `SKIP_DEPENDENCY_INSTALL=1`, preserved valid selectors (production main/no
-  exclusions; review wildcard/exclude-main), sealed bounded startup environment/
-  configuration digests and every Build stopped at each fence, including review.
-  Apply only the documented two-field commands PATCH. Builds may still enqueue
-  or start and fail immediately; never claim that branch pushes are disabled.
-  Branch pause alone cannot fence manual/retried Builds. Retain unknown
-  credentials unread and uncalled; this policy authorizes no authentication
-  removal, secret copying or new PROD deployment. A rejected partial PATCH is
-  no transition proof. Restoring credential-free review needs separate current
-  authorization and policy proof. The historical
-  `deployment/workers-builds-review.json` design and incident procedures below
-  remain evidence, never current credential-boundary or activation proof.
-  Branch builds create no Worker version. Live review is an operator-supervised exact-SHA run in a dedicated
-  account with no GitHub connection or zone. Its production-disjoint resources, disabled
-  circuits, exact-duration lease, quiescing/terminal teardown fence, logical
-  versus physical fixture retention, Access boundary, and force-delete/readback cleanup guards must
-  remain synchronized with `docs/review-environment.md` and
-  `scripts/review-environment.mjs`. `scripts/workers-builds-provisioning.mjs`
-  composes both checked-in contracts, requires stable exhaustive private
-  provider inventories plus fresh production random-sentinel GitHub evidence,
-  and stages review activation behind a bounded digest-bound phase authority,
-  fresh per-command current-main evidence, a fresh private absent-root proof,
-  inert commands, the exact nonsecret environment, and an atomic final trigger PATCH.
-  A separately authorized review-token rotation may replace the review wrapper only through
-  the digest-pinned `review-token-rotation` gate: create one exact zero-resource successor,
-  repoint the journaled inert production trigger and final review trigger without changing any
-  other field, bind the replacement owner to a fresh accepted account-membership observation,
-  preserve the complete non-token production control plane, prove the predecessor wrapper
-  unreferenced across the exhaustive account inventory, then delete only that wrapper. Bind
-  current-main and authority before each exhaustive forward sweep, but measure the 30-second
-  mutation handoff from the fresh provider proof capture to intent, not from the earlier
-  authority check; the sweep may exceed 30 seconds while the authority retains its full reserve.
-  Bind
-  the terminal rotation proof and checksum-valid journal into every later disposable authority;
-  the original setup wrapper remains predecessor provenance and is never treated as live.
-  If predecessor deletion succeeds before terminal evidence is durable, recover only through the
-  historical-authority exact-state readback terminal; never backdate the deletion tombstone,
-  retry the deletion, or recreate the predecessor wrapper.
-  The fresh intermediate readback must also bind Cloudflare's peer disposition: accept either
-  the unchanged predecessor-token review trigger or only the provider-added production sentinel
-  exclusion. If rollback begins from that augmented phase, bind the current attempt's exact
-  completed 17-record forward prefix or only the contract-enumerated partial-production and
-  final-review-no-effect suffixes, the attempt namespace, and all applicable pre-mutation
-  proofs. Exceptional prefixes require a fresh exhaustive augmented-state handoff captured
-  after the last forward record; never backdate or synthesize a missing mutation bound. An
-  expired no-owned prefix may end at the fifth pre-create proof binding. Immediate and rerun
-  no-owned terminal validation must load that exact pre-create proof document; never substitute
-  the residual rollback proof. Fresh rotation authority binds the exact #114 program/#118 leaf
-  ledger and the completed #115 successor terminal. The failed #110 five-record forward and
-  two-record rollback journals are immutable inputs to that separately checksum-framed,
-  read-only successor terminal:
-  bind their exact raw/document coordinates and failed executor, capture a fresh exhaustive
-  predecessor snapshot under its own authenticated current-main proof, and use only the dedicated
-  no-owned successor verifier. Preserve its deterministic readable/compact equivalence test and
-  execute both forms against the same terminal evidence. Never append or relabel either historical
-  journal. Then restore
-  a fresh exhaustive augmented-state rollback precondition after current-main and authority
-  and no more than 30 seconds before the production intent, restore production first, prove
-  the resulting peer state, and patch
-  review only when that one
-  exclusion remains. Never substitute the pinned
-  historical incident coordinate for a fresh attempt.
-  The #96 provider-normalized incident is a separate rollback-only phase: bind its exact
-  12-record prefix and exhaustive peer-augmented snapshot, restore production first, then prove
-  whether Cloudflare normalized the peer review trigger. Patch review only when the one sentinel
-  exclusion remains, prove predecessor restoration and global replacement-wrapper absence, and
-  delete only the journal-created replacement. Every incident write uses the incident-only
-  historical-authority verifier, which authenticates current `main` while retaining the exact
-  pinned historical source, plan, and authority file. Never alias this state to an ordinary
-  rotation phase or continue the forward rotation.
-  The #102 rollback-blocked terminal is immutable. Its final delete intent stopped before any
-  provider DELETE because the account-wide `/builds/triggers` guard is unsupported. Retire that
-  still-present wrapper only through the separate #104 one-write successor: pin the exact blocked
-  journal, proof, snapshot, executor, and failed guard. Only that exact pinned 96,731-byte
-  historical executor may use the narrow 128 KiB incident-evidence limit; the successor executor
-  and every other private document retain the 64 KiB limit. Recapture the account trigger inventory by
-  stable Worker-script enumeration plus per-script trigger reads; issue a fresh current-main-bound
-  authority bound to the full proof document and one canonical receipt; and delete only the
-  freshly proven globally unreferenced replacement UUID. Bind the terminal provider observation to
-  its own authenticated current-main proof; keep that observation source distinct from both the
-  historical write-authority source and any later verifier's current main. A blocked residual sweep
-  must start after the failed prefix, and exact complete/blocked terminals require the dedicated
-  successor-journal verifier before handoff or rerun. Never
-  resume the old intent, repeat either trigger PATCH, or use the unsupported account-wide route.
-  The disposable automatic-build proof uses a separate renewable 60-minute
-  authority issued only from the exact review-active state; it permits only the
-  journaled disposable push/delete and exact owned-build cleanup, never production activation.
-  Bind the exact branch, commit, journal identity, predecessor journals, and current
-  trigger/wrapper UUIDs; require exclusive one-use receipts, 40 minutes remaining
-  before push, and five before deletion.
-  A membership-readable review-token repair must create a fresh user token,
-  never edit the failed token in place or use an account-owned token. Bind the
-  exact #120 failure and current review-active state, permit only User Details
-  Read plus Memberships Read on only that owner's self-user resource with no
-  account/zone scope, then hand the new
-  owner-only secret and policy proof to a distinct successor rotation. That
-  authority derives the live predecessor wrapper and token from the immutable
-  prior rotation terminal, never from the absent original setup wrapper, and
-  binds the exact membership-repair authority, journal, result, and snapshot
-  manifest before reusing the existing proof-gated rotation state machine. Every
-  forward, rollback, blocked, and terminal phase snapshot must select that
-  authority-bound predecessor by UUID and underlying token ID; the predecessor
-  and replacement may legitimately share the current wrapper name during the
-  successor rotation, so names alone never distinguish their generations.
-  API Tokens Write is a separate
-  owner-bootstrap boundary and must not be inferred from any Workers Builds
-  credential. A lost one-time secret from a completed membership repair is
-  recoverable only through the distinct #131 program/attempt-bound authority:
-  never replay or amend #122, never adopt the bootstrap as the replacement,
-  and never retry a durable POST intent. Bind exact complete or post-prefix
-  blocked evidence; cleanup is limited to the exact journal-created unwrapped
-  token after exhaustive wrapper-unreference proof. A successful recovery must
-  feed a new membership-successor coordinate into a wholly fresh wrapper
-  rotation namespace.
-  It performs only readback and local protected-document materialization, and must never gain implicit
-  provider mutation. Provider apply and live-canary execution remain gated by
-  separate maintainer authorization; `npm run deploy:review-canary` must fail
-  closed until the dedicated account and exact runner are reviewed and provisioned.
+  stacks; push validation remains limited to `main`. Cloudflare Workers Builds
+  is retired: do not add Builds triggers, provisioning or Builds-state checks.
 - Preserve the curated `request_rejected`, `blacklist_match`, and
   `unexpected_error` diagnostics with their closed, redacted schemas. Do not
   log routine success, expected `404`, rate-limit, or open-circuit traffic; use

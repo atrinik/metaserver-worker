@@ -169,33 +169,27 @@ test("each artifact dimension and the queued predecessor are independently fence
 });
 
 test("fresh authority is fetched on every fence; moved tag prevents the next mutation", async () => {
-  const f = fixture(); let writerChecks = 0;
+  const f = fixture();
   const authority = await createProductionAuthority({ environment: f.environment, checkoutHead: source, dirty: false,
-    readEvent: async () => JSON.stringify(f.event), fetcher: fakeFetch(f), now: () => now,
-    writerFence: async () => { writerChecks += 1; } });
+    readEvent: async () => JSON.stringify(f.event), fetcher: fakeFetch(f), now: () => now });
   assert.equal(authority.sourceSha, source);
   assert.equal(authority.executionId, "1234");
   await authority.fence();
-  assert.equal(writerChecks, 2);
   f.evidence.tagSha = controller;
   await assert.rejects(authority.fence(), /tag/);
-  assert.equal(writerChecks, 2);
 });
 
-test("dispatch expiry during writer inventory stops initial and subsequent authority handoff", async () => {
+test("dispatch expiry stops initial and subsequent authority handoff", async () => {
   const f = fixture();
   const created = Date.parse(f.evidence.run.created_at);
-  let clock = created + 60 * 60 * 1000 - 1000;
-  let sweepDuration = 2000;
+  let clock = created + 60 * 60 * 1000 + 1000;
   const options = { environment: f.environment, checkoutHead: source, dirty: false,
-    readEvent: async () => JSON.stringify(f.event), fetcher: fakeFetch(f), now: () => clock,
-    writerFence: async () => { clock += sweepDuration; } };
+    readEvent: async () => JSON.stringify(f.event), fetcher: fakeFetch(f), now: () => clock };
   await assert.rejects(createProductionAuthority(options), /freshness/);
 
   clock = created + 60 * 60 * 1000 - 1000;
-  sweepDuration = 0;
   const authority = await createProductionAuthority(options);
-  sweepDuration = 2000;
+  clock += 2000;
   let mutations = 0;
   await assert.rejects(async () => { await authority.fence(); mutations += 1; }, /freshness/);
   assert.equal(mutations, 0);
@@ -205,24 +199,15 @@ for (const [name, change] of [
   ["tag moved", (f) => { f.evidence.tagSha = controller; }],
   ["run cancelled", (f) => { f.evidence.run.status = "completed"; f.evidence.run.conclusion = "cancelled"; }],
   ["operator permission revoked", (f) => { f.evidence.actorPermission.permission = "read"; }],
-]) test(`refreshes GitHub authority after writer sweep: ${name}`, async () => {
+]) test(`refreshes GitHub authority before each mutation: ${name}`, async () => {
   const f = fixture();
-  let mutateDuringSweep = false;
   const options = { environment: f.environment, checkoutHead: source, dirty: false,
-    readEvent: async () => JSON.stringify(f.event), fetcher: fakeFetch(f), now: () => now,
-    writerFence: async () => { if (mutateDuringSweep) change(f); } };
+    readEvent: async () => JSON.stringify(f.event), fetcher: fakeFetch(f), now: () => now };
   const authority = await createProductionAuthority(options);
-  mutateDuringSweep = true;
+  change(f);
   let mutations = 0;
   await assert.rejects(async () => { await authority.fence(); mutations += 1; });
   assert.equal(mutations, 0);
-});
-
-test("writer fence failure denies authority before delivery", async () => {
-  const f = fixture();
-  await assert.rejects(createProductionAuthority({ environment: f.environment, checkoutHead: source, dirty: false,
-    readEvent: async () => JSON.stringify(f.event), fetcher: fakeFetch(f), now: () => now,
-    writerFence: async () => { throw new Error("old writer active"); } }), /old writer active/);
 });
 
 test("annotated tags are peeled with a bounded exact commit check", async () => {
@@ -497,33 +482,20 @@ test("a mismatched action-host version still selects and probes the actual pinne
   assert(launched);
 });
 
-test("retirement handoff refreshes full source authority without repeating the slow provider sweep", async () => {
+test("retirement handoff refreshes full source authority", async () => {
   for (const change of [
     f => { f.evidence.tagSha = controller; },
     f => { f.evidence.run.status = "completed"; f.evidence.run.conclusion = "cancelled"; },
     f => { f.evidence.actorPermission.permission = "read"; },
   ]) {
-    const f = fixture(); let sweeps = 0;
+    const f = fixture();
     const authority = await createProductionAuthority({ environment: f.environment, checkoutHead: source, dirty: false,
-      readEvent: async () => JSON.stringify(f.event), fetcher: fakeFetch(f), now: () => now,
-      writerFence: async () => { sweeps++; } });
-    await authority.authorize(); assert.equal(sweeps, 1);
+      readEvent: async () => JSON.stringify(f.event), fetcher: fakeFetch(f), now: () => now });
+    await authority.authorize();
     change(f); let writes = 0;
     await assert.rejects(async () => { await authority.authorize(); writes++; });
-    assert.equal(writes, 0); assert.equal(sweeps, 1);
+    assert.equal(writes, 0);
   }
-});
-
-test("PROD propagates drain completion and supports a strict final authority pass", async () => {
-  const f = fixture(), seen = [];
-  const authority = await createProductionAuthority({ environment: f.environment, checkoutHead: source, dirty: false,
-    readEvent: async () => JSON.stringify(f.event), fetcher: fakeFetch(f), now: () => now,
-    writerFence: async (_environment, _fetcher, options) => {
-      seen.push(options.allowDrain); return { waited: options.allowDrain };
-    } });
-  assert.deepEqual(await authority.fence(), { waited: true });
-  assert.deepEqual(await authority.fence({ allowDrain: false }), { waited: false });
-  assert.deepEqual(seen, [true, true, false]);
 });
 
 const diagnosticEndpoints = [

@@ -248,8 +248,7 @@ export async function validatePromotionSource({ environment = process.env, fetch
 }
 
 export async function createProductionAuthority({ environment = process.env, checkoutHead, dirty,
-  fetcher = fetch, readEvent = (path) => readFile(path, "utf8"), now = () => Date.now(),
-  writerFence = assertProductionWriterFence } = {}) {
+  fetcher = fetch, readEvent = (path) => readFile(path, "utf8"), now = () => Date.now() } = {}) {
   let event;
   try { event = JSON.parse(await readEvent(environment.GITHUB_EVENT_PATH)); }
   catch { fail("GitHub dispatch event is missing or invalid", "event", "json-invalid"); }
@@ -258,27 +257,13 @@ export async function createProductionAuthority({ environment = process.env, che
     const evidence = await readPromotionEvidence(environment, inputs, fetcher);
     validatePromotionEvidence({ environment, event, inputs, evidence, now: now() });
   };
-  const fence = async ({ allowDrain = true } = {}) => {
-    await authorize();
-    const writer = await writerFence(environment, fetcher, { allowDrain });
-    // Provider sweeps can outlive the dispatch or race a cancellation/tag move.
-    // Refresh GitHub authority, then check its deadline at the mutation handoff.
-    await authorize();
-    return { waited: writer?.waited === true };
-  };
+  const fence = authorize;
   await fence();
   return {
     sourceSha: inputs.source_sha, executionId: environment.GITHUB_RUN_ID, fence, authorize,
     validatePlan: async (plan) => validatePromotionPlan(inputs, plan),
     validatePredecessor: async (_annotations, { versions }) => validatePromotionPredecessor(inputs, versions),
   };
-}
-
-// Filled from the provider's read-only transition verifier; no CF mutation API is
-// available to this adapter. The immutable controller chooses the implementation.
-export async function assertProductionWriterFence(environment, fetcher = fetch, options = {}) {
-  const { assertProductionPromotionWriterFence } = await import("./production-writer-fence.mjs");
-  return assertProductionPromotionWriterFence({ environment, fetcher, ...options });
 }
 
 const promotionFailure = () => ({ outcome: "production-promotion-stopped", reason: "authority-or-delivery-verification-failed" });

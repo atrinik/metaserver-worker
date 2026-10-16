@@ -1,5 +1,4 @@
 // Copyright (C) 2026 Atrinik contributors
-// The historical contract is validation evidence only, never live authority.
 export const developmentWorkerNames = Object.freeze([
   "atrinik-metaserver-development",
   "atrinik-metaserver-development-publisher",
@@ -13,7 +12,6 @@ export const promotionEnvironmentNames = Object.freeze([
   "ATRINIK_DELIVERY_SOURCE_ROOT", "ATRINIK_DEVELOPMENT_SHA", "ATRINIK_PROMOTION_TAG", "ATRINIK_PROMOTION_SHA",
   "ATRINIK_PROMOTION_ARTIFACT_DIGEST", "ATRINIK_PROMOTION_CONFIG_DIGEST",
   "ATRINIK_PROMOTION_MIGRATION_DIGEST", "ATRINIK_PROMOTION_PREDECESSOR",
-  "ATRINIK_PRODUCTION_BUILDS_READ_TOKEN", "ATRINIK_PRODUCTION_WRITER_FENCE_POLICY",
 ]);
 const origins = Object.freeze({
   "https://classic.meta.atrinik.org": "https://classic.dev.meta.atrinik.org",
@@ -21,52 +19,6 @@ const origins = Object.freeze({
   "https://publish.meta.atrinik.org": "https://publish.dev.meta.atrinik.org",
   "https://rendezvous.meta.atrinik.org": "https://rendezvous.dev.meta.atrinik.org",
 });
-export function targetContract(historical, target) {
-  if (!["development", "production"].includes(target))
-    throw new Error("unknown delivery target");
-  const value = structuredClone(historical);
-  value.schemaVersion = 2;
-  value.target = target;
-  if (target === "production") {
-    value.provider = "github-actions";
-    value.automaticPush = false;
-    value.source = { kind: "immutable-release-tag", repository: "atrinik/metaserver-worker",
-      workflow: "promote-production.yml", controllerBranch: "main" };
-    delete value.protectedInputs.buildsApiTokenVariable;
-    Object.assign(value.invariants, {
-      controlPlanePolicy: "explicit-immutable-tag-promotion",
-      buildSerialization: "github-actions-production-concurrency",
-      noOp: "selected-source-and-matching-bundles-config-migrations",
-      recovery: "disabled-circuit-fix-forward-and-fresh-tag-promotion",
-    });
-  } else {
-    value.provider = "github-actions";
-    value.source = { kind: "successful-main-check", repository: "atrinik/metaserver-worker",
-      workflow: "deploy-development.yml", validationWorkflow: "check.yml", controllerBranch: "main" };
-    value.invariants.buildSerialization = "github-actions-development-concurrency";
-    value.deployCommand = "npm run deploy:development";
-    value.reviewCommand = "npm run deploy:development:dry-run";
-    for (const key of ["coreConfigVariable", "publisherConfigVariable", "rendezvousConfigVariable"])
-      value.protectedInputs[key] = value.protectedInputs[key].replace("PRODUCTION", "DEVELOPMENT");
-    delete value.protectedInputs.buildsApiTokenVariable;
-    for (const [index, worker] of value.workers.entries()) {
-      worker.name = developmentWorkerNames[index];
-      worker.configuration = worker.configuration.replace("PRODUCTION", "DEVELOPMENT");
-      worker.serviceBindings = worker.serviceBindings.map((name) =>
-        name.replace("atrinik-metaserver#", "atrinik-metaserver-development#"));
-      worker.customDomains = worker.customDomains.map((name) =>
-        new URL(origins[`https://${name}`]).hostname);
-    }
-    value.workers[0].requiredVariables.push("DEVELOPMENT_MAINTENANCE");
-    value.workers[0].state = value.workers[0].state.filter((item) => !item.startsWith("Cron:"));
-    value.workers[0].state.push("DurableObject:DEVELOPMENT_MAINTENANCE_DO");
-    for (const canary of value.productionCanaries)
-      canary.command = canary.command.filter((argument) => argument !== "--allow-production")
-        .map((argument) => origins[argument] ?? argument);
-  }
-  return value;
-}
-
 // Checked-in build-only fixtures use unique names and inert placeholder IDs.
 // Live configuration remains a protected, separately verified provider input.
 export function developmentFixture(config, index) {
