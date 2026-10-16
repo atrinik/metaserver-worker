@@ -1974,6 +1974,19 @@ test("live contracts authorize only automatic DEV and explicit production promot
     const changed = structuredClone(live);
     changed.provider = "cloudflare-workers-builds";
     await assert.rejects(validateDeliveryContract(changed), /contract drift/u);
+    for (const change of [
+      (value) => { value.protectedInputs.accountVariable = "OTHER_ACCOUNT"; },
+      (value) => { value.workers[1].order = 1; },
+      (value) => { value.workers[0].requiredSecrets.pop(); },
+      (value) => { value.toolchain.node = "24.0.0"; },
+      (value) => { value.productionCanaries.pop(); },
+      (value) => { value.invariants.deploymentMode = "gradual"; },
+      (value) => { value.unexpected = true; },
+    ]) {
+      const drifted = structuredClone(live);
+      change(drifted);
+      await assert.rejects(validateDeliveryContract(drifted), /contract drift/u);
+    }
     assert.equal(live.invariants.migrationPolicy, "exact-ledger-no-automatic-apply");
   }
   await assert.rejects(validateDeliveryContract({ ...contract, target: "review" }), /contract drift/u);

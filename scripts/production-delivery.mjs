@@ -232,9 +232,17 @@ function boundedIntegerVariable(variables, name, minimum, maximum) {
   return parsed;
 }
 
+// The delivery engine trusts every contract field, so pin each reviewed live
+// contract exactly. A contract edit must update its digest in the same change.
+const liveContractDigests = Object.freeze({
+  production: "6ed271bdf0e6ac15542a3e272d5cd56c483b28ead014ebc035bd59e98288685b",
+  development: "02174a14343f0e01d04659cdfb8dd4fbff14527b95c0f7106c2e704d9d2dc3ec",
+});
+
 export async function validateDeliveryContract(contract) {
   if (contract?.schemaVersion !== 2 || contract.provider !== "github-actions" ||
-      !["development", "production"].includes(contract.target))
+      !Object.hasOwn(liveContractDigests, contract.target) ||
+      sha256Json(canonicalJson(contract)) !== liveContractDigests[contract.target])
     fail("live delivery contract drift");
 }
 
