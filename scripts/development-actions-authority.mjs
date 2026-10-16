@@ -1,10 +1,13 @@
 // Copyright (C) 2026 Atrinik contributors
 import { readFile } from "node:fs/promises";
+import { brandDeliveryFailure } from "./delivery-failure-reasons.mjs";
 
 const repository = "atrinik/metaserver-worker";
 const workflow = ".github/workflows/deploy-development.yml";
 const shaPattern = /^[0-9a-f]{40}$/u;
-const fail = (message) => { throw new Error(`development delivery: ${message}`); };
+const fail = (message, reason = "development-authority-github-read-rejected") => {
+  throw brandDeliveryFailure(new Error(`development delivery: ${message}`), reason);
+};
 
 export function validateDevelopmentContext(environment, event, checkoutHead, dirty) {
   const sourceSha = environment.ATRINIK_DEVELOPMENT_SHA;
@@ -20,7 +23,8 @@ export function validateDevelopmentContext(environment, event, checkoutHead, dir
       check.event !== "push" || check.conclusion !== "success" || check.status !== "completed" ||
       !Number.isSafeInteger(check.id) || check.id < 1 ||
       check.repository?.full_name !== repository || check.head_repository?.full_name !== repository)
-    fail("requires a clean current-main checkout and successful same-repository Check event");
+    fail("requires a clean current-main checkout and successful same-repository Check event",
+      "development-authority-context-rejected");
   return sourceSha;
 }
 
@@ -35,7 +39,7 @@ export function validateDevelopmentEvidence(environment, event, evidence, now = 
       run.path !== workflow || run.status !== "in_progress" || run.conclusion !== null ||
       run.repository?.full_name !== repository || run.head_repository?.full_name !== repository ||
       !Number.isFinite(created) || created > now || now - created > 60 * 60 * 1000)
-    fail("run identity, freshness or newest-main fence failed");
+    fail("run identity, freshness or newest-main fence failed", "development-authority-run-fence-rejected");
   if (check?.id !== event.workflow_run.id || check.path !== ".github/workflows/check.yml" ||
       check.event !== "push" || check.head_branch !== "main" || check.head_sha !== sourceSha ||
       check.status !== "completed" || check.conclusion !== "success" ||
@@ -44,16 +48,18 @@ export function validateDevelopmentEvidence(environment, event, evidence, now = 
       !Array.isArray(jobs) || jobs.filter((job) => job.name === "verify").length !== 1 ||
       !jobs.some((job) => job.name === "verify" && job.run_id === check.id &&
         job.head_sha === sourceSha && job.status === "completed" && job.conclusion === "success"))
-    fail("exact source Check and job validation failed");
+    fail("exact source Check and job validation failed", "development-authority-check-rejected");
   if (!Array.isArray(activeRuns) || activeRuns.length !== 1 || activeRuns[0].id !== run.id ||
       !Array.isArray(deployJobs) || deployJobs.filter((job) => job.name === "deploy").length !== 1 ||
       !deployJobs.some((job) => job.name === "deploy" && job.run_id === run.id &&
         job.head_sha === sourceSha && job.status === "in_progress" && job.conclusion === null))
-    fail("development writer is not the sole authenticated active deployment");
+    fail("development writer is not the sole authenticated active deployment",
+      "development-authority-concurrent-writer");
   if (protection?.name !== "development" ||
       protection.deployment_branch_policy?.protected_branches !== true ||
       protection.deployment_branch_policy?.custom_branch_policies !== false)
-    fail("development credential environment must restrict protected branches");
+    fail("development credential environment must restrict protected branches",
+      "development-authority-environment-rejected");
 }
 
 async function requestJson(path, environment, fetcher) {
@@ -87,7 +93,10 @@ export async function createDevelopmentAuthority({ environment = process.env, ch
   fetcher = fetch, readEvent = (path) => readFile(path, "utf8"), now = () => Date.now(),
   writerFence = async (input, options) => {
     const { assertProductionPromotionWriterFence } = await import("./production-writer-fence.mjs");
-    return assertProductionPromotionWriterFence({ environment: input, fetcher, ...options });
+    // Every main push also queues the retained inert production build, which
+    // Cloudflare can hold for several minutes before it runs and stops.
+    return assertProductionPromotionWriterFence({ environment: input, fetcher,
+      drainMilliseconds: 480_000, pollMilliseconds: 15_000, ...options });
   } } = {}) {
   const event = JSON.parse(await readEvent(environment.GITHUB_EVENT_PATH));
   const sourceSha = validateDevelopmentContext(environment, event, checkoutHead, dirty);

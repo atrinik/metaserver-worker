@@ -1,5 +1,6 @@
 // Copyright (C) 2026 Atrinik contributors
 import { createHash } from "node:crypto";
+import { brandDeliveryFailure } from "./delivery-failure-reasons.mjs";
 import { validateRateBootstrap, bootstrapDesiredWorker, validateBootstrapConfiguration,
   compareBootstrapInventory, projectNativeRates, legacyCallerSecrets, bootstrapCallerDispositions } from "./production-rate-bootstrap.mjs";
 
@@ -13,7 +14,9 @@ const cohortWorkerNames = Object.freeze({
 const originBindings = ["CLASSIC_DIRECTORY_PUBLIC_ORIGIN", "GAME_DIRECTORY_PUBLIC_ORIGIN",
   "PUBLISH_HOSTNAME", "RENDEZVOUS_HOSTNAME"];
 const resourceTypes = new Set(["d1", "r2", "durable-object", "analytics", "rate-limit"]);
-const fail = (message) => { throw new Error(`delivery resource isolation: ${message}`); };
+const fail = (message) => {
+  throw brandDeliveryFailure(new Error(`delivery resource isolation: ${message}`), "delivery-resource-policy-rejected");
+};
 const sorted = (values) => [...values].sort((a, b) => JSON.stringify(a).localeCompare(JSON.stringify(b)));
 export function canonicalResourcePolicy(value) {
   if (Array.isArray(value)) return value.map(canonicalResourcePolicy);

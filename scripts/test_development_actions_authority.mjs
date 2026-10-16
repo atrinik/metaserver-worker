@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { createDevelopmentAuthority, validateDevelopmentContext,
   validateDevelopmentEvidence } from "./development-actions-authority.mjs";
+import { deliveryFailureReason } from "./delivery-failure-reasons.mjs";
 const sha = "a".repeat(40);
 const repository = { full_name: "atrinik/metaserver-worker" };
 const now = Date.parse("2026-10-11T12:00:00Z");
@@ -60,6 +61,25 @@ test("DEV rejects supersession, forged Check success, competing writers and stal
   ]) {
     const bad = structuredClone(evidence); change(bad);
     assert.throws(() => validateDevelopmentEvidence(environment, event, bad, now));
+  }
+});
+
+test("DEV authority rejections carry only their fixed branded reason", () => {
+  const { environment, event, evidence } = fixture();
+  const reason = (action) => {
+    try { action(); } catch (error) { return deliveryFailureReason(error); }
+    assert.fail("expected rejection");
+  };
+  assert.equal(reason(() => validateDevelopmentContext(environment, event, sha, true)),
+    "development-authority-context-rejected");
+  for (const [expected, change] of [
+    ["development-authority-run-fence-rejected", (value) => { value.branch.commit.sha = "b".repeat(40); }],
+    ["development-authority-check-rejected", (value) => { value.jobs[0].conclusion = "failure"; }],
+    ["development-authority-concurrent-writer", (value) => { value.activeRuns.push({ ...value.run, id: 13 }); }],
+    ["development-authority-environment-rejected", (value) => { value.protection.name = "production"; }],
+  ]) {
+    const bad = structuredClone(evidence); change(bad);
+    assert.equal(reason(() => validateDevelopmentEvidence(environment, event, bad, now)), expected);
   }
 });
 
