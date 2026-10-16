@@ -158,10 +158,8 @@ async function main() {
   const config = JSON.parse(await readFile(configPath, "utf8"));
   validateDirectoryProxyInput(config, process.env);
   const environment = { ...process.env };
-  // The read-only authority checker retains this credential in its private
-  // closure; Wrangler and its remote-binding subprocesses cannot inherit it.
-  delete process.env.ATRINIK_WORKERS_BUILDS_API_TOKEN;
-  delete process.env.ATRINIK_DEVELOPMENT_WORKERS_BUILDS_API_TOKEN;
+  // The read-only authority checker retains these credentials in its private
+  // closure; Wrangler and its remote-binding subprocesses cannot inherit them.
   for (const name of promotionEnvironmentNames) delete process.env[name];
   process.env.WRANGLER_LOG = "error";
   const receipt = await invokeDirectoryProxy({

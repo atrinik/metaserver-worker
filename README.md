@@ -121,8 +121,7 @@ Production changes require an explicit GitHub Actions workflow dispatch for an
 owner-approved immutable tag and exact SHA. Main pushes and release events
 cannot promote. Release provenance, artifact/configuration/migration digests,
 expected predecessor, fixed concurrency, and one-use attempts fence the write;
-workflow reruns are rejected. The old automatic-production writer must be
-fenced and drained before publishing the replacement policy. See
+workflow reruns are rejected. See
 [deployment environments](docs/deployment-environments.md) for prerequisites,
 DEV schema preparation, promotion phases and recovery. This source change
 proves no deployment or provider activation.
@@ -130,23 +129,8 @@ proves no deployment or provider activation.
 Private resource identifiers and credentials remain in owner-only protected
 configuration and provider secrets. Routine builds inherit encrypted core
 runtime secrets by name; public callers receive no signing keys or key IDs.
-Historical provisioning and token-rotation records remain immutable evidence,
-and their former production activation procedure is superseded by the current
-environment policy in [DEPLOYMENT.md](DEPLOYMENT.md).
-
-GitHub Actions provides PR/source validation. The retained Cloudflare review
-connection and histories are inactive until a separately authorized restoration
-proves credential-free policy. Fresh provider readback instead includes an
-encrypted Builds secret and a shared wrapper with unreadable policy. Both
-retained Cloudflare triggers require literal `exit 1` build/deploy commands,
-skipped installation, preserved existing branch selectors, sealed private
-configuration/environment digests and stopped Builds at each promotion fence. A branch pause cannot fence manual
-runs or retries. The commands-only PATCH does not disable branch pushes:
-Builds may enqueue/start and fail immediately. No completed provider fence is
-claimed by this source. See [deployment environments](docs/deployment-environments.md) for the
-retained-inert alternative. Historical
-[review-environment design](docs/review-environment.md) remains evidence,
-not proof of the current credential boundary.
+GitHub Actions provides PR/source validation. Cloudflare Workers Builds is
+retired and takes no part in validation or delivery.
 
 After an operator has separately provisioned an isolated R2 custom domain and
 its reviewed edge rules, validate the public static contract with the

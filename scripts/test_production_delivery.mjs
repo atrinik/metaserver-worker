@@ -17,9 +17,7 @@ import test from "node:test";
 import {
   activeVersionId,
   fenceDeliveryMutation,
-  arbitrateBuildLease,
   assertCoherentTopology,
-  buildLeaseDecision,
   childEnvironment,
   controlPlaneView,
   currentMainGitUrl,
@@ -49,23 +47,17 @@ import {
   recoverDisabledCore,
   resolveProductionCanaryCommand,
   selectProductionCanaries,
-  selectBuildLeaseOwner,
   selectApiHandoffRoles,
   completeCallerRetirement,
   acceptCallerRetirement,
   verifyCallerActivationHandoff,
-  selectLiveTrigger,
   sanitizedChildEnvironment,
-  validateBuildTrigger,
-  validateBuildEnvironment,
-  validateContract,
   validateDeliveryContract,
   runDelivery,
   validateLiveControlPlane,
   validateProtectedDocument,
   validateRemoteMigrations,
   validateRuntimeExports,
-  validateSourceCoordinates,
   validateTopology,
   validateToolchain,
   wranglerDeployArguments,
@@ -79,7 +71,7 @@ import { invokeDirectoryProxy, validateDirectoryProxyInput } from "./production-
 const root = resolve(import.meta.dirname, "..");
 const contract = JSON.parse(
   await readFile(
-    resolve(root, "deployment/historical/workers-builds-production-v1.json"),
+    resolve(root, "deployment/workers-builds-production.json"),
     "utf8",
   ),
 );
@@ -152,8 +144,8 @@ function liveControlPlane(index) {
   };
 }
 
-test("accepts the checked-in production trigger and topology", () => {
-  assert.doesNotThrow(() => validateContract(contract));
+test("accepts the checked-in production contract and topology", async () => {
+  await assert.doesNotReject(validateDeliveryContract(contract));
   assert.doesNotThrow(() => validateTopology(contract, configs));
   assert.deepEqual(
     contract.productionCanaries.find(
@@ -223,12 +215,12 @@ test("rejects missing or empty Wrangler versions and declarations", () => {
   }
 });
 
-test("bootstraps SQLite only when Workers Builds lacks sqlite3", () => {
+test("bootstraps SQLite only when the host lacks sqlite3", () => {
   const command = packageJson.scripts["test:admin"];
   assert.match(command, /import sqlite3/u);
   assert.match(command, /sqlite3\.connect\(':memory:'\)/u);
   assert.match(command, /python3 -m pip install/u);
-  assert.match(command, /deployment\/review-check\/requirements\.txt/u);
+  assert.match(command, /scripts\/requirements\/sqlite\.txt/u);
   assert.match(command, /PYTHONPATH=/u);
   assert.match(command, /python3 -m unittest discover/u);
 });
@@ -254,71 +246,6 @@ test("uses a bounded git ref fallback for GitHub API rate limits", () => {
     () => currentMainGitUrl("https://example.invalid/commits/main"),
     /fallback URL is invalid/u,
   );
-});
-
-test("pins the one exact initial bootstrap predecessor", () => {
-  for (const changed of [
-    changedContract((value) => {
-      value.initialBootstrapPredecessor.allowedBindingDelta[0].name = "PUBLISH_ENABLED";
-    }),
-    changedContract((value) => {
-      value.initialBootstrapPredecessor.allowedBindingDelta[0].live = "changed";
-    }),
-    changedContract((value) => {
-      value.initialBootstrapPredecessor.requiredPhase = "any";
-    }),
-  ]) assert.throws(() => validateContract(changed), /bootstrap predecessor drift/u);
-});
-
-test("requires every main push to use the one repository entrypoint", () => {
-  for (const changed of [
-    changedContract((value) => {
-      value.productionBranch = "production";
-    }),
-    changedContract((value) => {
-      value.pathIncludes = ["src/**"];
-    }),
-    changedContract((value) => {
-      value.pathExcludes = ["docs/**"];
-    }),
-    changedContract((value) => {
-      value.deployCommand = "wrangler deploy";
-    }),
-    changedContract((value) => {
-      value.automaticPush = false;
-    }),
-  ])
-    assert.throws(() => validateContract(changed), /trigger drift|command contract/u);
-});
-
-test("rejects gradual rollout and unordered topology drift", () => {
-  for (const changed of [
-    changedContract((value) => {
-      value.invariants.deploymentMode = "gradual";
-    }),
-    changedContract((value) => {
-      value.invariants.deploymentOrder.reverse();
-    }),
-    changedContract((value) => {
-      value.workers[1].order = 1;
-    }),
-    changedContract((value) => {
-      value.workers[0].role = "coordinator";
-    }),
-    changedContract((value) => {
-      value.workers[1].configuration = "UNREVIEWED_CONFIG";
-    }),
-    changedContract((value) => {
-      value.workers[0].state.pop();
-    }),
-    changedContract((value) => {
-      value.workers[2].customDomains.push("alternate.example");
-    }),
-    changedContract((value) => {
-      value.workers[0].unexpected = true;
-    }),
-  ])
-    assert.throws(() => validateContract(changed), /invariant drift|topology drift/u);
 });
 
 test("rejects alternate production URLs and caller state authority", () => {
@@ -482,40 +409,7 @@ test("version annotations bind source, deployable input, control plane, and role
   );
 });
 
-test("rejects non-main, dirty, mixed, stale, and unknown-account sources", () => {
-  const source = "a".repeat(40);
-  const valid = {
-    workersCi: "1",
-    branch: "main",
-    sourceSha: source,
-    head: source,
-    dirty: false,
-    buildUuid: "11111111-1111-1111-1111-111111111111",
-    overrideName: "atrinik-metaserver",
-    matchTag: "worker-tag",
-    accountId: "b".repeat(32),
-    currentMain: source,
-  };
-  assert.doesNotThrow(() => validateSourceCoordinates(valid));
-  for (const changed of [
-    { workersCi: "0" },
-    { branch: "review" },
-    { sourceSha: "invalid", head: "invalid", currentMain: "invalid" },
-    { head: "c".repeat(40) },
-    { dirty: true },
-    { buildUuid: "" },
-    { overrideName: "atrinik-metaserver-publisher" },
-    { matchTag: "" },
-    { accountId: "0" },
-    { currentMain: "c".repeat(40) },
-  ])
-    assert.throws(
-      () => validateSourceCoordinates({ ...valid, ...changed }),
-      /restricted|invalid|does not match|dirty|missing|unexpected|superseded/u,
-    );
-});
-
-test("scrubs Workers Builds name and tag overrides from every child", () => {
+test("scrubs provider overrides and credentials from every child", () => {
   const input = {
     SAFE: "retained",
     UNKNOWN_PROVIDER_SECRET: "must-not-cross",
@@ -674,120 +568,6 @@ test("creates an exact disabled-circuit staging topology", () => {
   assert.equal(staged[1].vars.PUBLISH_ENABLED, "disabled");
   assert.equal(staged[2].vars.RENDEZVOUS_ENABLED, "disabled");
   assert.equal(desired[0].vars.PUBLISH_ENABLED, "enabled");
-});
-
-test("requires the live Workers Builds trigger to match the contract", () => {
-  const build = {
-    build_trigger_metadata: {
-      build_command: contract.installCommand,
-      deploy_command: contract.deployCommand,
-      build_trigger_source: "push",
-      provider_type: "github",
-      provider_account_name: "atrinik",
-      repo_name: "metaserver-worker",
-      root_directory: "/",
-      environment_variables: {
-        SKIP_DEPENDENCY_INSTALL: { is_secret: false, value: "1" },
-      },
-    },
-    trigger: {
-      build_command: contract.installCommand,
-      deploy_command: contract.deployCommand,
-      root_directory: "/",
-      branch_includes: ["main"],
-      branch_excludes: [],
-      path_includes: ["*"],
-      path_excludes: [],
-      external_script_id: "worker-tag",
-      repo_connection: {
-        provider_type: "github",
-        provider_account_name: "atrinik",
-        repo_name: "metaserver-worker",
-      },
-    },
-  };
-  for (const source of ["push_event", "push", "retry", "manual", "api"]) {
-    const accepted = structuredClone(build);
-    accepted.build_trigger_metadata.build_trigger_source = source;
-    assert.doesNotThrow(() => validateBuildTrigger(contract, accepted, "worker-tag"));
-  }
-  const legacyMetadata = structuredClone(build);
-  legacyMetadata.build_trigger_metadata.environment_variables = {
-    SKIP_DEPENDENCY_INSTALL: "1",
-  };
-  assert.doesNotThrow(() =>
-    validateBuildTrigger(contract, legacyMetadata, "worker-tag"),
-  );
-  for (const mutate of [
-    (value) => { value.trigger.path_excludes = ["docs/**"]; },
-    (value) => { value.trigger.branch_includes = ["production"]; },
-    (value) => { value.trigger.root_directory = "packages/worker"; },
-    (value) => { value.trigger.repo_connection.provider_type = "gitlab"; },
-    (value) => { value.trigger.repo_connection.repo_name = "other"; },
-    (value) => { value.build_trigger_metadata.build_trigger_source = "pull_request"; },
-    (value) => {
-      value.build_trigger_metadata.environment_variables.SKIP_DEPENDENCY_INSTALL.value =
-        "0";
-    },
-  ]) {
-    const changed = structuredClone(build);
-    mutate(changed);
-    assert.throws(
-      () => validateBuildTrigger(contract, changed, "worker-tag"),
-      /trigger drift/u,
-    );
-  }
-});
-
-test("requires the exact protected Workers Builds environment with an inert legacy gate", () => {
-  const environment = Object.fromEntries([
-    contract.protectedInputs.accountVariable,
-    contract.protectedInputs.coreConfigVariable,
-    contract.protectedInputs.publisherConfigVariable,
-    contract.protectedInputs.rendezvousConfigVariable,
-    contract.protectedInputs.buildsApiTokenVariable,
-  ].map((name) => [name, { is_secret: true, value: null }]));
-  environment.SKIP_DEPENDENCY_INSTALL = { is_secret: false, value: "1" };
-  assert.doesNotThrow(() => validateBuildEnvironment(contract, environment));
-  const legacy = {
-    ...environment,
-    ATRINIK_PRODUCTION_CONTROL_PLANE_READY: { is_secret: true, value: null },
-  };
-  assert.doesNotThrow(() => validateBuildEnvironment(contract, legacy));
-  for (const mutate of [
-    (value) => { value.SKIP_DEPENDENCY_INSTALL.value = "0"; },
-    (value) => { value[contract.protectedInputs.coreConfigVariable].is_secret = false; },
-    (value) => { value.UNREVIEWED = { is_secret: true, value: null }; },
-    (value) => {
-      value.ATRINIK_PRODUCTION_CONTROL_PLANE_READY = {
-        is_secret: false,
-        value: "approved:stale",
-      };
-    },
-    (value) => {
-      value.ATRINIK_PRODUCTION_CONTROL_PLANE_READY = {
-        is_secret: true,
-        value: "routine",
-      };
-    },
-  ]) {
-    const changed = structuredClone(environment);
-    mutate(changed);
-    assert.throws(
-      () => validateBuildEnvironment(contract, changed),
-      /environment|classification/u,
-    );
-  }
-});
-
-test("selects exactly one current live Workers Builds trigger", () => {
-  const trigger = { trigger_uuid: "production" };
-  assert.equal(selectLiveTrigger([trigger], "production"), trigger);
-  for (const values of [[], [trigger, { ...trigger }], null])
-    assert.throws(
-      () => selectLiveTrigger(values, "production"),
-      /invalid|missing or ambiguous/u,
-    );
 });
 
 test("verified API predecessors enable handoff with or without retained annotations", () => {
@@ -1180,171 +960,6 @@ test("requires an exact ordered remote migration ledger", () => {
       () => validateRemoteMigrations(actual, expected),
       /pending, missing, or divergent/u,
     );
-});
-
-test("selects one deterministic active exact-source build lease owner", () => {
-  const source = "a".repeat(40);
-  const build = (uuid, created, commit = source) => ({
-    build_uuid: uuid,
-    created_on: created,
-    status: "running",
-    trigger: { trigger_uuid: "production" },
-    build_trigger_metadata: { branch: "main", commit_hash: commit },
-  });
-  const builds = [
-    build("later", "2026-08-14T20:01:00Z"),
-    build("earlier", "2026-08-14T20:00:00Z"),
-    build("stale", "2026-08-14T19:59:00Z", "b".repeat(40)),
-    { ...build("stopped", "2026-08-14T19:58:00Z"), status: "stopped" },
-  ];
-  assert.equal(
-    selectBuildLeaseOwner(builds, source, "production"),
-    "later",
-  );
-  const withLateStaleRetry = [
-    ...builds,
-    build("late-stale", "2026-08-14T20:02:00Z", "b".repeat(40)),
-  ];
-  assert.equal(
-    selectBuildLeaseOwner(withLateStaleRetry, source, "production"),
-    "later",
-  );
-  assert.deepEqual(
-    buildLeaseDecision(builds, source, "production", "later")
-      .map(({ build_uuid: uuid }) => uuid),
-    ["earlier", "stale"],
-  );
-  assert.deepEqual(
-    buildLeaseDecision(withLateStaleRetry, source, "production", "later")
-      .map(({ build_uuid: uuid }) => uuid),
-    ["earlier", "stale", "late-stale"],
-  );
-});
-
-test("lease arbitration converges after cancellation and detects main advance", async () => {
-  const source = "a".repeat(40);
-  const other = "b".repeat(40);
-  const build = (uuid, commit = source, status = "running") => ({
-    build_uuid: uuid,
-    created_on: uuid === "owner" ? "2026-08-14T20:01:00Z" :
-      "2026-08-14T20:00:00Z",
-    status,
-    trigger: { trigger_uuid: "production" },
-    build_trigger_metadata: { branch: "main", commit_hash: commit },
-  });
-  const states = new Map([
-    ["owner", build("owner")],
-    ["stale", build("stale", other)],
-  ]);
-  const cancelled = [];
-  let lists = 0;
-  let currentMainProofs = 0;
-  await arbitrateBuildLease({
-    sourceSha: source,
-    buildUuid: "owner",
-    triggerUuid: "production",
-    currentMain: async () => {
-      currentMainProofs += 1;
-      return source;
-    },
-    listBuilds: async () => {
-      lists += 1;
-      if (lists === 2) states.set("retry", build("retry"));
-      return [...states.values()];
-    },
-    cancelBuild: async (uuid) => {
-      cancelled.push(uuid);
-      states.set(uuid, { ...states.get(uuid), status: "stopped" });
-    },
-    readBuild: async (uuid) => states.get(uuid),
-    pause: async () => {},
-  });
-  assert.deepEqual(cancelled, ["stale", "retry"]);
-  assert.equal(lists, 3);
-  assert.equal(currentMainProofs, 2);
-
-  let uncontestedProofs = 0;
-  await arbitrateBuildLease({
-    sourceSha: source,
-    buildUuid: "owner",
-    triggerUuid: "production",
-    currentMain: async () => {
-      uncontestedProofs += 1;
-      return source;
-    },
-    listBuilds: async () => [build("owner")],
-    cancelBuild: async () => {},
-    readBuild: async () => build("owner"),
-    pause: async () => {},
-  });
-  assert.equal(uncontestedProofs, 1);
-
-  let mainProofs = 0;
-  const advanceStates = new Map([
-    ["owner", build("owner")],
-    ["stale", build("stale", other)],
-  ]);
-  await assert.rejects(arbitrateBuildLease({
-    sourceSha: source,
-    buildUuid: "owner",
-    triggerUuid: "production",
-    currentMain: async () => {
-      mainProofs += 1;
-      return mainProofs === 1 ? source : other;
-    },
-    listBuilds: async () => [...advanceStates.values()],
-    cancelBuild: async (uuid) => {
-      advanceStates.set(uuid, {
-        ...advanceStates.get(uuid),
-        status: "stopped",
-      });
-    },
-    readBuild: async (uuid) => advanceStates.get(uuid),
-    pause: async () => {},
-  }), /superseded by current main/u);
-  assert.equal(mainProofs, 2);
-
-  let raceCancellations = 0;
-  await assert.rejects(arbitrateBuildLease({
-    sourceSha: source,
-    buildUuid: "owner",
-    triggerUuid: "production",
-    currentMain: async () => other,
-    listBuilds: async () => [build("owner"), build("new-main", other)],
-    cancelBuild: async () => { raceCancellations += 1; },
-    readBuild: async () => build("new-main", other),
-    pause: async () => {},
-  }), /superseded by current main/u);
-  assert.equal(raceCancellations, 0);
-
-  const changingStates = new Map([
-    ["owner", build("owner")],
-    ["old", build("old", other)],
-  ]);
-  let changingLists = 0;
-  const changingCancelled = [];
-  await assert.rejects(arbitrateBuildLease({
-    sourceSha: source,
-    buildUuid: "owner",
-    triggerUuid: "production",
-    currentMain: async () => source,
-    listBuilds: async () => {
-      changingLists += 1;
-      if (changingLists === 2)
-        changingStates.set("new", build("new", "c".repeat(40)));
-      return [...changingStates.values()];
-    },
-    cancelBuild: async (uuid) => {
-      changingCancelled.push(uuid);
-      changingStates.set(uuid, {
-        ...changingStates.get(uuid),
-        status: "stopped",
-      });
-    },
-    readBuild: async (uuid) => changingStates.get(uuid),
-    pause: async () => {},
-  }), /lease changed during arbitration/u);
-  assert.deepEqual(changingCancelled, ["old"]);
 });
 
 test("accepted main automatically deploys protected configuration changes", () => {
@@ -1809,7 +1424,7 @@ test("ambiguous staged-core upload marks recovery intent before mutation", async
   assert.equal(publisherMarked, false);
 });
 
-test("accepts only bounded protected Workers Builds documents", () => {
+test("accepts only bounded protected documents", () => {
   assert.equal(validateProtectedDocument("{}", "CONFIG"), "{}");
   for (const value of [undefined, "", "x".repeat(5 * 1024 + 1), "bad\0value"])
     assert.throws(
@@ -1882,9 +1497,9 @@ test("branded preflight failures expose only their fixed reason, never a reflect
   const { brandDeliveryFailure } = await import("./delivery-failure-reasons.mjs");
   const secret = "private account/token/path";
   const evidence = { sourceSha: null, deployableDigest: null, failedRole: "preflight", completedRoles: [], recoveryOutcome: "not-needed" };
-  const branded = brandDeliveryFailure(new Error(secret), "production-writer-fence-unverified");
-  assert.equal(deliveryFailureRecord(branded, evidence).reason, "production-writer-fence-unverified");
-  assert.equal(deliveryFailureRecord(new Error(secret, { cause: branded }), evidence).reason, "production-writer-fence-unverified");
+  const branded = brandDeliveryFailure(new Error(secret), "delivery-resource-policy-rejected");
+  assert.equal(deliveryFailureRecord(branded, evidence).reason, "delivery-resource-policy-rejected");
+  assert.equal(deliveryFailureRecord(new Error(secret, { cause: branded }), evidence).reason, "delivery-resource-policy-rejected");
   assert.equal(deliveryFailureRecord(new Error(branded.message), evidence).reason, "unexpected-internal-error");
   assert.equal(JSON.stringify(deliveryFailureRecord(branded, evidence)).includes(secret), false);
   assert.throws(() => brandDeliveryFailure(new Error(secret), secret), TypeError);
@@ -2025,9 +1640,6 @@ function proxyEnvironment() {
   return {
     ATRINIK_DELIVERY_ENVIRONMENT: "production", GITHUB_ACTIONS: "true",
     GITHUB_EVENT_NAME: "workflow_dispatch", ATRINIK_PROMOTION_SHA: "a".repeat(40),
-    WORKERS_CI: "1", WORKERS_CI_BRANCH: "main",
-    WORKERS_CI_COMMIT_SHA: "a".repeat(40),
-    WORKERS_CI_BUILD_UUID: "11111111-1111-1111-1111-111111111111",
     CLOUDFLARE_ACCOUNT_ID: "a".repeat(32), CLOUDFLARE_API_TOKEN: "test-only",
   };
 }
@@ -2051,11 +1663,10 @@ test("directory proxy is account-bound and grants only the private remote entryp
   assert.throws(() => validateDirectoryProxyInput(proxy, {}), /authority rejected/u);
   assert.throws(() => directoryReconciliationProxyConfiguration({ ...core, name: "other-core" }),
     /target identity/u);
-  const authorityEnvironment = { ...proxyEnvironment(),
-    ATRINIK_WORKERS_BUILDS_API_TOKEN: "read-only-observer",
-    WRANGLER_CI_MATCH_TAG: "test-core-tag", WRANGLER_CI_OVERRIDE_NAME: "atrinik-metaserver" };
+  const authorityEnvironment = proxyEnvironment();
   const child = childEnvironment({ ...authorityEnvironment,
     ATRINIK_PRODUCTION_CORE_CONFIG: "private",
+    WRANGLER_CI_MATCH_TAG: "test-core-tag", WRANGLER_CI_OVERRIDE_NAME: "atrinik-metaserver",
     UNREVIEWED_SECRET: "parent-only" }, "directory-reconciliation");
   assert.deepEqual(child, authorityEnvironment);
 });
@@ -2361,11 +1972,24 @@ test("live contracts authorize only automatic DEV and explicit production promot
     const live = JSON.parse(await readFile(resolve(root, `deployment/workers-builds-${target}.json`), "utf8"));
     await assert.doesNotReject(validateDeliveryContract(live));
     const changed = structuredClone(live);
-    changed.automaticPush = !changed.automaticPush;
+    changed.provider = "cloudflare-workers-builds";
     await assert.rejects(validateDeliveryContract(changed), /contract drift/u);
+    for (const change of [
+      (value) => { value.protectedInputs.accountVariable = "OTHER_ACCOUNT"; },
+      (value) => { value.workers[1].order = 1; },
+      (value) => { value.workers[0].requiredSecrets.pop(); },
+      (value) => { value.toolchain.node = "24.0.0"; },
+      (value) => { value.productionCanaries.pop(); },
+      (value) => { value.invariants.deploymentMode = "gradual"; },
+      (value) => { value.unexpected = true; },
+    ]) {
+      const drifted = structuredClone(live);
+      change(drifted);
+      await assert.rejects(validateDeliveryContract(drifted), /contract drift/u);
+    }
     assert.equal(live.invariants.migrationPolicy, "exact-ledger-no-automatic-apply");
   }
-  await assert.rejects(validateDeliveryContract(contract), /unknown delivery target/u);
+  await assert.rejects(validateDeliveryContract({ ...contract, target: "review" }), /contract drift/u);
 });
 
 test("DEV requires existing names, private maintenance DO, exact origins and no cron", async () => {
@@ -2405,13 +2029,11 @@ test("production exact-tag no-op refuses an equivalent different source", () => 
 });
 
 test("promotion credentials reach only the independently authorized reconciliation child", () => {
-  const environment = { GITHUB_TOKEN: "github-secret", ATRINIK_PRODUCTION_BUILDS_READ_TOKEN: "provider-secret",
-    ATRINIK_PRODUCTION_WRITER_FENCE_POLICY: "policy", ATRINIK_DELIVERY_ENVIRONMENT: "production",
+  const environment = { GITHUB_TOKEN: "github-secret", ATRINIK_DELIVERY_ENVIRONMENT: "production",
     ATRINIK_DELIVERY_SOURCE_ROOT: "/selected", ATRINIK_PRODUCTION_CORE_CONFIG: "private-config" };
   for (const policy of ["public", "deployment"]) assert.deepEqual(childEnvironment(environment, policy), {});
   assert.deepEqual(childEnvironment(environment, "directory-reconciliation"), {
-    GITHUB_TOKEN: "github-secret", ATRINIK_PRODUCTION_BUILDS_READ_TOKEN: "provider-secret",
-    ATRINIK_PRODUCTION_WRITER_FENCE_POLICY: "policy", ATRINIK_DELIVERY_ENVIRONMENT: "production",
+    GITHUB_TOKEN: "github-secret", ATRINIK_DELIVERY_ENVIRONMENT: "production",
     ATRINIK_DELIVERY_SOURCE_ROOT: "/selected",
   });
 });
@@ -3180,32 +2802,25 @@ test("old caller code and key-ID authority remain pinned until that role's stagi
   }
 });
 
-for (const waited of [false, true]) test(`mutation fence refreshes resource and source after drain=${waited}`, async () => {
+test("mutation fence proves resource, authority and source before mutation", async () => {
   const events = [], sourceSha = "a".repeat(40);
-  const authority = { sourceSha, fence: async options => {
-    events.push(options?.allowDrain === false ? "strict-authority" : "drain-authority");
-    return { waited: options?.allowDrain === false ? false : waited };
-  } };
+  const authority = { sourceSha, fence: async () => { events.push("authority"); } };
   await fenceDeliveryMutation(authority, async () => events.push("resource"), async () => {
     events.push("source"); return { head: sourceSha, dirty: false };
   });
   events.push("mutation");
-  assert.deepEqual(events, waited
-    ? ["resource", "drain-authority", "resource", "strict-authority", "source", "mutation"]
-    : ["resource", "drain-authority", "source", "mutation"]);
+  assert.deepEqual(events, ["resource", "authority", "source", "mutation"]);
 });
-for (const drift of ["resource", "main", "run", "release", "new-build", "source", "dirty", "second-wait"])
-  test(`post-drain ${drift} drift stops mutation and disabled recovery`, async () => {
+for (const drift of ["resource", "authority", "source", "dirty"])
+  test(`${drift} drift stops mutation and disabled recovery`, async () => {
     for (const recovery of [false, true]) {
-      let waited = false, mutations = 0;
+      let mutations = 0;
       const sourceSha = "a".repeat(40);
-      const authority = { sourceSha, fence: async options => {
-        if (options?.allowDrain !== false) { waited = true; return { waited: true }; }
-        if (["main", "run", "release", "new-build"].includes(drift)) throw new Error("authority drift");
-        return { waited: drift === "second-wait" };
+      const authority = { sourceSha, fence: async () => {
+        if (drift === "authority") throw new Error("authority drift");
       } };
       const fence = () => fenceDeliveryMutation(authority, async () => {
-        if (waited && drift === "resource") throw new Error("resource drift");
+        if (drift === "resource") throw new Error("resource drift");
       }, async () => ({ head: drift === "source" ? "b".repeat(40) : sourceSha, dirty: drift === "dirty" }));
       if (recovery) {
         await assert.rejects(recoverDisabledCore({ coreStaged: true, fence,
@@ -3214,23 +2829,19 @@ for (const drift of ["resource", "main", "run", "release", "new-build", "source"
       assert.equal(mutations, 0);
     }
   });
-test("a no-op still refreshes post-drain authority before private reconciliation", async () => {
+test("a no-op still refreshes authority before private reconciliation", async () => {
   let calls = 0, reconciliations = 0;
   const sourceSha = "a".repeat(40);
-  const authority = { sourceSha, fence: async options => {
-    calls++;
-    if (options?.allowDrain === false) throw new Error("new writer after drain");
-    return { waited: true };
-  } };
+  const authority = { sourceSha, fence: async () => { calls++; throw new Error("authority drift"); } };
   await assert.rejects(orchestrateDelivery({ decision: "no-op", workers: [],
     fence: () => fenceDeliveryMutation(authority, async () => {}, async () => ({ head: sourceSha, dirty: false })),
     verifyFinal: async () => {}, reconcileDirectories: async () => { reconciliations++; },
     canaries: async () => {}, recover: async () => assert.fail("no-op recovery") }));
-  assert.equal(calls, 2);
+  assert.equal(calls, 1);
   assert.equal(reconciliations, 0);
 });
 
-for (const drift of ["head", "dirty"]) test(`default Git source reader rejects ${drift} changes during drain`, async () => {
+for (const drift of ["head", "dirty"]) test(`default Git source reader rejects ${drift} changes before mutation`, async () => {
   const directory = await mkdtemp(resolve(tmpdir(), "atrinik-fence-source-"));
   const git = (...args) => {
     const result = spawnSync("/usr/bin/git", ["-C", directory, "-c", "core.hooksPath=/dev/null",

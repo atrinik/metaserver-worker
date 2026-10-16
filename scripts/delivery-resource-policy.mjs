@@ -8,7 +8,7 @@ const roles = ["core", "publisher", "rendezvous"];
 const cohortWorkerNames = Object.freeze({
   production: ["atrinik-metaserver", "atrinik-metaserver-publisher", "atrinik-metaserver-rendezvous"],
   development: ["atrinik-metaserver-development", "atrinik-metaserver-development-publisher", "atrinik-metaserver-development-rendezvous"],
-  // These are the governed disposable canary identities in workers-builds-review.json.
+  // Governed disposable canary identities for an optional live-review cohort.
   review: ["atrinik-metaserver-review-canary", "atrinik-metaserver-publisher-review-canary", "atrinik-metaserver-rendezvous-review-canary"],
 });
 const originBindings = ["CLASSIC_DIRECTORY_PUBLIC_ORIGIN", "GAME_DIRECTORY_PUBLIC_ORIGIN",

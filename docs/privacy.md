@@ -55,7 +55,7 @@ review non-IP rule replacements and retention before claiming historical erasure
 
 ## Build and deployment evidence
 
-Automatic `main` delivery emits only the public source SHA, Workers Builds UUID,
+Automatic `main` delivery emits only the public source SHA, GitHub Actions run ID,
 closed outcome, role, and hashes of deployable/configuration inputs. Production
 account, database, bucket, namespace, version, rule, recovery, and secret
 coordinates remain in the owner-protected deployment record. The entrypoint
@@ -65,24 +65,8 @@ only in owner-only temporary files that are removed on exit; raw provider
 responses and canary bodies are suppressed, leaving only closed pass/fail
 results. Repository checks and public canaries receive only an explicit
 non-secret process allowlist and no production config or Cloudflare token;
-Wrangler receives only deployment authentication, while the
-Workers Builds lease token remains parent-only. Build secrets are distinct from
+Wrangler receives only deployment authentication. Build secrets are distinct from
 Worker runtime bindings and are never available to application requests.
-
-Automatic non-`main` review builds are a separate trust boundary. Their
-trigger contains no protected input, binding, route, Worker upload, production
-resource permission, or live-canary credential. They emit only the public
-branch, source SHA, build UUID, closed check outcome, bounded output size, and
-Cloudflare's native PR status comment/history. Fork code is not replayed
-through that connection. The production core Worker uses a provider-native
-preview trigger with a separate zero-resource token and a trigger-specific
-one-variable nonsecret environment; it receives no production protected input.
-Its dedicated-nonhuman user
-token contains no personal data and has only `User Details:Read` plus empty
-account/zone permissions and selectors. #66 must
-prove representative production reads and writes fail before enabling it.
-Review execution creates no Worker version, route, binding, URL, or log
-destination.
 
 An explicitly requested live review uses fresh ephemeral nonproduction signing
 keys/certificates and a distinct canary secret pair, D1/DO state, R2, Analytics

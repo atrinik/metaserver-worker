@@ -10,7 +10,7 @@ live configuration is unchanged. An operator must separately review a non-IP
 replacement and its invocation-cost tradeoffs before changing those rules.
 This document does not authorize any deployment or provider write.
 
-The Workers Builds automatic-`main` entrypoint validates this boundary but does
+The DEV and PROD delivery entrypoints validate this boundary but do
 not own zone rules, DNS, Custom Domain attachment, triggers, or secret
 rotation. Drift fails before upload and requires a separately authorized
 operator correction followed by an exact-current-main provider retry. The
@@ -332,9 +332,7 @@ DNS-only while a positive max age may remain cached.
 
 ## Canary and release gate
 
-The Git-backed review topology is specified in
-[`review-environment.md`](review-environment.md). Its automatic branch check is
-build-only and creates no edge. The optional live cohort uses only
+An optional live review cohort uses only
 three stable review-account `workers.dev` hosts and one `all_workers` Access application;
 it has no zone, Custom Domain, WAF/cache rule, production DNS, route, purge, or
 observability authority. Preview URLs remain disabled. Access protects
