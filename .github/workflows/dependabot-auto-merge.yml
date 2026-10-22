@@ -1,0 +1,24 @@
+name: Dependabot auto-merge
+
+# Auto-merge Dependabot patch and minor updates once required CI passes, using
+# the shared policy in atrinik/github-settings (README "Dependabot auto-merge").
+# The reusable workflow never checks out or runs pull-request code.
+
+on:
+  pull_request:
+    branches: [main]
+    types: [opened, synchronize, reopened]
+
+permissions: {}
+
+concurrency:
+  group: dependabot-auto-merge-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  auto-merge:
+    if: github.event.pull_request.user.login == 'dependabot[bot]'
+    uses: atrinik/github-settings/.github/workflows/dependabot-auto-merge.yml@ad9da89a3ac583031401c75a4d211b8dcc7d2621 # atrinik/github-settings#103 head; re-pin to the merge commit
+    permissions:
+      contents: write
+      pull-requests: write
