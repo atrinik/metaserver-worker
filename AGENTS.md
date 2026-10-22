@@ -285,7 +285,15 @@
   workflow; PROD requires the separately approved exact-tag workflow dispatch.
   Local live execution must fail before remote access.
 - Commits and pull-request titles use Conventional Commits. Every squash merge
-  is released by semantic-release.
+  is released by semantic-release, except Dependabot auto-merges (below), whose
+  changes release with the next merge by a person.
+- Dependabot patch and minor updates auto-merge once required CI passes, through
+  `.github/workflows/dependabot-auto-merge.yml` and the shared
+  atrinik/github-settings policy (owner-approved 2026-10-22). They skip the
+  advisory dependency-review read below and merge with `GITHUB_TOKEN`, so the
+  push starts no Check, Release or DEV deploy. A DEV deploy already in flight
+  for an earlier merge then fails its newest-main fence; after main settles,
+  re-run that deploy or let the next merge by a person redeploy.
 - Preserve unrelated work and finish with `git diff --check`.
 - Update this `AGENTS.md` in the same change when major rework alters platform
   ownership, bindings, state/migration policy, protocol, or validation.
@@ -302,7 +310,7 @@
   releases. Immutable-release policy is managed by the governance repository;
   successful source publication does not authorize production promotion.
 
-Dependency review is advisory. Before merge, the Codex implementer reads the
+Dependency review is advisory. Before a merge by a person, the implementer reads the
 latest current-HEAD job summary even when a PR comment exists, fixes actionable
 introduced dependency risk, or records explicit maintainer acceptance of existing
 risk. Coverage requires the workflow to exist on the relevant PR/merge revision.
