@@ -50,8 +50,8 @@
     "jose": "6.2.12",
     "tsx": "^4.23.15",
     "typescript": "^7.0.2",
-    "vitest": "^4.1.11",
-    "wrangler": "^4.149.0"
+    "vitest": "^4.1.12",
+    "wrangler": "^4.151.1"
   },
   "dependencies": {
     "tr46": "^7.0.0"
