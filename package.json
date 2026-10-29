@@ -47,11 +47,11 @@
     "@types/node": "^26.6.5",
     "@types/tr46": "^5.0.1",
     "esbuild": "^0.28.2",
-    "jose": "6.2.12",
+    "jose": "6.2.13",
     "tsx": "^4.23.15",
     "typescript": "^7.0.2",
     "vitest": "^4.1.12",
-    "wrangler": "^4.151.1"
+    "wrangler": "^4.152.0"
   },
   "dependencies": {
     "tr46": "^7.0.0"
