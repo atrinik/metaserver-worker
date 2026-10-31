@@ -56,14 +56,14 @@ const run = f => diagnoseDevelopmentResources(f.environment, f.fetcher, now);
 const assertSanitized = result => {
   const text = formatDiagnostic(result);
   assert.equal(text.includes(secret), false); assert.equal(text.includes("private-provider-value"), false);
-  assert.equal(text.includes("api.cloudflare.com"), false); assert.equal(text.includes("Authorization"), false);
+  assert.doesNotMatch(text, /https?:\/\//u); assert.equal(text.includes("Authorization"), false);
 };
 
 test("manual trusted-main diagnostic reads all cohorts with GET only and never emits credentials", async () => {
   const f = fixture(); const result = await run(f);
   assert.equal(result.outcome, "matched"); assert.equal(result.rows.length, 6);
   assert.equal(f.requests.length, 22); assertSanitized(result);
-  assert.equal(f.requests.filter(r => r.url.includes("api.cloudflare.com")).length, 18);
+  assert.equal(f.requests.filter(r => new URL(r.url).origin === "https://api.cloudflare.com").length, 18);
 });
 
 test("local, fork, wrong workflow, rerun and arbitrary ref fail before any network read", async () => {
@@ -140,7 +140,7 @@ test("denied, throttled, malformed, paginated and oversized provider responses a
     () => Response.json({ success: true, result: [], result_info: { total_pages: 2 } }),
     () => new Response("x".repeat(2_000_001)), () => { throw new Error(secret); }]) {
     const f = fixture(); const base = f.fetcher;
-    f.fetcher = async (url, options) => url.includes("api.cloudflare.com") ? response() : base(url, options);
+    f.fetcher = async (url, options) => new URL(url).origin === "https://api.cloudflare.com" ? response() : base(url, options);
     const result = await run(f); assert.equal(result.category, "resource-read-rejected");
     assert.equal(result.rows.length, 1); assertSanitized(result);
   }
@@ -148,7 +148,7 @@ test("denied, throttled, malformed, paginated and oversized provider responses a
 
 test("unsupported provider binding emits projection category without its supplied name/value", async () => {
   const f = fixture(); const base = f.fetcher;
-  f.fetcher = async (url, options) => url.includes("api.cloudflare.com") && url.includes("/settings")
+  f.fetcher = async (url, options) => new URL(url).origin === "https://api.cloudflare.com" && new URL(url).pathname.endsWith("/settings")
     ? Response.json({ success: true, result: { bindings: [{ type: secret, name: secret }] } }) : base(url, options);
   const result = await run(f); assert.equal(result.category, "resource-projection-rejected"); assertSanitized(result);
 });
