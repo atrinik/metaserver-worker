@@ -80,6 +80,14 @@
   provider secrets; pin unchanged non-target legacy secret names without cleanup
   authority. Provider readback exposes names, never secret values: disjoint key
   generation requires separate provisioning-receipt proof.
+- `diagnose-development-resources.yml` is manual, current-protected-main-only
+  read-only diagnosis, separately owner-authorized before dispatch. Keep its
+  secret-free identity preflight before protected inputs and repeated context
+  check before provider reads. Give it only the existing DEV account, resource
+  policy and read token; never a deployment credential, OIDC, caller-supplied
+  URL/method or code-install step. Preserve exact all-cohort GET endpoints,
+  bounded field/status-only output and no provider mutation. Its success is
+  not deployment acceptance or repair authority.
 - Production controller account-API GETs share one explicit fetch scheduler
   across resource/native-rate inventories, native control-plane
   reads and caller snapshots, regardless of token. Space actual starts by at
