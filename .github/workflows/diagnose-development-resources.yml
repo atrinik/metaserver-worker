@@ -1,0 +1,42 @@
+name: Diagnose development resource fence
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: metaserver-development-resource-diagnostic
+  cancel-in-progress: false
+
+jobs:
+  diagnose:
+    if: github.repository == 'atrinik/metaserver-worker' && github.ref == 'refs/heads/main' && github.run_attempt == 1
+    runs-on: ubuntu-24.04
+    timeout-minutes: 6
+    environment: development
+    steps:
+      - name: Check out trusted main revision without persisted credentials
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version-file: .nvmrc
+          package-manager-cache: false
+      - name: Verify trusted current main before protected inputs
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
+          test -z "$(git status --porcelain)"
+          node scripts/diagnose-development-resources.mjs --verify-context
+      - name: Read resource fence with sanitized field diagnostics
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          ATRINIK_DELIVERY_RESOURCE_POLICY: ${{ secrets.ATRINIK_DELIVERY_RESOURCE_POLICY }}
+          ATRINIK_DELIVERY_RESOURCE_READ_TOKEN: ${{ secrets.ATRINIK_DELIVERY_RESOURCE_READ_TOKEN }}
+        run: node scripts/diagnose-development-resources.mjs --diagnose

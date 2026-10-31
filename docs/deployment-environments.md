@@ -136,6 +136,38 @@ requires the exact authenticated automatic GitHub Actions main run, clean source
 matching its SHA and successful source validation. A stale run stops before
 mutation. A local invocation grants no remote access.
 
+### Read-only resource-fence diagnosis
+
+An owner-authorized manual dispatch of `diagnose-development-resources.yml` on
+current protected `main` can diagnose a failed resource fence without deploying.
+The workflow has no inputs, rejects other refs and reruns, verifies its exact
+repository/run/current-main identity before protected inputs, and repeats that
+verification before provider reads. Its only provider inputs are the existing
+DEV `CLOUDFLARE_ACCOUNT_ID`, `ATRINIK_DELIVERY_RESOURCE_POLICY`, and
+`ATRINIK_DELIVERY_RESOURCE_READ_TOKEN`; it never receives a deployment token.
+Do not dispatch merely to validate a source change: review the concrete run and
+obtain owner authorization first.
+
+The diagnostic reads the same settings, routes and custom domains for every
+inventoried cohort, including PROD and any provisioned review cohort. It permits
+only those exact GET endpoints, with no redirects or retries, a 120-second
+provider budget, bounded responses and at most 27 requests. It does not invoke
+Wrangler, apply migrations, change policy, publish artifacts or deploy. GitHub's
+`development` environment still scopes the protected inputs; GitHub may record
+environment-run metadata, but the diagnostic performs no provider mutation.
+
+Output contains only closed outcome/category names, public source SHA,
+cohort/role labels, endpoint categories and HTTP status codes. A mismatch lists
+at most 128 JSON field paths per role, such as `/resources/0/id`, without expected
+or observed values, resource IDs, secret names, provider messages or credentials.
+The index is in the canonical sorted inventory. `fieldLimitReached` means more
+differences may exist; total output is bounded to 64 KiB. A read or projection
+failure stops further cohorts. Non-target plaintext values remain pinned;
+target plaintext uses the existing resource fence exception and is not compared
+by this diagnostic. A matched result proves only that resource comparison at
+the time of this run, not deployment readiness, migration state or secret-value
+uniqueness. A mismatch authorizes no automatic repair or policy update.
+
 ## Review and dispatch a PROD promotion
 
 Release production uses semantic-release's draft mode followed by the trusted
