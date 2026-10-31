@@ -1,7 +1,7 @@
 // Copyright (C) 2026 Atrinik contributors
 import { pathToFileURL } from "node:url";
 import { resolve } from "node:path";
-import { parseResourcePolicy, projectWorkerResources, canonicalResourcePolicy,
+import { parseResourcePolicy, projectWorkerResources,
   resourcePolicyReader } from "./delivery-resource-policy.mjs";
 
 const repository = "atrinik/metaserver-worker";
@@ -63,7 +63,8 @@ export async function verifyContext(environment, fetcher = fetch, now = Date.now
 }
 
 function normalize(worker) {
-  const result = canonicalResourcePolicy(worker);
+  const result = { ...worker };
+  // Preserve the delivery fence's array comparator, including JSON key order.
   for (const key of ["resources", "services", "origins", "variables", "routes", "secrets"])
     result[key] = [...result[key]].sort((a, b) => JSON.stringify(a).localeCompare(JSON.stringify(b)));
   return result;

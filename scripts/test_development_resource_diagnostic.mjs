@@ -119,6 +119,20 @@ test("non-target values yield field paths; target plaintext keeps the existing f
   }
 });
 
+test("inventory array ordering matches the existing fence before comparing object fields", async () => {
+  const f = fixture();
+  f.policy.cohorts[0].workers[0].variables = [{ binding: "Z", value: "z" }, { value: "a", binding: "A" }];
+  f.environment.ATRINIK_DELIVERY_RESOURCE_POLICY = JSON.stringify(f.policy);
+  const base = f.fetcher;
+  f.fetcher = async (url, options) => url.endsWith("/workers/scripts/atrinik-metaserver/settings")
+    ? Response.json({ success: true, result: { bindings: [
+      { name: "A", type: "plain_text", text: "a" }, { name: "Z", type: "plain_text", text: "z" },
+    ] } }) : base(url, options);
+  const result = await run(f);
+  assert.equal(result.outcome, "rejected");
+  assert.deepEqual(result.rows[0].fields, ["/variables/0/binding", "/variables/0/value", "/variables/1/binding", "/variables/1/value"]);
+});
+
 test("denied, throttled, malformed, paginated and oversized provider responses are bounded and redacted", async () => {
   for (const response of [() => new Response("private-provider-value", { status: 403 }),
     () => new Response("private-provider-value", { status: 429 }), () => new Response("invalid-json"),
