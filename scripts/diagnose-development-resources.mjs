@@ -3,6 +3,7 @@ import { pathToFileURL } from "node:url";
 import { resolve } from "node:path";
 import { parseResourcePolicy, projectWorkerResources,
   resourcePolicyReader } from "./delivery-resource-policy.mjs";
+import { collectionDifferences, validateDiagnosticWorker } from "./development-resource-differences.mjs";
 
 const repository = "atrinik/metaserver-worker";
 const workflow = ".github/workflows/diagnose-development-resources.yml";
@@ -129,13 +130,20 @@ export async function diagnoseDevelopmentResources(environment, fetcher = fetch,
       return { ...failure("resource-read-rejected"), sourceSha: authority.sourceSha, rows };
     }
     try {
-      const actual = normalize(projectWorkerResources({ name: worker.name, role: worker.role, ...observed }));
+      const projected = projectWorkerResources({ name: worker.name, role: worker.role, ...observed });
+      validateDiagnosticWorker(projected);
+      validateDiagnosticWorker(worker);
+      const actual = normalize(projected);
       const expected = normalize(worker);
       // Match the ordinary DEV fence: non-target plaintext remains pinned.
       if (cohort.environment === "development") { delete actual.variables; delete expected.variables; }
       const fields = differentPaths(expected, actual);
+      // Collection summaries must survive truncation of the legacy path list.
+      const changedCollections = ["resources", "variables", "secrets"].filter(key =>
+        differentPaths(expected[key], actual[key]).length > 0);
       rows.push({ cohort: cohort.environment, role: worker.role, outcome: fields.length ? "mismatch" : "matched",
-        fields, fieldLimitReached: fields.length === maxFields, requests: requests.slice(start) });
+        fields, collections: collectionDifferences(expected, actual, changedCollections),
+        fieldLimitReached: fields.length === maxFields, requests: requests.slice(start) });
     } catch {
       rows.push({ cohort: cohort.environment, role: worker.role, outcome: "projection-rejected", requests: requests.slice(start) });
       return { ...failure("resource-projection-rejected"), sourceSha: authority.sourceSha, rows };

@@ -156,13 +156,25 @@ Wrangler, apply migrations, change policy, publish artifacts or deploy. GitHub's
 `development` environment still scopes the protected inputs; GitHub may record
 environment-run metadata, but the diagnostic performs no provider mutation.
 
-Output contains only closed outcome/category names, public source SHA,
+Output contains closed outcome/category names, public source SHA,
 cohort/role labels, endpoint categories and HTTP status codes. A mismatch lists
-at most 128 JSON field paths per role, such as `/resources/0/id`, without expected
-or observed values, resource IDs, secret names, provider messages or credentials.
+at most 128 JSON field paths per role, such as `/resources/0/id`.
 The index is in the canonical sorted inventory. `fieldLimitReached` means more
-differences may exist; total output is bounded to 64 KiB. A read or projection
-failure stops further cohorts. Non-target plaintext values remain pinned;
+field differences may exist. Independently of that path limit, mismatched
+resource, variable and secret collections include `policyCount` and `liveCount`.
+Their `publicNames` rows use only the role- and collection-scoped source labels
+in `scripts/diagnostic-public-names.json`, tested against the three checked-in
+Wrangler configurations. Resources pair by `(binding, type)` and other entries
+by binding name, with `policy-only`, `live-only` or `both` membership. Paired
+resources expose only `idDiffers`; paired variables expose only `valueDiffers`.
+Other resource fields retain indexed paths. Unknown names are aggregated into
+`unrecognized.policyCount` and `unrecognized.liveCount`, without pairing or
+revealing them. No raw IDs, variable/secret values, hashes, private names,
+provider messages or credentials are emitted. Source names are disclosure
+labels, not authority to replace the private policy with source configuration.
+Total output is bounded to 64 KiB; malformed projections or collections over
+4096 entries fail closed. A read or projection failure stops further cohorts.
+Non-target plaintext values remain pinned;
 target plaintext uses the existing resource fence exception and is not compared
 by this diagnostic. A matched result proves only that resource comparison at
 the time of this run, not deployment readiness, migration state or secret-value
