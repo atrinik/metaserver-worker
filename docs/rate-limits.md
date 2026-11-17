@@ -94,7 +94,8 @@ resulting bound of about `48 × 2 × 3 = 288` handoffs per server per day (a
 35-second handoff window can touch two native minute windows) holds per
 location, not as an exact global cap.
 
-Every other admission (reconnects after network drops) is charged to a
+Every other admission (reconnects after network drops, or retries later than
+the handoff window) is charged to a
 one-hour fixed window of 16. Windows start at half past each UTC hour, so a
 refused server waits at most an hour, and no window key coincides with a
 former UTC-day `rendezvous-server` row (window start at midnight). A UTC day
