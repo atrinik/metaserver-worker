@@ -7,7 +7,10 @@ import {
   enforceNativeBurst,
   enforceSharedIngress,
   isD1ProgrammingOrIntegrityFailure,
+  isRendezvousServerHandoff,
   isRequestActorKey,
+  RENDEZVOUS_SERVER_HANDOFF_SECONDS,
+  rendezvousServerWindow,
   REQUEST_BUDGET_SCOPES,
   RequestBudgetExceeded,
   RequestControlUnavailable,
@@ -323,6 +326,47 @@ describe("request-control helpers", () => {
     expect(boundedRetryAfter(window.endAt, noon)).toBe(41_104);
     expect(boundedRetryAfter(noon, noon)).toBe(1);
     expect(boundedRetryAfter(noon + 1_000_000, noon)).toBe(86_400);
+  });
+
+  it("computes half-past-hour server-rendezvous windows that never start at midnight", () => {
+    const at = (iso: string) => Math.floor(Date.parse(iso) / 1_000);
+    expect(rendezvousServerWindow(at("2026-11-16T21:46:38.000Z"))).toEqual({
+      startAt: at("2026-11-16T21:30:00.000Z"),
+      endAt: at("2026-11-16T22:30:00.000Z"),
+    });
+    expect(rendezvousServerWindow(at("2026-11-17T00:00:00.000Z"))).toEqual({
+      startAt: at("2026-11-16T23:30:00.000Z"),
+      endAt: at("2026-11-17T00:30:00.000Z"),
+    });
+    expect(rendezvousServerWindow(at("2026-11-17T00:29:59.000Z")).startAt)
+      .toBe(at("2026-11-16T23:30:00.000Z"));
+    expect(rendezvousServerWindow(at("2026-11-17T00:30:00.000Z")).startAt)
+      .toBe(at("2026-11-17T00:30:00.000Z"));
+    for (let now = at("2026-11-16T00:00:00.000Z"); now < at("2026-11-18T00:00:00.000Z"); now += 617) {
+      const window = rendezvousServerWindow(now);
+      expect(window.startAt % 86_400).not.toBe(0);
+      expect(window.startAt).toBeLessThanOrEqual(now);
+      expect(window.endAt).toBeGreaterThan(now);
+      expect(window.endAt - window.startAt).toBe(3_600);
+      expect(boundedRetryAfter(window.endAt, now)).toBeLessThanOrEqual(3_600);
+    }
+    expect(() => rendezvousServerWindow(1_799)).toThrow(RangeError);
+    expect(() => rendezvousServerWindow(-1)).toThrow(RangeError);
+  });
+
+  it("recognizes only the bounded post-publication handoff", () => {
+    const published = 1_800_000_000;
+    expect(RENDEZVOUS_SERVER_HANDOFF_SECONDS).toBe(30);
+    expect(isRendezvousServerHandoff(published, published)).toBe(true);
+    expect(isRendezvousServerHandoff(published, published + 30)).toBe(true);
+    expect(isRendezvousServerHandoff(published, published + 31)).toBe(false);
+    expect(isRendezvousServerHandoff(published, published - 5)).toBe(true);
+    expect(isRendezvousServerHandoff(published, published - 6)).toBe(false);
+    expect(isRendezvousServerHandoff(published, published + 86_400)).toBe(false);
+    for (const invalid of [Number.NaN, -1, 1.5, Number.POSITIVE_INFINITY]) {
+      expect(isRendezvousServerHandoff(invalid, published)).toBe(false);
+    }
+    expect(() => isRendezvousServerHandoff(published, -1)).toThrow(RangeError);
   });
 
   it("wraps the native burst limiter with scoped keys and typed rejections", async () => {

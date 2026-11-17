@@ -38,7 +38,7 @@ review environments. No Worker limiter can undo the invocation that reached it.
 | Shared challenge and client rendezvous ingress | 65,536/minute/location | none |
 | Shared server rendezvous ingress | 65,536/minute/location | none |
 | Authenticated Classic/Game publisher identity | 2/minute | 48/UTC day |
-| Authenticated server rendezvous identity | 3/minute | 50/UTC day |
+| Authenticated server rendezvous identity | 3/minute | 16/hour (handoff exempt) |
 | Authenticated private route operations | 16/minute | 64/hour/identity |
 | Eligible private resolves | covered by shared resolve ceiling | 60/server/minute |
 | Live access grants | n/a | 32/server; 32,768 global; 15-second expiry |
@@ -76,6 +76,31 @@ seconds with 10% jitter. All publication attempts share a two-attempt capacity
 with a 1,920-second refill; visible changes debounce for 10 seconds. Producers
 must honor `Retry-After` and use bounded backoff with jitter. Limiting is not a
 substitute for repairing a retry loop.
+
+### Server control admissions
+
+Every signed publication mints a new rendezvous token and generation and
+retires the previous control socket with `4004 Rendezvous server replaced`, so
+the server must reconnect after each publication. That handoff is caused by the
+core, so it is not charged to the server's budget: an authenticated control
+admission that arrives from 5 seconds before to 30 seconds after the
+publication that minted its token (`server_presence.last_seen`, written in the
+same upsert as the token) skips the D1 fixed window. It still needs the current
+token and still passes the 3/minute native burst limiter, and publications are
+limited to 48 per UTC day, so handoffs add at most about
+`48 × 2 × 3 = 288` admissions per server per day, where a handoff window can
+touch two native minute windows.
+
+Every other admission (reconnects after network drops or a restart) is charged
+to a one-hour fixed window of 16. Windows start at half past each UTC hour, so
+a refused server waits at most an hour, and no window key coincides with a
+former UTC-day `rendezvous-server` row (window start at midnight). The ceiling
+is therefore 384 charged plus at most 288 handoff admissions per server per day.
+
+Before this change a 50 per UTC day window charged handoffs too. A server that
+published about 30 times a day, plus ordinary drops, exhausted it in the
+afternoon and was refused until 00:00 UTC; production saw that on most days
+from 3 to 16 November 2026.
 
 | Dimension | Ceiling |
 | --- | ---: |
@@ -126,7 +151,7 @@ retry values come from one bounded value. Native minute limits retry after
 60 seconds; exact fixed-window budgets use the remaining window. Request-control
 errors expose `global_burst`, `publish_burst`, `publish_daily`,
 `rendezvous_client_burst`, `rendezvous_server_burst`, or
-`rendezvous_server_daily`; authenticated access-budget exhaustion exposes
+`rendezvous_server_hourly`; authenticated access-budget exhaustion exposes
 `request_budget_exceeded`. There is no source/pair cooldown reason or retry state.
 
 A missing or failed request-control dependency or invalid configuration fails

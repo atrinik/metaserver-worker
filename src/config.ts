@@ -10,7 +10,7 @@ export const RENDEZVOUS_POLICY_MAXIMUMS = Object.freeze({
 export const CANONICAL_POLICY_MAXIMUMS = Object.freeze({
   listingTtlSeconds: 86_400,
   publishServerDaily: 48,
-  rendezvousServerDaily: 50,
+  rendezvousServerHourly: 16,
 } as const);
 
 export const DIRECTORY_ARTIFACT_POLICY_MAXIMUMS = Object.freeze({
@@ -85,14 +85,14 @@ export interface RendezvousCoordinatorConfigurationInput {
   readonly RENDEZVOUS_HOSTNAME?: string;
   readonly LISTING_TTL_SECONDS?: string;
   readonly ROUTE_DISABLED_RETRY_SECONDS?: string;
-  readonly RENDEZVOUS_SERVER_DAILY_LIMIT?: string;
+  readonly RENDEZVOUS_SERVER_HOURLY_LIMIT?: string;
 }
 
 export interface RendezvousCoordinatorConfiguration {
   readonly authority: string;
   readonly listingTtlSeconds: number;
   readonly routeDisabledRetrySeconds: number;
-  readonly rendezvousServerDaily: number;
+  readonly rendezvousServerHourly: number;
 }
 
 export interface RendezvousPolicyConfigurationInput {
@@ -200,11 +200,11 @@ export function rendezvousCoordinatorConfiguration(
       1,
       MAXIMUM_RETRY_AFTER_SECONDS,
     ),
-    rendezvousServerDaily: strictInteger(
-      input.RENDEZVOUS_SERVER_DAILY_LIMIT,
-      "RENDEZVOUS_SERVER_DAILY_LIMIT",
+    rendezvousServerHourly: strictInteger(
+      input.RENDEZVOUS_SERVER_HOURLY_LIMIT,
+      "RENDEZVOUS_SERVER_HOURLY_LIMIT",
       1,
-      CANONICAL_POLICY_MAXIMUMS.rendezvousServerDaily,
+      CANONICAL_POLICY_MAXIMUMS.rendezvousServerHourly,
     ),
   });
 }

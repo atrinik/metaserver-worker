@@ -50,6 +50,8 @@ import {
 import {
   consumeFixedWindowBudget,
   enforceNativeBurst,
+  isRendezvousServerHandoff,
+  rendezvousServerWindow,
   utcDayWindow,
 } from "./rate-limit";
 import { handleRequestError } from "./request-errors";
@@ -260,19 +262,23 @@ async function openCanonicalRendezvous(
 ): Promise<Response> {
   return openRendezvous(request, env, route.serverId, route.role, {
     listingTtlSeconds: control.listingTtlSeconds,
-    async serverAuthenticated(): Promise<void> {
+    async serverAuthenticated({ publishedAt }): Promise<void> {
       await enforceNativeBurst(
         env.RENDEZVOUS_SERVER_RATE_LIMITER,
         route.serverId,
         "rendezvous-server",
       );
-      await consumeFixedWindowBudget(env.DB, {
-        actorKey: route.serverId,
-        scope: "rendezvous-server",
-        limit: control.rendezvousServerDaily,
-        now,
-        window: utcDayWindow(now),
-      });
+      // The reconnect that follows the server's own publication (whose token
+      // rotation retired its previous control) is not charged to its budget.
+      if (!isRendezvousServerHandoff(publishedAt, now)) {
+        await consumeFixedWindowBudget(env.DB, {
+          actorKey: route.serverId,
+          scope: "rendezvous-server",
+          limit: control.rendezvousServerHourly,
+          now,
+          window: rendezvousServerWindow(now),
+        });
+      }
       const observation = recordRendezvousAuthenticatedAdmission(env.DB, now)
         .catch(() => undefined);
       if (ctx === undefined) {

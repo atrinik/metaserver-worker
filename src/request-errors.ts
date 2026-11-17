@@ -111,6 +111,6 @@ function rateLimitReason(error: RequestBudgetExceeded): HttpRateLimitReason {
     case "rendezvous-server":
       return burst
         ? "rendezvous_server_burst"
-        : "rendezvous_server_daily";
+        : "rendezvous_server_hourly";
   }
 }

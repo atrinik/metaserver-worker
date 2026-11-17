@@ -93,7 +93,7 @@ export const HTTP_RATE_LIMIT_REASONS = [
   "global_burst",
   "rendezvous_client_burst",
   "rendezvous_server_burst",
-  "rendezvous_server_daily",
+  "rendezvous_server_hourly",
   "publish_burst",
   "publish_daily",
   "request_budget_exceeded",
