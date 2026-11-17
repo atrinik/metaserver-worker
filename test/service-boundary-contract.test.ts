@@ -211,7 +211,8 @@ describe("in-process service-boundary contract", () => {
   it("does not let one source/day counter lock out distinct server identities", async () => {
     const core = coreEnvironment();
     const edge = rendezvousEnvironment(core);
-    const now = publisherFixture.created;
+    // Publish two minutes earlier so the reconnect is charged, not a handoff.
+    const now = publisherFixture.created - 120;
     for (const [index, serverId] of ["4".repeat(64), "5".repeat(64)].entries()) {
       const token = String(index + 1).repeat(64);
       await persistRendezvousPublication(env.DB, {
@@ -259,6 +260,92 @@ describe("in-process service-boundary contract", () => {
     expect(await env.DB.prepare(
       "SELECT COUNT(*) AS count FROM request_budgets WHERE scope = 'rendezvous-server-source'",
     ).first<number>("count")).toBe(0);
+  });
+
+  it("does not charge the post-publication handoff and bounds reconnects by the hour", async () => {
+    const core = coreEnvironment();
+    const edge = rendezvousEnvironment(core);
+    const now = Math.floor(Date.now() / 1_000);
+    const publish = async (
+      serverId: string,
+      token: string,
+      publishedAt: number,
+      index: number,
+    ) => persistRendezvousPublication(env.DB, {
+      serverId,
+      directoryProfile: "classic-v3",
+      certificate: "AA==",
+      publisherSequence: String(index + 1),
+      publisherNonce: String(index + 1).repeat(32),
+      publisherNonceExpiresAt: now + 86_400,
+      commitToken: String(index + 6).repeat(64),
+      expectedGeneration: null,
+      generation: String(index + 8).repeat(64),
+      tokenHash: await sha256Hex(token),
+      now: publishedAt,
+      visibilityCutoff: publishedAt - 14_400,
+      name: `Handoff ${index}`,
+      playersCount: 0,
+      version: "5.109.0",
+      textComment: "Handoff accounting",
+      isPublic: true,
+      quicHost: "",
+      quicPort: 1,
+      quicCertSha256: serverId,
+      authorizationRequired: false,
+      directoryFingerprint: String(index + 1).repeat(64),
+    });
+    const connect = (serverId: string, token: string) => rendezvousWorker.fetch(
+      new Request(
+        `https://rendezvous.meta.atrinik.org/v1/classic/servers/${serverId}?role=server`,
+        {
+          headers: {
+            Authorization: `Bearer ${token}`,
+            "CF-Connecting-IP": "192.0.2.220",
+            "Sec-WebSocket-Protocol": ACCESS_RENDEZVOUS_SUBPROTOCOL,
+            Upgrade: "websocket",
+          },
+        },
+      ),
+      edge,
+    );
+    const charged = async (serverId: string) => await env.DB.prepare(
+      `SELECT COALESCE(SUM(request_count), 0) AS count FROM request_budgets
+        WHERE scope = 'rendezvous-server' AND actor_key = ?`,
+    ).bind(serverId).first<number>("count");
+
+    // The reconnect right after the server's own publication is the handoff.
+    const fresh = "e".repeat(64);
+    await publish(fresh, "1".repeat(64), now, 0);
+    const handoff = await connect(fresh, "1".repeat(64));
+    expect(handoff.status).toBe(101);
+    handoff.webSocket?.accept();
+    handoff.webSocket?.close(1000, "Test complete");
+    expect(await charged(fresh)).toBe(0);
+
+    // Any later reconnect is charged to an hourly window (8 in the test config).
+    const settled = "f".repeat(64);
+    await publish(settled, "2".repeat(64), now - 120, 1);
+    for (let attempt = 1; attempt <= 8; attempt += 1) {
+      const admitted = await connect(settled, "2".repeat(64));
+      expect(admitted.status).toBe(101);
+      admitted.webSocket?.accept();
+      admitted.webSocket?.close(1000, "Test complete");
+    }
+    expect(await charged(settled)).toBe(8);
+    const refused = await connect(settled, "2".repeat(64));
+    expect(refused.status).toBe(429);
+    const retryAfter = Number(refused.headers.get("Retry-After"));
+    expect(retryAfter).toBeGreaterThanOrEqual(1);
+    expect(retryAfter).toBeLessThanOrEqual(3_600);
+    expect(await refused.json()).toMatchObject({
+      error: {
+        code: "rate_limited",
+        reason: "rendezvous_server_hourly",
+        retry_after_seconds: retryAfter,
+      },
+    });
+    expect(await charged(settled)).toBe(8);
   });
 
   it("selects an offered access subprotocol for every server control socket", async () => {

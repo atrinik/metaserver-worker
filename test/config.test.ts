@@ -16,7 +16,7 @@ const rendezvousCoordinator = {
   RENDEZVOUS_HOSTNAME: "rendezvous.example.test",
   LISTING_TTL_SECONDS: "14400",
   ROUTE_DISABLED_RETRY_SECONDS: "300",
-  RENDEZVOUS_SERVER_DAILY_LIMIT: "50",
+  RENDEZVOUS_SERVER_HOURLY_LIMIT: "16",
 } as const;
 
 describe("canonical configuration", () => {
@@ -53,7 +53,7 @@ describe("canonical configuration", () => {
       authority: "rendezvous.example.test",
       listingTtlSeconds: 14_400,
       routeDisabledRetrySeconds: 300,
-      rendezvousServerDaily: 50,
+      rendezvousServerHourly: 16,
     });
     expect(scheduledMaintenanceConfiguration({
       LISTING_TTL_SECONDS: "14400",
@@ -61,14 +61,15 @@ describe("canonical configuration", () => {
     expect(Object.keys(CANONICAL_POLICY_MAXIMUMS).sort()).toEqual([
       "listingTtlSeconds",
       "publishServerDaily",
-      "rendezvousServerDaily",
+      "rendezvousServerHourly",
     ]);
   });
 
   it("fails closed for missing, malformed, or raised canonical limits", () => {
     for (const [variable, value] of [
-      ["RENDEZVOUS_SERVER_DAILY_LIMIT", undefined],
-      ["RENDEZVOUS_SERVER_DAILY_LIMIT", "51"],
+      ["RENDEZVOUS_SERVER_HOURLY_LIMIT", undefined],
+      ["RENDEZVOUS_SERVER_HOURLY_LIMIT", "17"],
+      ["RENDEZVOUS_SERVER_HOURLY_LIMIT", "0"],
     ] as const) {
       expect(() => rendezvousCoordinatorConfiguration({
         ...rendezvousCoordinator,

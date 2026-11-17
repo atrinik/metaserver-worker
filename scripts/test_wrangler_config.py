@@ -51,8 +51,11 @@ class WranglerSecurityConfigurationTests(unittest.TestCase):
             self.configuration["vars"]["PUBLISH_SERVER_DAILY_LIMIT"], "48"
         )
         self.assertEqual(
-            self.configuration["vars"]["RENDEZVOUS_SERVER_DAILY_LIMIT"],
-            "50",
+            self.configuration["vars"]["RENDEZVOUS_SERVER_HOURLY_LIMIT"],
+            "16",
+        )
+        self.assertNotIn(
+            "RENDEZVOUS_SERVER_DAILY_LIMIT", self.configuration["vars"]
         )
         for retired in (
             "GLOBAL_RATE_LIMITER",

@@ -53,10 +53,19 @@ const RENDEZVOUS_ERROR_DEFINITIONS = {
 
 type RendezvousErrorCode = keyof typeof RENDEZVOUS_ERROR_DEFINITIONS;
 
+/**
+ * A token-authenticated server control admission. `publishedAt` is the
+ * authoritative publication time that minted the current rendezvous token and
+ * generation (`server_presence.last_seen`; both are written in one upsert).
+ */
+export interface AuthenticatedServerAdmission {
+  readonly publishedAt: number;
+}
+
 export interface RendezvousAdmissionHooks {
   readonly listingTtlSeconds: number;
   clientEligible?(): Promise<void>;
-  serverAuthenticated(): Promise<void>;
+  serverAuthenticated(admission: AuthenticatedServerAdmission): Promise<void>;
 }
 
 export async function openRendezvous(
@@ -96,7 +105,8 @@ export async function openRendezvous(
   const cutoff = Math.floor(Date.now() / 1_000) - hooks.listingTtlSeconds;
   const server = await env.DB.prepare(
     `SELECT presence.access_required AS authorization_required,
-            presence.rendezvous_token_hash, presence.rendezvous_generation
+            presence.rendezvous_token_hash, presence.rendezvous_generation,
+            presence.last_seen
        FROM server_presence presence
       WHERE presence.profile='classic-v3' AND presence.server_id=? AND presence.last_seen>?
         AND NOT EXISTS(SELECT 1 FROM server_denials WHERE server_id=presence.server_id)
@@ -122,7 +132,7 @@ export async function openRendezvous(
     if (!await constantTimeEqual(actual, server.rendezvous_token_hash)) {
       return fixedError("invalid_rendezvous_token");
     }
-    await hooks.serverAuthenticated();
+    await hooks.serverAuthenticated({ publishedAt: server.last_seen });
   } else {
     if (server.authorization_required === 1) {
       if (!accessProtocol) {

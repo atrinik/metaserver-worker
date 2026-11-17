@@ -113,6 +113,58 @@ export function utcDayWindow(now: number): FixedWindow {
   return { startAt, endAt: startAt + SECONDS_PER_DAY };
 }
 
+const SECONDS_PER_HOUR = 3_600;
+const RENDEZVOUS_SERVER_WINDOW_OFFSET_SECONDS = 1_800;
+
+/**
+ * Return the one-hour server-rendezvous window containing a Unix timestamp in
+ * seconds. Windows start at half past each UTC hour, so a window start is never
+ * a UTC midnight and its primary key never coincides with a row of the former
+ * UTC-day `rendezvous-server` window. Rolling forward or back within one day
+ * therefore never meets a divergent window.
+ */
+export function rendezvousServerWindow(now: number): FixedWindow {
+  requireNonNegativeInteger(now, "now");
+  if (now < RENDEZVOUS_SERVER_WINDOW_OFFSET_SECONDS) {
+    throw new RangeError("now precedes the first server-rendezvous window");
+  }
+  const startAt = Math.floor(
+    (now - RENDEZVOUS_SERVER_WINDOW_OFFSET_SECONDS) / SECONDS_PER_HOUR,
+  ) * SECONDS_PER_HOUR + RENDEZVOUS_SERVER_WINDOW_OFFSET_SECONDS;
+  if (startAt > Number.MAX_SAFE_INTEGER - SECONDS_PER_HOUR) {
+    throw new RangeError("now is too large to form a complete window");
+  }
+  return { startAt, endAt: startAt + SECONDS_PER_HOUR };
+}
+
+/** Seconds after a publication during which a control admission is its handoff. */
+export const RENDEZVOUS_SERVER_HANDOFF_SECONDS = 30;
+/** Tolerated isolate clock skew between the publication and the admission. */
+const RENDEZVOUS_SERVER_HANDOFF_SKEW_SECONDS = 5;
+
+/**
+ * Whether a token-authenticated server control admission is the handoff that
+ * follows its own publication. Every signed publication mints a new rendezvous
+ * token and generation and retires the previous control (4004), so the server
+ * must reconnect; that reconnect is caused by the core, not by the server, and
+ * is not charged to the server's fixed-window budget. It stays bounded: it needs
+ * the current token, arrives within this window of the token being minted, and
+ * remains subject to the per-identity native burst limiter, while publications
+ * themselves are limited to `PUBLISH_SERVER_DAILY_LIMIT` per UTC day.
+ */
+export function isRendezvousServerHandoff(
+  publishedAt: number,
+  now: number,
+): boolean {
+  requireNonNegativeInteger(now, "now");
+  if (!Number.isSafeInteger(publishedAt) || publishedAt < 0) {
+    return false;
+  }
+  const elapsed = now - publishedAt;
+  return elapsed >= -RENDEZVOUS_SERVER_HANDOFF_SKEW_SECONDS &&
+    elapsed <= RENDEZVOUS_SERVER_HANDOFF_SECONDS;
+}
+
 /**
  * Calculate a safe integer Retry-After value for a known fixed-window reset.
  */

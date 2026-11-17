@@ -235,8 +235,8 @@ function boundedIntegerVariable(variables, name, minimum, maximum) {
 // The delivery engine trusts every contract field, so pin each reviewed live
 // contract exactly. A contract edit must update its digest in the same change.
 const liveContractDigests = Object.freeze({
-  production: "6ed271bdf0e6ac15542a3e272d5cd56c483b28ead014ebc035bd59e98288685b",
-  development: "02174a14343f0e01d04659cdfb8dd4fbff14527b95c0f7106c2e704d9d2dc3ec",
+  production: "a41476a5bd0709b7f8ecfc4a14fb9eda2181cace9484f20b1a35ef08c6120df4",
+  development: "af5c5a635a3a3198be00e44cac01365529cb708f6d8d128003f8c6978644ab87",
 });
 
 export async function validateDeliveryContract(contract) {
@@ -477,7 +477,7 @@ export function validateTopology(contract, configs, { production = false } = {})
     86_400,
   );
   boundedIntegerVariable(core.vars, "PUBLISH_SERVER_DAILY_LIMIT", 1, 48);
-  boundedIntegerVariable(core.vars, "RENDEZVOUS_SERVER_DAILY_LIMIT", 1, 50);
+  boundedIntegerVariable(core.vars, "RENDEZVOUS_SERVER_HOURLY_LIMIT", 1, 16);
   boundedIntegerVariable(core.vars, "RENDEZVOUS_ACTIVE_CLIENT_LIMIT", 1, 16);
   boundedIntegerVariable(core.vars, "RENDEZVOUS_CLIENT_SESSION_SECONDS", 1, 15);
   boundedIntegerVariable(
