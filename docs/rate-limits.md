@@ -83,19 +83,22 @@ Every signed publication mints a new rendezvous token and generation and
 retires the previous control socket with `4004 Rendezvous server replaced`, so
 the server must reconnect after each publication. That handoff is caused by the
 core, so it is not charged to the server's budget: an authenticated control
-admission that arrives from 5 seconds before to 30 seconds after the
+admission that arrives between 5 seconds before and 30 seconds after the
 publication that minted its token (`server_presence.last_seen`, written in the
-same upsert as the token) skips the D1 fixed window. It still needs the current
-token and still passes the 3/minute native burst limiter, and publications are
-limited to 48 per UTC day, so handoffs add at most about
-`48 × 2 × 3 = 288` admissions per server per day, where a handoff window can
-touch two native minute windows.
+same upsert as the token) skips the D1 fixed window. A Classic server only
+learns a token from a publish response, so its first control after a restart is
+a handoff too. A handoff still needs the current token and still passes the
+3/minute native burst limiter, and publications are limited to 48 per UTC day.
+Because the native counters are per Cloudflare location and approximate, the
+resulting bound of about `48 × 2 × 3 = 288` handoffs per server per day (a
+35-second handoff window can touch two native minute windows) holds per
+location, not as an exact global cap.
 
-Every other admission (reconnects after network drops or a restart) is charged
-to a one-hour fixed window of 16. Windows start at half past each UTC hour, so
-a refused server waits at most an hour, and no window key coincides with a
-former UTC-day `rendezvous-server` row (window start at midnight). The ceiling
-is therefore 384 charged plus at most 288 handoff admissions per server per day.
+Every other admission (reconnects after network drops) is charged to a
+one-hour fixed window of 16. Windows start at half past each UTC hour, so a
+refused server waits at most an hour, and no window key coincides with a
+former UTC-day `rendezvous-server` row (window start at midnight). A UTC day
+touches 25 such windows, so at most 400 charged admissions fall within one day.
 
 Before this change a 50 per UTC day window charged handoffs too. A server that
 published about 30 times a day, plus ordinary drops, exhausted it in the

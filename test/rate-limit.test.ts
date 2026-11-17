@@ -169,6 +169,54 @@ describe("fixed request-budget windows", () => {
     )).toBe(5);
   });
 
+  it("keeps server-rendezvous hours disjoint from legacy UTC-day rows in both directions", async () => {
+    const at = (iso: string) => Math.floor(Date.parse(iso) / 1_000);
+    const midnight = at("2026-11-17T00:00:00.000Z");
+    // Roll forward: an exhausted legacy daily row (window start at midnight).
+    await env.DB.prepare(
+      `INSERT INTO request_budgets
+         (actor_key, scope, window_start, request_count, expires_at)
+       VALUES (?, 'rendezvous-server', ?, 50, ?)`,
+    ).bind(SERVER_ACTOR, midnight, midnight + 86_400).run();
+    const expected = new Map<number, number>();
+    for (const now of [
+      midnight,
+      at("2026-11-17T00:10:00.000Z"),
+      at("2026-11-17T00:45:00.000Z"),
+      at("2026-11-17T21:46:38.000Z"),
+    ]) {
+      const window = rendezvousServerWindow(now);
+      expected.set(window.startAt, (expected.get(window.startAt) ?? 0) + 1);
+      const admission = await consumeFixedWindowBudget(env.DB, request({
+        scope: "rendezvous-server",
+        limit: 16,
+        now,
+        window,
+      }));
+      expect(admission.count).toBe(expected.get(window.startAt));
+      expect(admission.resetAt).toBe(window.endAt);
+    }
+    // 00:00 and 00:10 share the 23:30 window; 00:45 and 21:46 open their own.
+    expect([...expected.values()]).toEqual([2, 1, 1]);
+    expect(await readCount(SERVER_ACTOR, "rendezvous-server", midnight)).toBe(50);
+
+    // Roll back: the former daily window still admits beside hourly rows.
+    const nextMidnight = midnight + 86_400;
+    await consumeFixedWindowBudget(env.DB, request({
+      scope: "rendezvous-server",
+      limit: 16,
+      now: nextMidnight + 600,
+      window: rendezvousServerWindow(nextMidnight + 600),
+    }));
+    const legacy = await consumeFixedWindowBudget(env.DB, request({
+      scope: "rendezvous-server",
+      limit: 50,
+      now: nextMidnight + 700,
+      window: utcDayWindow(nextMidnight + 700),
+    }));
+    expect(legacy).toMatchObject({ count: 1, resetAt: nextMidnight + 86_400 });
+  });
+
   it("isolates every closed scope for the same actor and window", async () => {
     const actorKey = "3".repeat(64);
     const now = 1_786_147_200;
