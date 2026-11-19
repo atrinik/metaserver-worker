@@ -54,7 +54,7 @@
     "tsx": "^4.23.15",
     "typescript": "^7.0.2",
     "vitest": "^4.1.12",
-    "wrangler": "^4.160.1"
+    "wrangler": "^4.162.0"
   },
   "dependencies": {
     "tr46": "^7.0.0"
